@@ -1,68 +1,599 @@
 ---
 title: Deployment
-description: Container images, release tags and the environment each binary expects.
+description: Run the control plane from the GHCR images, apply the schema with surrealkit, set up SurrealDB and RabbitMQ, and ship the worker binary from a GitHub release.
 ---
 
-## Images
+This guide walks a single-host production deployment from an empty machine to a working dashboard.
+It assumes you are comfortable with Linux, Docker and a reverse proxy, and that you have never seen
+this project — or an architecture like it — before.
 
-Both images build from the **repository root** — the frontend needs the whole Bun workspace for the
-`app-protobuf` package:
+Out of scope on purpose: installing a worker on a data-plane node and registering it with the
+control plane. This guide only gets the binary onto a machine you can distribute it from.
 
-```sh
-docker build -f master.Dockerfile   -t guru-master   .
-docker build -f frontend.Dockerfile -t guru-frontend .
-```
+## 1. What you are deploying
 
-## Release tags
+Four processes, all from **one** image, plus the dashboard:
 
-Only tag pushes publish. `<version>` is the tag minus its prefix; `latest` moves only for a final
-`vX.Y.Z`.
+| Component | Image / artifact | Run mode | Talks to |
+|---|---|---|---|
+| Operator API | `ghcr.io/haruki-nikaidou/guru-master` | `dashboard_grpc` | SurrealDB, RabbitMQ |
+| Worker API | `ghcr.io/haruki-nikaidou/guru-master` | `workers_grpc` | SurrealDB, RabbitMQ |
+| Derivation hook | `ghcr.io/haruki-nikaidou/guru-master` | `consumer` | SurrealDB, RabbitMQ |
+| Sweeper | `ghcr.io/haruki-nikaidou/guru-master` | `cron` | SurrealDB |
+| Dashboard | `ghcr.io/haruki-nikaidou/guru-frontend` | — | Operator API (gRPC) |
+| Worker | `guru-worker` binary from a GitHub release | — | Worker API (gRPC) |
 
-| Tag | Publishes |
+State lives in exactly two places: **SurrealDB** (canvases, servers, nodes, edges, accounts,
+config views) and **RabbitMQ** (one durable queue of "this canvas changed" hints). Nothing is kept
+on a container filesystem, so every container is disposable. Redis appears in the module scaffolding
+but the control plane does not connect to it today — you do not need a Redis server.
+
+Ports, and who is allowed to reach them:
+
+| Port | Process | Exposure |
+|---|---|---|
+| `50051` | `dashboard_grpc` | **Private.** The dashboard only; plaintext h2c, no TLS, no auth at the transport level. |
+| `50052` | `workers_grpc` | Reachable by data-plane nodes (VPN, private network, or a TLS-terminating gRPC proxy). |
+| `3000` | dashboard | Behind your HTTPS reverse proxy; never publish directly. |
+| `8000` | SurrealDB | **Private.** Root credentials are all it has. |
+| `5672` | RabbitMQ | **Private.** |
+
+:::caution[The gRPC ports are plaintext]
+Both master modes serve cleartext HTTP/2, and the dashboard opens its channel with
+`ChannelCredentials.createInsecure()`. Keep `50051` on a private network (a Docker network, a
+loopback bind, or a VPN) and treat `50052` as a link that needs its own transport security if it
+crosses the public internet.
+:::
+
+## 2. Prerequisites
+
+- A Linux host with Docker ≥ 24 and the Compose plugin.
+- A DNS name for the dashboard plus a TLS certificate (nginx, Caddy, Traefik — anything).
+- A checkout of this repository on an operator machine. You need it for two things: the schema
+  files under `database/` and the `manage-tool` admin CLI. Neither is shipped as an image.
+- [`surrealkit`](https://github.com/surrealdb/surrealkit) on that operator machine:
+
+  ```sh
+  cargo binstall surrealkit     # or: cargo install surrealkit
+  surrealkit --version          # this guide was written against 0.7.0
+  ```
+
+- A Rust toolchain on that machine (the repository pins it in `rust-toolchain.toml`) plus
+  `protobuf-compiler`, to build `manage-tool`.
+
+## 3. Pick versions
+
+Publishing happens on tag pushes only; the image tag is the git tag minus its component prefix.
+
+| Git tag | Publishes |
 |---|---|
-| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:<version>` (`distroless/cc-debian13:nonroot`) |
-| `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:<version>` (`distroless/nodejs24-debian13:nonroot`) |
-| `worker-v0.1.0[-alpha]` | GitHub release with the raw `linux/x86_64` `guru-worker` binary |
+| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]` |
+| `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:v0.1.0[-alpha]` |
+| `worker-v0.1.0[-alpha]` | GitHub release carrying the raw `linux/x86_64` `guru-worker` binary |
 
-## Running the control plane
+`latest` moves only for a final `vX.Y.Z`, never for a pre-release. **Pin an explicit tag** in your
+Compose file anyway: `latest` gives you no way to say which revision is running, and the master and
+the schema move together.
 
-`guru-master` is configured entirely through the environment. `GURU_WORKER_MODE` selects the mode;
-`SURREALDB_NAMESPACE`, `SURREALDB_NAME` and `AMQP_URI` have **no defaults**. Run one container per
-mode:
+Both images are public, so no `docker login ghcr.io` is needed to pull.
 
-- `dashboard_grpc` — operator API, listens on `GURU_DASHBOARD_GRPC_ADDR` (`0.0.0.0:50051`).
-- `workers_grpc` — worker API, listens on `GURU_WORKERS_GRPC_ADDR` (`0.0.0.0:50052`).
-- `consumer` — AMQP derivation hook.
-- `cron` — stale-canvas sweep.
+## 4. Lay out the secrets
 
-See [Configuration](/reference/configuration/) for the full variable list.
+Create a deployment directory (this guide uses `/srv/guru`) with a `.env` next to the Compose file:
 
-## Running the dashboard
-
-The frontend listens on `:3000` and reaches the control plane through `GURU_GRPC_URL`. Behind a
-reverse proxy, set `ORIGIN` (or `PROTOCOL_HEADER` / `HOST_HEADER`) so the Node adapter builds
-correct URLs and passes its CSRF check.
-
-## Running a worker
-
-Standalone, from a file that is reloaded on `SIGHUP`:
+Generate the two passwords **URL-safe** — the broker password is interpolated into `AMQP_URI`,
+where `@`, `:`, `/` and `%` change the meaning of the URI:
 
 ```sh
-guru-worker --config /etc/guru/worker.toml
+openssl rand -hex 32
 ```
-
-Agent mode, streaming configs from the master:
 
 ```sh
-GURU_API_KEY=<operator-api-key> \
-guru-worker --master http://10.0.0.1:50052 --server <orchestration_server key>
+# /srv/guru/.env
+# The master and the frontend are tagged and released independently; pin each one.
+MASTER_VERSION=v0.0.1-alpha
+FRONTEND_VERSION=v0.0.1-alpha
+
+SURREAL_ROOT_USER=root
+SURREAL_ROOT_PASSWORD=<hex string from openssl>
+
+RABBIT_USER=guru
+RABBIT_PASSWORD=<hex string from openssl>
+
+GURU_NS=guru
+GURU_DB=guru
 ```
 
-The API key is used once per session to register with the master; `--api-key-file`
-(`GURU_API_KEY_FILE`) is the file-based alternative. Worker state is kept in `GURU_STATE_DIR`
-(`/var/lib/guru-worker`).
+If you insist on a passphrase with punctuation, percent-encode it before putting it in `AMQP_URI`
+(`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`). SurrealDB's password is passed as an argv
+value, so it needs no encoding — only quoting.
 
-## Schema rollouts
+:::caution[The repository `.env` is a different file]
+The repository root may contain a `.env` with credentials of *another* environment, and both
+`surrealkit` and every process started from that directory inherit it (`SURREALDB_HOST`,
+`SURREALDB_USER`, `SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`).
+`surrealkit` resolves CLI flags > environment > `.env`, so always pass `--host/--ns/--db/--user/--pass`
+explicitly when you run schema commands. A forgotten flag is how a "local" command ends up
+rewriting production.
+:::
 
-Development uses `surrealkit sync`. For shared or production databases use `surrealkit rollout`,
-which plans the change set and supports rollback.
+## 5. SurrealDB and RabbitMQ
+
+### SurrealDB
+
+Use a **3.2 or newer** server. Older 3.0 binaries disagree with the client the workspace links
+against and mis-handle assertions that read a row written earlier in the same transaction, which
+shows up as spurious "table does not exist" or cancelled-transaction errors.
+
+Two things the control plane needs from it:
+
+- **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects
+  namespace and database. A namespace- or database-scoped user will not work.
+- **A durable storage backend.** `rocksdb:/data/guru.db` in this guide; put it on a volume you
+  back up. The `surrealdb/surrealdb` image runs as an unprivileged user that cannot write to a
+  fresh named volume, hence `user: root` in the service below.
+
+### RabbitMQ
+
+Any 3.13/4.x server works; the control plane declares its own exchange and durable queue
+(`guru_orchestration_canvas_dirty`) on startup, so there is nothing to pre-create. Create a user and
+leave it on the default vhost.
+
+The URI form matters: `amqp://user:password@host:5672/` — the **trailing slash** selects the default
+vhost. `/%2f` is rejected by the parser.
+
+The broker is **mandatory** in `dashboard_grpc`, `workers_grpc` and `consumer`; those modes refuse
+to start without a reachable `AMQP_URI`, because a control plane that cannot publish a dirty-canvas
+event would accept edits that nothing re-derives. Only `cron` runs without it.
+
+### Compose services
+
+```yaml
+# /srv/guru/docker-compose.yml
+name: guru
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    restart: unless-stopped
+    command:
+      - start
+      - --user
+      - ${SURREAL_ROOT_USER}
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD}
+      - rocksdb:/data/guru.db
+    user: root
+    volumes:
+      - surreal-data:/data
+    # Loopback only: the operator machine reaches it through an SSH tunnel.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  surreal-data:
+  rabbit-data:
+```
+
+Bring the two datastores up first — the schema has to exist before any master starts:
+
+```sh
+cd /srv/guru
+docker compose up -d surrealdb rabbitmq
+```
+
+## 6. Apply the schema with `surrealkit`
+
+The schema is a set of declarative `.surql` files under `database/schema/` (one per module) plus
+`database/setup.surql`, which defines the two bookkeeping tables (`__entity`, `__rollout`)
+`surrealkit` itself needs. Run every command from the repository root, because `surrealkit` resolves
+`./database` relative to the working directory (`--folder` overrides it).
+
+Wrap the connection in a shell function so the flags stay short, nothing falls back to the
+repository `.env`, and the password survives whatever characters it contains (a `SK="… --pass $pw"`
+string variable would be re-tokenized on spaces):
+
+```sh
+cd ~/proxy-guru                      # your checkout
+read -rs SURREAL_ROOT_PASSWORD       # paste the root password, it is not echoed
+export SURREAL_ROOT_PASSWORD
+
+sk() {
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
+}
+```
+
+If the database only listens on loopback on the server, tunnel to it:
+`ssh -N -L 8000:127.0.0.1:8000 guru-host`.
+
+**Step 1 — bookkeeping tables.** Once per database:
+
+```sh
+sk setup
+```
+
+**Step 2 — plan the change.** `plan` diffs the schema files against the live database and writes a
+reviewable manifest:
+
+```sh
+sk rollout plan --name initial_schema
+# Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
+# Updated ./database/snapshots/catalog_snapshot.json
+```
+
+Read the manifest, then validate it without touching the database:
+
+```sh
+sk rollout lint 20260913083052__initial_schema
+```
+
+**Step 3 — expand.** `start` applies the *non-destructive* half (new tables, fields, indexes,
+functions). It is safe to run while an older control plane is live:
+
+```sh
+sk rollout start 20260913083052__initial_schema
+# Rollout ... is ready to complete.
+```
+
+**Step 4 — cut over, then contract.** Deploy the master version that matches the schema
+(section 7), and only then run the destructive half — dropping objects the new code no longer uses:
+
+```sh
+sk rollout complete 20260913083052__initial_schema
+sk status
+# __rollout:20260913083052__initial_schema [completed] initial_schema
+```
+
+For the very first deployment steps 3 and 4 run back to back: there is no old version to keep
+alive.
+
+Other commands you will want eventually:
+
+| Command | When |
+|---|---|
+| `surrealkit rollout baseline` | First rollout against a database that already has the schema (adopts the current state instead of diffing it from empty) |
+| `surrealkit rollout rollback <target>` | Revert an in-flight rollout |
+| `surrealkit rollout repair <target>` | A `start`/`complete` was killed mid-flight and `__rollout.status` is stuck on `running_*`; reconciles metadata only |
+| `surrealkit sync` | **Disposable databases only.** Reconciles immediately, prunes deleted objects, no review step, no rollback |
+
+Commit `database/rollouts/*.toml` and `database/snapshots/*.json`: they are how the next `plan`
+knows what the shared database already has.
+
+## 7. Run the control plane
+
+`guru-master` is configured entirely through the environment. `GURU_WORKER_MODE` picks the mode;
+`SURREALDB_NAMESPACE`, `SURREALDB_NAME` and `AMQP_URI` have **no defaults**. Extend the same
+`docker-compose.yml`: the `x-master` anchor goes above `services:`, the four services inside it,
+next to `surrealdb` and `rabbitmq`:
+
+```yaml
+x-master: &master
+  image: ghcr.io/haruki-nikaidou/guru-master:${MASTER_VERSION}
+  restart: unless-stopped
+  environment: &master-env
+    SURREALDB_HOST: ws://surrealdb:8000
+    SURREALDB_USER: ${SURREAL_ROOT_USER}
+    SURREALDB_PASSWORD: ${SURREAL_ROOT_PASSWORD}
+    SURREALDB_NAMESPACE: ${GURU_NS}
+    SURREALDB_NAME: ${GURU_DB}
+    AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    GURU_LOG_LEVEL: info
+  depends_on:
+    surrealdb:
+      condition: service_started
+    rabbitmq:
+      condition: service_healthy
+
+services:
+  # ... surrealdb and rabbitmq from section 5 ...
+
+  master-dashboard:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: dashboard_grpc
+    # No `ports`: only the dashboard container reaches :50051, over this network.
+
+  master-workers:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: workers_grpc
+    ports:
+      - "50052:50052"
+
+  master-consumer:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: consumer
+
+  master-cron:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: cron
+```
+
+What each mode is for, and how it scales:
+
+- **`dashboard_grpc`** — the operator API (`Auth` + `Orchestration`) on `GURU_DASHBOARD_GRPC_ADDR`
+  (`0.0.0.0:50051`). Stateless; replicate freely behind a gRPC-aware load balancer.
+- **`workers_grpc`** — the worker API (`WorkerAgent`) on `GURU_WORKERS_GRPC_ADDR`
+  (`0.0.0.0:50052`), plus the config-view poller that wakes worker streams
+  (`GURU_WATCH_POLL_MS`, default `1000`). Replicable, but each worker session is pinned to the
+  instance holding its stream, so put a plain TCP/gRPC load balancer in front, never an HTTP/1 proxy.
+- **`consumer`** — re-derives a canvas when a `CanvasDirty` message arrives, with a prefetch of 8.
+  Replicate for throughput; derivation is guarded by the canvas generation counter, so concurrent
+  passes cannot overwrite each other — the loser is simply redone.
+- **`cron`** — sweeps canvases whose `generation` ran ahead of their `derived_generation` every
+  `GURU_SWEEP_INTERVAL_SECS` (default `30`). This is what makes the broker a latency optimisation
+  rather than a correctness dependency: a dropped message costs at most one sweep. One replica is
+  enough; more are safe but only duplicate work.
+
+Two operational notes that follow from the code:
+
+- The `consumer` mode **exits non-zero when the AMQP connection drops** (the client does not
+  reconnect, and a silently dead consumer is worse than a restart). `restart: unless-stopped` is
+  what makes that self-healing — do not remove it.
+- The images are distroless: no shell, no `curl`. A Compose `healthcheck` that shells out cannot
+  work. Monitor from outside instead (a TCP connect to `50051`/`50052`, or scrape the logs).
+
+Start them:
+
+```sh
+docker compose up -d
+docker compose logs master-dashboard master-workers master-consumer master-cron
+```
+
+A healthy start looks like this — one line per mode:
+
+```text
+master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
+master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
+master-consumer-1   | INFO guru_master: consuming canvas edits queue="guru_orchestration_canvas_dirty"
+master-cron-1       | INFO guru_master: running cron worker interval_secs=30
+```
+
+## 8. Create the first administrator
+
+There is no self-service signup: the first account is created directly against the database with
+`manage-tool`, which deliberately bypasses RBAC because no admin exists yet. It is not published as
+an image, so build it from your checkout:
+
+```sh
+cd ~/proxy-guru
+cargo build --release -p manage-tool
+
+./target/release/manage-tool \
+  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
+  --namespace guru --database guru \
+  create-admin --email admin@example.com --password '<strong password>'
+# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+```
+
+Pass all five database flags explicitly — they also read `SURREALDB_*` from the environment, so a
+stray `.env` silently redirects the command.
+
+The same binary has `orchestration export-config --server <key>`, which prints the worker TOML the
+canvas currently derives for one server. That is the tool to reach for when a node's behaviour and
+the canvas seem to disagree.
+
+## 9. Run the dashboard
+
+The dashboard is a SvelteKit app on the Node adapter. It listens on `:3000` and reaches the control
+plane through `GURU_GRPC_URL`. One more service in the same file:
+
+```yaml
+  frontend:
+    image: ghcr.io/haruki-nikaidou/guru-frontend:${FRONTEND_VERSION}
+    restart: unless-stopped
+    environment:
+      GURU_GRPC_URL: master-dashboard:50051
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - master-dashboard
+```
+
+:::danger[Serve it over HTTPS, and forward the protocol]
+This is the single most common way to get a dashboard that loads but cannot log in.
+
+The app never trusts the socket it is listening on. For every request it reconstructs its own
+origin from headers and **defaults the scheme to `https`** when `PROTOCOL_HEADER` is unset. Its
+login (a SvelteKit *remote function*, i.e. a POST) is rejected with
+`403 {"message":"Cross-site remote requests are forbidden"}` whenever the browser's `Origin` header
+does not match that reconstructed origin. So:
+
+- **Behind an HTTPS proxy that preserves `Host`:** it works with no extra configuration — scheme
+  defaults to `https`, host comes from `Host`.
+- **Anything else (plain HTTP, a different public host or port):** set
+  `PROTOCOL_HEADER=x-forwarded-proto` and `HOST_HEADER=x-forwarded-host`, and make the proxy send
+  both. `X-Forwarded-Host` **must include the port** if the public URL has a non-default one —
+  nginx's `$host` drops it, use `$http_host`.
+- `ORIGIN` does nothing. The Node adapter in this build bakes that value in at build time from
+  `kit.paths.origin`; the runtime variable is ignored.
+
+HTTPS is not optional in any case: the session cookie (`guru_session`, a full bearer credential for
+the control plane) is issued with `Secure`, so browsers drop it over plain HTTP on anything but
+`localhost`.
+:::
+
+A minimal nginx server block, with the two headers the app needs:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name guru.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Host  $http_host;   # $host drops the port
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+    }
+}
+```
+
+Also useful: `ADDRESS_HEADER=x-forwarded-for` if you want real client IPs, and `BODY_SIZE_LIMIT`
+(default `512K`) if you ever import very large canvases.
+
+Now open `https://guru.example.com/`, which redirects to `/auth`, and sign in with the account from
+section 8. You should land on the canvas list with your email in the sidebar.
+
+## 10. Get the worker binary from a GitHub release
+
+The data plane ships as a raw binary, not an image, and only `linux/x86_64` is published. Each
+`worker-<version>` release carries one asset, `guru-worker-<version>-x86_64-unknown-linux-gnu`,
+where `<version>` is the tag minus its `worker-` prefix — so tag `worker-v0.1.0` publishes
+`guru-worker-v0.1.0-x86_64-unknown-linux-gnu`.
+
+Pick a release that actually lists that asset, and check before you script anything around it:
+
+```sh
+curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
+  | jq -r '.[] | select(.tag_name | startswith("worker-"))
+           | .tag_name + " -> " + ((.assets | map(.name)) | join(", "))'
+```
+
+:::caution[Not every tag has a binary]
+A `worker-v*` tag whose release lists no assets was tagged before the release workflow existed (as
+of writing, `worker-v0.0.1-alpha` is in exactly that state: `assets: []`). There is nothing to
+download from such a tag — use a newer release, or push a fresh `worker-v*` tag so the *Release
+Worker* workflow builds and attaches the binary.
+:::
+
+With the GitHub CLI:
+
+```sh
+VERSION=v0.1.0
+gh release download "worker-${VERSION}" \
+  --repo haruki-nikaidou/proxy-guru \
+  --pattern 'guru-worker-*-x86_64-unknown-linux-gnu' \
+  --output guru-worker
+```
+
+Or with plain `curl` — resolve the asset through the API so you never hard-code a URL:
+
+```sh
+VERSION=v0.1.0
+url=$(curl -fsSL \
+  "https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases/tags/worker-${VERSION}" \
+  | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-gnu")) | .browser_download_url')
+curl -fsSL "$url" -o guru-worker
+```
+
+Then make it executable and confirm it runs (there is no `--version` flag; `--help` is the smoke
+test):
+
+```sh
+chmod +x guru-worker
+./guru-worker --help
+```
+
+Keep the binaries in your own artifact store (an internal HTTP server, an apt/OCI registry, your
+config-management system) keyed by version. There is no `latest` alias and no published checksum
+file, so record the version — and ideally your own `sha256sum` — alongside the copy you distribute.
+
+The binary is glibc-linked (`x86_64-unknown-linux-gnu`), built on the GitHub runner's Debian base.
+It runs on a current Debian/Ubuntu/RHEL; it will not run on Alpine or any other musl distribution.
+
+Installing, configuring and registering a worker node is covered separately; everything above stops
+at "the binary is available and distributable".
+
+## 11. Verify the deployment
+
+Work through these in order — each one fails loudly and independently:
+
+```sh
+# 1. Datastores
+docker compose ps                     # surrealdb + rabbitmq healthy
+
+# 2. Schema
+sk status                             # from section 6
+#   → the rollout you applied, [completed]
+
+# 3. Control plane: one banner per mode, and no restart loop
+docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
+
+# 4. Worker API reachable from a data-plane node's network
+nc -z <host> 50052 && echo "workers_grpc reachable"
+
+# 5. Dashboard through the proxy (303 to /auth)
+curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
+
+# 6. Log in with the admin account — this is the only check that exercises
+#    dashboard → operator API → SurrealDB end to end.
+```
+
+If step 6 fails with `Forbidden` while steps 1–5 pass, re-read the proxy warning in section 9.
+
+## 12. Upgrades, backups, rollback
+
+**Upgrading.** Schema first, code second, contraction last:
+
+1. `surrealkit rollout plan --name <change>` and review the manifest.
+2. `surrealkit rollout start <target>` — expansion only; the running version keeps working.
+3. Bump `MASTER_VERSION` (and `FRONTEND_VERSION`, if the dashboard also has a new tag) in
+   `.env`, then `docker compose pull && docker compose up -d`.
+4. Verify, then `surrealkit rollout complete <target>`.
+
+If step 3 or 4 goes wrong: `surrealkit rollout rollback <target>`, and pin the version variables
+back to the previous tags. A rollout killed mid-flight leaves `__rollout.status` on `running_*` — heal the
+metadata with `surrealkit rollout repair <target>` before planning anything else.
+
+**Backups.** SurrealDB is the only irreplaceable state:
+
+```sh
+docker compose exec -T surrealdb /surreal export \
+  --endpoint http://127.0.0.1:8000 --user root --pass '<pw>' \
+  --ns guru --db guru - > guru-$(date +%F).surql
+```
+
+Snapshot the `surreal-data` volume too if you want a fast restore path. RabbitMQ needs no backup: its
+queue holds latency hints, and the `cron` sweeper rebuilds anything a lost message would have
+triggered.
+
+**Logs.** Everything is structured `tracing` output on stdout, with `GURU_LOG_LEVEL` taking a full
+`EnvFilter` string (`info`, `warn`, `guru_master=debug,orchestration=debug`, …). Ship it with your
+usual Docker log driver.
+
+## 13. Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| Dashboard login returns `Forbidden` / `Cross-site remote requests are forbidden` | Reconstructed origin ≠ browser `Origin`. Serve over HTTPS, or set `PROTOCOL_HEADER`/`HOST_HEADER` and forward `X-Forwarded-Proto` and `X-Forwarded-Host` (with the port). `ORIGIN` has no effect. |
+| Login succeeds, next request bounces back to `/auth` | The `Secure` session cookie was dropped — the browser reached the dashboard over plain HTTP. |
+| `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` are unset; they have no defaults. |
+| Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. Every mode but `cron` requires the broker. Check the trailing `/` on the URI. |
+| `consumer` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
+| `table does not exist` / cancelled transactions right after a clean install | SurrealDB older than 3.2, or the schema was never applied. Check `surrealkit status`. |
+| `surrealkit` wrote to the wrong database | A `.env` in the working directory supplied the connection. Always pass `--host/--ns/--db/--user/--pass`. |
+| Canvas edits never reach a worker | `consumer` is down *and* `cron` is down. Either one alone still converges, `cron` just more slowly. |
+
+See [Configuration](/reference/configuration/) for every flag and variable, and
+[Rollout Model](/reference/rollout/) for what "derivation" actually does.

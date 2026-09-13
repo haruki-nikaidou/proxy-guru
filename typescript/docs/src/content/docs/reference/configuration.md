@@ -56,9 +56,17 @@ Global flags mirror `guru-master`'s database options: `--address` (`SURREALDB_HO
 | Environment | Default | Purpose |
 |---|---|---|
 | `GURU_GRPC_URL` | `127.0.0.1:50051` | Dashboard gRPC endpoint of `guru-master --mode dashboard_grpc` |
-| `ORIGIN` | — | Public URL when running behind a reverse proxy (or use `PROTOCOL_HEADER` / `HOST_HEADER`) |
+| `PROTOCOL_HEADER` | — | Header carrying the public scheme, e.g. `x-forwarded-proto`. **Unset means the app assumes `https`** |
+| `HOST_HEADER` | — | Header carrying the public host, e.g. `x-forwarded-host` (must include a non-default port) |
+| `ADDRESS_HEADER` | — | Header carrying the client IP, e.g. `x-forwarded-for` |
+| `BODY_SIZE_LIMIT` | `512K` | Maximum request body |
 
-The server listens on `:3000`.
+The server listens on `:3000`. Every request's own origin is reconstructed from those headers, and
+a POST whose browser `Origin` does not match it is rejected with
+`403 Cross-site remote requests are forbidden` — so behind a plain-HTTP or port-shifted proxy both
+`PROTOCOL_HEADER` and `HOST_HEADER` are mandatory. `ORIGIN` is **not** read at run time: the Node
+adapter bakes `kit.paths.origin` in at build time. The session cookie is issued with `Secure`, so
+the dashboard must be served over HTTPS (except on `localhost`).
 
 ## Module configuration
 

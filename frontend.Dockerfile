@@ -48,7 +48,10 @@ ENV HOST="0.0.0.0"
 ENV PORT="3000"
 # Dashboard gRPC endpoint of `guru-master --mode dashboard_grpc`.
 ENV GURU_GRPC_URL="127.0.0.1:50051"
-# Behind a reverse proxy, set `ORIGIN` to the public URL (or `PROTOCOL_HEADER` /
-# `HOST_HEADER`) so adapter-node builds correct URLs and passes its CSRF check.
+# Serve it over HTTPS. The app reconstructs its origin per request and assumes
+# `https` unless `PROTOCOL_HEADER` is set, rejecting mismatched POSTs with 403;
+# behind a plain-HTTP or port-shifted proxy set `PROTOCOL_HEADER=x-forwarded-proto`
+# and `HOST_HEADER=x-forwarded-host`. Runtime `ORIGIN` is ignored: adapter-node
+# bakes `kit.paths.origin` in at build time.
 
 CMD ["build/index.js"]
