@@ -522,8 +522,10 @@ file, so record the version — and ideally your own `sha256sum` — alongside t
 The binary is glibc-linked (`x86_64-unknown-linux-gnu`), built on the GitHub runner's Debian base.
 It runs on a current Debian/Ubuntu/RHEL; it will not run on Alpine or any other musl distribution.
 
-Installing, configuring and registering a worker node is covered separately; everything above stops
-at "the binary is available and distributable".
+Installing and registering a worker node against this control plane is covered separately;
+everything above stops at "the binary is available and distributable". A node that should run
+without a control plane at all is a different guide:
+[Independent Worker Deployment](/guides/independent-worker/).
 
 ## 11. Verify the deployment
 

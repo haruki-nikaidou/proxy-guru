@@ -24,7 +24,8 @@ standalone from a TOML file (reloaded on `SIGHUP`) or in agent mode, streaming c
 master.
 
 The worker config model itself lives in `lib/guru_worker_config` and is shared by both planes: the
-master derives it, the worker consumes it.
+master derives it, the worker consumes it. A worker driven from a file needs no control plane at
+all — see [Independent Worker Deployment](/guides/independent-worker/).
 
 ## Topology vocabulary
 
@@ -61,3 +62,5 @@ generated API client.
   machine.
 - [Architecture](/reference/architecture/) — crate roles and layer rules.
 - [Rollout Model](/reference/rollout/) — how a canvas edit reaches a worker.
+- [Independent Worker Deployment](/guides/independent-worker/) — run a worker from a
+  TOML file, without a master.

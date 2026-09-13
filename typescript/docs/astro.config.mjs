@@ -27,11 +27,17 @@ export default defineConfig({
 					]
 				},
 				{
+					label: 'Configuration',
+					items: [
+						{ label: 'Configuration Reference', link: '/reference/configuration/' },
+						{ label: 'Independent Worker Deployment', link: '/guides/independent-worker/' }
+					]
+				},
+				{
 					label: 'Reference',
 					items: [
 						{ label: 'Architecture', link: '/reference/architecture/' },
 						{ label: 'Rollout Model', link: '/reference/rollout/' },
-						{ label: 'Configuration', link: '/reference/configuration/' },
 						{ label: 'Workspace Layout', link: '/reference/workspace-layout/' }
 					]
 				}
