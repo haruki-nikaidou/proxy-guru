@@ -12,13 +12,18 @@ FROM oven/bun:1.3 AS base
 WORKDIR /app
 ENV CI="true"
 
-# Manifests only: this layer survives every source-only change.
+# Manifests only: this layer survives every source-only change. Every workspace
+# member matched by the root `workspaces` glob has to be here, otherwise Bun
+# resolves a different workspace set than `bun.lock` records and
+# `--frozen-lockfile` fails; `--filter` then keeps the docs site's dependency
+# tree (astro, sharp, …) out of both installs.
 COPY package.json bun.lock ./
 COPY typescript/app-protobuf/package.json typescript/app-protobuf/
+COPY typescript/docs/package.json typescript/docs/
 COPY typescript/guru-frontend/package.json typescript/guru-frontend/
 
 FROM base AS builder
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --filter guru-frontend
 COPY biome.json ./
 COPY proto/ proto/
 COPY typescript/ typescript/
@@ -28,7 +33,7 @@ RUN bun run --filter guru-frontend build
 # adapter-node bundles the app but keeps `dependencies` external (`nice-grpc`,
 # `valibot`, …), so the runtime still needs a production `node_modules`.
 FROM base AS deps
-RUN bun install --frozen-lockfile --production --ignore-scripts
+RUN bun install --frozen-lockfile --production --ignore-scripts --filter guru-frontend
 
 FROM gcr.io/distroless/nodejs24-debian13:nonroot AS runtime
 # Bun's isolated linker keeps the shared store in `<root>/node_modules/.bun` and
