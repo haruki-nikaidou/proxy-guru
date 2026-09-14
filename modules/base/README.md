@@ -4,7 +4,9 @@
 
 1. **Shared library.** It holds the entities, config primitives, and utilities
    that more than one module needs, so feature modules depend on `base` instead
-   of duplicating them.
+   of duplicating them. Today that is the **configuration store**: the
+   `app_config` table, the `ConfigJson` key binding, and the `ConfigStore`
+   service every binary loads its typed settings through.
 2. **Template.** Its directory layout is the layout **every** module follows.
    To add a feature, copy this structure into a new `modules/<name>` crate.
 
@@ -13,11 +15,10 @@
 ```
 src/
 ├── lib.rs          # crate root: declares the modules below
-├── config.rs       # strongly typed module configuration (DB-backed, Redis-cached)
+├── config.rs       # how a module declares typed configuration (`base` owns no key)
 ├── utils/          # small, dependency-light helpers
 ├── entities/       # persistence layer
-│   ├── db/         # PostgreSQL rows + compile-time-checked queries
-│   └── redis/      # Redis key/value types (rkyv-encoded)
+│   └── surreal/    # SurrealDB rows + queries (`app_config`); add `redis/` when a module caches
 ├── services/       # business logic (stateful Processors)
 ├── events/         # AMQP message payloads + routing
 ├── hooks/          # background reactors: consumers, cron, event loggers
@@ -36,8 +37,8 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 A processor is a `Clone`-able struct that owns its dependencies and implements
 `Processor<Input>` once per operation. The same abstraction is used everywhere:
 
-- **Entities** implement `Processor` on `wakuwaku::sqlx::DatabaseProcessor` (for
-  database work) or on their own type (for Redis).
+- **Entities** implement `Processor` on `wakuwaku::surreal::SurrealProcessor`
+  (for database work) or on their own type (for Redis).
 - **Services** implement `Processor` on a service struct that owns the database,
   Redis, message queue, and any collaborating services.
 - **Hooks** implement `Processor` (plus `AmqpMessageProcessor`) to consume
@@ -48,7 +49,7 @@ This keeps each unit small, individually testable, and trivially composable.
 ## Data flow
 
 ```
-gRPC request ──► rpc ──► services ──► entities ──► PostgreSQL / Redis
+gRPC request ──► rpc ──► services ──► entities ──► SurrealDB / Redis
                             │
                             └─► events ──► AMQP ──► hooks (this or another module)
 ```

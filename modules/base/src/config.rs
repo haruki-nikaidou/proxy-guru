@@ -1,28 +1,39 @@
 //! Module configuration.
 //!
-//! Put the strongly typed configuration for this module here. The convention in
-//! this stack is to store configuration as JSON in the database (one row per
-//! key in a shared application-config table) and cache it in Redis so services
-//! can load it cheaply and read-only at runtime. The management CLI seeds the
-//! defaults; a refresh step copies the database value into the Redis cache.
+//! Put the strongly typed configuration for this module here. Configuration
+//! lives in the database: one `app_config` row per key, holding the whole
+//! struct as a JSON document (see
+//! [`crate::entities::surreal::app_config`]). The database is the only source
+//! of truth, so every process in a fleet loads the same values without any
+//! matching environment; `manage-tool config seed` writes the defaults and
+//! `manage-tool config set` replaces them.
 //!
-//! Define a `serde`-(de)serializable struct that implements `Default` and bind
-//! it to a stable config key:
+//! Define a `serde`-(de)serializable struct that implements [`Default`] and
+//! bind it to a stable key with
+//! [`ConfigJson`](crate::entities::surreal::app_config::ConfigJson):
 //!
-//! ```ignore
+//! ```
+//! use base::entities::surreal::app_config::ConfigJson;
 //! use serde::{Deserialize, Serialize};
 //!
+//! // `#[serde(default)]` on the struct is load-bearing: a row written before
+//! // `max_items` existed still loads, with `Default` filling the gap.
 //! #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+//! #[serde(default)]
 //! pub struct ExampleConfig {
 //!     pub feature_enabled: bool,
 //!     pub max_items: u32,
 //! }
 //!
-//! // Bind the struct to the key used to store/lookup it in the database/Redis.
-//! // The concrete `ConfigJson`-style trait is provided by whichever module in
-//! // your workspace owns configuration storage.
-//! //
-//! // impl ConfigJson for ExampleConfig {
-//! //     const KEY: &'static str = "example";
-//! // }
+//! impl ConfigJson for ExampleConfig {
+//!     const KEY: &'static str = "example";
+//! }
 //! ```
+//!
+//! Services hold the struct by value and receive it at construction time; load
+//! it once during startup with
+//! [`LoadConfig`](crate::services::config::LoadConfig), not per request, and
+//! register the key as a `ConfigKey` variant in `manage-tool` so it is seeded
+//! and inspectable.
+//!
+//! `base` itself has no settings of its own — it owns the store, not a key.

@@ -10,6 +10,9 @@
 //! calls into. Keep transport concerns (protobuf, HTTP) out of here — a service
 //! should be usable regardless of how it is invoked.
 //!
+//! [`config`] is this module's own service: the configuration store every
+//! binary loads its typed settings from.
+//!
 //! ```ignore
 //! use kanau::processor::Processor;
 //! use wakuwaku::sqlx::DatabaseProcessor;
@@ -32,3 +35,5 @@
 //!     }
 //! }
 //! ```
+
+pub mod config;

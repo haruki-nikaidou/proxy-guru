@@ -16,8 +16,9 @@
 //! - [`events`] — AMQP payloads this module publishes or consumes.
 //! - [`hooks`] — background reactors: the derivation hook and its sweep, relay
 //!   leaf rotation, the health liveness sweep and retention, ACME renewal.
-//! - [`config`] — [`config::OrchestrationConfig`], filled from `guru-master`'s
-//!   flags: health intervals and retention, ACME and relay-certificate knobs.
+//! - [`config`] — [`config::OrchestrationConfig`], loaded from the database
+//!   under the `"orchestration"` key: health intervals and retention, ACME and
+//!   relay-certificate knobs.
 //! - [`utils`] — record-id conversion and master-key encryption of stored secrets.
 //!
 //! ## How a change reaches a worker

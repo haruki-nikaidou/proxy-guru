@@ -1,9 +1,13 @@
 //! Module configuration.
 //!
-//! There is no configuration store yet, so the values come from `guru-master`'s
-//! `GURU_*` flags (see `bin/guru-master`), with these defaults. Services and hooks
-//! hold the struct by value.
+//! [`OrchestrationConfig`] is stored in the database under the
+//! `"orchestration"` key and loaded once during startup through `base`'s
+//! configuration store (`base::services::config::LoadConfig`); services and
+//! hooks hold the struct by value. `manage-tool config seed` writes these
+//! defaults, `manage-tool config set orchestration '<json>'` changes them, and
+//! the new values take effect when the masters restart.
 
+use base::entities::surreal::app_config::ConfigJson;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -11,7 +15,13 @@ pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/d
 pub const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
     "https://acme-staging-v02.api.letsencrypt.org/directory";
 
+/// Operator-tunable orchestration settings: health thresholds and retention,
+/// ACME defaults, relay-certificate lifetimes.
+///
+/// `#[serde(default)]` keeps a row written before a field existed readable: the
+/// missing field falls back to [`Default`] instead of failing the startup read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OrchestrationConfig {
     /// How often a worker sends a `HealthReport`. Workers are told nothing; this
     /// is the master's expectation and sizes the offline threshold.
@@ -52,6 +62,10 @@ impl Default for OrchestrationConfig {
             relay_cert_renew_before_secs: 10 * 24 * 60 * 60,
         }
     }
+}
+
+impl ConfigJson for OrchestrationConfig {
+    const KEY: &'static str = "orchestration";
 }
 
 impl OrchestrationConfig {

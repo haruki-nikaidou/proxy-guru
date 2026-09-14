@@ -11,6 +11,7 @@ rpguru_sdk = { path = "../../lib/rpguru_sdk" }
 newtype_record_id = { path = "../../lib/newtype_record_id" }
 guru_worker_config = { path = "../../lib/guru_worker_config" }
 auth = { path = "../auth" }
+base = { path = "../base" }
 
 # Framework
 wakuwaku = { workspace = true }

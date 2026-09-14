@@ -37,7 +37,7 @@ Every module crate mirrors `modules/base`:
 ```text
 src/
 ├── lib.rs        # declares the modules below; sets crate-wide lints
-├── config.rs     # typed configuration (stored in DB, cached in Redis)
+├── config.rs     # typed configuration (one `app_config` row, JSON document)
 ├── utils/        # small, dependency-light helpers
 ├── entities/     # persistence layer
 │   ├── surreal/  # SurrealDB row types + SurrealProcessor queries

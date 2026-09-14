@@ -60,7 +60,8 @@ time range.
 ## Certificates
 
 An Entry with a `tls` block (`sni`, DNS provider, `domain_id`, optional ACME directory — empty means
-`--default-acme-directory`, Let's Encrypt) resolves to one `certificate` row per
+the stored `orchestration` config's `default_acme_directory`, Let's Encrypt) resolves to one
+`certificate` row per
 `(sni, acme_directory)`. The ACME cron creates the row, runs a DNS-01 challenge through the DNS
 provider (Cloudflare: `domain_id` is the zone id; Vercel: `domain_id` is the domain, the provider's
 `account_id` is the team id), waits for the TXT record to be visible on public resolvers, and stores

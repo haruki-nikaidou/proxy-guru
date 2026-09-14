@@ -220,14 +220,17 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
         servers: ServerService {
             db: db.clone(),
             notifier: Default::default(),
+            config: config.clone(),
         },
         nodes: NodeService {
             db: db.clone(),
             notifier: Default::default(),
+            config: config.clone(),
         },
         edges: EdgeService {
             db: db.clone(),
             notifier: Default::default(),
+            config: config.clone(),
         },
         agents: AgentService {
             db: db.clone(),

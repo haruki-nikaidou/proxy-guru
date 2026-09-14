@@ -9,9 +9,8 @@
 //! ## Module layout (the convention every module follows)
 //!
 //! - [`entities`] — persistence layer. Plain data types plus the
-//!   `Processor` implementations that read and
-//!   write them. Split into [`entities::db`] (PostgreSQL rows and queries) and
-//!   [`entities::redis`] (Redis key/value types).
+//!   `Processor` implementations that read and write them. In this crate that
+//!   is [`entities::surreal`], which owns the shared `app_config` table.
 //! - [`services`] — business logic. Stateful `Processor`s that own their
 //!   dependencies (database, Redis, message queue, other services) and
 //!   orchestrate entities to fulfil a use case.
@@ -22,7 +21,8 @@
 //! - [`hooks`] — background reactors: AMQP consumers, cron jobs, and event
 //!   loggers that run outside the request path.
 //! - [`config`] — strongly typed configuration for the module, stored in the
-//!   database and cached in Redis.
+//!   database under a stable key and loaded through
+//!   [`services::config::ConfigStore`].
 //! - [`utils`] — small, dependency-light helpers local to the module.
 //!
 //! See `AGENTS.md` at the workspace root for the full authoring guide.

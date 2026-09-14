@@ -1,5 +1,6 @@
 //! Edge operations. All edge legality lives in the topology checker.
 
+use crate::config::OrchestrationConfig;
 use crate::entities::surreal::connection::{
     ConnectPorts, DeleteEdgeRow, EdgeConnectionEntity, EdgeConnectionId, FindEdgeById,
 };
@@ -23,6 +24,7 @@ use wakuwaku::surreal::SurrealProcessor;
 pub struct EdgeService {
     pub db: SurrealProcessor,
     pub notifier: DirtyNotifier,
+    pub config: OrchestrationConfig,
 }
 
 /// The canvas an edge endpoint belongs to.
@@ -74,7 +76,7 @@ impl Processor<Connect> for EdgeService {
                 canvases: projected.canvas_ids(),
             })
             .await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         let edge = self
             .db
@@ -124,7 +126,7 @@ impl Processor<Disconnect> for EdgeService {
                 canvases: projected.canvas_ids(),
             })
             .await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         self.db
             .process(DeleteEdgeRow {
