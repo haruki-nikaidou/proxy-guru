@@ -7,6 +7,7 @@
 //! axis — carries an [`ImportSync`] that reshapes the importer's ports in the same
 //! transaction.
 
+use crate::config::OrchestrationConfig;
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::surreal::certificate::ListCertificatesBySnis;
 use crate::entities::surreal::dns::FindDnsProviderById;
@@ -34,6 +35,7 @@ use wakuwaku::surreal::SurrealProcessor;
 pub struct NodeService {
     pub db: SurrealProcessor,
     pub notifier: DirtyNotifier,
+    pub config: OrchestrationConfig,
 }
 
 /// The direction of an export node's single port *inside* its canvas. An
@@ -448,7 +450,7 @@ impl Processor<CreateNode> for NodeService {
         let projected = topology.project(&edits);
         ensure_valid(&projected)?;
         let views = self.views_for(&projected).await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         let created = self
             .db
@@ -579,7 +581,7 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         let projected = topology.project(&edits);
         ensure_valid(&projected)?;
         let views = self.views_for(&projected).await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         let updated = self
             .db
@@ -769,7 +771,7 @@ impl Processor<RetireNode> for NodeService {
         let projected = topology.project(&retirement.edits);
         ensure_valid(&projected)?;
         let views = self.views_for(&projected).await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         self.delete_node(&topology, node, retirement).await
     }

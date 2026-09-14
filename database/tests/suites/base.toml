@@ -1,0 +1,43 @@
+name = "base"
+tags = ["base"]
+
+[[cases]]
+name = "app_config_table_visible"
+kind = "schema_metadata"
+sql = "INFO FOR DB;"
+contains = ["app_config"]
+
+# The record key is the config key, so the UNIQUE index is what stops a second
+# row from claiming the same key under a different record id — two such rows
+# would make "the" value for a key depend on which one a query happened to read.
+[[cases]]
+name = "app_config_key_index_is_unique"
+kind = "schema_metadata"
+sql = "INFO FOR TABLE app_config;"
+contains = ["DEFINE INDEX app_config_key ON app_config FIELDS key UNIQUE"]
+
+[[cases]]
+name = "a_key_cannot_be_claimed_twice"
+kind = "sql_expect"
+actor = "root"
+sql = """
+CREATE app_config:duplicate_a CONTENT { key: "duplicate", content: { a: 1 } };
+CREATE app_config:duplicate_b CONTENT { key: "duplicate", content: { a: 2 } };
+"""
+allow = false
+error_contains = "already contains"
+
+# `content` is FLEXIBLE: each key has a different shape, and a SCHEMAFULL table
+# would otherwise drop every sub-field on write. The guards fail the case on any
+# wrong answer.
+[[cases]]
+name = "content_round_trips_a_nested_document"
+kind = "sql_expect"
+actor = "root"
+sql = """
+CREATE app_config:nested CONTENT { key: "nested", content: { enabled: false, limits: { max_items: 7, labels: ["a", "b"] } } };
+IF (SELECT VALUE content.enabled FROM ONLY app_config:nested) != false { THROW "enabled" };
+IF (SELECT VALUE content.limits.max_items FROM ONLY app_config:nested) != 7 { THROW "max_items" };
+IF (SELECT VALUE content.limits.labels FROM ONLY app_config:nested) != ["a", "b"] { THROW "labels" };
+"""
+allow = true

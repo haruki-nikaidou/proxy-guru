@@ -47,7 +47,7 @@ Every module crate mirrors `modules/base`:
 ```
 src/
 ├── lib.rs        # declares the modules below; sets crate-wide lints
-├── config.rs     # typed configuration (stored in DB, cached in Redis)
+├── config.rs     # typed configuration (one `app_config` row, JSON document)
 ├── utils/        # small, dependency-light helpers
 ├── entities/     # persistence layer
 │   ├── surreal/  # SurrealDB row types + SurrealProcessor queries
@@ -102,8 +102,9 @@ src/
 - A service is a `Clone` struct owning its dependencies (database, Redis, AMQP,
   loaded config, other services).
 - One `Processor` impl per operation; return domain types, not protobuf types.
-- Load config with the config-cache helpers, not by re-reading the database on
-  every call.
+- Receive the loaded config at construction time (`guru-master` reads it once
+  from the store during startup); never re-read it per call and never cache it
+  elsewhere — the database is the only source of truth.
 - Services orchestrate entities and publish events. **No transport types here.**
 
 ### `events`
@@ -133,8 +134,13 @@ src/
 ### `config`
 
 - A `serde`-(de)serializable struct implementing `Default`, bound to a stable
-  string key.
-- Stored as JSON in the database, cached in Redis, seeded by `manage-tool`.
+  string key with `base::entities::surreal::app_config::ConfigJson`.
+- Stored as JSON in one `app_config` row (no cache, no second copy), seeded by
+  `manage-tool config seed` and loaded once at startup with
+  `base::services::config::LoadConfig`; services hold the value.
+- Carry `#[serde(default)]` on the struct so a row written before a field was
+  added still loads. Register the key as a `ConfigKey` variant in
+  `manage-tool`, whose match arms then force every operation to handle it.
 
 ## Cross-cutting conventions
 

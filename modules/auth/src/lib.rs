@@ -22,7 +22,7 @@
 //! - [`hooks`] — background reactors: AMQP consumers, cron jobs, and event
 //!   loggers that run outside the request path.
 //! - [`config`] — strongly typed configuration for the module, stored in the
-//!   database and cached in Redis.
+//!   database under the `"auth"` key and loaded through `base`'s config store.
 //! - [`utils`] — small, dependency-light helpers local to the module.
 //!
 //! See `AGENTS.md` at the workspace root for the full authoring guide.

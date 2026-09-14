@@ -1,28 +1,31 @@
 //! Module configuration.
 //!
-//! Put the strongly typed configuration for this module here. The convention in
-//! this stack is to store configuration as JSON in the database (one row per
-//! key in a shared application-config table) and cache it in Redis so services
-//! can load it cheaply and read-only at runtime. The management CLI seeds the
-//! defaults; a refresh step copies the database value into the Redis cache.
+//! Put the strongly typed configuration for this module here. Configuration
+//! lives in the database: one `app_config` row per key, holding the whole
+//! struct as a JSON document. The database is the only source of truth — there
+//! is no cache — and `manage-tool config seed` writes the defaults.
 //!
 //! Define a `serde`-(de)serializable struct that implements `Default` and bind
-//! it to a stable config key:
+//! it to a stable key with `base`'s `ConfigJson`:
 //!
 //! ```ignore
+//! use base::entities::surreal::app_config::ConfigJson;
 //! use serde::{Deserialize, Serialize};
 //!
+//! // `#[serde(default)]` on the struct is load-bearing: a row written before
+//! // `max_items` existed still loads, with `Default` filling the gap.
 //! #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+//! #[serde(default)]
 //! pub struct ExampleConfig {
 //!     pub feature_enabled: bool,
 //!     pub max_items: u32,
 //! }
 //!
-//! // Bind the struct to the key used to store/lookup it in the database/Redis.
-//! // The concrete `ConfigJson`-style trait is provided by whichever module in
-//! // your workspace owns configuration storage.
-//! //
-//! // impl ConfigJson for ExampleConfig {
-//! //     const KEY: &'static str = "example";
-//! // }
+//! impl ConfigJson for ExampleConfig {
+//!     const KEY: &'static str = "example";
+//! }
 //! ```
+//!
+//! Load it once during startup with `base::services::config::LoadConfig` and
+//! hand the value to the services; register the key in `manage-tool`'s
+//! `ConfigKey` enum.

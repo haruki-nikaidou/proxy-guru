@@ -1,5 +1,6 @@
 //! Server and ip-record operations.
 
+use crate::config::OrchestrationConfig;
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::surreal::node::NodeSpec;
 use crate::entities::surreal::server::{
@@ -24,6 +25,7 @@ use wakuwaku::surreal::SurrealProcessor;
 pub struct ServerService {
     pub db: SurrealProcessor,
     pub notifier: DirtyNotifier,
+    pub config: OrchestrationConfig,
 }
 
 pub struct CreateServer {
@@ -114,7 +116,7 @@ impl Processor<UpdateServer> for ServerService {
                 canvases: projected.canvas_ids(),
             })
             .await?;
-        ensure_switch_safe(&projected, &views)?;
+        ensure_switch_safe(&projected, &views, &self.config)?;
 
         let server = self
             .db

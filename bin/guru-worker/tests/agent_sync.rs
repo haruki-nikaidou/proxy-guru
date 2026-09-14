@@ -244,14 +244,17 @@ async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::erro
     let servers = ServerService {
         db: db.clone(),
         notifier: DirtyNotifier::default(),
+        config: OrchestrationConfig::default(),
     };
     let nodes = NodeService {
         db: db.clone(),
         notifier: DirtyNotifier::default(),
+        config: OrchestrationConfig::default(),
     };
     let edges = EdgeService {
         db: db.clone(),
         notifier: DirtyNotifier::default(),
+        config: OrchestrationConfig::default(),
     };
 
     let canvas = canvases
@@ -466,6 +469,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
     let nodes = NodeService {
         db: master.db.clone(),
         notifier: DirtyNotifier::default(),
+        config: OrchestrationConfig::default(),
     };
     nodes
         .process(ReplaceNodeSpec {

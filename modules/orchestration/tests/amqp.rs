@@ -14,6 +14,7 @@ use auth::entities::surreal::account::{AccountId, AccountRole};
 use auth::services::identity::{Identity, IdentityKind};
 use common::*;
 use kanau::processor::Processor;
+use orchestration::config::OrchestrationConfig;
 use orchestration::entities::surreal::canvas::CanvasUiPosition;
 use orchestration::entities::surreal::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
 use orchestration::entities::surreal::server::ServerIpv6Resolve;
@@ -88,14 +89,17 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
     let servers = ServerService {
         db: db.clone(),
         notifier: notifier.clone(),
+        config: OrchestrationConfig::default(),
     };
     let nodes = NodeService {
         db: db.clone(),
         notifier: notifier.clone(),
+        config: OrchestrationConfig::default(),
     };
     let edges = EdgeService {
         db: db.clone(),
         notifier,
+        config: OrchestrationConfig::default(),
     };
 
     let canvas = canvases

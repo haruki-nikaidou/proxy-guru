@@ -275,6 +275,7 @@ fn entry_at(
 pub fn ensure_switch_safe(
     projected: &CanvasTopology,
     views: &[ServerConfigViewEntity],
+    config: &OrchestrationConfig,
 ) -> Result<(), OrchestrationError> {
     let mut referenced: Vec<ListenerCap> = Vec::new();
     for view in views {
@@ -293,12 +294,10 @@ pub fn ensure_switch_safe(
     // Only listener shapes matter here, so certificate availability must not
     // hide a pod: a switch is just as unsafe once its certificate arrives.
     let certificates = DerivationCertificates::assumed();
-    let config = OrchestrationConfig::default();
     for server in &projected.servers {
         // A server whose config does not derive at all is reported by the
         // derivation pass, not here.
-        let Ok(derived) = derive_server_config(projected, &server.id, &certificates, &config)
-        else {
+        let Ok(derived) = derive_server_config(projected, &server.id, &certificates, config) else {
             continue;
         };
         for deps in &derived.forwardings {

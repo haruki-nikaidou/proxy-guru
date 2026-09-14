@@ -10,8 +10,13 @@
 //!
 //! See `bin/manage-tool/README.md` for the full description.
 
+use auth::config::AuthConfig;
 use auth::entities::surreal::account::{AccountRole, CreateAccount, FindAccountByEmail};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use base::entities::surreal::app_config::{ConfigJson, FindRawConfig};
+use base::services::config::{
+    ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode, defaults,
+};
 use clap::{Parser, Subcommand};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -66,10 +71,40 @@ enum Command {
     /// Print a fresh `GURU_MASTER_KEY` (32 random bytes, base64). Needs no
     /// database.
     GenerateMasterKey,
+    /// The database-backed configuration store.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Orchestration maintenance.
     Orchestration {
         #[command(subcommand)]
         command: OrchestrationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Write the defaults for every registered key that has none. Idempotent:
+    /// a key an operator has edited is left untouched. Run it after
+    /// `surrealkit sync`.
+    Seed,
+    /// Print every registered key with its stored document, or the defaults
+    /// when it has none.
+    List,
+    /// Print one key's stored document, or the defaults when it has none. Not
+    /// decoded, so a row that fails a master's startup read is still readable.
+    Get {
+        /// Config key, e.g. `orchestration`.
+        key: String,
+    },
+    /// Replace one key's stored JSON. The payload is validated against the
+    /// config's type before it is written; masters pick it up on restart.
+    Set {
+        /// Config key, e.g. `orchestration`.
+        key: String,
+        /// The whole config as a JSON object.
+        json: String,
     },
 }
 
@@ -117,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             create_admin(SurrealProcessor::new(db), email, password).await
         }
         Command::GenerateMasterKey => Ok(()),
+        Command::Config { command } => config(SurrealProcessor::new(db), command).await,
         Command::Orchestration {
             command: OrchestrationCommand::ExportConfig { server },
         } => export_config(SurrealProcessor::new(db), server).await,
@@ -126,13 +162,160 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Every config key this installation owns.
+///
+/// One variant per key, and every operation below dispatches on it, so adding a
+/// key is a compile error until it is wired everywhere — the CLI cannot drift
+/// from the set of configs the binaries load.
+#[derive(Debug, Clone, Copy)]
+enum ConfigKey {
+    Auth,
+    Orchestration,
+}
+
+impl ConfigKey {
+    const ALL: [Self; 2] = [Self::Auth, Self::Orchestration];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auth => AuthConfig::KEY,
+            Self::Orchestration => OrchestrationConfig::KEY,
+        }
+    }
+
+    fn parse(key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.name() == key)
+            .ok_or_else(|| {
+                let known = Self::ALL
+                    .into_iter()
+                    .map(Self::name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("unknown config key `{key}`; registered keys: {known}").into()
+            })
+    }
+
+    /// Insert the defaults when the key is absent; `true` when it was created.
+    async fn seed(self, store: &ConfigStore) -> Result<bool, ConfigError> {
+        match self {
+            Self::Auth => store.process(SeedConfig::<AuthConfig>::new()).await,
+            Self::Orchestration => {
+                store
+                    .process(SeedConfig::<OrchestrationConfig>::new())
+                    .await
+            }
+        }
+    }
+
+    /// Validate the payload against the config's type, then store it.
+    async fn set(self, store: &ConfigStore, content: serde_json::Value) -> Result<(), ConfigError> {
+        match self {
+            Self::Auth => {
+                store
+                    .process(StoreConfig(decode::<AuthConfig>(content)?))
+                    .await
+            }
+            Self::Orchestration => {
+                store
+                    .process(StoreConfig(decode::<OrchestrationConfig>(content)?))
+                    .await
+            }
+        }
+    }
+
+    /// The payload `seed` would write. Printed for a key that has no row yet,
+    /// so `get` still answers with what a master would run.
+    fn defaults(self) -> Result<serde_json::Value, ConfigError> {
+        match self {
+            Self::Auth => defaults::<AuthConfig>(),
+            Self::Orchestration => defaults::<OrchestrationConfig>(),
+        }
+    }
+}
+
+/// Loads the orchestration config the masters run with. Keeping the CLI on the
+/// same values is what makes an exported config match what a master derives.
+async fn orchestration_config(
+    db: &SurrealProcessor,
+) -> Result<OrchestrationConfig, Box<dyn std::error::Error>> {
+    let store = ConfigStore { db: db.clone() };
+    Ok(store.process(LoadConfig::new()).await?)
+}
+
+/// The configuration store: seed defaults, inspect and replace values.
+///
+/// `list` and `get` print the row as stored, without decoding it: a document
+/// that no longer matches its type is exactly what an operator needs to see,
+/// and `set` is the way back out.
+async fn config(
+    db: SurrealProcessor,
+    command: ConfigCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = ConfigStore { db };
+    match command {
+        ConfigCommand::Seed => {
+            for key in ConfigKey::ALL {
+                if key.seed(&store).await.map_err(|e| e.to_string())? {
+                    println!("seeded {}", key.name());
+                } else {
+                    println!("{} already set, left untouched", key.name());
+                }
+            }
+        }
+        ConfigCommand::List => {
+            for key in ConfigKey::ALL {
+                let (state, value) = document(key, &store).await?;
+                println!("# {} ({state})", key.name());
+                println!("{}\n", serde_json::to_string_pretty(&value)?);
+            }
+        }
+        ConfigCommand::Get { key } => {
+            let key = ConfigKey::parse(&key)?;
+            let (_, value) = document(key, &store).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        ConfigCommand::Set { key, json } => {
+            let key = ConfigKey::parse(&key)?;
+            let content: serde_json::Value = serde_json::from_str(&json)
+                .map_err(|e| format!("the payload is not valid JSON: {e}"))?;
+            // A payload that is not this config is an operator typo, not a bug:
+            // report it plainly and leave the row alone.
+            if let Err(error) = key.set(&store, content).await {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            eprintln!(
+                "{} updated; restart guru-master for it to take effect",
+                key.name()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One key's document: the stored row, or the defaults when it has none.
+async fn document(
+    key: ConfigKey,
+    store: &ConfigStore,
+) -> Result<(&'static str, serde_json::Value), Box<dyn std::error::Error>> {
+    // Raw read straight through the entity layer: an operator inspecting a row
+    // that no longer matches its type must see it undecoded.
+    match store.db.process(FindRawConfig { key: key.name() }).await? {
+        Some(value) => Ok(("stored", value)),
+        None => Ok(("unset, showing defaults", key.defaults()?)),
+    }
+}
+
 /// Generates the internal CA. Every canvas tree holding a TLS/QUIC relay is
 /// marked for re-derivation so its pods get their first leaf certificates.
 async fn init_ca(db: SurrealProcessor) -> Result<(), Box<dyn std::error::Error>> {
+    let config = orchestration_config(&db).await?;
     let ca = CaService {
         db,
         secrets: SecretKey::from_env()?,
-        config: OrchestrationConfig::default(),
+        config,
     };
     let init = match ca.process(InitInternalCa).await {
         Ok(init) => init,
@@ -189,12 +372,8 @@ async fn export_config(
         ca_present: db.process(FindInternalCa).await?.is_some(),
         assume_issued: false,
     };
-    let derived = derive_server_config(
-        &topology,
-        &server_id,
-        &certificates,
-        &OrchestrationConfig::default(),
-    )?;
+    let config = orchestration_config(&db).await?;
+    let derived = derive_server_config(&topology, &server_id, &certificates, &config)?;
     print!("{}", derived.config.to_toml_string()?);
     Ok(())
 }

@@ -276,8 +276,12 @@ knows what the shared database already has.
 
 ## 7. Run the control plane
 
-`guru-master` is configured entirely through the environment. `GURU_WORKER_MODE` picks the mode;
-`SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and `GURU_MASTER_KEY` have **no defaults**.
+`guru-master`'s *deployment* settings come from the environment: `GURU_WORKER_MODE` picks the mode,
+and `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and `GURU_MASTER_KEY` have **no defaults**.
+Everything an operator tunes per installation — health thresholds and retention, the default ACME
+directory, the renewal window — lives in the database instead (step 8), so replicas need no
+matching environment.
+
 Generate the master key once and keep it with the database credentials — it encrypts every DNS
 provider token and certificate key at rest, and there is no way to recover them without it.
 `manage-tool` is built from your checkout (see step 8); this subcommand needs no database:
@@ -414,6 +418,36 @@ cargo build --release -p manage-tool
 
 Pass all five database flags explicitly — they also read `SURREALDB_*` from the environment, so a
 stray `.env` silently redirects the command.
+
+### Seed the module configuration
+
+The operator-tunable settings live in the `app_config` table, one row per key. Write the defaults
+once the schema is in place:
+
+```sh
+./target/release/manage-tool \
+  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
+  --namespace guru --database guru \
+  config seed
+# seeded auth
+# seeded orchestration
+```
+
+Re-run it after every schema change: it only fills in keys that have none, so a value you have
+edited is left alone. `config list` prints every stored document, and `config set <key> <json>`
+replaces one key — for example a two-week ACME renewal window:
+
+```sh
+./target/release/manage-tool ... config set orchestration '{"acme_renew_before_secs":1209600}'
+```
+
+A `set` is validated against the config's type before it is written and replaces the whole
+document, with unspecified fields taking their default. The masters read these keys once at
+startup, so restart them to pick a change up. Skipping the seed is safe — an unseeded installation
+runs the defaults — but a stored document that does not match its type fails master startup naming
+the key, which is deliberate: silently falling back to defaults could move ACME from staging to the
+production directory. See
+[Configuration → Module configuration](/reference/configuration#module-configuration).
 
 The same binary has `orchestration export-config --server <key>`, which prints the worker TOML the
 canvas currently derives for one server. That is the tool to reach for when a node's behaviour and
@@ -617,6 +651,7 @@ usual Docker log driver.
 | Login succeeds, next request bounces back to `/auth` | The `Secure` session cookie was dropped — the browser reached the dashboard over plain HTTP. |
 | `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` are unset; they have no defaults. |
 | Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | Every mode needs the key. Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
+| Master exits with `stored config for key ... does not match its type` | The stored document is corrupt or predates a renamed field. Inspect it with `manage-tool config get <key>` and rewrite it with `config set`. |
 | A TLS Entry's pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME cron has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). Check the DNS provider token, `domain_id` (Cloudflare zone id / Vercel domain) and that the cron reaches the ACME directory. `RetryCertificate` forces a retry. |
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
 | Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. Every mode but `cron` requires the broker. Check the trailing `/` on the URI. |

@@ -36,6 +36,20 @@ Schema lives in `database/schema/*.surql` (one file per module) and is managed w
 surrealkit sync --host ws://127.0.0.1:8000 --ns guru --db guru
 ```
 
+Then write the default module configuration into the `app_config` table. It is idempotent and never
+overwrites a value you have edited, so re-run it after every sync:
+
+```sh
+cargo run -p manage-tool -- \
+  --address ws://127.0.0.1:8000 --username root --password root \
+  --namespace guru --database guru \
+  config seed
+```
+
+`config list`, `config get <key>` and `config set <key> <json>` inspect and change those values; the
+masters pick them up on restart. See
+[Configuration → Module configuration](/reference/configuration#module-configuration).
+
 ## 3. Bootstrap an administrator
 
 ```sh

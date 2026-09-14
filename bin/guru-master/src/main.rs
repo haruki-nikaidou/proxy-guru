@@ -23,7 +23,9 @@ use auth::services::account::AccountService;
 use auth::services::api_key::ApiKeyService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
+use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
+use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::events::CanvasDirty;
 use orchestration::hooks::derive::{self, CanvasDeriver};
@@ -123,54 +125,11 @@ struct Cli {
     log_level: String,
     #[arg(
         long,
-        env = "GURU_HEALTH_REPORT_INTERVAL_SECS",
-        default_value = "15",
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    health_report_interval_secs: u64,
-    #[arg(
-        long,
-        env = "GURU_HEALTH_OFFLINE_AFTER_INTERVALS",
-        default_value = "3",
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    health_offline_after_intervals: u64,
-    #[arg(long, env = "GURU_DEGRADED_GRACE_SECS", default_value = "60")]
-    degraded_grace_secs: u64,
-    #[arg(long, env = "GURU_SERVER_HEALTH_TTL_SECS", default_value = "604800")]
-    server_health_ttl_secs: u64,
-    #[arg(long, env = "GURU_NODE_HEALTH_TTL_SECS", default_value = "604800")]
-    node_health_ttl_secs: u64,
-    #[arg(
-        long,
-        env = "GURU_DEFAULT_ACME_DIRECTORY",
-        default_value = orchestration::config::LETS_ENCRYPT_DIRECTORY
-    )]
-    default_acme_directory: String,
-    #[arg(long, env = "GURU_ACME_RENEW_BEFORE_SECS", default_value = "2592000")]
-    acme_renew_before_secs: u64,
-    #[arg(
-        long,
         env = "GURU_ACME_INTERVAL_SECS",
         default_value = "60",
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     acme_interval_secs: u64,
-}
-
-impl Cli {
-    fn orchestration_config(&self) -> OrchestrationConfig {
-        OrchestrationConfig {
-            health_report_interval_secs: self.health_report_interval_secs,
-            health_offline_after_intervals: self.health_offline_after_intervals,
-            degraded_grace_secs: self.degraded_grace_secs,
-            server_health_ttl_secs: self.server_health_ttl_secs,
-            node_health_ttl_secs: self.node_health_ttl_secs,
-            default_acme_directory: self.default_acme_directory.clone(),
-            acme_renew_before_secs: self.acme_renew_before_secs,
-            ..OrchestrationConfig::default()
-        }
-    }
 }
 
 #[tokio::main]
@@ -191,13 +150,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Environment only, never argv: the key would otherwise be visible in process
     // listings. `manage-tool generate-master-key` prints a fresh one.
     let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;
-    let config = cli.orchestration_config();
+    // Operator-tunable settings live in the database, so every process in the
+    // fleet runs the same values without any matching environment. An unseeded
+    // installation reads the defaults; a corrupt row fails startup rather than
+    // silently swapping an operator's config for `Default`.
+    let configs = ConfigStore { db: db.clone() };
+    let auth_config: AuthConfig = configs
+        .process(LoadConfig::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    let config: OrchestrationConfig = configs
+        .process(LoadConfig::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::debug!(?auth_config, ?config, "loaded configuration");
 
     let hasher = Argon2PasswordAlgorithm::default();
     let sessions = SessionService {
         db: db.clone(),
         hasher: hasher.clone(),
-        config: AuthConfig::default(),
+        config: auth_config,
     };
     let api_keys = ApiKeyService { db: db.clone() };
     let health = HealthService {
@@ -230,14 +202,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 servers: ServerService {
                     db: db.clone(),
                     notifier: notifier.clone(),
+                    config: config.clone(),
                 },
                 nodes: NodeService {
                     db: db.clone(),
                     notifier: notifier.clone(),
+                    config: config.clone(),
                 },
                 edges: EdgeService {
                     db: db.clone(),
                     notifier: notifier.clone(),
+                    config: config.clone(),
                 },
                 rollout: RolloutService {
                     db: db.clone(),

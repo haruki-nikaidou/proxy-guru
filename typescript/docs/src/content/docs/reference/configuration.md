@@ -22,14 +22,11 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *required* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
-| `--health-report-interval-secs` | `GURU_HEALTH_REPORT_INTERVAL_SECS` | `15` (must be ≥ 1) |
-| `--health-offline-after-intervals` | `GURU_HEALTH_OFFLINE_AFTER_INTERVALS` | `3` (must be ≥ 1) |
-| `--degraded-grace-secs` | `GURU_DEGRADED_GRACE_SECS` | `60` |
-| `--server-health-ttl-secs` | `GURU_SERVER_HEALTH_TTL_SECS` | `604800` (7 days) |
-| `--node-health-ttl-secs` | `GURU_NODE_HEALTH_TTL_SECS` | `604800` (7 days) |
-| `--default-acme-directory` | `GURU_DEFAULT_ACME_DIRECTORY` | Let's Encrypt production (`https://acme-v02.api.letsencrypt.org/directory`) |
-| `--acme-renew-before-secs` | `GURU_ACME_RENEW_BEFORE_SECS` | `2592000` (30 days) |
 | `--acme-interval-secs` | `GURU_ACME_INTERVAL_SECS` | `60` (must be ≥ 1) |
+
+Everything else an operator can tune — health thresholds and retention, the default ACME directory,
+the renewal window — lives in the database, not in the environment. See
+[Module configuration](#module-configuration).
 
 `--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer` and `cron`. A broker URI looks like
 `amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost.
@@ -40,12 +37,14 @@ argv is visible in process listings. Losing the key means re-entering every DNS 
 re-issuing every certificate; changing it is not supported in place.
 
 The `cron` mode runs, besides the derivation sweep: the server liveness sweep (every 30 s — a server
-that has not reported for `health_report_interval × health_offline_after_intervals` is `Offline`),
-health retention (every 5 min, deletes `server_health_record` / `node_health_record` rows older than
-the TTLs), ACME issuance and renewal (every `--acme-interval-secs`; renews `--acme-renew-before-secs`
-before expiry, retries a failed attempt after an hour), and relay-leaf rotation (hourly). A server
-is `Degraded` while it lags its desired revision for longer than `--degraded-grace-secs` or while the
-last acknowledged revision failed for any pod.
+that has not reported for `health_report_interval_secs × health_offline_after_intervals` is
+`Offline`), health retention (every 5 min, deletes `server_health_record` / `node_health_record`
+rows older than `server_health_ttl_secs` / `node_health_ttl_secs`), ACME issuance and renewal (every
+`--acme-interval-secs`; renews `acme_renew_before_secs` before expiry, retries a failed attempt
+after `acme_retry_after_secs`), and relay-leaf rotation (hourly). A server is `Degraded` while it
+lags its desired revision for longer than `degraded_grace_secs` or while the last acknowledged
+revision failed for any pod. The named values are keys of the stored `orchestration` config, not
+flags.
 
 ## `guru-worker`
 
@@ -224,6 +223,10 @@ Global flags mirror `guru-master`'s database options: `--address` (`SURREALDB_HO
 |---|---|
 | `create-admin --email <email> --password <password>` | Bootstrap the first administrator account |
 | `generate-master-key` | Print a fresh `GURU_MASTER_KEY` (needs no database) |
+| `config seed` | Write the default values for every key that has none; leaves edited keys untouched |
+| `config list` | Print every key with its stored document (or the defaults when it has none) |
+| `config get <key>` | Print one key's stored document, undecoded — readable even when it is corrupt |
+| `config set <key> <json>` | Replace one key's stored JSON (validated before it is written) |
 | `orchestration export-config --server <key>` | Print the derived `guru-worker` TOML for one server |
 | `orchestration init-ca` | Create the internal CA for relay TLS/QUIC links and print its certificate; refuses to replace an existing one (needs `GURU_MASTER_KEY`) |
 
@@ -246,6 +249,29 @@ the dashboard must be served over HTTPS (except on `localhost`).
 
 ## Module configuration
 
-Each module declares a `serde`-(de)serializable struct implementing `Default` (for example
-`orchestration::config::OrchestrationConfig`). There is no configuration store yet: `guru-master`
-fills the struct from the `GURU_*` flags listed above and services hold it by value.
+Operator-tunable settings live in the database, one `app_config` row per key holding the whole
+config as a JSON document. The database is the only source of truth — no cache, no second copy — so
+every `guru-master` in a fleet runs identical settings with no matching environment, and a change
+needs no redeploy, only a restart. Two keys exist today:
+
+| Key | Struct | Contents |
+|---|---|---|
+| `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs` |
+
+Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
+`manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do
+not decode it, so a document that fails a master's startup read is still inspectable. A `set`
+replaces the whole document, but it is decoded into the config's type first, so a partial payload
+is filled in from the defaults and a payload of the wrong shape is rejected before it reaches the
+row:
+
+```sh
+manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
+```
+
+`guru-master` reads both keys once, during startup, and hands the values to its services; there is
+no live reload. An unseeded installation runs the defaults. A row that does not deserialize fails
+startup naming the key — substituting defaults for a corrupt document would silently swap an
+operator's whole config, for instance moving ACME from staging to the production directory.
+Fields added in a later release are read with their default value, so an older row keeps working.

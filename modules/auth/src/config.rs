@@ -1,14 +1,21 @@
 //! Module configuration.
 //!
-//! The config-store/Redis cache infrastructure does not exist yet in this
-//! workspace, so services hold an [`AuthConfig`] value constructed via
-//! [`Default`]. When a shared config store lands, bind this struct to a stable
-//! key and load it through the cache helpers instead of constructing defaults.
+//! [`AuthConfig`] is stored in the database under the `"auth"` key and loaded
+//! once during startup through `base`'s configuration store
+//! (`base::services::config::LoadConfig`); services hold the value.
+//! `manage-tool config seed` writes the defaults, `manage-tool config set auth
+//! '<json>'` changes them, and the new value takes effect when the masters
+//! restart.
 
+use base::entities::surreal::app_config::ConfigJson;
 use serde::{Deserialize, Serialize};
 
 /// Tunable authentication settings.
+///
+/// `#[serde(default)]` keeps a row written before a field existed readable: the
+/// missing field falls back to [`Default`] instead of failing the startup read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AuthConfig {
     /// How long a session may sit idle (no activity) before it is treated as
     /// expired and rejected, in seconds. Sessions slide on each authenticated
@@ -23,4 +30,8 @@ impl Default for AuthConfig {
             session_idle_ttl_secs: 7 * 24 * 3600,
         }
     }
+}
+
+impl ConfigJson for AuthConfig {
+    const KEY: &'static str = "auth";
 }

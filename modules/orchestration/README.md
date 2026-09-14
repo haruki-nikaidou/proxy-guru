@@ -9,7 +9,7 @@ per server, and streams every new revision to the workers that registered for it
 ```
 src/
 ├── lib.rs          # crate root: declares the modules below
-├── config.rs       # `OrchestrationConfig`: health, ACME and relay-certificate knobs
+├── config.rs       # `OrchestrationConfig` (key `orchestration`): health, ACME and relay knobs
 ├── utils/          # ids (record id ↔ wire string), secret (master-key encryption)
 ├── entities/
 │   └── surreal/    # canvas, server, node, port, connection, view, topology,
