@@ -63,7 +63,7 @@ async fn run_standalone(cli: cli::Cli) -> Result<(), BoxError> {
     log_lint(&cfg);
 
     let mut sup = supervisor::Supervisor::new();
-    sup.apply(&cfg)?;
+    sup.apply(&cfg).await?;
 
     use tokio::signal::unix::{SignalKind, signal};
     let mut hup = signal(SignalKind::hangup())?;
@@ -75,7 +75,7 @@ async fn run_standalone(cli: cli::Cli) -> Result<(), BoxError> {
                 match guru_worker_config::Config::load(&path) {
                     Ok(c) => {
                         log_lint(&c);
-                        if let Err(e) = sup.apply(&c) {
+                        if let Err(e) = sup.apply(&c).await {
                             tracing::error!(error = %e, "reload apply failed; keeping running config");
                         } else {
                             tracing::info!("config reloaded");
@@ -141,7 +141,7 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
                 for warning in cfg.lint() {
                     tracing::warn!(revision = good.revision, warning = %warning, "config lint");
                 }
-                match sup.lock().await.apply(&cfg) {
+                match sup.lock().await.apply(&cfg).await {
                     Ok(()) => {
                         applied_revision.store(good.revision, Ordering::Relaxed);
                         tracing::info!(revision = good.revision, "applied last-known-good config")

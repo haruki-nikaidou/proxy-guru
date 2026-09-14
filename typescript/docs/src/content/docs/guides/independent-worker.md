@@ -232,6 +232,11 @@ A reload is all-or-nothing and does not interrupt traffic it does not have to:
 - Listeners that survive the change hot-swap their compiled config; the next connection uses the new
   destinations. Existing connections keep their old path until they close.
 - Listeners that disappeared stop accepting, but their in-flight connections are not killed.
+- A listener that is replaced by a different one on the same `ip:port` is closed first, and the
+  reload waits for the socket to actually be released, so the replacement binds within the same
+  reload. A QUIC endpoint drains its live connections first and is forced down if that takes longer
+  than three seconds — an address being taken over cannot be held indefinitely. If the replacement
+  still fails to bind, every listener the reload had stopped is brought back up.
 
 Because certificates are parsed on apply, renewal is a reload too — no restart, no dropped
 connections. Wire it into your ACME client, e.g. for certbot:

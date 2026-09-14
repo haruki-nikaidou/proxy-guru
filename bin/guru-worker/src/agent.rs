@@ -109,7 +109,7 @@ async fn session(
                 for warning in cfg.lint() {
                     tracing::warn!(revision = revision.revision, warning = %warning, "config lint");
                 }
-                match sup.lock().await.apply(&cfg) {
+                match sup.lock().await.apply(&cfg).await {
                     Err(e) => Some(e.to_string()),
                     Ok(()) => {
                         opts.applied_revision
