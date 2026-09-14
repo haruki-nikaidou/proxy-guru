@@ -277,9 +277,17 @@ knows what the shared database already has.
 ## 7. Run the control plane
 
 `guru-master` is configured entirely through the environment. `GURU_WORKER_MODE` picks the mode;
-`SURREALDB_NAMESPACE`, `SURREALDB_NAME` and `AMQP_URI` have **no defaults**. Extend the same
-`docker-compose.yml`: the `x-master` anchor goes above `services:`, the four services inside it,
-next to `surrealdb` and `rabbitmq`:
+`SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and `GURU_MASTER_KEY` have **no defaults**.
+Generate the master key once and keep it with the database credentials — it encrypts every DNS
+provider token and certificate key at rest, and there is no way to recover them without it.
+`manage-tool` is built from your checkout (see step 8); this subcommand needs no database:
+
+```sh
+./target/release/manage-tool generate-master-key
+```
+
+Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the four
+services inside it, next to `surrealdb` and `rabbitmq`:
 
 ```yaml
 x-master: &master
@@ -292,6 +300,7 @@ x-master: &master
     SURREALDB_NAMESPACE: ${GURU_NS}
     SURREALDB_NAME: ${GURU_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
     surrealdb:
@@ -343,8 +352,24 @@ What each mode is for, and how it scales:
   passes cannot overwrite each other — the loser is simply redone.
 - **`cron`** — sweeps canvases whose `generation` ran ahead of their `derived_generation` every
   `GURU_SWEEP_INTERVAL_SECS` (default `30`). This is what makes the broker a latency optimisation
-  rather than a correctness dependency: a dropped message costs at most one sweep. One replica is
-  enough; more are safe but only duplicate work.
+  rather than a correctness dependency: a dropped message costs at most one sweep. The same process
+  runs the health liveness sweep and retention, ACME issuance/renewal (`GURU_ACME_INTERVAL_SECS`,
+  default `60`; it needs outbound HTTPS to the ACME directory and the DNS provider APIs, and DNS
+  to public resolvers) and relay-leaf rotation. One replica is enough; more are safe but duplicate
+  work — and two ACME passes on the same certificate would race the same DNS-01 challenge.
+
+Relay links over TLS or QUIC need the internal CA before their pods derive. Run this once from the
+operator machine, with the same `GURU_MASTER_KEY` the master uses:
+
+```sh
+GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
+  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
+  --namespace guru --database guru \
+  orchestration init-ca
+```
+
+It prints the CA certificate and marks every canvas holding a TLS/QUIC relay for re-derivation. It
+refuses to run twice.
 
 Two operational notes that follow from the code:
 
@@ -591,6 +616,9 @@ usual Docker log driver.
 | Dashboard login returns `Forbidden` / `Cross-site remote requests are forbidden` | Reconstructed origin ≠ browser `Origin`. Serve over HTTPS, or set `PROTOCOL_HEADER`/`HOST_HEADER` and forward `X-Forwarded-Proto` and `X-Forwarded-Host` (with the port). `ORIGIN` has no effect. |
 | Login succeeds, next request bounces back to `/auth` | The `Secure` session cookie was dropped — the browser reached the dashboard over plain HTTP. |
 | `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` are unset; they have no defaults. |
+| Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | Every mode needs the key. Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
+| A TLS Entry's pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME cron has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). Check the DNS provider token, `domain_id` (Cloudflare zone id / Vercel domain) and that the cron reaches the ACME directory. `RetryCertificate` forces a retry. |
+| A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
 | Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. Every mode but `cron` requires the broker. Check the trailing `/` on the URI. |
 | `consumer` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
 | `table does not exist` / cancelled transactions right after a clean install | SurrealDB older than 3.2, or the schema was never applied. Check `surrealkit status`. |

@@ -78,6 +78,7 @@ mod tests {
             log: LogConfig {
                 level: "debug".to_string(),
             },
+            relay_ca: None,
             forwardings: vec![
                 Forwarding {
                     tag: "raw-exit".to_string(),

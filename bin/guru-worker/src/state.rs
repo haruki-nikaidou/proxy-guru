@@ -1,8 +1,11 @@
 //! Last-known-good config store.
 //!
 //! One file holds the revision and its TOML so the two can never disagree; it is
-//! written only after a config has been applied successfully, and replayed at
-//! startup so the data plane comes up even while the master is unreachable.
+//! written after every apply with the config actually running — the revision's shape
+//! for the pods that took it, the previous shape for the pods that did not — and
+//! replayed at startup so the data plane comes up even while the master is unreachable.
+//! Certificate paths in it are absolute, resolved against the state directory the
+//! delivered files were written to.
 //!
 //! It is a restart optimisation, not a record of what the worker is serving: the
 //! revision reported to the master comes from the last apply that actually

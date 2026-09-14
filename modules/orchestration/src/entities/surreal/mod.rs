@@ -1,4 +1,6 @@
+pub mod ca;
 pub mod canvas;
+pub mod certificate;
 pub mod connection;
 pub mod dns;
 pub mod health;

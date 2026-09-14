@@ -1,7 +1,9 @@
+use crate::stats::TagStats;
 use guru_worker_config::{
     Forwarding, ForwardingTo, Ipv6Resolve, ListenAs, LoadBalanceStrategy, RelayHost, RelayProtocol,
     Remote, TcpProxyProtocol,
 };
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
@@ -26,6 +28,8 @@ pub enum Target {
         destination: Remote,
         ipv6_resolve: Ipv6Resolve,
         sni: Option<String>,
+        /// CA the relay peer is verified against; `None` means the system roots.
+        relay_ca: Option<PathBuf>,
     },
     LoadBalance {
         members: Vec<Arc<Target>>,
@@ -41,12 +45,16 @@ pub struct PreparedForwarding {
     pub ingest: Ingest,
     pub target: Arc<Target>,
     pub quic_server: Option<quinn::ServerConfig>,
+    /// The tag's counters, shared with every earlier and later shape of the same tag.
+    pub stats: Arc<TagStats>,
 }
 
 impl PreparedForwarding {
     pub fn build(
         f: &Forwarding,
         ipv6_resolve: Ipv6Resolve,
+        relay_ca: Option<&Path>,
+        stats: Arc<TagStats>,
     ) -> Result<PreparedForwarding, crate::BoxError> {
         let ingest = match &f.listen_as {
             ListenAs::Raw => Ingest::Raw,
@@ -61,17 +69,22 @@ impl PreparedForwarding {
             ListenAs::Relay(RelayHost::Quic(c)) => Some(crate::tls::quic_server_config(c)?),
             _ => None,
         };
-        let target = compile_target(&f.to, ipv6_resolve);
+        let target = compile_target(&f.to, ipv6_resolve, relay_ca);
         Ok(PreparedForwarding {
             forwarding: Arc::new(f.clone()),
             ingest,
             target,
             quic_server,
+            stats,
         })
     }
 }
 
-fn compile_target(to: &ForwardingTo, ipv6_resolve: Ipv6Resolve) -> Arc<Target> {
+fn compile_target(
+    to: &ForwardingTo,
+    ipv6_resolve: Ipv6Resolve,
+    relay_ca: Option<&Path>,
+) -> Arc<Target> {
     match to {
         ForwardingTo::Exit {
             destination,
@@ -90,12 +103,13 @@ fn compile_target(to: &ForwardingTo, ipv6_resolve: Ipv6Resolve) -> Arc<Target> {
             destination: destination.clone(),
             ipv6_resolve,
             sni: sni.clone(),
+            relay_ca: relay_ca.map(Path::to_path_buf),
         }),
         ForwardingTo::LoadBalance(g) => {
             let members = g
                 .members
                 .iter()
-                .map(|m| compile_target(m, ipv6_resolve))
+                .map(|m| compile_target(m, ipv6_resolve, relay_ca))
                 .collect();
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

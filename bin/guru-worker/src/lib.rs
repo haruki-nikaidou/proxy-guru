@@ -9,12 +9,14 @@
 //! integration tests can drive the supervisor and the control-plane agent directly.
 
 pub mod agent;
+pub mod certs;
 pub mod cli;
 pub mod listener;
 pub mod pipe;
 pub mod prepared;
 pub mod resolver;
 pub mod state;
+pub mod stats;
 pub mod supervisor;
 pub mod tls;
 
@@ -40,6 +42,15 @@ fn log_lint(cfg: &guru_worker_config::Config) {
     }
 }
 
+/// Renders the failed pods of an apply as one error line, or `None` when all applied.
+fn apply_failures(outcome: &supervisor::ApplyOutcome) -> Option<String> {
+    let failures: Vec<String> = outcome
+        .failed()
+        .map(|p| format!("{}: {}", p.tag, p.error.as_deref().unwrap_or_default()))
+        .collect();
+    (!failures.is_empty()).then(|| failures.join("; "))
+}
+
 /// Runs the worker until SIGTERM/SIGINT.
 ///
 /// Standalone mode (no `--master`) loads a config file and reloads it on SIGHUP.
@@ -63,7 +74,10 @@ async fn run_standalone(cli: cli::Cli) -> Result<(), BoxError> {
     log_lint(&cfg);
 
     let mut sup = supervisor::Supervisor::new();
-    sup.apply(&cfg).await?;
+    // Standalone has nothing to fall back on: a forwarding that cannot start is fatal.
+    if let Some(failures) = apply_failures(&sup.apply(&cfg).await) {
+        return Err(failures.into());
+    }
 
     use tokio::signal::unix::{SignalKind, signal};
     let mut hup = signal(SignalKind::hangup())?;
@@ -75,10 +89,12 @@ async fn run_standalone(cli: cli::Cli) -> Result<(), BoxError> {
                 match guru_worker_config::Config::load(&path) {
                     Ok(c) => {
                         log_lint(&c);
-                        if let Err(e) = sup.apply(&c).await {
-                            tracing::error!(error = %e, "reload apply failed; keeping running config");
-                        } else {
-                            tracing::info!("config reloaded");
+                        match apply_failures(&sup.apply(&c).await) {
+                            Some(failures) => tracing::error!(
+                                error = %failures,
+                                "reload applied partially; failed forwardings keep their previous listener"
+                            ),
+                            None => tracing::info!("config reloaded"),
                         }
                     }
                     Err(e) => tracing::error!(error = %e, "reload failed; keeping running config"),
@@ -135,19 +151,25 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
     // What the worker reports as running: only a successful apply may advance it.
     let applied_revision = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
     let sup = std::sync::Arc::new(tokio::sync::Mutex::new(supervisor::Supervisor::new()));
+    // Interrupted certificate swaps are finished first, so the replayed config never
+    // compiles half a key pair.
+    certs::recover(&cli.state_dir);
     if let Some(good) = state::load(&cli.state_dir) {
         match guru_worker_config::Config::from_toml_str(&good.toml) {
-            Ok(cfg) => {
+            Ok(mut cfg) => {
                 for warning in cfg.lint() {
                     tracing::warn!(revision = good.revision, warning = %warning, "config lint");
                 }
-                match sup.lock().await.apply(&cfg).await {
-                    Ok(()) => {
+                cfg.resolve_paths(&cli.state_dir);
+                // The stored config is the mix that was running, so anything less than
+                // all of it is not that revision: report `0` and let the master resend.
+                match apply_failures(&sup.lock().await.apply(&cfg).await) {
+                    None => {
                         applied_revision.store(good.revision, Ordering::Relaxed);
                         tracing::info!(revision = good.revision, "applied last-known-good config")
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "last-known-good config failed to apply")
+                    Some(failures) => {
+                        tracing::error!(error = %failures, "last-known-good config applied partially")
                     }
                 }
             }
@@ -163,6 +185,7 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
             server_id,
             state_dir: cli.state_dir.clone(),
             applied_revision,
+            health_interval: std::time::Duration::from_secs(cli.health_interval),
         },
         sup.clone(),
         shutdown.clone(),

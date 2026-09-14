@@ -6,6 +6,7 @@ pub mod relay;
 use crate::BoxError;
 use crate::pipe::relay::RelayStream;
 use crate::prepared::{PreparedForwarding, Target};
+use crate::stats::TagStats;
 use guru_worker_config::TcpProxyProtocol;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -186,6 +187,59 @@ pub async fn splice(mut a: impl AsyncRw, mut b: impl AsyncRw) {
     }
 }
 
+/// A client-side stream whose traffic is credited to its tag as it flows: bytes read
+/// from the client count as upload, bytes written to it as download. Counting per
+/// poll rather than at close keeps a long-lived connection visible in every health
+/// interval and keeps the bytes of a connection that ends in an error.
+pub struct Counted<S> {
+    inner: S,
+    stats: Arc<TagStats>,
+}
+
+impl<S> Counted<S> {
+    pub fn new(inner: S, stats: Arc<TagStats>) -> Self {
+        Self { inner, stats }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Counted<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &polled {
+            let n = buf.filled().len().saturating_sub(before);
+            this.stats.add_upload(n as u64);
+        }
+        polled
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &polled {
+            this.stats.add_download(*n as u64);
+        }
+        polled
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 pub enum TargetStream {
     Exit(TcpStream),
     Relay(RelayStream),
@@ -250,12 +304,14 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
             destination,
             ipv6_resolve,
             sni,
+            relay_ca,
         } => Ok(TargetStream::Relay(
             relay::dial_relay(
                 *protocol,
                 destination,
                 *ipv6_resolve,
                 sni.as_deref(),
+                relay_ca.as_deref(),
                 client_addr,
             )
             .await?,
@@ -285,6 +341,7 @@ async fn handle_tcp_inner(
     peer: SocketAddr,
     cfg: &PreparedForwarding,
 ) -> Result<(), BoxError> {
+    let _open = cfg.stats.open();
     let (client, client_addr) = entry::ingest_tcp(
         stream,
         peer,
@@ -293,7 +350,7 @@ async fn handle_tcp_inner(
     )
     .await?;
     let out = connect_target(&cfg.target, client_addr).await?;
-    splice(client, out).await;
+    splice(Counted::new(client, cfg.stats.clone()), out).await;
     Ok(())
 }
 
@@ -313,8 +370,9 @@ async fn handle_relay_quic_stream(
     _remote: SocketAddr,
     cfg: &PreparedForwarding,
 ) -> Result<(), BoxError> {
+    let _open = cfg.stats.open();
     let (src, leftover) = read_proxy_header(&mut joined).await?;
-    let client = Box::new(Prefixed::new(leftover, joined));
+    let client = Counted::new(Prefixed::new(leftover, joined), cfg.stats.clone());
     let out = connect_target(&cfg.target, src).await?;
     splice(client, out).await;
     Ok(())

@@ -3,6 +3,7 @@
 use auth::entities::surreal::account::{AccountId, AccountRole};
 use auth::services::identity::{Identity, IdentityKind};
 use kanau::processor::Processor;
+use orchestration::config::OrchestrationConfig;
 use orchestration::entities::surreal::canvas::{
     CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas,
 };
@@ -15,12 +16,18 @@ use orchestration::entities::surreal::server::{
 };
 use orchestration::entities::surreal::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
+use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
 use orchestration::services::agent::AgentService;
+use orchestration::services::ca::CaService;
 use orchestration::services::canvas::CanvasService;
+use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
+use orchestration::services::health::HealthService;
 use orchestration::services::node::NodeService;
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
+use orchestration::utils::secret::SecretKey;
+use std::sync::Arc;
 use surrealdb::types::RecordId;
 use wakuwaku::surreal::SurrealProcessor;
 
@@ -186,17 +193,25 @@ pub fn pos0() -> CanvasUiPosition {
 /// Every service over one in-memory database, plus the derivation hook.
 pub struct World {
     pub db: SurrealProcessor,
+    pub secrets: SecretKey,
+    pub config: OrchestrationConfig,
     pub canvases: CanvasService,
     pub servers: ServerService,
     pub nodes: NodeService,
     pub edges: EdgeService,
     pub agents: AgentService,
     pub rollout: RolloutService,
+    pub health: HealthService,
+    pub ca: CaService,
+    pub dns: DnsProviderService,
+    pub certificates: AcmeService,
     pub deriver: CanvasDeriver,
 }
 
 pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let db = setup().await?;
+    let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
+    let config = OrchestrationConfig::default();
     Ok(World {
         canvases: CanvasService {
             db: db.clone(),
@@ -224,8 +239,35 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
             db: db.clone(),
             notifier: Default::default(),
         },
-        deriver: CanvasDeriver { db: db.clone() },
+        health: HealthService {
+            db: db.clone(),
+            config: Default::default(),
+        },
+        dns: DnsProviderService {
+            db: db.clone(),
+            secrets: secrets.clone(),
+        },
+        certificates: AcmeService {
+            db: db.clone(),
+            secrets: secrets.clone(),
+            config: config.clone(),
+            notifier: Default::default(),
+            http: reqwest::Client::new(),
+            issuer: Arc::new(InstantAcmeIssuer),
+        },
+        ca: CaService {
+            db: db.clone(),
+            secrets: secrets.clone(),
+            config: config.clone(),
+        },
+        deriver: CanvasDeriver {
+            db: db.clone(),
+            secrets: secrets.clone(),
+            config: config.clone(),
+        },
         db,
+        secrets,
+        config,
     })
 }
 

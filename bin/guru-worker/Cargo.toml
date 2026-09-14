@@ -32,6 +32,8 @@ rpguru_sdk = { path = "../../lib/rpguru_sdk" }
 tonic = { workspace = true, features = ["channel"] }
 clap = { workspace = true }
 serde_json = { workspace = true }
+tokio-stream = { workspace = true }
+parking_lot = "0.12"
 
 [dev-dependencies]
 orchestration = { path = "../../modules/orchestration" }
@@ -39,6 +41,6 @@ auth = { path = "../../modules/auth" }
 wakuwaku = { workspace = true }
 kanau = { workspace = true }
 surrealdb = { workspace = true, features = ["kv-mem"] }
-tokio-stream = { workspace = true, features = ["net"] }
 tower = { workspace = true }
+rcgen = { workspace = true }
 chrono = { workspace = true }

@@ -10,6 +10,7 @@ license.workspace = true
 auth = { path = "../../modules/auth" }
 base = { path = "../../modules/base" }
 orchestration = { path = "../../modules/orchestration" }
+reqwest = { workspace = true }
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }
 
 # Runtime

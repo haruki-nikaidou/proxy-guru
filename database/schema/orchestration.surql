@@ -36,6 +36,13 @@ DEFINE FIELD refresh_key_generation ON orchestration_server TYPE int DEFAULT 0;
 DEFINE FIELD watch_epoch ON orchestration_server TYPE int DEFAULT 0;
 DEFINE FIELD session_lease_until ON orchestration_server TYPE option<datetime>;
 DEFINE FIELD last_seen_at ON orchestration_server TYPE option<datetime>;
+-- Health liveness is separate from the watch lease: only an accepted health
+-- report advances `last_health_report_at`, so a live config stream cannot mask
+-- a dead health stream. `health_status` is the denormalised current status,
+-- kept by the health pipeline (see `server_health_record`) so listings never
+-- scan history.
+DEFINE FIELD last_health_report_at ON orchestration_server TYPE option<datetime>;
+DEFINE FIELD health_status ON orchestration_server TYPE string DEFAULT "offline" ASSERT $value INSIDE ["online", "degraded", "offline"];
 DEFINE INDEX orchestration_server_canvas ON orchestration_server FIELDS canvas;
 DEFINE INDEX orchestration_server_refresh_key ON orchestration_server FIELDS current_dynamic_refresh_key;
 
@@ -81,6 +88,10 @@ DEFINE FIELD spec.config.canvas ON orchestration_node TYPE option<record<orchest
     ASSERT $value == NONE OR (record::exists($value) AND $value != $this.canvas);
 -- A canvas is imported at most once. NONE (every non-import node) is not indexed.
 DEFINE INDEX orchestration_node_import ON orchestration_node FIELDS spec.config.canvas UNIQUE;
+-- An Entry's TLS block (`spec.config.tls`) names the DNS provider that answers
+-- its ACME DNS-01 challenge. It is deliberately not a defined field: defining
+-- `spec.config.tls.dns_provider` makes every Entry materialise an empty `tls`
+-- object. The service layer checks the provider exists.
 
 -- [parent, grandparent, ..., root]; [] for a root.
 DEFINE FUNCTION fn::orchestration_ancestors($canvas: record<orchestration_canvas>, $depth: int) -> array<record<orchestration_canvas>> {
@@ -155,5 +166,92 @@ DEFINE FIELD derive_error ON orchestration_server_config_view TYPE option<string
 -- a SCHEMAFULL table otherwise rejects their keys. A server-level failure leaves
 -- this list empty.
 DEFINE FIELD invalid_pods ON orchestration_server_config_view TYPE array<object> FLEXIBLE DEFAULT [];
+-- Pods the worker could not apply from the last acknowledged revision. A
+-- revision is applied per pod: the others run it, these keep the shape they had
+-- before, and `applied` is the snapshot of that mix. Each element is
+-- `{ pod, tag, error }`. `apply_error` stays reserved for a revision that could
+-- not be applied at all.
+DEFINE FIELD failed_pods ON orchestration_server_config_view TYPE array<object> FLEXIBLE DEFAULT [];
 DEFINE FIELD waiting_for ON orchestration_server_config_view TYPE array<record<orchestration_server>> DEFAULT [];
 DEFINE INDEX orchestration_server_config_view_server ON orchestration_server_config_view FIELDS server UNIQUE;
+
+-- Health history. One `server_health_record` per worker report (the byte and
+-- connection counters are deltas since the previous report) and one
+-- `node_health_record` per node per report; both are raw, never downsampled,
+-- and trimmed by the retention cron after `server_health_ttl` /
+-- `node_health_ttl`.
+DEFINE TABLE server_health_record SCHEMAFULL;
+DEFINE FIELD server ON server_health_record TYPE record<orchestration_server>;
+DEFINE FIELD status ON server_health_record TYPE string ASSERT $value INSIDE ["online", "degraded", "offline"];
+DEFINE FIELD report_time ON server_health_record TYPE datetime;
+DEFINE FIELD upload_bytes ON server_health_record TYPE int;
+DEFINE FIELD download_bytes ON server_health_record TYPE int;
+DEFINE FIELD current_connections ON server_health_record TYPE int;
+DEFINE FIELD max_connections ON server_health_record TYPE int;
+DEFINE INDEX server_health_record_server_time ON server_health_record FIELDS server, report_time;
+DEFINE INDEX server_health_record_time ON server_health_record FIELDS report_time;
+
+DEFINE TABLE node_health_record SCHEMAFULL;
+DEFINE FIELD node ON node_health_record TYPE record<orchestration_node>;
+DEFINE FIELD status ON node_health_record TYPE string ASSERT $value INSIDE ["ready", "deploying", "failed"];
+DEFINE FIELD message ON node_health_record TYPE string;
+DEFINE FIELD report_time ON node_health_record TYPE datetime;
+DEFINE INDEX node_health_record_node_time ON node_health_record FIELDS node, report_time;
+DEFINE INDEX node_health_record_time ON node_health_record FIELDS report_time;
+
+-- DNS providers answer ACME DNS-01 challenges. `api_secret` is encrypted with
+-- the master key (`GURU_MASTER_KEY`) before it is stored and is never returned
+-- by the API. `account_id` is provider specific: unused for Cloudflare (the zone
+-- id is on the Entry), the team id for Vercel.
+DEFINE TABLE dns_provider SCHEMAFULL;
+DEFINE FIELD name ON dns_provider TYPE string;
+DEFINE FIELD provider ON dns_provider TYPE string ASSERT $value INSIDE ["cloudflare", "vercel"];
+DEFINE FIELD account_id ON dns_provider TYPE string;
+DEFINE FIELD api_secret ON dns_provider TYPE string;
+DEFINE FIELD created_at ON dns_provider TYPE datetime;
+
+-- One public certificate per `(sni, acme_directory)`, shared by every Entry that
+-- asks for it. `acme_account_key` and `private_key_pem` are encrypted with the
+-- master key. `version` increments on every issuance and renewal; a config
+-- snapshot pins the version it was derived against, so a renewal is a new
+-- revision for every server serving the certificate.
+DEFINE TABLE certificate SCHEMAFULL;
+DEFINE FIELD sni ON certificate TYPE string;
+DEFINE FIELD dns_provider ON certificate TYPE record<dns_provider>;
+DEFINE FIELD domain_id ON certificate TYPE string;
+DEFINE FIELD acme_directory ON certificate TYPE string;
+DEFINE FIELD status ON certificate TYPE string ASSERT $value INSIDE ["pending", "issued", "failed"];
+DEFINE FIELD acme_account_key ON certificate TYPE option<string>;
+DEFINE FIELD private_key_pem ON certificate TYPE option<string>;
+DEFINE FIELD full_chain_pem ON certificate TYPE option<string>;
+DEFINE FIELD not_before ON certificate TYPE option<datetime>;
+DEFINE FIELD not_after ON certificate TYPE option<datetime>;
+DEFINE FIELD last_error ON certificate TYPE option<string>;
+DEFINE FIELD last_attempt_at ON certificate TYPE option<datetime>;
+DEFINE FIELD version ON certificate TYPE int DEFAULT 0;
+DEFINE FIELD created_at ON certificate TYPE datetime;
+DEFINE INDEX certificate_sni_directory ON certificate FIELDS sni, acme_directory UNIQUE;
+DEFINE INDEX certificate_dns_provider ON certificate FIELDS dns_provider;
+
+-- The internal CA signs the leaf certificates relay TLS/QUIC links present to
+-- each other. Exactly one row, `internal_ca:master`, created by
+-- `manage-tool orchestration init-ca`. The private key is encrypted with the
+-- master key; the certificate is delivered to every worker as its trust root.
+DEFINE TABLE internal_ca SCHEMAFULL;
+DEFINE FIELD certificate_pem ON internal_ca TYPE string;
+DEFINE FIELD private_key_pem ON internal_ca TYPE string;
+DEFINE FIELD not_after ON internal_ca TYPE datetime;
+DEFINE FIELD created_at ON internal_ca TYPE datetime;
+
+-- One leaf per pod whose listener is a TLS or QUIC relay, SAN
+-- `<pod-key>.relay.guru.internal`, rotated by the certificate cron. `version`
+-- plays the same role as on `certificate`.
+DEFINE TABLE relay_certificate SCHEMAFULL;
+DEFINE FIELD pod ON relay_certificate TYPE record<orchestration_node>;
+DEFINE FIELD sni ON relay_certificate TYPE string;
+DEFINE FIELD private_key_pem ON relay_certificate TYPE string;
+DEFINE FIELD certificate_pem ON relay_certificate TYPE string;
+DEFINE FIELD not_before ON relay_certificate TYPE datetime;
+DEFINE FIELD not_after ON relay_certificate TYPE datetime;
+DEFINE FIELD version ON relay_certificate TYPE int DEFAULT 0;
+DEFINE INDEX relay_certificate_pod ON relay_certificate FIELDS pod UNIQUE;

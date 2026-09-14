@@ -74,6 +74,47 @@ pub struct ForwardingDeps {
     pub pod: NodeId,
     pub serves: ListenerCap,
     pub points_at: Vec<ListenerCap>,
+    /// Every non-pod node this entry was derived through (the Entry or Relay on
+    /// the listen side; exits, relays and load balancers on the destination
+    /// side), boundaries excluded. Node health follows the pod's through this.
+    #[surreal(default)]
+    pub nodes: Vec<NodeId>,
+    /// The certificates this entry's TOML references (the ACME certificate of a
+    /// TLS Entry, the relay leaf of a TLS/QUIC relay listener). A forwarding
+    /// carried over from an older snapshot keeps its refs, so a synthesised
+    /// snapshot's `certificates` is just the union over its entries.
+    #[surreal(default)]
+    pub certificates: Vec<CertificateRef>,
+}
+
+/// A certificate a snapshot's TOML references, at the version it was derived
+/// against. The material itself is fetched when the revision is handed to a
+/// worker, so no key ever lives in a snapshot; the pinned version is what makes
+/// a renewal a new revision even though the file paths do not change.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, SurrealValue)]
+pub struct CertificateRef {
+    pub kind: CertificateKind,
+    /// The record key of the `certificate` (ACME) or `relay_certificate` row.
+    pub key: String,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, SurrealValue)]
+#[surreal(untagged, rename_all = "snake_case")]
+pub enum CertificateKind {
+    /// Public ACME certificate, delivered as `certs/acme/<key>/{full_chain,key}.pem`.
+    Acme,
+    /// Relay leaf, delivered as `certs/relay/<key>/{full_chain,key}.pem`.
+    Relay,
+}
+
+/// A pod the worker could not apply from the acknowledged revision.
+#[derive(Debug, Clone, SurrealValue)]
+pub struct PodFailure {
+    pub pod: NodeId,
+    /// The `[[forwarding]]` tag, i.e. the pod's name at the time.
+    pub tag: String,
+    pub error: String,
 }
 
 /// A pod whose own derivation failed.
@@ -99,6 +140,10 @@ pub struct ConfigSnapshot {
     pub created_at: DateTime<Utc>,
     /// Index-aligned with the `[[forwarding]]` entries of `toml`.
     pub forwardings: Vec<ForwardingDeps>,
+    /// The certificates `toml` references. Sorted, so two snapshots asking for
+    /// the same material compare equal.
+    #[surreal(default)]
+    pub certificates: Vec<CertificateRef>,
 }
 
 #[derive(Debug, Clone, SurrealValue)]
@@ -113,7 +158,13 @@ pub struct ServerConfigViewEntity {
     /// What the worker last told us it is running.
     pub applied: Option<ConfigSnapshot>,
     pub failed_revision: Option<i64>,
+    /// Set when the last acknowledged revision could not be applied at all.
     pub apply_error: Option<String>,
+    /// Pods of the last acknowledged revision that failed on the worker. The
+    /// other pods run the revision; these keep their previous shape, and
+    /// `applied` describes that mix.
+    #[surreal(default)]
+    pub failed_pods: Vec<PodFailure>,
     pub derive_error: Option<String>,
     /// Pods that failed to derive while the rest of this server's config was
     /// published. Empty when `derive_error` is set: that is a whole-server failure.
@@ -198,12 +249,19 @@ impl Processor<TakeInFlight> for SurrealProcessor {
 }
 
 /// Promotes `in_flight` to `applied`, or records why the worker refused it.
+///
+/// Three outcomes: `error` set — the revision was not applied at all;
+/// `applied` set — some pods failed and this is the synthesised mix the worker
+/// actually runs (`failed_pods` names them, `failed_revision` is the acked one);
+/// neither — every pod applied and `in_flight` is promoted as is.
 #[derive(Debug)]
 pub struct AckServerConfig {
     pub server: ServerId,
     pub canvas: CanvasId,
     pub revision: i64,
     pub error: Option<String>,
+    pub applied: Option<ConfigSnapshot>,
+    pub failed_pods: Vec<PodFailure>,
 }
 
 impl Processor<AckServerConfig> for SurrealProcessor {
@@ -212,6 +270,7 @@ impl Processor<AckServerConfig> for SurrealProcessor {
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:AckServerConfig", skip_all, err)]
     async fn process(&self, input: AckServerConfig) -> Result<Self::Output, Self::Error> {
+        let failed_revision = (!input.failed_pods.is_empty()).then_some(input.revision);
         // Statement 0 is BEGIN; the RETURN below is statement 3.
         let mut resp = self
             .db()
@@ -220,6 +279,9 @@ impl Processor<AckServerConfig> for SurrealProcessor {
             .bind(("canvas", input.canvas))
             .bind(("revision", input.revision))
             .bind(("error", input.error))
+            .bind(("applied", input.applied))
+            .bind(("failed_pods", input.failed_pods))
+            .bind(("failed_revision", failed_revision))
             .await?;
         Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
     }

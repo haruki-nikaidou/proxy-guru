@@ -60,6 +60,8 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
         canvas: row.canvas,
         revision: snapshot.revision,
         error: None,
+        applied: None,
+        failed_pods: Vec::new(),
     })
     .await?;
     Ok(())

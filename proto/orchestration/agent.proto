@@ -3,13 +3,17 @@ syntax = "proto3";
 package guru.orchestration.agent;
 
 // The worker control plane. `Register` is authenticated with an operator API
-// key (`x-api-key`, Maintainer+); `WatchConfig` and `AckConfig` are
-// authenticated with the dynamic refresh key (`x-refresh-key`) that
-// `Register` returned.
+// key (`x-api-key`, Maintainer+); `WatchConfig`, `AckConfig` and
+// `ReportHealth` are authenticated with the dynamic refresh key
+// (`x-refresh-key`) that `Register` returned.
 service WorkerAgent {
   rpc Register(RegisterRequest) returns (RegisterReply);
   rpc WatchConfig(WatchConfigRequest) returns (stream ConfigRevision);
   rpc AckConfig(AckConfigRequest) returns (AckConfigReply);
+  // One report per interval for as long as the worker lives; the master treats
+  // the stream closing as the liveness signal. The reply arrives only when the
+  // worker half-closes.
+  rpc ReportHealth(stream HealthReport) returns (ReportHealthReply);
 }
 
 message RegisterRequest {
@@ -18,14 +22,50 @@ message RegisterRequest {
 }
 message RegisterReply {
   string refresh_key = 1;
+  // How often the master expects a `HealthReport`; the worker schedules from
+  // this so the two sides never disagree on the offline threshold.
+  uint32 health_report_interval_secs = 2;
 }
 message WatchConfigRequest {}
+// A file the worker writes under its state directory before applying `toml`.
+// `path` is relative to the state directory and is exactly what the TOML's
+// `key` / `full_chain` / `relay_ca` fields reference.
+message CertificateFile {
+  string path = 1;
+  string pem = 2;
+}
 message ConfigRevision {
   int64 revision = 1;
   string toml = 2;
+  repeated CertificateFile files = 3;
 }
+// The outcome of one `[[forwarding]]` (keyed by its `tag`, the pod name).
+// Unset `error` means the pod runs the shape the revision asked for.
+message PodStatus {
+  string tag = 1;
+  optional string error = 2;
+}
+// A revision is applied per pod: every `[[forwarding]]` that prepares and binds
+// is committed, and a pod that fails keeps whatever listener it had before (or
+// none). `pods` lists every pod of the revision with its outcome. `error` is
+// only set when the revision could not be applied at all (unparsable TOML,
+// unwritable certificate files), in which case `pods` is empty and nothing
+// changed on the worker.
 message AckConfigRequest {
   int64 revision = 1;
   optional string error = 2;
+  repeated PodStatus pods = 3;
 }
 message AckConfigReply {}
+message HealthReport {
+  int64 running_revision = 1;
+  // Deltas since the previous report.
+  int64 upload_bytes = 2;
+  int64 download_bytes = 3;
+  int64 current_connections = 4;
+  // High-water mark since the previous report.
+  int64 max_connections = 5;
+  // One entry per running `[[forwarding]]`.
+  repeated PodStatus pods = 6;
+}
+message ReportHealthReply {}

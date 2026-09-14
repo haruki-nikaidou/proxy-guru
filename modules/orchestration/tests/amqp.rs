@@ -25,6 +25,7 @@ use orchestration::services::edge::{Connect, EdgeService};
 use orchestration::services::node::{CreateNode, NodeService};
 use orchestration::services::rollout::DirtyNotifier;
 use orchestration::services::server::{AddServerIp, CreateServer, ServerService};
+use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
 use std::time::Duration;
 use surrealdb::types::RecordId;
@@ -67,7 +68,11 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
         .await?;
     setup_consumer::<CanvasDirty, CanvasDeriver>(
         &channel,
-        Arc::new(CanvasDeriver { db: db.clone() }),
+        Arc::new(CanvasDeriver {
+            db: db.clone(),
+            secrets: SecretKey::from_base64(&SecretKey::generate_base64())?,
+            config: Default::default(),
+        }),
     )
     .await?;
 

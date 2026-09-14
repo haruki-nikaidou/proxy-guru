@@ -14,10 +14,11 @@
 //! - [`rpc`] — the transport edge: the operator `Orchestration` service and the
 //!   `WorkerAgent` service workers talk to, plus their middleware.
 //! - [`events`] — AMQP payloads this module publishes or consumes.
-//! - [`hooks`] — background reactors, notably the derivation hook and its sweep.
-//! - [`config`] — the typed module-configuration scaffold, kept for later: nothing
-//!   in this module is wired to an operator-visible setting yet.
-//! - [`utils`] — record-id conversion helpers shared by the edge.
+//! - [`hooks`] — background reactors: the derivation hook and its sweep, relay
+//!   leaf rotation, the health liveness sweep and retention, ACME renewal.
+//! - [`config`] — [`config::OrchestrationConfig`], filled from `guru-master`'s
+//!   flags: health intervals and retention, ACME and relay-certificate knobs.
+//! - [`utils`] — record-id conversion and master-key encryption of stored secrets.
 //!
 //! ## How a change reaches a worker
 //!
@@ -38,7 +39,11 @@
 //!    only once the target's `applied` snapshot serves it, and keeps serving a
 //!    listener for as long as any snapshot still points at it.
 //! 4. A worker stream promotes `desired` to `in_flight` with one conditional
-//!    update, and `AckConfig` promotes `in_flight` to `applied`.
+//!    update, and `AckConfig` promotes `in_flight` to `applied` — per pod: a pod
+//!    the worker could not apply keeps its previous shape in the stored mix.
+//! 5. Workers stream health reports; certificates (ACME for Entries, the
+//!    internal CA for relay TLS/QUIC) are pinned by version in every snapshot
+//!    and delivered with the revision.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]

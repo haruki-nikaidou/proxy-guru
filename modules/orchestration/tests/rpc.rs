@@ -18,6 +18,9 @@ fn grpc(w: &World) -> OrchestrationGrpc {
         nodes: w.nodes.clone(),
         edges: w.edges.clone(),
         rollout: w.rollout.clone(),
+        health: w.health.clone(),
+        dns: w.dns.clone(),
+        certificates: w.certificates.clone(),
     }
 }
 

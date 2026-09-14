@@ -201,6 +201,8 @@ impl Builder {
             watch_epoch: 0,
             session_lease_until: None,
             last_seen_at: None,
+            last_health_report_at: None,
+            health_status: orchestration::entities::surreal::health::ServerHealthStatus::Offline,
         });
         id
     }

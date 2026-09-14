@@ -30,9 +30,22 @@ tower = { workspace = true }
 
 # Serialization
 rkyv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Certificates and secrets
+instant-acme = { workspace = true }
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+chacha20poly1305 = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+hickory-resolver = { workspace = true }
 
 # Data types
 chrono = { workspace = true }
+time = { workspace = true }
 smallvec = { workspace = true }
 
 # Tracing
@@ -48,4 +61,5 @@ tokio-util = { workspace = true }
 [dev-dependencies]
 surrealdb = { workspace = true, features = ["kv-mem"] }
 testcontainers-modules = { version = "0.15.0", features = ["rabbitmq"] }
+x509-parser = { workspace = true, features = ["verify-aws"] }
 tokio = { workspace = true }

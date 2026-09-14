@@ -2,6 +2,8 @@ BEGIN TRANSACTION;
 LET $ports = (SELECT VALUE id FROM orchestration_port WHERE owner = $id);
 DELETE orchestration_edge_connection WHERE in IN $ports OR out IN $ports;
 DELETE orchestration_port WHERE id IN $ports;
+DELETE node_health_record WHERE node = $id;
+DELETE relay_certificate WHERE pod = $id;
 DELETE $id;
 -- Retiring an export node drops its mirrored port (and that port's edge) on the
 -- importing node.

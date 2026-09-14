@@ -5,7 +5,8 @@
 //! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration`),
 //! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller,
 //! - `consumer` — the AMQP derivation hook,
-//! - `cron` — periodic jobs, currently the stale-canvas derivation sweep.
+//! - `cron` — periodic jobs: the stale-canvas derivation sweep, the health
+//!   liveness sweep and retention, ACME issuance/renewal and relay leaf rotation.
 //!
 //! Wiring only: every rule lives in the modules under `modules/`.
 
@@ -23,17 +24,24 @@ use auth::services::api_key::ApiKeyService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
 use clap::Parser;
+use orchestration::config::OrchestrationConfig;
 use orchestration::events::CanvasDirty;
 use orchestration::hooks::derive::{self, CanvasDeriver};
+use orchestration::hooks::{acme as acme_hooks, health as health_hooks};
 use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::rpc::{OrchestrationGrpc, WorkerAgentGrpc};
+use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
 use orchestration::services::agent::AgentService;
+use orchestration::services::ca::CaService;
 use orchestration::services::canvas::CanvasService;
+use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
+use orchestration::services::health::HealthService;
 use orchestration::services::node::NodeService;
 use orchestration::services::rollout::{DirtyNotifier, RolloutService};
 use orchestration::services::server::ServerService;
 use orchestration::services::watch::{self, SessionLease, WatchHub};
+use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::auth::auth_server::AuthServer;
 use rpguru_sdk::orchestration::orchestration_server::OrchestrationServer;
 use rpguru_sdk::orchestration_agent::worker_agent_server::WorkerAgentServer;
@@ -113,6 +121,56 @@ struct Cli {
     watch_poll_ms: u64,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     log_level: String,
+    #[arg(
+        long,
+        env = "GURU_HEALTH_REPORT_INTERVAL_SECS",
+        default_value = "15",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    health_report_interval_secs: u64,
+    #[arg(
+        long,
+        env = "GURU_HEALTH_OFFLINE_AFTER_INTERVALS",
+        default_value = "3",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    health_offline_after_intervals: u64,
+    #[arg(long, env = "GURU_DEGRADED_GRACE_SECS", default_value = "60")]
+    degraded_grace_secs: u64,
+    #[arg(long, env = "GURU_SERVER_HEALTH_TTL_SECS", default_value = "604800")]
+    server_health_ttl_secs: u64,
+    #[arg(long, env = "GURU_NODE_HEALTH_TTL_SECS", default_value = "604800")]
+    node_health_ttl_secs: u64,
+    #[arg(
+        long,
+        env = "GURU_DEFAULT_ACME_DIRECTORY",
+        default_value = orchestration::config::LETS_ENCRYPT_DIRECTORY
+    )]
+    default_acme_directory: String,
+    #[arg(long, env = "GURU_ACME_RENEW_BEFORE_SECS", default_value = "2592000")]
+    acme_renew_before_secs: u64,
+    #[arg(
+        long,
+        env = "GURU_ACME_INTERVAL_SECS",
+        default_value = "60",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    acme_interval_secs: u64,
+}
+
+impl Cli {
+    fn orchestration_config(&self) -> OrchestrationConfig {
+        OrchestrationConfig {
+            health_report_interval_secs: self.health_report_interval_secs,
+            health_offline_after_intervals: self.health_offline_after_intervals,
+            degraded_grace_secs: self.degraded_grace_secs,
+            server_health_ttl_secs: self.server_health_ttl_secs,
+            node_health_ttl_secs: self.node_health_ttl_secs,
+            default_acme_directory: self.default_acme_directory.clone(),
+            acme_renew_before_secs: self.acme_renew_before_secs,
+            ..OrchestrationConfig::default()
+        }
+    }
 }
 
 #[tokio::main]
@@ -130,6 +188,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     db.use_ns(&cli.namespace).use_db(&cli.database).await?;
     let db = SurrealProcessor::new(db);
+    // Environment only, never argv: the key would otherwise be visible in process
+    // listings. `manage-tool generate-master-key` prints a fresh one.
+    let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;
+    let config = cli.orchestration_config();
 
     let hasher = Argon2PasswordAlgorithm::default();
     let sessions = SessionService {
@@ -138,6 +200,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: AuthConfig::default(),
     };
     let api_keys = ApiKeyService { db: db.clone() };
+    let health = HealthService {
+        db: db.clone(),
+        config: config.clone(),
+    };
+    let ca = CaService {
+        db: db.clone(),
+        secrets: secrets.clone(),
+        config: config.clone(),
+    };
+    let deriver = CanvasDeriver {
+        db: db.clone(),
+        secrets: secrets.clone(),
+        config: config.clone(),
+    };
 
     match cli.mode {
         WorkerMode::DashboardGrpc => {
@@ -165,7 +241,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 rollout: RolloutService {
                     db: db.clone(),
+                    notifier: notifier.clone(),
+                },
+                health,
+                dns: DnsProviderService {
+                    db: db.clone(),
+                    secrets: secrets.clone(),
+                },
+                certificates: AcmeService {
+                    db: db.clone(),
+                    secrets,
+                    config,
                     notifier,
+                    http: reqwest::Client::new(),
+                    issuer: Arc::new(InstantAcmeIssuer),
                 },
             };
             let auth = AuthGrpc {
@@ -200,6 +289,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ));
             let workers = WorkerAgentGrpc {
                 agents: agents.clone(),
+                health,
+                ca,
                 db: db.clone(),
                 hub,
                 lease,
@@ -242,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .basic_qos(BasicQosArguments::new(0, 8, false))
                 .await
                 .map_err(|e| format!("setting the consumer prefetch failed: {e}"))?;
-            setup_consumer::<CanvasDirty, CanvasDeriver>(&channel, Arc::new(CanvasDeriver { db }))
+            setup_consumer::<CanvasDirty, CanvasDeriver>(&channel, Arc::new(deriver))
                 .await
                 .map_err(|e| format!("binding the consumer failed: {e}"))?;
             tracing::info!(queue = CanvasDeriver::QUEUE, "consuming canvas edits");
@@ -264,21 +355,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("closing the AMQP connection failed: {e}"))?;
         }
         WorkerMode::Cron => {
+            // The broker stays optional here: an issuance touches its canvases, and
+            // the sweeper in this very process picks them up; the message only
+            // shortens the delay when a broker is configured.
+            let (_connection, notifier) = match cli.amqp_uri.as_deref() {
+                Some(_) => {
+                    let (connection, notifier) = notifier(cli.amqp_uri.as_deref()).await?;
+                    (Some(connection), notifier)
+                }
+                None => (None, DirtyNotifier::default()),
+            };
             let token = CancellationToken::new();
-            let sweeper = tokio::spawn(derive::run_sweeper(
-                CanvasDeriver { db },
+            let acme = AcmeService {
+                db: db.clone(),
+                secrets,
+                config,
+                notifier,
+                http: reqwest::Client::new(),
+                issuer: Arc::new(InstantAcmeIssuer),
+            };
+            let mut jobs = tokio::task::JoinSet::new();
+            jobs.spawn(derive::run_sweeper(
+                deriver.clone(),
                 Duration::from_secs(cli.sweep_interval_secs),
                 token.clone(),
             ));
+            jobs.spawn(health_hooks::run_liveness_sweep(
+                health.clone(),
+                Duration::from_secs(30),
+                token.clone(),
+            ));
+            jobs.spawn(health_hooks::run_health_retention(
+                health,
+                Duration::from_secs(300),
+                token.clone(),
+            ));
+            jobs.spawn(acme_hooks::run_acme_renewal(
+                acme,
+                Duration::from_secs(cli.acme_interval_secs),
+                token.clone(),
+            ));
+            jobs.spawn(derive::run_relay_cert_rotation(
+                deriver,
+                Duration::from_secs(3600),
+                token.clone(),
+            ));
             tracing::info!(
-                interval_secs = cli.sweep_interval_secs,
+                sweep_interval_secs = cli.sweep_interval_secs,
+                acme_interval_secs = cli.acme_interval_secs,
                 "running cron worker"
             );
             shutdown().await;
             token.cancel();
-            if let Err(error) = sweeper.await {
-                tracing::error!(%error, "the derivation sweeper task failed");
-                return Err(error.into());
+            // A panicking job must not be absorbed: the process exits non-zero so
+            // the supervisor restarts it.
+            while let Some(joined) = jobs.join_next().await {
+                if let Err(error) = joined {
+                    tracing::error!(%error, "a cron job task failed");
+                    return Err(error.into());
+                }
             }
         }
     }

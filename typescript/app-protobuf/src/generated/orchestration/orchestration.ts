@@ -487,6 +487,180 @@ export function problemKindToJSON(object: ProblemKind): string {
   }
 }
 
+export enum ServerHealthStatus {
+  UNSPECIFIED = 0,
+  SERVER_ONLINE = 1,
+  SERVER_DEGRADED = 2,
+  SERVER_OFFLINE = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function serverHealthStatusFromJSON(object: any): ServerHealthStatus {
+  switch (object) {
+    case 0:
+    case "SERVER_HEALTH_STATUS_UNSPECIFIED":
+      return ServerHealthStatus.UNSPECIFIED;
+    case 1:
+    case "SERVER_ONLINE":
+      return ServerHealthStatus.SERVER_ONLINE;
+    case 2:
+    case "SERVER_DEGRADED":
+      return ServerHealthStatus.SERVER_DEGRADED;
+    case 3:
+    case "SERVER_OFFLINE":
+      return ServerHealthStatus.SERVER_OFFLINE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ServerHealthStatus.UNRECOGNIZED;
+  }
+}
+
+export function serverHealthStatusToJSON(object: ServerHealthStatus): string {
+  switch (object) {
+    case ServerHealthStatus.UNSPECIFIED:
+      return "SERVER_HEALTH_STATUS_UNSPECIFIED";
+    case ServerHealthStatus.SERVER_ONLINE:
+      return "SERVER_ONLINE";
+    case ServerHealthStatus.SERVER_DEGRADED:
+      return "SERVER_DEGRADED";
+    case ServerHealthStatus.SERVER_OFFLINE:
+      return "SERVER_OFFLINE";
+    case ServerHealthStatus.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum NodeHealthStatus {
+  UNSPECIFIED = 0,
+  NODE_READY = 1,
+  NODE_DEPLOYING = 2,
+  NODE_FAILED = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function nodeHealthStatusFromJSON(object: any): NodeHealthStatus {
+  switch (object) {
+    case 0:
+    case "NODE_HEALTH_STATUS_UNSPECIFIED":
+      return NodeHealthStatus.UNSPECIFIED;
+    case 1:
+    case "NODE_READY":
+      return NodeHealthStatus.NODE_READY;
+    case 2:
+    case "NODE_DEPLOYING":
+      return NodeHealthStatus.NODE_DEPLOYING;
+    case 3:
+    case "NODE_FAILED":
+      return NodeHealthStatus.NODE_FAILED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return NodeHealthStatus.UNRECOGNIZED;
+  }
+}
+
+export function nodeHealthStatusToJSON(object: NodeHealthStatus): string {
+  switch (object) {
+    case NodeHealthStatus.UNSPECIFIED:
+      return "NODE_HEALTH_STATUS_UNSPECIFIED";
+    case NodeHealthStatus.NODE_READY:
+      return "NODE_READY";
+    case NodeHealthStatus.NODE_DEPLOYING:
+      return "NODE_DEPLOYING";
+    case NodeHealthStatus.NODE_FAILED:
+      return "NODE_FAILED";
+    case NodeHealthStatus.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum DnsProviderKind {
+  UNSPECIFIED = 0,
+  DNS_CLOUDFLARE = 1,
+  DNS_VERCEL = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function dnsProviderKindFromJSON(object: any): DnsProviderKind {
+  switch (object) {
+    case 0:
+    case "DNS_PROVIDER_KIND_UNSPECIFIED":
+      return DnsProviderKind.UNSPECIFIED;
+    case 1:
+    case "DNS_CLOUDFLARE":
+      return DnsProviderKind.DNS_CLOUDFLARE;
+    case 2:
+    case "DNS_VERCEL":
+      return DnsProviderKind.DNS_VERCEL;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return DnsProviderKind.UNRECOGNIZED;
+  }
+}
+
+export function dnsProviderKindToJSON(object: DnsProviderKind): string {
+  switch (object) {
+    case DnsProviderKind.UNSPECIFIED:
+      return "DNS_PROVIDER_KIND_UNSPECIFIED";
+    case DnsProviderKind.DNS_CLOUDFLARE:
+      return "DNS_CLOUDFLARE";
+    case DnsProviderKind.DNS_VERCEL:
+      return "DNS_VERCEL";
+    case DnsProviderKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum CertificateStatus {
+  UNSPECIFIED = 0,
+  CERTIFICATE_PENDING = 1,
+  CERTIFICATE_ISSUED = 2,
+  CERTIFICATE_FAILED = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function certificateStatusFromJSON(object: any): CertificateStatus {
+  switch (object) {
+    case 0:
+    case "CERTIFICATE_STATUS_UNSPECIFIED":
+      return CertificateStatus.UNSPECIFIED;
+    case 1:
+    case "CERTIFICATE_PENDING":
+      return CertificateStatus.CERTIFICATE_PENDING;
+    case 2:
+    case "CERTIFICATE_ISSUED":
+      return CertificateStatus.CERTIFICATE_ISSUED;
+    case 3:
+    case "CERTIFICATE_FAILED":
+      return CertificateStatus.CERTIFICATE_FAILED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return CertificateStatus.UNRECOGNIZED;
+  }
+}
+
+export function certificateStatusToJSON(object: CertificateStatus): string {
+  switch (object) {
+    case CertificateStatus.UNSPECIFIED:
+      return "CERTIFICATE_STATUS_UNSPECIFIED";
+    case CertificateStatus.CERTIFICATE_PENDING:
+      return "CERTIFICATE_PENDING";
+    case CertificateStatus.CERTIFICATE_ISSUED:
+      return "CERTIFICATE_ISSUED";
+    case CertificateStatus.CERTIFICATE_FAILED:
+      return "CERTIFICATE_FAILED";
+    case CertificateStatus.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface CanvasUiPosition {
   x: bigint;
   y: bigint;
@@ -594,6 +768,7 @@ export interface Server {
   ipv6Resolve: Ipv6Resolve;
   logLevel: string;
   lastSeenAt: string;
+  healthStatus: ServerHealthStatus;
   ips: ServerIp[];
 }
 
@@ -888,6 +1063,152 @@ export interface ForgetServerAppliedRequest {
 }
 
 export interface ForgetServerAppliedReply {
+}
+
+export interface ServerHealthRecord {
+  id: string;
+  serverId: string;
+  status: ServerHealthStatus;
+  reportTime: string;
+  uploadBytes: bigint;
+  downloadBytes: bigint;
+  currentConnections: bigint;
+  maxConnections: bigint;
+}
+
+export interface NodeHealthRecord {
+  id: string;
+  nodeId: string;
+  status: NodeHealthStatus;
+  message: string;
+  reportTime: string;
+}
+
+/**
+ * `start` / `end` are RFC 3339; an empty `end` means now, an empty `start`
+ * means one hour before `end`.
+ */
+export interface ListServerHealthHistoryRequest {
+  serverId: string;
+  start: string;
+  end: string;
+}
+
+export interface ListServerHealthHistoryReply {
+  records: ServerHealthRecord[];
+}
+
+/** `limit` of 0 means the server default; records come newest first. */
+export interface ListNodeHealthHistoryRequest {
+  nodeId: string;
+  start: string;
+  end: string;
+  limit: number;
+}
+
+export interface ListNodeHealthHistoryReply {
+  records: NodeHealthRecord[];
+}
+
+/**
+ * DNS providers are Admin only. `api_secret` is write-only: it is never
+ * returned.
+ */
+export interface DnsProvider {
+  id: string;
+  name: string;
+  provider: DnsProviderKind;
+  /**
+   * Cloudflare: unused (the zone id lives on the Entry's `TlsConfig.domain_id`).
+   * Vercel: the team id, or empty for a personal account.
+   */
+  accountId: string;
+  createdAt: string;
+}
+
+export interface CreateDnsProviderRequest {
+  name: string;
+  provider: DnsProviderKind;
+  accountId: string;
+  apiSecret: string;
+}
+
+export interface CreateDnsProviderReply {
+  provider: DnsProvider | undefined;
+}
+
+export interface ListDnsProvidersRequest {
+}
+
+export interface ListDnsProvidersReply {
+  providers: DnsProvider[];
+}
+
+/** An empty `api_secret` keeps the stored secret. */
+export interface UpdateDnsProviderRequest {
+  dnsProviderId: string;
+  name: string;
+  accountId: string;
+  apiSecret: string;
+}
+
+export interface UpdateDnsProviderReply {
+  provider: DnsProvider | undefined;
+}
+
+/** Refused while an Entry still references the provider. */
+export interface DeleteDnsProviderRequest {
+  dnsProviderId: string;
+}
+
+export interface DeleteDnsProviderReply {
+}
+
+/**
+ * One ACME certificate, identified by `(sni, acme_directory)`. Key material is
+ * never returned.
+ */
+export interface Certificate {
+  id: string;
+  sni: string;
+  dnsProviderId: string;
+  domainId: string;
+  acmeDirectory: string;
+  status: CertificateStatus;
+  notBefore: string;
+  notAfter: string;
+  lastError: string;
+  lastAttemptAt: string;
+}
+
+export interface ListCertificatesRequest {
+}
+
+export interface ListCertificatesReply {
+  certificates: Certificate[];
+}
+
+/**
+ * Admin only: clears a failure (or forces a renewal of an issued one) so the
+ * next renewal pass retries it.
+ */
+export interface RetryCertificateRequest {
+  certificateId: string;
+}
+
+export interface RetryCertificateReply {
+  certificate: Certificate | undefined;
+}
+
+/**
+ * Admin only. Refused while an Entry still references the certificate's
+ * `(sni, acme_directory)`.
+ */
+export interface DeleteCertificateRequest {
+  certificateId: string;
+}
+
+export interface DeleteCertificateReply {
 }
 
 function createBaseCanvasUiPosition(): CanvasUiPosition {
@@ -2445,6 +2766,7 @@ function createBaseServer(): Server {
     ipv6Resolve: 0,
     logLevel: "",
     lastSeenAt: "",
+    healthStatus: 0,
     ips: [],
   };
 }
@@ -2477,6 +2799,9 @@ export const Server: MessageFns<Server> = {
     }
     if (message.lastSeenAt !== "") {
       writer.uint32(74).string(message.lastSeenAt);
+    }
+    if (message.healthStatus !== 0) {
+      writer.uint32(88).int32(message.healthStatus);
     }
     for (const v of message.ips) {
       ServerIp.encode(v!, writer.uint32(82).fork()).join();
@@ -2563,6 +2888,14 @@ export const Server: MessageFns<Server> = {
           message.lastSeenAt = reader.string();
           continue;
         }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.healthStatus = reader.int32() as any;
+          continue;
+        }
         case 10: {
           if (tag !== 82) {
             break;
@@ -2607,6 +2940,11 @@ export const Server: MessageFns<Server> = {
         : isSet(object.last_seen_at)
         ? globalThis.String(object.last_seen_at)
         : "",
+      healthStatus: isSet(object.healthStatus)
+        ? serverHealthStatusFromJSON(object.healthStatus)
+        : isSet(object.health_status)
+        ? serverHealthStatusFromJSON(object.health_status)
+        : 0,
       ips: globalThis.Array.isArray(object?.ips)
         ? object.ips.map((e: any) => ServerIp.fromJSON(e))
         : [],
@@ -2642,6 +2980,9 @@ export const Server: MessageFns<Server> = {
     if (message.lastSeenAt !== "") {
       obj.lastSeenAt = message.lastSeenAt;
     }
+    if (message.healthStatus !== 0) {
+      obj.healthStatus = serverHealthStatusToJSON(message.healthStatus);
+    }
     if (message.ips?.length) {
       obj.ips = message.ips.map((e) => ServerIp.toJSON(e));
     }
@@ -2664,6 +3005,7 @@ export const Server: MessageFns<Server> = {
     message.ipv6Resolve = object.ipv6Resolve ?? 0;
     message.logLevel = object.logLevel ?? "";
     message.lastSeenAt = object.lastSeenAt ?? "";
+    message.healthStatus = object.healthStatus ?? 0;
     message.ips = object.ips?.map((e) => ServerIp.fromPartial(e)) || [];
     return message;
   },
@@ -6936,6 +7278,1974 @@ export const ForgetServerAppliedReply: MessageFns<ForgetServerAppliedReply> = {
   },
 };
 
+function createBaseServerHealthRecord(): ServerHealthRecord {
+  return {
+    id: "",
+    serverId: "",
+    status: 0,
+    reportTime: "",
+    uploadBytes: 0n,
+    downloadBytes: 0n,
+    currentConnections: 0n,
+    maxConnections: 0n,
+  };
+}
+
+export const ServerHealthRecord: MessageFns<ServerHealthRecord> = {
+  encode(message: ServerHealthRecord, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.serverId !== "") {
+      writer.uint32(18).string(message.serverId);
+    }
+    if (message.status !== 0) {
+      writer.uint32(24).int32(message.status);
+    }
+    if (message.reportTime !== "") {
+      writer.uint32(34).string(message.reportTime);
+    }
+    if (message.uploadBytes !== 0n) {
+      if (BigInt.asIntN(64, message.uploadBytes) !== message.uploadBytes) {
+        throw new globalThis.Error("value provided for field message.uploadBytes of type int64 too large");
+      }
+      writer.uint32(40).int64(message.uploadBytes);
+    }
+    if (message.downloadBytes !== 0n) {
+      if (BigInt.asIntN(64, message.downloadBytes) !== message.downloadBytes) {
+        throw new globalThis.Error("value provided for field message.downloadBytes of type int64 too large");
+      }
+      writer.uint32(48).int64(message.downloadBytes);
+    }
+    if (message.currentConnections !== 0n) {
+      if (BigInt.asIntN(64, message.currentConnections) !== message.currentConnections) {
+        throw new globalThis.Error("value provided for field message.currentConnections of type int64 too large");
+      }
+      writer.uint32(56).int64(message.currentConnections);
+    }
+    if (message.maxConnections !== 0n) {
+      if (BigInt.asIntN(64, message.maxConnections) !== message.maxConnections) {
+        throw new globalThis.Error("value provided for field message.maxConnections of type int64 too large");
+      }
+      writer.uint32(64).int64(message.maxConnections);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerHealthRecord {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerHealthRecord();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.reportTime = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.uploadBytes = reader.int64() as bigint;
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.downloadBytes = reader.int64() as bigint;
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.currentConnections = reader.int64() as bigint;
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.maxConnections = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerHealthRecord {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      status: isSet(object.status) ? serverHealthStatusFromJSON(object.status) : 0,
+      reportTime: isSet(object.reportTime)
+        ? globalThis.String(object.reportTime)
+        : isSet(object.report_time)
+        ? globalThis.String(object.report_time)
+        : "",
+      uploadBytes: isSet(object.uploadBytes)
+        ? BigInt(object.uploadBytes)
+        : isSet(object.upload_bytes)
+        ? BigInt(object.upload_bytes)
+        : 0n,
+      downloadBytes: isSet(object.downloadBytes)
+        ? BigInt(object.downloadBytes)
+        : isSet(object.download_bytes)
+        ? BigInt(object.download_bytes)
+        : 0n,
+      currentConnections: isSet(object.currentConnections)
+        ? BigInt(object.currentConnections)
+        : isSet(object.current_connections)
+        ? BigInt(object.current_connections)
+        : 0n,
+      maxConnections: isSet(object.maxConnections)
+        ? BigInt(object.maxConnections)
+        : isSet(object.max_connections)
+        ? BigInt(object.max_connections)
+        : 0n,
+    };
+  },
+
+  toJSON(message: ServerHealthRecord): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.status !== 0) {
+      obj.status = serverHealthStatusToJSON(message.status);
+    }
+    if (message.reportTime !== "") {
+      obj.reportTime = message.reportTime;
+    }
+    if (message.uploadBytes !== 0n) {
+      obj.uploadBytes = message.uploadBytes.toString();
+    }
+    if (message.downloadBytes !== 0n) {
+      obj.downloadBytes = message.downloadBytes.toString();
+    }
+    if (message.currentConnections !== 0n) {
+      obj.currentConnections = message.currentConnections.toString();
+    }
+    if (message.maxConnections !== 0n) {
+      obj.maxConnections = message.maxConnections.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ServerHealthRecord>): ServerHealthRecord {
+    return ServerHealthRecord.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ServerHealthRecord>): ServerHealthRecord {
+    const message = createBaseServerHealthRecord();
+    message.id = object.id ?? "";
+    message.serverId = object.serverId ?? "";
+    message.status = object.status ?? 0;
+    message.reportTime = object.reportTime ?? "";
+    message.uploadBytes = (object.uploadBytes !== undefined && object.uploadBytes !== null)
+      ? BigInt(object.uploadBytes)
+      : 0n;
+    message.downloadBytes = (object.downloadBytes !== undefined && object.downloadBytes !== null)
+      ? BigInt(object.downloadBytes)
+      : 0n;
+    message.currentConnections = (object.currentConnections !== undefined && object.currentConnections !== null)
+      ? BigInt(object.currentConnections)
+      : 0n;
+    message.maxConnections = (object.maxConnections !== undefined && object.maxConnections !== null)
+      ? BigInt(object.maxConnections)
+      : 0n;
+    return message;
+  },
+};
+
+function createBaseNodeHealthRecord(): NodeHealthRecord {
+  return { id: "", nodeId: "", status: 0, message: "", reportTime: "" };
+}
+
+export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
+  encode(message: NodeHealthRecord, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.nodeId !== "") {
+      writer.uint32(18).string(message.nodeId);
+    }
+    if (message.status !== 0) {
+      writer.uint32(24).int32(message.status);
+    }
+    if (message.message !== "") {
+      writer.uint32(34).string(message.message);
+    }
+    if (message.reportTime !== "") {
+      writer.uint32(42).string(message.reportTime);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthRecord {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNodeHealthRecord();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.message = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.reportTime = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): NodeHealthRecord {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      status: isSet(object.status) ? nodeHealthStatusFromJSON(object.status) : 0,
+      message: isSet(object.message) ? globalThis.String(object.message) : "",
+      reportTime: isSet(object.reportTime)
+        ? globalThis.String(object.reportTime)
+        : isSet(object.report_time)
+        ? globalThis.String(object.report_time)
+        : "",
+    };
+  },
+
+  toJSON(message: NodeHealthRecord): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.status !== 0) {
+      obj.status = nodeHealthStatusToJSON(message.status);
+    }
+    if (message.message !== "") {
+      obj.message = message.message;
+    }
+    if (message.reportTime !== "") {
+      obj.reportTime = message.reportTime;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<NodeHealthRecord>): NodeHealthRecord {
+    return NodeHealthRecord.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<NodeHealthRecord>): NodeHealthRecord {
+    const message = createBaseNodeHealthRecord();
+    message.id = object.id ?? "";
+    message.nodeId = object.nodeId ?? "";
+    message.status = object.status ?? 0;
+    message.message = object.message ?? "";
+    message.reportTime = object.reportTime ?? "";
+    return message;
+  },
+};
+
+function createBaseListServerHealthHistoryRequest(): ListServerHealthHistoryRequest {
+  return { serverId: "", start: "", end: "" };
+}
+
+export const ListServerHealthHistoryRequest: MessageFns<ListServerHealthHistoryRequest> = {
+  encode(message: ListServerHealthHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.start !== "") {
+      writer.uint32(18).string(message.start);
+    }
+    if (message.end !== "") {
+      writer.uint32(26).string(message.end);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListServerHealthHistoryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListServerHealthHistoryRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.start = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.end = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListServerHealthHistoryRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      start: isSet(object.start) ? globalThis.String(object.start) : "",
+      end: isSet(object.end) ? globalThis.String(object.end) : "",
+    };
+  },
+
+  toJSON(message: ListServerHealthHistoryRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.start !== "") {
+      obj.start = message.start;
+    }
+    if (message.end !== "") {
+      obj.end = message.end;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListServerHealthHistoryRequest>): ListServerHealthHistoryRequest {
+    return ListServerHealthHistoryRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListServerHealthHistoryRequest>): ListServerHealthHistoryRequest {
+    const message = createBaseListServerHealthHistoryRequest();
+    message.serverId = object.serverId ?? "";
+    message.start = object.start ?? "";
+    message.end = object.end ?? "";
+    return message;
+  },
+};
+
+function createBaseListServerHealthHistoryReply(): ListServerHealthHistoryReply {
+  return { records: [] };
+}
+
+export const ListServerHealthHistoryReply: MessageFns<ListServerHealthHistoryReply> = {
+  encode(message: ListServerHealthHistoryReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.records) {
+      ServerHealthRecord.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListServerHealthHistoryReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListServerHealthHistoryReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.records.push(ServerHealthRecord.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListServerHealthHistoryReply {
+    return {
+      records: globalThis.Array.isArray(object?.records)
+        ? object.records.map((e: any) => ServerHealthRecord.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListServerHealthHistoryReply): unknown {
+    const obj: any = {};
+    if (message.records?.length) {
+      obj.records = message.records.map((e) => ServerHealthRecord.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListServerHealthHistoryReply>): ListServerHealthHistoryReply {
+    return ListServerHealthHistoryReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListServerHealthHistoryReply>): ListServerHealthHistoryReply {
+    const message = createBaseListServerHealthHistoryReply();
+    message.records = object.records?.map((e) => ServerHealthRecord.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseListNodeHealthHistoryRequest(): ListNodeHealthHistoryRequest {
+  return { nodeId: "", start: "", end: "", limit: 0 };
+}
+
+export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryRequest> = {
+  encode(message: ListNodeHealthHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    if (message.start !== "") {
+      writer.uint32(18).string(message.start);
+    }
+    if (message.end !== "") {
+      writer.uint32(26).string(message.end);
+    }
+    if (message.limit !== 0) {
+      writer.uint32(32).uint32(message.limit);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListNodeHealthHistoryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListNodeHealthHistoryRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.start = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.end = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.limit = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListNodeHealthHistoryRequest {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      start: isSet(object.start) ? globalThis.String(object.start) : "",
+      end: isSet(object.end) ? globalThis.String(object.end) : "",
+      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
+    };
+  },
+
+  toJSON(message: ListNodeHealthHistoryRequest): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.start !== "") {
+      obj.start = message.start;
+    }
+    if (message.end !== "") {
+      obj.end = message.end;
+    }
+    if (message.limit !== 0) {
+      obj.limit = Math.round(message.limit);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListNodeHealthHistoryRequest>): ListNodeHealthHistoryRequest {
+    return ListNodeHealthHistoryRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListNodeHealthHistoryRequest>): ListNodeHealthHistoryRequest {
+    const message = createBaseListNodeHealthHistoryRequest();
+    message.nodeId = object.nodeId ?? "";
+    message.start = object.start ?? "";
+    message.end = object.end ?? "";
+    message.limit = object.limit ?? 0;
+    return message;
+  },
+};
+
+function createBaseListNodeHealthHistoryReply(): ListNodeHealthHistoryReply {
+  return { records: [] };
+}
+
+export const ListNodeHealthHistoryReply: MessageFns<ListNodeHealthHistoryReply> = {
+  encode(message: ListNodeHealthHistoryReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.records) {
+      NodeHealthRecord.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListNodeHealthHistoryReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListNodeHealthHistoryReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.records.push(NodeHealthRecord.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListNodeHealthHistoryReply {
+    return {
+      records: globalThis.Array.isArray(object?.records)
+        ? object.records.map((e: any) => NodeHealthRecord.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListNodeHealthHistoryReply): unknown {
+    const obj: any = {};
+    if (message.records?.length) {
+      obj.records = message.records.map((e) => NodeHealthRecord.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListNodeHealthHistoryReply>): ListNodeHealthHistoryReply {
+    return ListNodeHealthHistoryReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListNodeHealthHistoryReply>): ListNodeHealthHistoryReply {
+    const message = createBaseListNodeHealthHistoryReply();
+    message.records = object.records?.map((e) => NodeHealthRecord.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseDnsProvider(): DnsProvider {
+  return { id: "", name: "", provider: 0, accountId: "", createdAt: "" };
+}
+
+export const DnsProvider: MessageFns<DnsProvider> = {
+  encode(message: DnsProvider, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    if (message.provider !== 0) {
+      writer.uint32(24).int32(message.provider);
+    }
+    if (message.accountId !== "") {
+      writer.uint32(34).string(message.accountId);
+    }
+    if (message.createdAt !== "") {
+      writer.uint32(42).string(message.createdAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DnsProvider {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDnsProvider();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.provider = reader.int32() as any;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.accountId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.createdAt = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DnsProvider {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      provider: isSet(object.provider) ? dnsProviderKindFromJSON(object.provider) : 0,
+      accountId: isSet(object.accountId)
+        ? globalThis.String(object.accountId)
+        : isSet(object.account_id)
+        ? globalThis.String(object.account_id)
+        : "",
+      createdAt: isSet(object.createdAt)
+        ? globalThis.String(object.createdAt)
+        : isSet(object.created_at)
+        ? globalThis.String(object.created_at)
+        : "",
+    };
+  },
+
+  toJSON(message: DnsProvider): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.provider !== 0) {
+      obj.provider = dnsProviderKindToJSON(message.provider);
+    }
+    if (message.accountId !== "") {
+      obj.accountId = message.accountId;
+    }
+    if (message.createdAt !== "") {
+      obj.createdAt = message.createdAt;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<DnsProvider>): DnsProvider {
+    return DnsProvider.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<DnsProvider>): DnsProvider {
+    const message = createBaseDnsProvider();
+    message.id = object.id ?? "";
+    message.name = object.name ?? "";
+    message.provider = object.provider ?? 0;
+    message.accountId = object.accountId ?? "";
+    message.createdAt = object.createdAt ?? "";
+    return message;
+  },
+};
+
+function createBaseCreateDnsProviderRequest(): CreateDnsProviderRequest {
+  return { name: "", provider: 0, accountId: "", apiSecret: "" };
+}
+
+export const CreateDnsProviderRequest: MessageFns<CreateDnsProviderRequest> = {
+  encode(message: CreateDnsProviderRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.provider !== 0) {
+      writer.uint32(16).int32(message.provider);
+    }
+    if (message.accountId !== "") {
+      writer.uint32(26).string(message.accountId);
+    }
+    if (message.apiSecret !== "") {
+      writer.uint32(34).string(message.apiSecret);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateDnsProviderRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateDnsProviderRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.provider = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.accountId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.apiSecret = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateDnsProviderRequest {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      provider: isSet(object.provider) ? dnsProviderKindFromJSON(object.provider) : 0,
+      accountId: isSet(object.accountId)
+        ? globalThis.String(object.accountId)
+        : isSet(object.account_id)
+        ? globalThis.String(object.account_id)
+        : "",
+      apiSecret: isSet(object.apiSecret)
+        ? globalThis.String(object.apiSecret)
+        : isSet(object.api_secret)
+        ? globalThis.String(object.api_secret)
+        : "",
+    };
+  },
+
+  toJSON(message: CreateDnsProviderRequest): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.provider !== 0) {
+      obj.provider = dnsProviderKindToJSON(message.provider);
+    }
+    if (message.accountId !== "") {
+      obj.accountId = message.accountId;
+    }
+    if (message.apiSecret !== "") {
+      obj.apiSecret = message.apiSecret;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CreateDnsProviderRequest>): CreateDnsProviderRequest {
+    return CreateDnsProviderRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CreateDnsProviderRequest>): CreateDnsProviderRequest {
+    const message = createBaseCreateDnsProviderRequest();
+    message.name = object.name ?? "";
+    message.provider = object.provider ?? 0;
+    message.accountId = object.accountId ?? "";
+    message.apiSecret = object.apiSecret ?? "";
+    return message;
+  },
+};
+
+function createBaseCreateDnsProviderReply(): CreateDnsProviderReply {
+  return { provider: undefined };
+}
+
+export const CreateDnsProviderReply: MessageFns<CreateDnsProviderReply> = {
+  encode(message: CreateDnsProviderReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.provider !== undefined) {
+      DnsProvider.encode(message.provider, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateDnsProviderReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateDnsProviderReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.provider = DnsProvider.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateDnsProviderReply {
+    return { provider: isSet(object.provider) ? DnsProvider.fromJSON(object.provider) : undefined };
+  },
+
+  toJSON(message: CreateDnsProviderReply): unknown {
+    const obj: any = {};
+    if (message.provider !== undefined) {
+      obj.provider = DnsProvider.toJSON(message.provider);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CreateDnsProviderReply>): CreateDnsProviderReply {
+    return CreateDnsProviderReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CreateDnsProviderReply>): CreateDnsProviderReply {
+    const message = createBaseCreateDnsProviderReply();
+    message.provider = (object.provider !== undefined && object.provider !== null)
+      ? DnsProvider.fromPartial(object.provider)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseListDnsProvidersRequest(): ListDnsProvidersRequest {
+  return {};
+}
+
+export const ListDnsProvidersRequest: MessageFns<ListDnsProvidersRequest> = {
+  encode(_: ListDnsProvidersRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListDnsProvidersRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListDnsProvidersRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ListDnsProvidersRequest {
+    return {};
+  },
+
+  toJSON(_: ListDnsProvidersRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListDnsProvidersRequest>): ListDnsProvidersRequest {
+    return ListDnsProvidersRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<ListDnsProvidersRequest>): ListDnsProvidersRequest {
+    const message = createBaseListDnsProvidersRequest();
+    return message;
+  },
+};
+
+function createBaseListDnsProvidersReply(): ListDnsProvidersReply {
+  return { providers: [] };
+}
+
+export const ListDnsProvidersReply: MessageFns<ListDnsProvidersReply> = {
+  encode(message: ListDnsProvidersReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.providers) {
+      DnsProvider.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListDnsProvidersReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListDnsProvidersReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.providers.push(DnsProvider.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListDnsProvidersReply {
+    return {
+      providers: globalThis.Array.isArray(object?.providers)
+        ? object.providers.map((e: any) => DnsProvider.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListDnsProvidersReply): unknown {
+    const obj: any = {};
+    if (message.providers?.length) {
+      obj.providers = message.providers.map((e) => DnsProvider.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListDnsProvidersReply>): ListDnsProvidersReply {
+    return ListDnsProvidersReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListDnsProvidersReply>): ListDnsProvidersReply {
+    const message = createBaseListDnsProvidersReply();
+    message.providers = object.providers?.map((e) => DnsProvider.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseUpdateDnsProviderRequest(): UpdateDnsProviderRequest {
+  return { dnsProviderId: "", name: "", accountId: "", apiSecret: "" };
+}
+
+export const UpdateDnsProviderRequest: MessageFns<UpdateDnsProviderRequest> = {
+  encode(message: UpdateDnsProviderRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.dnsProviderId !== "") {
+      writer.uint32(10).string(message.dnsProviderId);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    if (message.accountId !== "") {
+      writer.uint32(26).string(message.accountId);
+    }
+    if (message.apiSecret !== "") {
+      writer.uint32(34).string(message.apiSecret);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateDnsProviderRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateDnsProviderRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.dnsProviderId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.accountId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.apiSecret = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateDnsProviderRequest {
+    return {
+      dnsProviderId: isSet(object.dnsProviderId)
+        ? globalThis.String(object.dnsProviderId)
+        : isSet(object.dns_provider_id)
+        ? globalThis.String(object.dns_provider_id)
+        : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      accountId: isSet(object.accountId)
+        ? globalThis.String(object.accountId)
+        : isSet(object.account_id)
+        ? globalThis.String(object.account_id)
+        : "",
+      apiSecret: isSet(object.apiSecret)
+        ? globalThis.String(object.apiSecret)
+        : isSet(object.api_secret)
+        ? globalThis.String(object.api_secret)
+        : "",
+    };
+  },
+
+  toJSON(message: UpdateDnsProviderRequest): unknown {
+    const obj: any = {};
+    if (message.dnsProviderId !== "") {
+      obj.dnsProviderId = message.dnsProviderId;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.accountId !== "") {
+      obj.accountId = message.accountId;
+    }
+    if (message.apiSecret !== "") {
+      obj.apiSecret = message.apiSecret;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<UpdateDnsProviderRequest>): UpdateDnsProviderRequest {
+    return UpdateDnsProviderRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<UpdateDnsProviderRequest>): UpdateDnsProviderRequest {
+    const message = createBaseUpdateDnsProviderRequest();
+    message.dnsProviderId = object.dnsProviderId ?? "";
+    message.name = object.name ?? "";
+    message.accountId = object.accountId ?? "";
+    message.apiSecret = object.apiSecret ?? "";
+    return message;
+  },
+};
+
+function createBaseUpdateDnsProviderReply(): UpdateDnsProviderReply {
+  return { provider: undefined };
+}
+
+export const UpdateDnsProviderReply: MessageFns<UpdateDnsProviderReply> = {
+  encode(message: UpdateDnsProviderReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.provider !== undefined) {
+      DnsProvider.encode(message.provider, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateDnsProviderReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateDnsProviderReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.provider = DnsProvider.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateDnsProviderReply {
+    return { provider: isSet(object.provider) ? DnsProvider.fromJSON(object.provider) : undefined };
+  },
+
+  toJSON(message: UpdateDnsProviderReply): unknown {
+    const obj: any = {};
+    if (message.provider !== undefined) {
+      obj.provider = DnsProvider.toJSON(message.provider);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<UpdateDnsProviderReply>): UpdateDnsProviderReply {
+    return UpdateDnsProviderReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<UpdateDnsProviderReply>): UpdateDnsProviderReply {
+    const message = createBaseUpdateDnsProviderReply();
+    message.provider = (object.provider !== undefined && object.provider !== null)
+      ? DnsProvider.fromPartial(object.provider)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseDeleteDnsProviderRequest(): DeleteDnsProviderRequest {
+  return { dnsProviderId: "" };
+}
+
+export const DeleteDnsProviderRequest: MessageFns<DeleteDnsProviderRequest> = {
+  encode(message: DeleteDnsProviderRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.dnsProviderId !== "") {
+      writer.uint32(10).string(message.dnsProviderId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteDnsProviderRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteDnsProviderRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.dnsProviderId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteDnsProviderRequest {
+    return {
+      dnsProviderId: isSet(object.dnsProviderId)
+        ? globalThis.String(object.dnsProviderId)
+        : isSet(object.dns_provider_id)
+        ? globalThis.String(object.dns_provider_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeleteDnsProviderRequest): unknown {
+    const obj: any = {};
+    if (message.dnsProviderId !== "") {
+      obj.dnsProviderId = message.dnsProviderId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<DeleteDnsProviderRequest>): DeleteDnsProviderRequest {
+    return DeleteDnsProviderRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<DeleteDnsProviderRequest>): DeleteDnsProviderRequest {
+    const message = createBaseDeleteDnsProviderRequest();
+    message.dnsProviderId = object.dnsProviderId ?? "";
+    return message;
+  },
+};
+
+function createBaseDeleteDnsProviderReply(): DeleteDnsProviderReply {
+  return {};
+}
+
+export const DeleteDnsProviderReply: MessageFns<DeleteDnsProviderReply> = {
+  encode(_: DeleteDnsProviderReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteDnsProviderReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteDnsProviderReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): DeleteDnsProviderReply {
+    return {};
+  },
+
+  toJSON(_: DeleteDnsProviderReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<DeleteDnsProviderReply>): DeleteDnsProviderReply {
+    return DeleteDnsProviderReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<DeleteDnsProviderReply>): DeleteDnsProviderReply {
+    const message = createBaseDeleteDnsProviderReply();
+    return message;
+  },
+};
+
+function createBaseCertificate(): Certificate {
+  return {
+    id: "",
+    sni: "",
+    dnsProviderId: "",
+    domainId: "",
+    acmeDirectory: "",
+    status: 0,
+    notBefore: "",
+    notAfter: "",
+    lastError: "",
+    lastAttemptAt: "",
+  };
+}
+
+export const Certificate: MessageFns<Certificate> = {
+  encode(message: Certificate, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.sni !== "") {
+      writer.uint32(18).string(message.sni);
+    }
+    if (message.dnsProviderId !== "") {
+      writer.uint32(26).string(message.dnsProviderId);
+    }
+    if (message.domainId !== "") {
+      writer.uint32(34).string(message.domainId);
+    }
+    if (message.acmeDirectory !== "") {
+      writer.uint32(42).string(message.acmeDirectory);
+    }
+    if (message.status !== 0) {
+      writer.uint32(48).int32(message.status);
+    }
+    if (message.notBefore !== "") {
+      writer.uint32(58).string(message.notBefore);
+    }
+    if (message.notAfter !== "") {
+      writer.uint32(66).string(message.notAfter);
+    }
+    if (message.lastError !== "") {
+      writer.uint32(74).string(message.lastError);
+    }
+    if (message.lastAttemptAt !== "") {
+      writer.uint32(82).string(message.lastAttemptAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Certificate {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCertificate();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.sni = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.dnsProviderId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.domainId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.acmeDirectory = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.notBefore = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.notAfter = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.lastError = reader.string();
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.lastAttemptAt = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Certificate {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      sni: isSet(object.sni) ? globalThis.String(object.sni) : "",
+      dnsProviderId: isSet(object.dnsProviderId)
+        ? globalThis.String(object.dnsProviderId)
+        : isSet(object.dns_provider_id)
+        ? globalThis.String(object.dns_provider_id)
+        : "",
+      domainId: isSet(object.domainId)
+        ? globalThis.String(object.domainId)
+        : isSet(object.domain_id)
+        ? globalThis.String(object.domain_id)
+        : "",
+      acmeDirectory: isSet(object.acmeDirectory)
+        ? globalThis.String(object.acmeDirectory)
+        : isSet(object.acme_directory)
+        ? globalThis.String(object.acme_directory)
+        : "",
+      status: isSet(object.status) ? certificateStatusFromJSON(object.status) : 0,
+      notBefore: isSet(object.notBefore)
+        ? globalThis.String(object.notBefore)
+        : isSet(object.not_before)
+        ? globalThis.String(object.not_before)
+        : "",
+      notAfter: isSet(object.notAfter)
+        ? globalThis.String(object.notAfter)
+        : isSet(object.not_after)
+        ? globalThis.String(object.not_after)
+        : "",
+      lastError: isSet(object.lastError)
+        ? globalThis.String(object.lastError)
+        : isSet(object.last_error)
+        ? globalThis.String(object.last_error)
+        : "",
+      lastAttemptAt: isSet(object.lastAttemptAt)
+        ? globalThis.String(object.lastAttemptAt)
+        : isSet(object.last_attempt_at)
+        ? globalThis.String(object.last_attempt_at)
+        : "",
+    };
+  },
+
+  toJSON(message: Certificate): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.sni !== "") {
+      obj.sni = message.sni;
+    }
+    if (message.dnsProviderId !== "") {
+      obj.dnsProviderId = message.dnsProviderId;
+    }
+    if (message.domainId !== "") {
+      obj.domainId = message.domainId;
+    }
+    if (message.acmeDirectory !== "") {
+      obj.acmeDirectory = message.acmeDirectory;
+    }
+    if (message.status !== 0) {
+      obj.status = certificateStatusToJSON(message.status);
+    }
+    if (message.notBefore !== "") {
+      obj.notBefore = message.notBefore;
+    }
+    if (message.notAfter !== "") {
+      obj.notAfter = message.notAfter;
+    }
+    if (message.lastError !== "") {
+      obj.lastError = message.lastError;
+    }
+    if (message.lastAttemptAt !== "") {
+      obj.lastAttemptAt = message.lastAttemptAt;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<Certificate>): Certificate {
+    return Certificate.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Certificate>): Certificate {
+    const message = createBaseCertificate();
+    message.id = object.id ?? "";
+    message.sni = object.sni ?? "";
+    message.dnsProviderId = object.dnsProviderId ?? "";
+    message.domainId = object.domainId ?? "";
+    message.acmeDirectory = object.acmeDirectory ?? "";
+    message.status = object.status ?? 0;
+    message.notBefore = object.notBefore ?? "";
+    message.notAfter = object.notAfter ?? "";
+    message.lastError = object.lastError ?? "";
+    message.lastAttemptAt = object.lastAttemptAt ?? "";
+    return message;
+  },
+};
+
+function createBaseListCertificatesRequest(): ListCertificatesRequest {
+  return {};
+}
+
+export const ListCertificatesRequest: MessageFns<ListCertificatesRequest> = {
+  encode(_: ListCertificatesRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListCertificatesRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListCertificatesRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ListCertificatesRequest {
+    return {};
+  },
+
+  toJSON(_: ListCertificatesRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListCertificatesRequest>): ListCertificatesRequest {
+    return ListCertificatesRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<ListCertificatesRequest>): ListCertificatesRequest {
+    const message = createBaseListCertificatesRequest();
+    return message;
+  },
+};
+
+function createBaseListCertificatesReply(): ListCertificatesReply {
+  return { certificates: [] };
+}
+
+export const ListCertificatesReply: MessageFns<ListCertificatesReply> = {
+  encode(message: ListCertificatesReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.certificates) {
+      Certificate.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListCertificatesReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListCertificatesReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.certificates.push(Certificate.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListCertificatesReply {
+    return {
+      certificates: globalThis.Array.isArray(object?.certificates)
+        ? object.certificates.map((e: any) => Certificate.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListCertificatesReply): unknown {
+    const obj: any = {};
+    if (message.certificates?.length) {
+      obj.certificates = message.certificates.map((e) => Certificate.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListCertificatesReply>): ListCertificatesReply {
+    return ListCertificatesReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListCertificatesReply>): ListCertificatesReply {
+    const message = createBaseListCertificatesReply();
+    message.certificates = object.certificates?.map((e) => Certificate.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseRetryCertificateRequest(): RetryCertificateRequest {
+  return { certificateId: "" };
+}
+
+export const RetryCertificateRequest: MessageFns<RetryCertificateRequest> = {
+  encode(message: RetryCertificateRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.certificateId !== "") {
+      writer.uint32(10).string(message.certificateId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RetryCertificateRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRetryCertificateRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.certificateId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RetryCertificateRequest {
+    return {
+      certificateId: isSet(object.certificateId)
+        ? globalThis.String(object.certificateId)
+        : isSet(object.certificate_id)
+        ? globalThis.String(object.certificate_id)
+        : "",
+    };
+  },
+
+  toJSON(message: RetryCertificateRequest): unknown {
+    const obj: any = {};
+    if (message.certificateId !== "") {
+      obj.certificateId = message.certificateId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RetryCertificateRequest>): RetryCertificateRequest {
+    return RetryCertificateRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RetryCertificateRequest>): RetryCertificateRequest {
+    const message = createBaseRetryCertificateRequest();
+    message.certificateId = object.certificateId ?? "";
+    return message;
+  },
+};
+
+function createBaseRetryCertificateReply(): RetryCertificateReply {
+  return { certificate: undefined };
+}
+
+export const RetryCertificateReply: MessageFns<RetryCertificateReply> = {
+  encode(message: RetryCertificateReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.certificate !== undefined) {
+      Certificate.encode(message.certificate, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RetryCertificateReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRetryCertificateReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.certificate = Certificate.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RetryCertificateReply {
+    return { certificate: isSet(object.certificate) ? Certificate.fromJSON(object.certificate) : undefined };
+  },
+
+  toJSON(message: RetryCertificateReply): unknown {
+    const obj: any = {};
+    if (message.certificate !== undefined) {
+      obj.certificate = Certificate.toJSON(message.certificate);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RetryCertificateReply>): RetryCertificateReply {
+    return RetryCertificateReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RetryCertificateReply>): RetryCertificateReply {
+    const message = createBaseRetryCertificateReply();
+    message.certificate = (object.certificate !== undefined && object.certificate !== null)
+      ? Certificate.fromPartial(object.certificate)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseDeleteCertificateRequest(): DeleteCertificateRequest {
+  return { certificateId: "" };
+}
+
+export const DeleteCertificateRequest: MessageFns<DeleteCertificateRequest> = {
+  encode(message: DeleteCertificateRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.certificateId !== "") {
+      writer.uint32(10).string(message.certificateId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteCertificateRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteCertificateRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.certificateId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteCertificateRequest {
+    return {
+      certificateId: isSet(object.certificateId)
+        ? globalThis.String(object.certificateId)
+        : isSet(object.certificate_id)
+        ? globalThis.String(object.certificate_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeleteCertificateRequest): unknown {
+    const obj: any = {};
+    if (message.certificateId !== "") {
+      obj.certificateId = message.certificateId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<DeleteCertificateRequest>): DeleteCertificateRequest {
+    return DeleteCertificateRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<DeleteCertificateRequest>): DeleteCertificateRequest {
+    const message = createBaseDeleteCertificateRequest();
+    message.certificateId = object.certificateId ?? "";
+    return message;
+  },
+};
+
+function createBaseDeleteCertificateReply(): DeleteCertificateReply {
+  return {};
+}
+
+export const DeleteCertificateReply: MessageFns<DeleteCertificateReply> = {
+  encode(_: DeleteCertificateReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteCertificateReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteCertificateReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): DeleteCertificateReply {
+    return {};
+  },
+
+  toJSON(_: DeleteCertificateReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<DeleteCertificateReply>): DeleteCertificateReply {
+    return DeleteCertificateReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<DeleteCertificateReply>): DeleteCertificateReply {
+    const message = createBaseDeleteCertificateReply();
+    return message;
+  },
+};
+
 export type OrchestrationDefinition = typeof OrchestrationDefinition;
 export const OrchestrationDefinition = {
   name: "Orchestration",
@@ -7137,6 +9447,78 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    listServerHealthHistory: {
+      name: "ListServerHealthHistory",
+      requestType: ListServerHealthHistoryRequest as typeof ListServerHealthHistoryRequest,
+      requestStream: false,
+      responseType: ListServerHealthHistoryReply as typeof ListServerHealthHistoryReply,
+      responseStream: false,
+      options: {},
+    },
+    listNodeHealthHistory: {
+      name: "ListNodeHealthHistory",
+      requestType: ListNodeHealthHistoryRequest as typeof ListNodeHealthHistoryRequest,
+      requestStream: false,
+      responseType: ListNodeHealthHistoryReply as typeof ListNodeHealthHistoryReply,
+      responseStream: false,
+      options: {},
+    },
+    createDnsProvider: {
+      name: "CreateDnsProvider",
+      requestType: CreateDnsProviderRequest as typeof CreateDnsProviderRequest,
+      requestStream: false,
+      responseType: CreateDnsProviderReply as typeof CreateDnsProviderReply,
+      responseStream: false,
+      options: {},
+    },
+    listDnsProviders: {
+      name: "ListDnsProviders",
+      requestType: ListDnsProvidersRequest as typeof ListDnsProvidersRequest,
+      requestStream: false,
+      responseType: ListDnsProvidersReply as typeof ListDnsProvidersReply,
+      responseStream: false,
+      options: {},
+    },
+    updateDnsProvider: {
+      name: "UpdateDnsProvider",
+      requestType: UpdateDnsProviderRequest as typeof UpdateDnsProviderRequest,
+      requestStream: false,
+      responseType: UpdateDnsProviderReply as typeof UpdateDnsProviderReply,
+      responseStream: false,
+      options: {},
+    },
+    deleteDnsProvider: {
+      name: "DeleteDnsProvider",
+      requestType: DeleteDnsProviderRequest as typeof DeleteDnsProviderRequest,
+      requestStream: false,
+      responseType: DeleteDnsProviderReply as typeof DeleteDnsProviderReply,
+      responseStream: false,
+      options: {},
+    },
+    listCertificates: {
+      name: "ListCertificates",
+      requestType: ListCertificatesRequest as typeof ListCertificatesRequest,
+      requestStream: false,
+      responseType: ListCertificatesReply as typeof ListCertificatesReply,
+      responseStream: false,
+      options: {},
+    },
+    retryCertificate: {
+      name: "RetryCertificate",
+      requestType: RetryCertificateRequest as typeof RetryCertificateRequest,
+      requestStream: false,
+      responseType: RetryCertificateReply as typeof RetryCertificateReply,
+      responseStream: false,
+      options: {},
+    },
+    deleteCertificate: {
+      name: "DeleteCertificate",
+      requestType: DeleteCertificateRequest as typeof DeleteCertificateRequest,
+      requestStream: false,
+      responseType: DeleteCertificateReply as typeof DeleteCertificateReply,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
@@ -7223,6 +9605,42 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: ForgetServerAppliedRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ForgetServerAppliedReply>>;
+  listServerHealthHistory(
+    request: ListServerHealthHistoryRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ListServerHealthHistoryReply>>;
+  listNodeHealthHistory(
+    request: ListNodeHealthHistoryRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ListNodeHealthHistoryReply>>;
+  createDnsProvider(
+    request: CreateDnsProviderRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<CreateDnsProviderReply>>;
+  listDnsProviders(
+    request: ListDnsProvidersRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ListDnsProvidersReply>>;
+  updateDnsProvider(
+    request: UpdateDnsProviderRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<UpdateDnsProviderReply>>;
+  deleteDnsProvider(
+    request: DeleteDnsProviderRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<DeleteDnsProviderReply>>;
+  listCertificates(
+    request: ListCertificatesRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ListCertificatesReply>>;
+  retryCertificate(
+    request: RetryCertificateRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<RetryCertificateReply>>;
+  deleteCertificate(
+    request: DeleteCertificateRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<DeleteCertificateReply>>;
 }
 
 export interface OrchestrationClient<CallOptionsExt = {}> {
@@ -7308,6 +9726,42 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<ForgetServerAppliedRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ForgetServerAppliedReply>;
+  listServerHealthHistory(
+    request: DeepPartial<ListServerHealthHistoryRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ListServerHealthHistoryReply>;
+  listNodeHealthHistory(
+    request: DeepPartial<ListNodeHealthHistoryRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ListNodeHealthHistoryReply>;
+  createDnsProvider(
+    request: DeepPartial<CreateDnsProviderRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<CreateDnsProviderReply>;
+  listDnsProviders(
+    request: DeepPartial<ListDnsProvidersRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ListDnsProvidersReply>;
+  updateDnsProvider(
+    request: DeepPartial<UpdateDnsProviderRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<UpdateDnsProviderReply>;
+  deleteDnsProvider(
+    request: DeepPartial<DeleteDnsProviderRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<DeleteDnsProviderReply>;
+  listCertificates(
+    request: DeepPartial<ListCertificatesRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ListCertificatesReply>;
+  retryCertificate(
+    request: DeepPartial<RetryCertificateRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<RetryCertificateReply>;
+  deleteCertificate(
+    request: DeepPartial<DeleteCertificateRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<DeleteCertificateReply>;
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

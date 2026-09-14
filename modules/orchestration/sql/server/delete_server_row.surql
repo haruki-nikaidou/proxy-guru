@@ -10,6 +10,7 @@ IF array::len($used) > 0 {
     THROW "server still has " + <string> array::len($used) + " live pod(s)";
 };
 DELETE orchestration_server_config_view WHERE server = $id;
+DELETE server_health_record WHERE server = $id;
 DELETE server_ip_record WHERE server = $id;
 DELETE $id;
 fn::orchestration_touch($canvas);

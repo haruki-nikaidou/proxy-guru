@@ -1,0 +1,16 @@
+ipv6_resolve = "tolerated"
+
+[log]
+level = "info"
+
+[[forwarding]]
+tag = "pod"
+listen = "203.0.113.10:443"
+
+[forwarding.listen_as.tls]
+key = "certs/acme/c1/key.pem"
+full_chain = "certs/acme/c1/full_chain.pem"
+
+[forwarding.to]
+type = "exit"
+destination = "10.0.0.5:8080"

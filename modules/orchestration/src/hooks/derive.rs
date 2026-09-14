@@ -10,18 +10,40 @@
 //! The message is a latency hint, not the contract: [`run_sweeper`] re-derives any
 //! canvas whose `generation` ran ahead of its `derived_generation`, so a dropped
 //! message, a broker outage or a crashed consumer costs at most one sweep interval.
+//!
+//! Certificates are part of the input: a pass first issues the relay leaves its
+//! tree needs (when the internal CA exists), then derives against the ACME rows,
+//! relay leaves and CA it can see. A pod whose material is missing is reported
+//! invalid, never a hard failure. [`run_relay_cert_rotation`] re-issues leaves
+//! that are about to expire and re-derives their canvases so the new material
+//! ships as a new revision.
 
+use crate::config::OrchestrationConfig;
+use crate::entities::surreal::ca::{
+    FindInternalCa, ListRelayCertificatesByPods, ListRelayCertificatesExpiringBefore,
+};
 use crate::entities::surreal::canvas::CanvasId;
+use crate::entities::surreal::certificate::{ListCertificatesBySnis, TouchCanvases};
+use crate::entities::surreal::health::{
+    InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus,
+};
+use crate::entities::surreal::node::{ListCanvasesOfNodes, NodeId};
 use crate::entities::surreal::server::ServerId;
+use crate::entities::surreal::topology::CanvasTopology;
 use crate::entities::surreal::view::{
-    CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases, LoadCanvasDerivationInput,
-    ServerConfigViewEntity, ViewUpdate,
+    CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
+    LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
 use crate::events::CanvasDirty;
+use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
-use crate::services::derive::derive_server_config;
+use crate::services::derive::{
+    DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
+};
 use crate::utils::ids::{self, record_key};
-use chrono::Utc;
+use crate::utils::secret::SecretKey;
+use chrono::{DateTime, Utc};
+use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -36,6 +58,8 @@ const MAX_ATTEMPTS: usize = 8;
 #[derive(Clone)]
 pub struct CanvasDeriver {
     pub db: SurrealProcessor,
+    pub secrets: SecretKey,
+    pub config: OrchestrationConfig,
 }
 
 /// Derives one canvas. The typed input the AMQP consumer and the sweeper share.
@@ -81,6 +105,7 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
             if state.generation == state.derived_generation {
                 return Ok(());
             }
+            let certificates = self.certificates(&state.topology).await?;
 
             let mut server_of_ip: HashMap<String, ServerId> = HashMap::new();
             for ip in &state.topology.ips {
@@ -92,7 +117,9 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 .map(|view| (record_key(&view.server.0), view))
                 .collect();
 
+            let now = Utc::now();
             let mut updates = Vec::with_capacity(state.topology.servers.len());
+            let mut deploying = Vec::new();
             for server in &state.topology.servers {
                 let Some(view) = views_by_server.get(&record_key(&server.id.0)) else {
                     tracing::error!(
@@ -101,13 +128,20 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                     );
                     continue;
                 };
-                updates.push(derive_one(
+                let update = derive_one(
                     server.id.clone(),
                     view,
                     &state.topology,
                     &state.views,
                     &server_of_ip,
-                ));
+                    &certificates,
+                    &self.config,
+                    now,
+                );
+                if let Some(desired) = &update.desired {
+                    deploying_records(view.desired.as_ref(), desired, now, &mut deploying);
+                }
+                updates.push(update);
             }
 
             if self
@@ -119,6 +153,11 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 })
                 .await?
             {
+                // Status flips the moment a revision is published, not when the
+                // worker's next report happens to mention it.
+                self.db
+                    .process(InsertNodeHealthRecords { records: deploying })
+                    .await?;
                 return Ok(());
             }
             // The tree moved under us: derive the newer state right away rather
@@ -129,18 +168,71 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
     }
 }
 
+impl CanvasDeriver {
+    fn ca(&self) -> CaService {
+        CaService {
+            db: self.db.clone(),
+            secrets: self.secrets.clone(),
+            config: self.config.clone(),
+        }
+    }
+
+    /// The certificate state one tree derives against, after issuing the relay
+    /// leaves it is missing. An issuance failure is logged, not propagated: the
+    /// affected pods are reported invalid by the derivation and retried on the
+    /// next pass.
+    async fn certificates(
+        &self,
+        topology: &CanvasTopology,
+    ) -> Result<DerivationCertificates, wakuwaku::Error> {
+        let ca_present = self.db.process(FindInternalCa).await?.is_some();
+        let relay_pods = relay_tls_pods(topology);
+        if ca_present
+            && !relay_pods.is_empty()
+            && let Err(e) = self
+                .ca()
+                .process(EnsureRelayCertificates {
+                    pods: relay_pods.clone(),
+                })
+                .await
+        {
+            tracing::error!(error = %e, "issuing relay certificates failed; their pods stay invalid");
+        }
+        let acme = self
+            .db
+            .process(ListCertificatesBySnis {
+                snis: tls_snis(topology),
+            })
+            .await?;
+        let relay = self
+            .db
+            .process(ListRelayCertificatesByPods { pods: relay_pods })
+            .await?;
+        Ok(DerivationCertificates {
+            acme,
+            relay,
+            ca_present,
+            assume_issued: false,
+        })
+    }
+}
+
 /// One server's slot in a derivation pass.
 ///
 /// A pod that cannot be derived is reported in `invalid_pods` and costs only its
 /// own forwarding; `derive_error` is reserved for a failure of the whole server,
 /// which now means only a cross-pod one (two pods claiming a socket) or a broken
 /// stored snapshot.
+#[allow(clippy::too_many_arguments)]
 fn derive_one(
     server: ServerId,
     view: &ServerConfigViewEntity,
-    topology: &crate::entities::surreal::topology::CanvasTopology,
+    topology: &CanvasTopology,
     views: &[ServerConfigViewEntity],
     server_of_ip: &HashMap<String, ServerId>,
+    certificates: &DerivationCertificates,
+    config: &OrchestrationConfig,
+    now: DateTime<Utc>,
 ) -> ViewUpdate {
     let failed = |error: String| ViewUpdate {
         server: server.clone(),
@@ -151,7 +243,7 @@ fn derive_one(
         clear_failure: false,
     };
 
-    let ideal = match derive_server_config(topology, &server) {
+    let ideal = match derive_server_config(topology, &server, certificates, config) {
         Ok(ideal) => ideal,
         Err(e) => return failed(e.to_string()),
     };
@@ -167,10 +259,16 @@ fn derive_one(
         Err(e) => return failed(e.to_string()),
     };
 
-    if view.desired.as_ref().map(|s| s.toml.as_str()) == Some(toml.as_str()) {
-        // Byte-identical: no new revision, so the worker is never restarted for an
-        // edit that does not concern it. The pod report still has to land: a pod
-        // may have broken (or been fixed) without changing the served config.
+    // Byte-identical TOML pinning the same material: no new revision, so the
+    // worker is never restarted for an edit that does not concern it. A renewal
+    // changes only the pinned versions, and that alone is a new revision. The
+    // pod report still has to land either way: a pod may have broken (or been
+    // fixed) without changing the served config.
+    let unchanged = view
+        .desired
+        .as_ref()
+        .is_some_and(|s| s.toml == toml && s.certificates == converged.certificates);
+    if unchanged {
         return ViewUpdate {
             server,
             desired: None,
@@ -191,13 +289,59 @@ fn derive_one(
         desired: Some(ConfigSnapshot {
             revision,
             toml,
-            created_at: Utc::now(),
+            created_at: now,
             forwardings: converged.forwardings,
+            certificates: converged.certificates,
         }),
         derive_error: None,
         invalid_pods: converged.invalid,
         waiting_for: converged.waiting_for,
         clear_failure: true,
+    }
+}
+
+/// `Deploying` records for every pod whose `[[forwarding]]` entry in `next`
+/// differs from (or is absent in) `previous`, and for every node that entry was
+/// derived through. A renewal of pinned material counts too: the entry's bytes
+/// are the same, but the worker still has to swap the files.
+fn deploying_records(
+    previous: Option<&ConfigSnapshot>,
+    next: &ConfigSnapshot,
+    now: DateTime<Utc>,
+    out: &mut Vec<NewNodeHealthRecord>,
+) {
+    let Ok(next_config) = Config::from_toml_str(&next.toml) else {
+        return;
+    };
+    let old_entries: HashMap<String, (Forwarding, &[CertificateRef])> = previous
+        .and_then(|snapshot| {
+            let config = Config::from_toml_str(&snapshot.toml).ok()?;
+            Some(
+                config
+                    .forwardings
+                    .into_iter()
+                    .zip(&snapshot.forwardings)
+                    .map(|(f, deps)| (record_key(&deps.pod.0), (f, deps.certificates.as_slice())))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    for (forwarding, deps) in next_config.forwardings.iter().zip(&next.forwardings) {
+        let same = old_entries
+            .get(&record_key(&deps.pod.0))
+            .is_some_and(|(old, refs)| old == forwarding && *refs == deps.certificates);
+        if same {
+            continue;
+        }
+        let message = format!("revision {} published", next.revision);
+        for node in std::iter::once(&deps.pod).chain(&deps.nodes) {
+            out.push(NewNodeHealthRecord {
+                node: node.clone(),
+                status: NodeHealthStatus::Deploying,
+                message: message.clone(),
+                report_time: now,
+            });
+        }
     }
 }
 
@@ -226,4 +370,75 @@ pub async fn run_sweeper(deriver: CanvasDeriver, interval: Duration, shutdown: C
             }
         }
     }
+}
+
+/// Re-issues relay leaves expiring within `relay_cert_renew_before` and
+/// re-derives the canvases of their pods, so the rotated material ships as a
+/// new revision. Runs until `shutdown`.
+pub async fn run_relay_cert_rotation(
+    deriver: CanvasDeriver,
+    interval: Duration,
+    shutdown: CancellationToken,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = ticker.tick() => {}
+        }
+        if let Err(e) = rotate_expiring_relay_certificates(&deriver).await {
+            tracing::error!(error = %e, "relay certificate rotation failed");
+        }
+    }
+}
+
+/// One rotation pass: the cron's body, callable directly by tests.
+pub async fn rotate_expiring_relay_certificates(
+    deriver: &CanvasDeriver,
+) -> Result<(), wakuwaku::Error> {
+    let before = Utc::now()
+        .checked_add_signed(
+            chrono::Duration::from_std(deriver.config.relay_cert_renew_before())
+                .unwrap_or(chrono::TimeDelta::MAX),
+        )
+        .unwrap_or(DateTime::<Utc>::MAX_UTC);
+    let expiring = deriver
+        .db
+        .process(ListRelayCertificatesExpiringBefore { before })
+        .await?;
+    if expiring.is_empty() {
+        return Ok(());
+    }
+    let ca = deriver.ca();
+    let mut rotated: Vec<NodeId> = Vec::with_capacity(expiring.len());
+    for leaf in expiring {
+        match ca
+            .process(RotateRelayCertificate {
+                pod: leaf.pod.clone(),
+            })
+            .await
+        {
+            Ok(_) => rotated.push(leaf.pod),
+            Err(e) => {
+                tracing::error!(error = %e, pod = %record_key(&leaf.pod.0), "rotating a relay leaf failed")
+            }
+        }
+    }
+    let canvases = deriver
+        .db
+        .process(ListCanvasesOfNodes { nodes: rotated })
+        .await?;
+    deriver
+        .db
+        .process(TouchCanvases {
+            canvases: canvases.clone(),
+        })
+        .await?;
+    for canvas in canvases {
+        if let Err(e) = deriver.process(DeriveCanvas { canvas }).await {
+            tracing::error!(error = %e, "re-deriving a canvas after rotation failed");
+        }
+    }
+    Ok(())
 }
