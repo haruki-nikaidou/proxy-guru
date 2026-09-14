@@ -154,6 +154,8 @@
 	"editor_server_address_interfaces": "インターフェース",
 	"editor_server_delete": "サーバーを削除",
 	"editor_server_delete_description": "{name} とその {count} 個の Pod を削除します。このサーバーに接続する他サーバーのルールは、描き直すまで最後の設定を使い続けます。",
+	"editor_node_delete": "ノードを削除",
+	"editor_node_delete_description": "{name} と、それに接続されたすべてのエッジを削除します。",
 	"editor_pod_delete_title": "Pod を削除",
 	"editor_pod_delete_description": "{name} はポート {port} での待ち受けを止め、そのエッジも削除されます。",
 	"editor_pod_bind": "バインド",

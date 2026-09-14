@@ -154,6 +154,8 @@
 	"editor_server_address_interfaces": "Interfaces",
 	"editor_server_delete": "Delete server",
 	"editor_server_delete_description": "{name} and its {count} pods are deleted. Rules on other servers that dial it keep their last configuration until they are redrawn.",
+	"editor_node_delete": "Delete node",
+	"editor_node_delete_description": "{name} is removed together with every edge attached to it.",
 	"editor_pod_delete_title": "Delete pod",
 	"editor_pod_delete_description": "{name} stops listening on port {port}, and its edges are removed.",
 	"editor_pod_bind": "Bind",

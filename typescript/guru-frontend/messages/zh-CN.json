@@ -154,6 +154,8 @@
 	"editor_server_address_interfaces": "网卡地址",
 	"editor_server_delete": "删除服务器",
 	"editor_server_delete_description": "将删除 {name} 及其 {count} 个 Pod。其它服务器上指向它的规则会保持最后一次配置，直到重新绘制。",
+	"editor_node_delete": "删除节点",
+	"editor_node_delete_description": "将删除 {name} 及其所有连线。",
 	"editor_pod_delete_title": "删除 Pod",
 	"editor_pod_delete_description": "{name} 将停止监听端口 {port}，其连线也会被移除。",
 	"editor_pod_bind": "绑定地址",
