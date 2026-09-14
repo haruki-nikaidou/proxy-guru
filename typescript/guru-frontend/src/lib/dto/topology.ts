@@ -5,7 +5,9 @@ import type { CanvasOption, CanvasProblem } from '#lib/dto/canvas.js';
  * numeric enums become string unions and `int64` positions become numbers.
  */
 
-export type PortKindName = 'derive_listen' | 'derive_destination';
+export type PortKindName = 'derive_listen' | 'derive_destination' | 'bundle';
+/** The kinds an export node may mirror: bundles never cross a canvas boundary. */
+export type ExportPortKindName = 'derive_listen' | 'derive_destination';
 export type PortDirectionName = 'input' | 'output';
 export type ProxyProtocolName = 'none' | 'v1' | 'v2';
 export type RelayProtocolName = 'tcp_raw' | 'tcp_tls' | 'quic';
@@ -91,8 +93,41 @@ export type CanvasImportNodeDto = NodeBase & {
 /** One boundary port of the canvas it sits on, seen as a port on the importer. */
 export type CanvasExportNodeDto = NodeBase & {
 	kind: 'canvas_export';
-	portKind: PortKindName;
+	portKind: ExportPortKindName;
 	exportAs: CanvasExportAsName;
+};
+/** The handle groups a universal node offers instead of one-edge ports. */
+export type UniversalGroupName = 'channel_out' | 'bundle_in' | 'bundle_out';
+/**
+ * One channel: an entry pod connected to a universal distributor. `ordinal` is
+ * the position of its `chan:` port, handed out once per canvas tree and never
+ * reused, so `colorIndex` (ordinal modulo the palette) stays put when other
+ * channels come and go.
+ */
+export type ChannelDto = {
+	podId: string;
+	podName: string;
+	ordinal: number;
+	colorIndex: number;
+	distributorId: string;
+};
+/**
+ * Fans every channel connected to it over every universal pod it is bundled
+ * to. Its ports are created on demand and never edited: the canvas shows one
+ * handle per group.
+ */
+export type UniversalDistributeNodeDto = NodeBase & {
+	kind: 'universal_distribute';
+	balanceMode: LoadBalanceModeName;
+	protocol: RelayProtocolName;
+	/** The channels drawn into it, in ordinal order. */
+	channels: ChannelDto[];
+};
+/** One `chan:` input per channel its bundles carry, to be fed by an exit. */
+export type UniversalAggregateNodeDto = NodeBase & {
+	kind: 'universal_aggregate';
+	/** The channels it exposes, each with the `chan:` port that takes the exit. */
+	channels: (ChannelDto & { portId: string })[];
 };
 export type StandaloneNode =
 	| EntryNodeDto
@@ -100,7 +135,9 @@ export type StandaloneNode =
 	| ExitNodeDto
 	| LoadBalanceNodeDto
 	| CanvasImportNodeDto
-	| CanvasExportNodeDto;
+	| CanvasExportNodeDto
+	| UniversalDistributeNodeDto
+	| UniversalAggregateNodeDto;
 
 export type PodDto = {
 	id: string;
@@ -113,6 +150,32 @@ export type PodDto = {
 	/** `null` means the server's effective address. */
 	advertiseIp: string | null;
 	ports: CanvasPort[];
+};
+/**
+ * A generated pod on this server: one per channel per bundle landing here.
+ * Only its port and addresses are the operator's to edit; the row itself goes
+ * with the bundle that brought it.
+ */
+export type LaneDto = {
+	nodeId: string;
+	channel: ChannelDto;
+	/** The universal node the bundle came from: a distributor's name or a server's. */
+	sourceName: string;
+	serverId: string;
+	port: number;
+	bindIp: string | null;
+	advertiseIp: string | null;
+	/** `false` while the channel goes nowhere from this server (`CHANNEL_NO_EXIT`). */
+	hasExit: boolean;
+};
+/** The server's universal pod, drawn inside the server card. */
+export type UniversalPodDto = {
+	nodeId: string;
+	/** `bundle_in:<source>` ports, one per bundle drawn into it. */
+	bundleIn: CanvasPort[];
+	/** The fixed outgoing bundle port. */
+	bundleOut: CanvasPort | null;
+	lanes: LaneDto[];
 };
 /** One of the two fixed address slots of a server; empty strings mean unset. */
 export type AddressSlotDto = { reported: string; pinned: string };
@@ -149,6 +212,8 @@ export type ServerDto = {
 	healthStatus: ServerHealthStatusName;
 	addresses: ServerAddressesDto;
 	pods: PodDto[];
+	/** `null` only for a server created before universal pods existed. */
+	universal: UniversalPodDto | null;
 };
 
 /** One listener a forwarding either serves or points at, by its server. */
@@ -206,4 +271,6 @@ export type CanvasGraph = {
 	orphanPods: PodDto[];
 	/** Root first, parent last; empty when this canvas is a root. */
 	ancestors: CanvasOption[];
+	/** Every channel of the canvas, by entry pod id. */
+	channels: Record<string, ChannelDto>;
 };

@@ -13,6 +13,8 @@ import LoadBalanceForm from './LoadBalanceForm.svelte';
 import NodeDeleteButton from './NodeDeleteButton.svelte';
 import RelayForm from './RelayForm.svelte';
 import ServerForm from './ServerForm.svelte';
+import UniversalAggregateForm from './UniversalAggregateForm.svelte';
+import UniversalDistributeForm from './UniversalDistributeForm.svelte';
 
 let {
 	target = $bindable(null),
@@ -65,7 +67,11 @@ const kindLabel = $derived(
 								? node.mode === 'distribute'
 									? m.editor_kind_lb_distribute()
 									: m.editor_kind_lb_aggregate()
-								: ''
+								: node?.kind === 'universal_distribute'
+									? m.editor_kind_universal_distribute()
+									: node?.kind === 'universal_aggregate'
+										? m.editor_kind_universal_aggregate()
+										: ''
 );
 </script>
 
@@ -100,6 +106,10 @@ const kindLabel = $derived(
 			<CanvasImportForm {canvasId} {node} {editable} />
 		{:else if node?.kind === 'canvas_export'}
 			<CanvasExportForm {canvasId} {node} {editable} />
+		{:else if node?.kind === 'universal_distribute'}
+			<UniversalDistributeForm {canvasId} {node} {editable} />
+		{:else if node?.kind === 'universal_aggregate'}
+			<UniversalAggregateForm {node} graph={graph} />
 		{/if}
 		{#if node}
 			<NodeDeleteButton {canvasId} {node} {editable} />

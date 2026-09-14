@@ -2,6 +2,7 @@
 import ServerIcon from '@lucide/svelte/icons/server';
 import type { NodeProps } from '@xyflow/svelte';
 import {
+	channelColor,
 	portLabel,
 	serverHealthBadge,
 	serverHealthLabel,
@@ -10,12 +11,15 @@ import {
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
 
 // A server renders as one node containing all of its pods; pods are never placed
 // on the canvas themselves.
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'server' }> } = $props();
+
+const universal = $derived(data.server.universal);
 
 const ipv6 = $derived(
 	data.server.ipv6Resolve === 'required'
@@ -43,6 +47,9 @@ const silent = $derived(
 /** `[::]:port` for a wildcard bind, `[v6]:port` for a literal IPv6. */
 const listenOf = (bindIp: string | null, port: number): string =>
 	bindIp === null ? `[::]:${port}` : bindIp.includes(':') ? `[${bindIp}]:${port}` : `${bindIp}:${port}`;
+
+/** The channel an entry pod starts, if it is connected to a distributor. */
+const channelOf = (podId: string) => data.channels[podId];
 </script>
 
 <NodeShell
@@ -81,19 +88,65 @@ const listenOf = (bindIp: string | null, port: number): string =>
 			: ''}
 	</p>
 
+	{#if universal}
+		<!-- The universal pod: bundles in on the left, the one bundle out on the
+		     right, and a dot per channel landing here. -->
+		<div class="mt-2 border-t pt-1">
+			<p class="flex items-center gap-1 truncate px-3 text-xs font-medium">
+				{m.editor_universal_pod()}
+				{#each universal.lanes as lane (lane.nodeId)}
+					<span
+						class="size-2 shrink-0 rounded-full"
+						style="background: {channelColor(lane.channel)}"
+						title={lane.channel.podName}
+					></span>
+				{/each}
+				{#if universal.lanes.length > 0}
+					<span class="font-mono text-muted-foreground">{universal.lanes.length}</span>
+				{/if}
+			</p>
+			<div class="flex items-start justify-between">
+				<GroupHandle
+					flowId={id}
+					group="bundle_in"
+					label={m.editor_universal_bundle_in()}
+					side="left"
+					count={universal.bundleIn.length}
+				/>
+				<GroupHandle
+					flowId={id}
+					group="bundle_out"
+					label={m.editor_universal_bundle_out()}
+					side="right"
+					single
+				/>
+			</div>
+		</div>
+	{/if}
 	{#if data.server.pods.length === 0}
 		<p class="px-3 py-2 text-xs text-muted-foreground">{m.editor_pod_none()}</p>
 	{:else}
 		{#each data.server.pods as pod (pod.id)}
+			{@const channel = channelOf(pod.id)}
 			<div class="mt-2 border-t pt-1">
-				<p class="truncate px-3 text-xs font-medium">
-					{pod.name}
+				<p class="flex items-center gap-1 truncate px-3 text-xs font-medium">
+					{#if channel}
+						<span
+							class="size-2 shrink-0 rounded-full"
+							style="background: {channelColor(channel)}"
+						></span>
+					{/if}
+					<span class="truncate">{pod.name}</span>
 					<span class="font-mono text-muted-foreground">
 						{listenOf(pod.bindIp, pod.port)}
 					</span>
 				</p>
 				{#each pod.ports as port (port.id)}
-					<PortHandle {port} label={portLabel(port)} />
+					<PortHandle
+						{port}
+						label={portLabel(port)}
+						color={channel ? channelColor(channel) : undefined}
+					/>
 				{/each}
 			</div>
 		{/each}

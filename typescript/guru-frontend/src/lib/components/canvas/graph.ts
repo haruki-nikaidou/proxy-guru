@@ -4,6 +4,7 @@ import type {
 	CanvasGraph,
 	CanvasImportNodeDto,
 	CanvasPort,
+	ChannelDto,
 	EntryNodeDto,
 	ExitNodeDto,
 	LoadBalanceNodeDto,
@@ -11,7 +12,10 @@ import type {
 	PortKindName,
 	RelayNodeDto,
 	ServerDto,
-	ServerHealthStatusName
+	ServerHealthStatusName,
+	UniversalAggregateNodeDto,
+	UniversalDistributeNodeDto,
+	UniversalGroupName
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 
@@ -20,20 +24,60 @@ import { m } from '#lib/paraglide/messages.js';
 export type ProblemLevel = 'none' | 'warning' | 'error';
 
 export type FlowNodeData =
-	| { kind: 'server'; server: ServerDto; problem: ProblemLevel }
+	| {
+			kind: 'server';
+			server: ServerDto;
+			problem: ProblemLevel;
+			/** Entry pod id → its channel, for the pods on this server that start one. */
+			channels: Record<string, ChannelDto>;
+	  }
 	| { kind: 'entry'; node: EntryNodeDto; problem: ProblemLevel }
 	| { kind: 'relay'; node: RelayNodeDto; problem: ProblemLevel }
 	| { kind: 'exit'; node: ExitNodeDto; problem: ProblemLevel }
 	| { kind: 'load_balance'; node: LoadBalanceNodeDto; problem: ProblemLevel }
 	| { kind: 'canvas_import'; node: CanvasImportNodeDto; problem: ProblemLevel }
-	| { kind: 'canvas_export'; node: CanvasExportNodeDto; problem: ProblemLevel };
+	| { kind: 'canvas_export'; node: CanvasExportNodeDto; problem: ProblemLevel }
+	| { kind: 'universal_distribute'; node: UniversalDistributeNodeDto; problem: ProblemLevel }
+	| { kind: 'universal_aggregate'; node: UniversalAggregateNodeDto; problem: ProblemLevel };
 
 export type FlowNode = Node<FlowNodeData>;
+/**
+ * One connection endpoint: a port, or one of a universal node's handle groups.
+ * A group takes any number of edges unless `single` (a universal pod bundles
+ * out to one place).
+ */
 export type PortIndexEntry = {
 	flowNodeId: string;
 	kind: PortKindName;
 	direction: PortDirectionName;
+	group?: UniversalGroupName;
+	single?: boolean;
 };
+
+/** The edge data a bundle edge carries: how many channels ride on it. */
+export type BundleEdgeData = { count: number };
+
+/**
+ * A universal node's handle groups are Svelte Flow handles of their own, with
+ * ids no port can collide with; every port of the group maps onto the one
+ * handle. A universal pod's fixed `bundle_out` is a group of one.
+ */
+export const groupHandleId = (flowId: string, group: UniversalGroupName): string =>
+	`u:${flowId}:${group}`;
+
+export function parseGroupHandle(
+	handle: string
+): { flowId: string; group: UniversalGroupName } | null {
+	if (!handle.startsWith('u:')) return null;
+	const separator = handle.lastIndexOf(':');
+	const group = handle.slice(separator + 1);
+	if (group !== 'channel_out' && group !== 'bundle_in' && group !== 'bundle_out') return null;
+	return { flowId: handle.slice(2, separator), group };
+}
+
+/** The CSS colour of a channel; the palette wraps every 12 channels. */
+export const channelColor = (channel: Pick<ChannelDto, 'colorIndex'>): string =>
+	`var(--channel-${channel.colorIndex})`;
 
 /** Servers and nodes share one id space in Svelte Flow but not in the backend. */
 export const flowNodeId = (kind: 'server' | 'node', id: string): string => `${kind}:${id}`;
@@ -89,7 +133,17 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 		id: flowNodeId('server', server.id),
 		type: 'server',
 		position: { x: server.x, y: server.y },
-		data: { kind: 'server', server, problem: serverProblem(server, levels) }
+		data: {
+			kind: 'server',
+			server,
+			problem: serverProblem(server, levels),
+			channels: Object.fromEntries(
+				server.pods.flatMap(pod => {
+					const channel = graph.channels[pod.id];
+					return channel ? [[pod.id, channel] as const] : [];
+				})
+			)
+		}
 	}));
 
 	for (const node of graph.nodes) {
@@ -107,7 +161,11 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 								? 'canvasImport'
 								: node.kind === 'canvas_export'
 									? 'canvasExport'
-									: 'loadBalance',
+									: node.kind === 'universal_distribute'
+										? 'universalDistribute'
+										: node.kind === 'universal_aggregate'
+											? 'universalAggregate'
+											: 'loadBalance',
 			position: { x: node.x, y: node.y },
 			// The union is discriminated by the same `kind` the DTO carries.
 			data: { kind: node.kind, node, problem } as FlowNodeData
@@ -116,8 +174,26 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 	return nodes;
 }
 
+/**
+ * Port id → endpoint, plus one entry per universal handle group under its
+ * synthetic id. A port that belongs to a group (a bundle port, a distributor's
+ * `chan:` port) maps onto the group's entry, so an edge on it is drawn on the
+ * group's handle.
+ */
 export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> {
 	const index = new Map<string, PortIndexEntry>();
+	const group = (
+		owner: string,
+		name: UniversalGroupName,
+		kind: PortKindName,
+		single = false
+	): PortIndexEntry => ({
+		flowNodeId: owner,
+		kind,
+		direction: name === 'bundle_in' ? 'input' : 'output',
+		group: name,
+		single
+	});
 	for (const server of graph.servers) {
 		const owner = flowNodeId('server', server.id);
 		for (const pod of server.pods) {
@@ -125,9 +201,39 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 				index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
 			}
 		}
+		if (server.universal) {
+			const bundleIn = group(owner, 'bundle_in', 'bundle');
+			const bundleOut = group(owner, 'bundle_out', 'bundle', true);
+			index.set(groupHandleId(owner, 'bundle_in'), bundleIn);
+			index.set(groupHandleId(owner, 'bundle_out'), bundleOut);
+			for (const port of server.universal.bundleIn) index.set(port.id, bundleIn);
+			if (server.universal.bundleOut) index.set(server.universal.bundleOut.id, bundleOut);
+		}
 	}
 	for (const node of graph.nodes) {
 		const owner = flowNodeId('node', node.id);
+		if (node.kind === 'universal_distribute') {
+			const channelOut = group(owner, 'channel_out', 'derive_destination');
+			const bundleOut = group(owner, 'bundle_out', 'bundle');
+			index.set(groupHandleId(owner, 'channel_out'), channelOut);
+			index.set(groupHandleId(owner, 'bundle_out'), bundleOut);
+			for (const port of node.ports) {
+				if (port.kind === 'bundle') index.set(port.id, bundleOut);
+				else if (port.key.startsWith('chan:')) index.set(port.id, channelOut);
+			}
+			continue;
+		}
+		if (node.kind === 'universal_aggregate') {
+			const bundleIn = group(owner, 'bundle_in', 'bundle');
+			index.set(groupHandleId(owner, 'bundle_in'), bundleIn);
+			for (const port of node.ports) {
+				if (port.kind === 'bundle') index.set(port.id, bundleIn);
+				else if (port.key.startsWith('chan:')) {
+					index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
+				}
+			}
+			continue;
+		}
 		for (const port of node.ports) {
 			index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
 		}
@@ -135,22 +241,104 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 	return index;
 }
 
+/**
+ * The channel each pod-side port belongs to: an entry pod's own two ports and
+ * the aggregator's `chan:` port for it. Edges on these take the channel's
+ * colour, so one rule reads as one colour from entry to exit.
+ */
+function channelPorts(graph: CanvasGraph): Map<string, ChannelDto> {
+	const byPort = new Map<string, ChannelDto>();
+	for (const server of graph.servers) {
+		for (const pod of server.pods) {
+			const channel = graph.channels[pod.id];
+			if (!channel) continue;
+			for (const port of pod.ports) byPort.set(port.id, channel);
+		}
+	}
+	for (const node of graph.nodes) {
+		if (node.kind === 'universal_distribute') {
+			for (const port of node.ports) {
+				const channel = port.key.startsWith('chan:')
+					? graph.channels[port.key.slice('chan:'.length)]
+					: undefined;
+				if (channel) byPort.set(port.id, channel);
+			}
+		} else if (node.kind === 'universal_aggregate') {
+			for (const channel of node.channels) byPort.set(channel.portId, channel);
+		}
+	}
+	return byPort;
+}
+
+/**
+ * How many channels each bundle edge carries: a distributor's channels, carried
+ * along every bundle out of it and merged at every node bundles meet.
+ */
+function bundleCounts(graph: CanvasGraph, index: Map<string, PortIndexEntry>): Map<string, number> {
+	const carried = new Map<string, Set<string>>();
+	for (const node of graph.nodes) {
+		if (node.kind !== 'universal_distribute') continue;
+		carried.set(flowNodeId('node', node.id), new Set(node.channels.map(c => c.podId)));
+	}
+	const bundles = graph.edges.flatMap(edge => {
+		const source = index.get(edge.sourcePortId);
+		const target = index.get(edge.targetPortId);
+		return source?.kind === 'bundle' && target?.kind === 'bundle'
+			? [{ id: edge.id, from: source.flowNodeId, to: target.flowNodeId }]
+			: [];
+	});
+	// Bundles form a DAG (a cycle is a validation error); a few passes settle it.
+	for (let pass = 0; pass < 16; pass += 1) {
+		let changed = false;
+		for (const bundle of bundles) {
+			const upstream = carried.get(bundle.from);
+			if (!upstream) continue;
+			const downstream = carried.get(bundle.to) ?? new Set<string>();
+			const before = downstream.size;
+			for (const pod of upstream) downstream.add(pod);
+			carried.set(bundle.to, downstream);
+			changed ||= downstream.size !== before;
+		}
+		if (!changed) break;
+	}
+	return new Map(bundles.map(bundle => [bundle.id, carried.get(bundle.from)?.size ?? 0]));
+}
+
 export function buildFlowEdges(graph: CanvasGraph): Edge[] {
 	const index = buildPortIndex(graph);
+	const colours = channelPorts(graph);
+	const counts = bundleCounts(graph, index);
 	const edges: Edge[] = [];
 	for (const edge of graph.edges) {
 		const source = index.get(edge.sourcePortId);
 		const target = index.get(edge.targetPortId);
 		// A port outside this canvas cannot be drawn; the backend reports it too.
 		if (!source || !target) continue;
+		// An edge on a grouped port is drawn on the group's handle.
+		const handle = (entry: PortIndexEntry, portId: string) =>
+			entry.group ? groupHandleId(entry.flowNodeId, entry.group) : portId;
+		if (source.kind === 'bundle') {
+			edges.push({
+				id: edge.id,
+				type: 'bundle',
+				source: source.flowNodeId,
+				sourceHandle: handle(source, edge.sourcePortId),
+				target: target.flowNodeId,
+				targetHandle: handle(target, edge.targetPortId),
+				data: { count: counts.get(edge.id) ?? 0 } satisfies BundleEdgeData
+			});
+			continue;
+		}
+		const channel = colours.get(edge.sourcePortId) ?? colours.get(edge.targetPortId);
 		edges.push({
 			id: edge.id,
 			source: source.flowNodeId,
-			sourceHandle: edge.sourcePortId,
+			sourceHandle: handle(source, edge.sourcePortId),
 			target: target.flowNodeId,
-			targetHandle: edge.targetPortId,
-			style:
-				source.kind === 'derive_listen'
+			targetHandle: handle(target, edge.targetPortId),
+			style: channel
+				? `stroke: ${channelColor(channel)}; stroke-width: 2.5`
+				: source.kind === 'derive_listen'
 					? 'stroke: var(--canvas-port-listen); stroke-width: 2'
 					: 'stroke: var(--canvas-port-destination); stroke-width: 2'
 		});
@@ -256,7 +444,9 @@ export function reconcileFlowEdges(previous: Edge[], next: Edge[]): Edge[] {
 			old.target === edge.target &&
 			old.sourceHandle === edge.sourceHandle &&
 			old.targetHandle === edge.targetHandle &&
-			old.style === edge.style
+			old.style === edge.style &&
+			old.type === edge.type &&
+			sameJson(old.data ?? null, edge.data ?? null)
 		) {
 			return old;
 		}
@@ -292,7 +482,9 @@ export function connectedPortIds(graph: CanvasGraph, flowEdges: Edge[]): Set<str
  * Mirrors `check_edges` in the control plane so a doomed drag never round-trips:
  * both ports must be known, sit on different nodes, share a kind, run
  * output → input, and still be free — a second edge on either endpoint is what
- * the backend reports as `PortOversubscribed`.
+ * the backend reports as `PortOversubscribed`. A universal handle group takes
+ * any number of edges (a group of one aside), a distributor's channel output
+ * only lands on a pod's free `destination`, and bundles only join bundle groups.
  */
 export function canConnect(
 	connection: Edge | Connection,
@@ -308,8 +500,15 @@ export function canConnect(
 	if (connection.source === connection.target) return false;
 	if (source.kind !== target.kind) return false;
 	if (source.direction !== 'output' || target.direction !== 'input') return false;
+	if (source.group === 'channel_out') {
+		// Into a pod's destination, never into another universal node.
+		if (target.group || !target.flowNodeId.startsWith('server:')) return false;
+	}
+	if (source.kind === 'bundle' && (!source.group || !target.group)) return false;
 	const used = connectedPortIds(graph, flowEdges);
-	return !used.has(sourceHandle) && !used.has(targetHandle);
+	const sourceFree = source.group && !source.single ? true : !used.has(sourceHandle);
+	const targetFree = target.group ? true : !used.has(targetHandle);
+	return sourceFree && targetFree;
 }
 
 /**
@@ -369,6 +568,10 @@ export function buildBackendIndex(
 		};
 		index.set(server.id, entry);
 		for (const pod of server.pods) index.set(pod.id, entry);
+		if (server.universal) {
+			index.set(server.universal.nodeId, entry);
+			for (const lane of server.universal.lanes) index.set(lane.nodeId, entry);
+		}
 	}
 	for (const node of graph.nodes) {
 		index.set(node.id, {
@@ -380,7 +583,7 @@ export function buildBackendIndex(
 }
 
 /** Where suggested pod ports come from: the same high range the control plane
- * uses for a server's default transport pods. */
+ * draws generated landing pods from. */
 export const POD_PORT_RANGE: readonly [number, number] = [40000, 59999];
 
 /**

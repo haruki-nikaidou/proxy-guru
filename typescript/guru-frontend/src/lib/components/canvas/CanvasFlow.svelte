@@ -40,6 +40,7 @@ import {
 	keepNodes,
 	mergeTombstones,
 	parseFlowNodeId,
+	parseGroupHandle,
 	reconcileFlowEdges,
 	reconcileFlowNodes,
 	type FlowNode,
@@ -48,6 +49,7 @@ import {
 	type PanelTarget,
 	type Tombstones
 } from '#lib/components/canvas/graph.js';
+import BundleEdge from '#lib/components/canvas/edges/BundleEdge.svelte';
 import CanvasExportNode from '#lib/components/canvas/nodes/CanvasExportNode.svelte';
 import CanvasImportNode from '#lib/components/canvas/nodes/CanvasImportNode.svelte';
 import EntryNode from '#lib/components/canvas/nodes/EntryNode.svelte';
@@ -55,6 +57,8 @@ import ExitNode from '#lib/components/canvas/nodes/ExitNode.svelte';
 import LoadBalanceNode from '#lib/components/canvas/nodes/LoadBalanceNode.svelte';
 import RelayNode from '#lib/components/canvas/nodes/RelayNode.svelte';
 import ServerNode from '#lib/components/canvas/nodes/ServerNode.svelte';
+import UniversalAggregateNode from '#lib/components/canvas/nodes/UniversalAggregateNode.svelte';
+import UniversalDistributeNode from '#lib/components/canvas/nodes/UniversalDistributeNode.svelte';
 import AddExportDialog from '#lib/components/canvas/panels/AddExportDialog.svelte';
 import AddSubcanvasDialog from '#lib/components/canvas/panels/AddSubcanvasDialog.svelte';
 import ForceDeleteDialog from '#lib/components/canvas/panels/ForceDeleteDialog.svelte';
@@ -107,8 +111,12 @@ const nodeTypes = {
 	exit: ExitNode,
 	loadBalance: LoadBalanceNode,
 	canvasImport: CanvasImportNode,
-	canvasExport: CanvasExportNode
+	canvasExport: CanvasExportNode,
+	universalDistribute: UniversalDistributeNode,
+	universalAggregate: UniversalAggregateNode
 };
+
+const edgeTypes = { bundle: BundleEdge };
 
 // The node cards read this to ring the one the panel is editing.
 setFocusedNode({
@@ -198,7 +206,14 @@ async function addServer() {
  * clear of the names already on the canvas.
  */
 async function addNode(
-	kind: 'entry' | 'relay' | 'exit' | 'load_balance_distribute' | 'load_balance_aggregate',
+	kind:
+		| 'entry'
+		| 'relay'
+		| 'exit'
+		| 'load_balance_distribute'
+		| 'load_balance_aggregate'
+		| 'universal_distribute'
+		| 'universal_aggregate',
 	typeLabel: string
 ) {
 	const { x, y } = palettePosition();
@@ -302,12 +317,28 @@ const isValidConnection = (connection: Edge | Connection): boolean => {
 	return current ? canConnect(connection, portIndex, current, edges) : false;
 };
 
+/**
+ * A handle is either a port id or a universal node's group (`u:<flow>:<group>`);
+ * the control plane creates the port behind a group in the same write.
+ */
+function connectEnd(handle: string): { portId: string } | { nodeId: string; group: 'channel_out' | 'bundle_in' | 'bundle_out' } {
+	const group = parseGroupHandle(handle);
+	if (!group) return { portId: handle };
+	const { kind, id } = parseFlowNodeId(group.flowId);
+	// A server card's bundle handles belong to the universal pod drawn inside it.
+	const nodeId =
+		kind === 'server'
+			? (graph.current?.servers.find(server => server.id === id)?.universal?.nodeId ?? '')
+			: id;
+	return { nodeId, group: group.group };
+}
+
 async function connect(connection: Connection) {
 	try {
 		await connectNodePorts({
 			canvasId,
-			outputPortId: connection.sourceHandle ?? '',
-			inputPortId: connection.targetHandle ?? ''
+			output: connectEnd(connection.sourceHandle ?? ''),
+			input: connectEnd(connection.targetHandle ?? '')
 		});
 		toast.success(m.editor_connected());
 	} catch (err) {
@@ -470,6 +501,7 @@ $effect(() => {
 						bind:nodes
 						bind:edges
 						{nodeTypes}
+						{edgeTypes}
 						fitView
 						minZoom={0.2}
 						colorMode={mode.current ?? 'system'}
@@ -533,6 +565,22 @@ $effect(() => {
 									>
 										<PlusIcon />
 										{m.editor_add_lb_aggregate()}
+									</Button>
+									<Button
+										size="sm"
+										variant="secondary"
+										onclick={() => addNode('universal_distribute', m.editor_add_universal_distribute())}
+									>
+										<PlusIcon />
+										{m.editor_add_universal_distribute()}
+									</Button>
+									<Button
+										size="sm"
+										variant="secondary"
+										onclick={() => addNode('universal_aggregate', m.editor_add_universal_aggregate())}
+									>
+										<PlusIcon />
+										{m.editor_add_universal_aggregate()}
 									</Button>
 									<DropdownMenu.Root>
 										<DropdownMenu.Trigger>

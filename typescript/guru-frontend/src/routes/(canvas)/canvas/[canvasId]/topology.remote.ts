@@ -17,7 +17,8 @@ import {
 	ProblemSeverity,
 	ProxyProtocolVersion,
 	RelayProtocol,
-	ServerHealthStatus
+	ServerHealthStatus,
+	UniversalGroup
 } from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
 import type { CanvasOption } from '#lib/dto/canvas.js';
@@ -26,8 +27,11 @@ import type {
 	CanvasExportAsName,
 	CanvasGraph,
 	CanvasPort,
+	ChannelDto,
 	ConfigSnapshotDto,
+	ExportPortKindName,
 	Ipv6ResolveName,
+	LaneDto,
 	LoadBalanceModeName,
 	PodDto,
 	PortDirectionName,
@@ -40,7 +44,9 @@ import type {
 	ServerHealthStatusName,
 	ServerRolloutDto,
 	StandaloneNode,
-	TopologyProblem
+	TopologyProblem,
+	UniversalGroupName,
+	UniversalPodDto
 } from '#lib/dto/topology.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
@@ -230,7 +236,11 @@ function toServerHealth(value: ServerHealthStatus): ServerHealthStatusName {
 	}
 }
 const toPortKind = (value: PortKind): PortKindName =>
-	value === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination';
+	value === PortKind.DERIVE_LISTEN
+		? 'derive_listen'
+		: value === PortKind.BUNDLE
+			? 'bundle'
+			: 'derive_destination';
 const toPortDirection = (value: PortDirection): PortDirectionName =>
 	value === PortDirection.PORT_OUTPUT ? 'output' : 'input';
 
@@ -309,14 +319,23 @@ const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddress
 	reportedCountry: addresses?.reportedCountry ?? ''
 });
 
+/** The 12-colour channel palette: `--channel-0` … `--channel-11`. */
+const CHANNEL_COLORS = 12;
+
+/** The pod id a `chan:<pod>` / `lane:<pod>` port names, or `null`. */
+const channelOf = (key: string): string | null =>
+	key.startsWith('chan:') ? key.slice('chan:'.length) : null;
+
 /**
  * A standalone node, or `null` for a pod / an unsupported spec. `exportNames`
  * maps the export node ids of an import target to their names, which is what
- * the mirrored ports are keyed by.
+ * the mirrored ports are keyed by; `channels` resolves the `chan:` ports of a
+ * universal node.
  */
 function toStandalone(
 	node: ProtoNode,
-	exportNames: ReadonlyMap<string, string>
+	exportNames: ReadonlyMap<string, string>,
+	channels: ReadonlyMap<string, ChannelDto>
 ): StandaloneNode | null {
 	const spec = node.spec;
 	const base = {
@@ -392,17 +411,74 @@ function toStandalone(
 		return {
 			...base,
 			kind: 'canvas_export',
-			portKind: toPortKind(spec.canvasExport.kind),
+			portKind: spec.canvasExport.kind === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination',
 			exportAs:
 				spec.canvasExport.direction === CanvasExportAs.INPUT_INTO_CANVAS
 					? 'input_into_canvas'
 					: 'output_out_of_canvas'
 		};
 	}
+	if (spec?.universalDistribute) {
+		return {
+			...base,
+			kind: 'universal_distribute',
+			balanceMode: toBalanceMode(spec.universalDistribute.mode),
+			protocol: toRelayProtocol(spec.universalDistribute.protocol),
+			channels: base.ports
+				.flatMap(port => {
+					const pod = channelOf(port.key);
+					const channel = pod === null ? undefined : channels.get(pod);
+					return channel ? [channel] : [];
+				})
+				.sort((a, b) => a.ordinal - b.ordinal)
+		};
+	}
+	if (spec?.universalAggregate) {
+		return {
+			...base,
+			kind: 'universal_aggregate',
+			channels: base.ports
+				.flatMap(port => {
+					const pod = channelOf(port.key);
+					const channel = pod === null ? undefined : channels.get(pod);
+					return channel ? [{ ...channel, portId: port.id }] : [];
+				})
+				.sort((a, b) => a.ordinal - b.ordinal)
+		};
+	}
 	return null;
 }
 
-const toServer = (server: ProtoServer, pods: PodDto[]): ServerDto => ({
+/**
+ * The channels of a canvas: every `chan:` port of a distributor names the entry
+ * pod that is the channel; the port's position is the channel's ordinal.
+ */
+function collectChannels(nodes: ProtoNode[]): Map<string, ChannelDto> {
+	const names = new Map(nodes.map(node => [node.id, node.name]));
+	const channels = new Map<string, ChannelDto>();
+	for (const node of nodes) {
+		if (!node.spec?.universalDistribute) continue;
+		for (const port of node.ports) {
+			const podId = channelOf(port.key);
+			if (podId === null) continue;
+			const ordinal = Number(port.position);
+			channels.set(podId, {
+				podId,
+				podName: names.get(podId) ?? podId,
+				ordinal,
+				colorIndex: ((ordinal % CHANNEL_COLORS) + CHANNEL_COLORS) % CHANNEL_COLORS,
+				distributorId: node.id
+			});
+		}
+	}
+	return channels;
+}
+
+const toServer = (
+	server: ProtoServer,
+	pods: PodDto[],
+	universal: UniversalPodDto | null
+): ServerDto => ({
 	id: server.id,
 	name: server.name,
 	icon: server.icon,
@@ -414,7 +490,8 @@ const toServer = (server: ProtoServer, pods: PodDto[]): ServerDto => ({
 	lastSeenAt: server.lastSeenAt,
 	healthStatus: toServerHealth(server.healthStatus),
 	addresses: toAddresses(server.addresses),
-	pods
+	pods,
+	universal
 });
 
 export const getCanvasGraph = query(
@@ -462,10 +539,45 @@ export const getCanvasGraph = query(
 			})
 		);
 
+		const channels = collectChannels(detail.nodes);
+		const problems = validation.problems.map(toProblem);
+		// `CHANNEL_NO_EXIT` names the universal pod and the channel pod it warns
+		// about; a landing pod of that pair has no exit yet.
+		const noExit = new Set<string>();
+		for (const problem of problems) {
+			if (problem.kind !== 'CHANNEL_NO_EXIT') continue;
+			const [group, pod] = problem.nodeIds;
+			if (group && pod) noExit.add(`${group}:${pod}`);
+		}
+		const nodeNames = new Map(detail.nodes.map(node => [node.id, node.name]));
+		const serverNames = new Map(detail.servers.map(server => [server.id, server.name]));
+		// A lane's source is a distributor (named by its node) or a universal pod
+		// (named by its server).
+		const sourceName = (nodeId: string): string => {
+			const source = detail.nodes.find(node => node.id === nodeId);
+			const server = source?.spec?.universalPod?.serverId;
+			return (server ? serverNames.get(server) : undefined) ?? source?.name ?? nodeId;
+		};
+
 		const podsByServer = new Map<string, PodDto[]>();
+		const universalByServer = new Map<string, UniversalPodDto>();
 		const orphanPods: PodDto[] = [];
 		const nodes: StandaloneNode[] = [];
 		for (const node of detail.nodes) {
+			const universal = node.spec?.universalPod;
+			if (universal) {
+				const ports = toPorts(node, NO_LABELS);
+				universalByServer.set(universal.serverId, {
+					nodeId: node.id,
+					bundleIn: ports.filter(port => port.key.startsWith('bundle_in:')),
+					bundleOut: ports.find(port => port.key === 'bundle_out') ?? null,
+					lanes: []
+				});
+				continue;
+			}
+			// Generated lanes are not drawn: a landing pod is listed on its server,
+			// everything else lives behind the universal node that made it.
+			if (node.lane) continue;
 			const pod = node.spec?.pod;
 			if (pod) {
 				const dto = toPod(node, pod);
@@ -481,10 +593,36 @@ export const getCanvasGraph = query(
 			const target = node.spec?.canvasImport?.canvasId;
 			const standalone = toStandalone(
 				node,
-				(target === undefined ? undefined : exportNames.get(target)) ?? NO_LABELS
+				(target === undefined ? undefined : exportNames.get(target)) ?? NO_LABELS,
+				channels
 			);
 			if (standalone) nodes.push(standalone);
 		}
+		for (const node of detail.nodes) {
+			const lane = node.lane;
+			const pod = node.spec?.pod;
+			if (!lane || !pod) continue;
+			const universal = universalByServer.get(pod.serverId);
+			const channel = channels.get(lane.channelPodId);
+			if (!universal || !channel) continue;
+			const entry: LaneDto = {
+				nodeId: node.id,
+				channel,
+				sourceName: sourceName(lane.sourceNodeId),
+				serverId: pod.serverId,
+				port: pod.port,
+				bindIp: pod.bindIp === '' ? null : pod.bindIp,
+				advertiseIp: pod.advertiseIp === '' ? null : pod.advertiseIp,
+				hasExit: !noExit.has(`${lane.groupNodeId}:${lane.channelPodId}`)
+			};
+			universal.lanes.push(entry);
+		}
+		for (const universal of universalByServer.values()) {
+			universal.lanes.sort(
+				(a, b) => a.channel.ordinal - b.channel.ordinal || a.sourceName.localeCompare(b.sourceName)
+			);
+		}
+		void nodeNames;
 
 		return {
 			canvas: {
@@ -492,20 +630,27 @@ export const getCanvasGraph = query(
 				name: detail.canvas?.name ?? '',
 				description: detail.canvas?.description ?? ''
 			},
-			servers: detail.servers.map(server => toServer(server, podsByServer.get(server.id) ?? [])),
+			servers: detail.servers.map(server =>
+				toServer(
+					server,
+					podsByServer.get(server.id) ?? [],
+					universalByServer.get(server.id) ?? null
+				)
+			),
 			nodes,
 			edges: detail.edges.map(edge => ({
 				id: edge.id,
 				sourcePortId: edge.sourcePortId,
 				targetPortId: edge.targetPortId
 			})),
-			problems: validation.problems.map(toProblem),
+			problems,
 			orphanPods,
 			ancestors: detail.ancestors.map(canvas => ({
 				id: canvas.id,
 				name: canvas.name,
 				description: canvas.description
-			}))
+			})),
+			channels: Object.fromEntries(channels)
 		};
 	}
 );
@@ -611,7 +756,10 @@ export const deleteServerNode = command(
 		);
 		for (const node of detail.nodes) {
 			const pod = node.spec?.pod;
-			if (!pod || pod.serverId !== serverId) continue;
+			// A landing lane is not retirable by hand and the universal pod goes
+			// with the server: both are left to `DeleteServer`, which refuses with
+			// the channels still landing here.
+			if (!pod || pod.serverId !== serverId || node.lane) continue;
 			const nodeId = node.id;
 			await callGrpc(() =>
 				force
@@ -713,7 +861,9 @@ const standaloneKindSchema = v.picklist([
 	'relay',
 	'exit',
 	'load_balance_distribute',
-	'load_balance_aggregate'
+	'load_balance_aggregate',
+	'universal_distribute',
+	'universal_aggregate'
 ] as const);
 
 export const createStandaloneNode = command(
@@ -745,7 +895,16 @@ export const createStandaloneNode = command(
 						? { exit: { destination: '', passProxyProtocol: ProxyProtocolVersion.UNSPECIFIED } }
 						: kind === 'load_balance_distribute'
 							? { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN } }
-							: { loadBalanceAggregate: {} };
+							: kind === 'load_balance_aggregate'
+								? { loadBalanceAggregate: {} }
+								: kind === 'universal_distribute'
+									? {
+											universalDistribute: {
+												mode: LoadBalanceMode.ROUND_ROBIN,
+												protocol: RelayProtocol.RELAY_TCP_RAW
+											}
+										}
+									: { universalAggregate: {} };
 		const itemCount =
 			kind === 'load_balance_distribute' || kind === 'load_balance_aggregate' ? memberCount : 0;
 
@@ -763,7 +922,7 @@ export const createStandaloneNode = command(
 const portKindSchema = v.picklist(['derive_listen', 'derive_destination'] as const);
 const exportAsSchema = v.picklist(['input_into_canvas', 'output_out_of_canvas'] as const);
 
-const fromPortKind = (value: PortKindName): PortKind =>
+const fromPortKind = (value: ExportPortKindName): PortKind =>
 	value === 'derive_listen' ? PortKind.DERIVE_LISTEN : PortKind.DERIVE_DESTINATION;
 const fromExportAs = (value: CanvasExportAsName): CanvasExportAs =>
 	value === 'input_into_canvas'
@@ -1193,6 +1352,41 @@ export const replaceLoadBalanceSpec = command(
 	}
 );
 
+/**
+ * A distributor's mode and protocol apply to every channel at once. A protocol
+ * change re-rolls the ports of every landing pod its channels reach, since a
+ * listener cannot change protocol in place; the control plane does that in the
+ * same write.
+ */
+export const replaceUniversalDistributeSpec = command(
+	v.object({
+		canvasId: idSchema,
+		nodeId: idSchema,
+		balanceMode: balanceModeSchema,
+		protocol: relayProtocolSchema
+	}),
+	async ({ canvasId, nodeId, balanceMode, protocol }) => {
+		const metadata = sessionMetadata(requireSessionId());
+		await callGrpc(() =>
+			orchestrationClient().replaceNodeSpec(
+				{
+					nodeId,
+					spec: {
+						universalDistribute: {
+							mode: fromBalanceMode(balanceMode),
+							protocol: fromRelayProtocol(protocol)
+						}
+					},
+					itemCount: 0
+				},
+				{ metadata }
+			)
+		);
+		await getCanvasGraph({ canvasId }).refresh();
+		return { ok: true as const };
+	}
+);
+
 export const replacePodSpec = command(
 	v.object({
 		canvasId: idSchema,
@@ -1244,12 +1438,42 @@ export const deleteNode = command(
 	}
 );
 
+const universalGroupSchema = v.picklist(['channel_out', 'bundle_in', 'bundle_out'] as const);
+/** One end of a connect: a port id, or a universal node's handle group. */
+const connectEndSchema = v.union([
+	v.object({ portId: idSchema }),
+	v.object({ nodeId: idSchema, group: universalGroupSchema })
+]);
+const fromGroup = (value: UniversalGroupName): UniversalGroup =>
+	value === 'channel_out'
+		? UniversalGroup.CHANNEL_OUT
+		: value === 'bundle_in'
+			? UniversalGroup.BUNDLE_IN
+			: UniversalGroup.BUNDLE_OUT;
+
+/**
+ * Connects two ports, or a universal node's handle group to a port / another
+ * group: the port behind a group is created by the control plane in the same
+ * write as the edge and the lanes it calls for.
+ */
 export const connectNodePorts = command(
-	v.object({ canvasId: idSchema, outputPortId: idSchema, inputPortId: idSchema }),
-	async ({ canvasId, outputPortId, inputPortId }) => {
+	v.object({ canvasId: idSchema, output: connectEndSchema, input: connectEndSchema }),
+	async ({ canvasId, output, input }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
-			orchestrationClient().connectPorts({ outputPortId, inputPortId }, { metadata })
+			orchestrationClient().connectPorts(
+				{
+					outputPortId: 'portId' in output ? output.portId : '',
+					inputPortId: 'portId' in input ? input.portId : '',
+					outputHandle:
+						'portId' in output
+							? undefined
+							: { nodeId: output.nodeId, group: fromGroup(output.group) },
+					inputHandle:
+						'portId' in input ? undefined : { nodeId: input.nodeId, group: fromGroup(input.group) }
+				},
+				{ metadata }
+			)
 		);
 		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };

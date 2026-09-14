@@ -2,12 +2,14 @@
 import { Handle, Position, useNodeConnections } from '@xyflow/svelte';
 import type { CanvasPort } from '#lib/dto/topology.js';
 
-// The one place a Svelte Flow handle is created. Output ports are handles on the
-// left, input ports on the right, and the dot takes the port *kind*'s colour.
-let { port, label }: { port: CanvasPort; label: string } = $props();
+// The one place a one-edge Svelte Flow handle is created. Output ports are
+// handles on the left, input ports on the right, and the dot takes the port
+// *kind*'s colour — or the channel's, when the port belongs to one.
+let { port, label, color }: { port: CanvasPort; label: string; color?: string } = $props();
 
 const colour = $derived(
-	port.kind === 'derive_listen' ? 'var(--canvas-port-listen)' : 'var(--canvas-port-destination)'
+	color ??
+		(port.kind === 'derive_listen' ? 'var(--canvas-port-listen)' : 'var(--canvas-port-destination)')
 );
 const output = $derived(port.direction === 'output');
 

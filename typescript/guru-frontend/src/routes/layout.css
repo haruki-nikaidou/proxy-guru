@@ -47,9 +47,27 @@
 	--canvas-load-balance: oklch(0.9 0.04 303.86);
 	--canvas-import: oklch(0.9 0.04 220.62);
 	--canvas-export: oklch(0.9 0.04 130.41);
+	--canvas-universal: oklch(0.9 0.04 60);
 	/* Port colours are mode-independent: `.dark` deliberately does not repeat them. */
 	--canvas-port-listen: oklch(0.5 0.07 260.56);
 	--canvas-port-destination: oklch(0.5 0.07 90);
+	--canvas-bundle: oklch(0.55 0.02 60);
+	/*
+	 * The channel palette: one hue every 30°, chosen by a channel's ordinal.
+	 * Twelve steps is what stays distinguishable on a 2px line.
+	 */
+	--channel-0: oklch(0.55 0.16 0);
+	--channel-1: oklch(0.55 0.16 30);
+	--channel-2: oklch(0.55 0.16 60);
+	--channel-3: oklch(0.55 0.16 90);
+	--channel-4: oklch(0.55 0.16 120);
+	--channel-5: oklch(0.55 0.16 150);
+	--channel-6: oklch(0.55 0.16 180);
+	--channel-7: oklch(0.55 0.16 210);
+	--channel-8: oklch(0.55 0.16 240);
+	--channel-9: oklch(0.55 0.16 270);
+	--channel-10: oklch(0.55 0.16 300);
+	--channel-11: oklch(0.55 0.16 330);
 }
 
 .dark {
@@ -91,6 +109,20 @@
 	--canvas-load-balance: oklch(0.1 0.04 303.86);
 	--canvas-import: oklch(0.1 0.04 220.62);
 	--canvas-export: oklch(0.1 0.04 130.41);
+	--canvas-universal: oklch(0.12 0.04 60);
+	--canvas-bundle: oklch(0.7 0.02 60);
+	--channel-0: oklch(0.7 0.16 0);
+	--channel-1: oklch(0.7 0.16 30);
+	--channel-2: oklch(0.7 0.16 60);
+	--channel-3: oklch(0.7 0.16 90);
+	--channel-4: oklch(0.7 0.16 120);
+	--channel-5: oklch(0.7 0.16 150);
+	--channel-6: oklch(0.7 0.16 180);
+	--channel-7: oklch(0.7 0.16 210);
+	--channel-8: oklch(0.7 0.16 240);
+	--channel-9: oklch(0.7 0.16 270);
+	--channel-10: oklch(0.7 0.16 300);
+	--channel-11: oklch(0.7 0.16 330);
 }
 
 @theme inline {
@@ -133,6 +165,8 @@
 	--color-canvas-load-balance: var(--canvas-load-balance);
 	--color-canvas-import: var(--canvas-import);
 	--color-canvas-export: var(--canvas-export);
+	--color-canvas-universal: var(--canvas-universal);
+	--color-canvas-bundle: var(--canvas-bundle);
 	--color-canvas-port-listen: var(--canvas-port-listen);
 	--color-canvas-port-destination: var(--canvas-port-destination);
 	--radius-sm: calc(var(--radius) * 0.6);

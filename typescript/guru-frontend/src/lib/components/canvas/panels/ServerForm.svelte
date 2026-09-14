@@ -37,6 +37,7 @@ import { errorMessage } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
+import ServerLaneRow from './ServerLaneRow.svelte';
 import ServerPodRow from './ServerPodRow.svelte';
 
 let {
@@ -87,7 +88,12 @@ let newPodAdvertise = $state('');
 let newPodPort = $state('');
 
 const rerollPort = () => {
-	newPodPort = String(randomFreePort(server.pods.map(pod => pod.port)));
+	newPodPort = String(
+		randomFreePort([
+			...server.pods.map(pod => pod.port),
+			...(server.universal?.lanes ?? []).map(lane => lane.port)
+		])
+	);
 };
 
 let seededFor = $state('');
@@ -567,6 +573,21 @@ const forget = () =>
 		</Button>
 	</div>
 </div>
+
+{#if server.universal}
+	<Separator class="my-6" />
+	<h3 class="text-sm font-medium">{m.editor_lanes()}</h3>
+	<p class="mt-1 text-xs text-muted-foreground">{m.editor_lanes_hint()}</p>
+	{#if server.universal.lanes.length === 0}
+		<p class="mt-2 text-sm text-muted-foreground">{m.editor_lanes_none()}</p>
+	{:else}
+		<div class="mt-2 grid gap-3">
+			{#each server.universal.lanes as lane (lane.nodeId)}
+				<ServerLaneRow {canvasId} {lane} {editable} />
+			{/each}
+		</div>
+	{/if}
+{/if}
 
 <ConfirmDeleteDialog
 	bind:open={deleteOpen}

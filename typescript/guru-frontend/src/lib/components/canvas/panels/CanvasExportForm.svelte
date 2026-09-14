@@ -8,7 +8,7 @@ import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
-import type { CanvasExportAsName, CanvasExportNodeDto, PortKindName } from '#lib/dto/topology.js';
+import type { CanvasExportAsName, CanvasExportNodeDto, ExportPortKindName } from '#lib/dto/topology.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 
@@ -18,9 +18,9 @@ let {
 	editable
 }: { canvasId: string; node: CanvasExportNodeDto; editable: boolean } = $props();
 
-const KINDS: PortKindName[] = ['derive_listen', 'derive_destination'];
+const KINDS: ExportPortKindName[] = ['derive_listen', 'derive_destination'];
 const DIRECTIONS: CanvasExportAsName[] = ['input_into_canvas', 'output_out_of_canvas'];
-const kindLabel = (value: PortKindName): string =>
+const kindLabel = (value: ExportPortKindName): string =>
 	value === 'derive_listen' ? m.editor_port_listen() : m.editor_port_destination();
 const directionLabel = (value: CanvasExportAsName): string =>
 	value === 'input_into_canvas'
@@ -29,7 +29,7 @@ const directionLabel = (value: CanvasExportAsName): string =>
 
 let name = $state('');
 let comment = $state('');
-let portKind = $state<PortKindName>('derive_listen');
+let portKind = $state<ExportPortKindName>('derive_listen');
 let exportAs = $state<CanvasExportAsName>('input_into_canvas');
 let pending = $state(false);
 
@@ -83,7 +83,7 @@ async function save() {
 			type="single"
 			value={portKind}
 			disabled={!editable}
-			onValueChange={next => (portKind = next as PortKindName)}
+			onValueChange={next => (portKind = next as ExportPortKindName)}
 		>
 			<Select.Trigger id="export-kind">{kindLabel(portKind)}</Select.Trigger>
 			<Select.Content>
