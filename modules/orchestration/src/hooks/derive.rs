@@ -7,16 +7,23 @@
 //! generation, so a concurrent edit can never be overwritten by a stale pass — it
 //! just loses the race and the pass is redone.
 //!
-//! The message is a latency hint, not the contract: [`run_sweeper`] re-derives any
-//! canvas whose `generation` ran ahead of its `derived_generation`, so a dropped
-//! message, a broker outage or a crashed consumer costs at most one sweep interval.
+//! The message is a latency hint, not the contract: [`sweep_stale_canvases`]
+//! re-derives any canvas whose `generation` ran ahead of its
+//! `derived_generation`, so a dropped message, a broker outage or a crashed
+//! consumer costs at most one sweep interval.
+//!
+//! Neither periodic pass is an in-process loop any more. `--mode cron` publishes
+//! [`DeriveStaleCanvasesSignal`] and [`RotateRelayCertificatesSignal`] and this
+//! hook consumes them, so the work is spread over the consumer fleet and runs at
+//! most once per tick. The generation counters still carry correctness, so a
+//! lost or late signal costs latency, never a wrong config.
 //!
 //! Certificates are part of the input: a pass first issues the relay leaves its
 //! tree needs (when the internal CA exists), then derives against the ACME rows,
 //! relay leaves and CA it can see. A pod whose material is missing is reported
-//! invalid, never a hard failure. [`run_relay_cert_rotation`] re-issues leaves
-//! that are about to expire and re-derives their canvases so the new material
-//! ships as a new revision.
+//! invalid, never a hard failure. [`rotate_expiring_relay_certificates`]
+//! re-issues leaves that are about to expire and re-derives their canvases so
+//! the new material ships as a new revision.
 
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::ca::{
@@ -34,7 +41,8 @@ use crate::entities::surreal::view::{
     CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
-use crate::events::CanvasDirty;
+use crate::events::{CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertificatesSignal};
+use crate::hooks::schedule;
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
@@ -46,8 +54,6 @@ use chrono::{DateTime, Utc};
 use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
-use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 use wakuwaku::amqp::AmqpMessageProcessor;
 use wakuwaku::surreal::SurrealProcessor;
 
@@ -83,6 +89,55 @@ impl Processor<CanvasDirty> for CanvasDeriver {
             },
         )
         .await
+    }
+}
+
+impl AmqpMessageProcessor<DeriveStaleCanvasesSignal> for CanvasDeriver {
+    const QUEUE: &'static str = "guru_orchestration_derive_stale_canvases";
+}
+
+impl Processor<DeriveStaleCanvasesSignal> for CanvasDeriver {
+    type Output = ();
+    type Error = wakuwaku::Error;
+    #[tracing::instrument(name = "Hook:DeriveStaleCanvasesSignal", skip_all, err)]
+    async fn process(&self, input: DeriveStaleCanvasesSignal) -> Result<Self::Output, Self::Error> {
+        if !schedule::claim_run(
+            &self.db,
+            "derive_stale_canvases",
+            self.config.sweep_interval(),
+            input.tick_time(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+        sweep_stale_canvases(self).await
+    }
+}
+
+impl AmqpMessageProcessor<RotateRelayCertificatesSignal> for CanvasDeriver {
+    const QUEUE: &'static str = "guru_orchestration_rotate_relay_certificates";
+}
+
+impl Processor<RotateRelayCertificatesSignal> for CanvasDeriver {
+    type Output = ();
+    type Error = wakuwaku::Error;
+    #[tracing::instrument(name = "Hook:RotateRelayCertificatesSignal", skip_all, err)]
+    async fn process(
+        &self,
+        input: RotateRelayCertificatesSignal,
+    ) -> Result<Self::Output, Self::Error> {
+        if !schedule::claim_run(
+            &self.db,
+            "rotate_relay_certificates",
+            self.config.relay_rotation_interval(),
+            input.tick_time(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+        rotate_expiring_relay_certificates(self).await
     }
 }
 
@@ -345,55 +400,29 @@ fn deploying_records(
     }
 }
 
-/// Re-derives canvases whose edits outran their derivation, until `shutdown`.
+/// One sweep pass: re-derives every canvas whose edits outran its derivation.
 ///
-/// This is what makes the AMQP path optional: correctness lives in the generation
-/// counters, the message only shortens the delay.
-pub async fn run_sweeper(deriver: CanvasDeriver, interval: Duration, shutdown: CancellationToken) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return,
-            _ = ticker.tick() => {}
-        }
-        let canvases = match deriver.db.process(ListStaleCanvases).await {
-            Ok(canvases) => canvases,
-            Err(e) => {
-                tracing::error!(error = %e, "listing stale canvases failed");
-                continue;
-            }
-        };
-        for canvas in canvases {
-            if let Err(e) = deriver.process(DeriveCanvas { canvas }).await {
-                tracing::error!(error = %e, "sweeping a canvas failed");
-            }
+/// This is what makes the AMQP path optional: correctness lives in the
+/// generation counters, [`CanvasDirty`] only shortens the delay. A canvas that
+/// fails is logged and the pass continues; only a failure to list is returned,
+/// because then there is nothing to sweep.
+pub async fn sweep_stale_canvases(deriver: &CanvasDeriver) -> Result<(), wakuwaku::Error> {
+    let canvases = deriver.db.process(ListStaleCanvases).await?;
+    for canvas in canvases {
+        if let Err(e) = deriver.process(DeriveCanvas { canvas }).await {
+            tracing::error!(error = %e, "sweeping a canvas failed");
         }
     }
+    Ok(())
 }
 
-/// Re-issues relay leaves expiring within `relay_cert_renew_before` and
-/// re-derives the canvases of their pods, so the rotated material ships as a
-/// new revision. Runs until `shutdown`.
-pub async fn run_relay_cert_rotation(
-    deriver: CanvasDeriver,
-    interval: Duration,
-    shutdown: CancellationToken,
-) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return,
-            _ = ticker.tick() => {}
-        }
-        if let Err(e) = rotate_expiring_relay_certificates(&deriver).await {
-            tracing::error!(error = %e, "relay certificate rotation failed");
-        }
-    }
-}
-
-/// One rotation pass: the cron's body, callable directly by tests.
+/// One rotation pass: re-issues relay leaves expiring within
+/// `relay_cert_renew_before` and re-derives the canvases of their pods, so the
+/// rotated material ships as a new revision. Callable directly by tests.
+///
+/// A duplicate [`RotateRelayCertificatesSignal`] delivery cannot double-rotate a
+/// leaf: the write is conditional on the `version` the row was read at, so the
+/// second pass sees `None` and leaves the pod alone.
 pub async fn rotate_expiring_relay_certificates(
     deriver: &CanvasDeriver,
 ) -> Result<(), wakuwaku::Error> {
@@ -416,10 +445,14 @@ pub async fn rotate_expiring_relay_certificates(
         match ca
             .process(RotateRelayCertificate {
                 pod: leaf.pod.clone(),
+                expected_version: leaf.version,
             })
             .await
         {
-            Ok(_) => rotated.push(leaf.pod),
+            Ok(Some(_)) => rotated.push(leaf.pod),
+            Ok(None) => {
+                tracing::debug!(pod = %record_key(&leaf.pod.0), "relay leaf already rotated by another consumer")
+            }
             Err(e) => {
                 tracing::error!(error = %e, pod = %record_key(&leaf.pod.0), "rotating a relay leaf failed")
             }

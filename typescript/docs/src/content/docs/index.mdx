@@ -25,8 +25,8 @@ import { ContainerSection } from 'lucode-starlight/components';
 
 <CardGrid>
 	<Card title="Control plane" icon="setting">
-		`guru-master` serves the operator API, the worker API, the AMQP derivation hook and a cron
-		sweep — one binary, four modes.
+		`guru-master` serves the operator API, the worker API, the AMQP hooks that derive configs and
+		run every periodic job, and the clock that schedules them — one binary, four modes.
 	</Card>
 	<Card title="Data plane" icon="rocket">
 		`guru-worker` terminates listeners and forwards traffic, either from a local TOML file or by

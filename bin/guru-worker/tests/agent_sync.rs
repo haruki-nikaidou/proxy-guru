@@ -215,16 +215,31 @@ async fn serve(
         poller_token,
     ));
     // No broker in the test image: the sweep is the only derivation trigger, which
-    // is exactly the deployment the AMQP path is allowed to degrade to.
-    tokio::spawn(derive::run_sweeper(
-        CanvasDeriver {
-            db: db.clone(),
-            secrets,
-            config,
-        },
-        Duration::from_millis(50),
-        shutdown.clone(),
-    ));
+    // is exactly the deployment the AMQP path is allowed to degrade to. It stops
+    // with the master, so a test that restarts one never has two sweepers writing
+    // the same canvases.
+    let deriver = CanvasDeriver {
+        db: db.clone(),
+        secrets,
+        config,
+    };
+    let sweeper_token = shutdown.clone();
+    tokio::spawn(async move {
+        // `interval` with `Delay`, not a sleep after each pass: the tests wait on
+        // a real listener appearing, so the sweep has to keep a 50 ms period
+        // instead of 50 ms plus however long a pass took.
+        let mut ticker = tokio::time::interval(Duration::from_millis(50));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = sweeper_token.cancelled() => return,
+                _ = ticker.tick() => {}
+            }
+            if let Err(error) = derive::sweep_stale_canvases(&deriver).await {
+                tracing::debug!(%error, "the test sweeper failed a pass");
+            }
+        }
+    });
     Ok(addr)
 }
 

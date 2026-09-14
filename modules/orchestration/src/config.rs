@@ -45,6 +45,22 @@ pub struct OrchestrationConfig {
     pub relay_cert_valid_secs: u64,
     /// Rotate a relay leaf this long before `not_after`.
     pub relay_cert_renew_before_secs: u64,
+    /// How often the stale-canvas derivation sweep may run.
+    ///
+    /// This and the four cadences below gate the *execution* of a periodic job,
+    /// not its scheduling: the `cron` scheduler publishes each signal on a fixed
+    /// cadence (it opens no database), and the consumer claims a run only once
+    /// per interval. A value below the signal's own cadence therefore means
+    /// "every signal", and a larger one slows the job down fleet-wide.
+    pub sweep_interval_secs: u64,
+    /// How often silent servers are flipped to `Offline`.
+    pub liveness_interval_secs: u64,
+    /// How often health history is trimmed to its TTLs.
+    pub health_retention_interval_secs: u64,
+    /// How often ACME certificates are ensured, issued and renewed.
+    pub acme_interval_secs: u64,
+    /// How often expiring relay leaves are rotated.
+    pub relay_rotation_interval_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -60,6 +76,11 @@ impl Default for OrchestrationConfig {
             acme_retry_after_secs: 60 * 60,
             relay_cert_valid_secs: 30 * 24 * 60 * 60,
             relay_cert_renew_before_secs: 10 * 24 * 60 * 60,
+            sweep_interval_secs: 30,
+            liveness_interval_secs: 30,
+            health_retention_interval_secs: 300,
+            acme_interval_secs: 60,
+            relay_rotation_interval_secs: 3600,
         }
     }
 }
@@ -107,6 +128,26 @@ impl OrchestrationConfig {
 
     pub fn relay_cert_renew_before(&self) -> Duration {
         Duration::from_secs(self.relay_cert_renew_before_secs)
+    }
+
+    pub fn sweep_interval(&self) -> Duration {
+        Duration::from_secs(self.sweep_interval_secs)
+    }
+
+    pub fn liveness_interval(&self) -> Duration {
+        Duration::from_secs(self.liveness_interval_secs)
+    }
+
+    pub fn health_retention_interval(&self) -> Duration {
+        Duration::from_secs(self.health_retention_interval_secs)
+    }
+
+    pub fn acme_interval(&self) -> Duration {
+        Duration::from_secs(self.acme_interval_secs)
+    }
+
+    pub fn relay_rotation_interval(&self) -> Duration {
+        Duration::from_secs(self.relay_rotation_interval_secs)
     }
 
     /// The directory an Entry resolves to: its own, or the default when empty.

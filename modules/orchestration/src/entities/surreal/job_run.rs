@@ -1,0 +1,96 @@
+//! The last run of each periodic job: what makes an execution signal
+//! at-most-once per interval across every consumer.
+//!
+//! One row per job, the record key being the job name. A consumer that receives
+//! a periodic signal first tries to *claim* the run, and the claim fences on two
+//! things at once:
+//!
+//! - `last_signal_tick < tick` — the scheduling tick must be newer than the last
+//!   one that ran. A redelivered or backlogged message carries a tick that
+//!   already ran, so it is a no-op whatever the clock says.
+//! - `last_signal_tick <= tick_not_before` — the configured interval must have
+//!   elapsed *between the two ticks*. This is where the cadence an operator sets
+//!   takes effect: the publication cadence of a signal is a constant (the
+//!   scheduler reads no configuration), while the interval comes from
+//!   [`crate::config::OrchestrationConfig`].
+//!
+//! Both are needed. Without the tick fence a duplicate delivered after the
+//! interval — or any duplicate at all, once an operator sets the interval to
+//! zero — would run the pass twice; without the interval fence the configured
+//! cadence would have no effect.
+//!
+//! Both fences compare *ticks*, never the wall clock of the last run, and that
+//! is not cosmetic: `last_run_at` is stamped when a consumer gets round to the
+//! message, so measuring the interval from it would subtract the processing
+//! delay from every period and drop every other signal whenever the interval
+//! equals the publication cadence. `last_run_at` is recorded for operators, not
+//! for the fence.
+
+use chrono::{DateTime, Utc};
+use kanau::processor::Processor;
+use newtype_record_id::table_record;
+use surrealdb_types::SurrealValue;
+use wakuwaku::surreal::SurrealProcessor;
+
+table_record!(JobRunId, "orchestration_job_run");
+
+#[derive(Debug, Clone, SurrealValue)]
+pub struct JobRunEntity {
+    pub id: JobRunId,
+    pub last_run_at: DateTime<Utc>,
+    /// The scheduling tick of the signal that last ran this job.
+    pub last_signal_tick: DateTime<Utc>,
+}
+
+/// Claims the run of `job` for the signal published at `tick`: succeeds when the
+/// job has never run, or last ran for a tick that is both older than this one and
+/// at least the configured interval behind it. Stamps the tick and the wall clock
+/// so nobody else claims the same run.
+#[derive(Debug)]
+pub struct ClaimJobRun {
+    /// The job name; it is the record key.
+    pub job: &'static str,
+    /// When the claim is made; recorded for operators, never compared.
+    pub now: DateTime<Utc>,
+    /// The scheduling tick of the signal being handled.
+    pub tick: DateTime<Utc>,
+    /// `tick` minus the configured interval: the newest `last_signal_tick` that
+    /// may still be claimed over.
+    pub tick_not_before: DateTime<Utc>,
+}
+
+impl Processor<ClaimJobRun> for SurrealProcessor {
+    /// `true` when this caller owns the run.
+    type Output = bool;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query-Transaction:ClaimJobRun", skip_all, err, fields(job = %input.job))]
+    async fn process(&self, input: ClaimJobRun) -> Result<Self::Output, Self::Error> {
+        // Statement 0 is BEGIN, 1-2 the LETs; the RETURN is statement 3.
+        //
+        // `UPDATE` (not `UPDATE ONLY`) on purpose: the fence is the `WHERE`, and a
+        // refused claim has to come back as an empty result, not an error.
+        let mut resp = self
+            .db()
+            .query(
+                "BEGIN TRANSACTION;
+                 LET $id = type::record('orchestration_job_run', $job);
+                 LET $claimed = IF record::exists($id) {
+                     (UPDATE $id SET last_run_at = $now, last_signal_tick = $tick
+                         WHERE last_signal_tick < $tick
+                           AND last_signal_tick <= $tick_not_before
+                         RETURN AFTER)
+                 } ELSE {
+                     (CREATE $id CONTENT { last_run_at: $now, last_signal_tick: $tick }
+                         RETURN AFTER)
+                 };
+                 RETURN array::len($claimed) > 0;
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("job", input.job.to_string()))
+            .bind(("now", input.now))
+            .bind(("tick", input.tick))
+            .bind(("tick_not_before", input.tick_not_before))
+            .await?;
+        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
+    }
+}

@@ -166,8 +166,10 @@ async fn relay_leaves_are_issued_stable_and_rotated_when_expiring() -> TestResul
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
         not_after: Utc::now() + chrono::Duration::hours(1),
+        expected_version: None,
     })
-    .await?;
+    .await?
+    .expect("the unconditional store writes the row");
     let rotated =
         w.ca.process(EnsureRelayCertificates {
             pods: vec![pod.clone()],
@@ -585,8 +587,10 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
         not_after: Utc::now() + chrono::Duration::hours(1),
+        expected_version: None,
     })
-    .await?;
+    .await?
+    .expect("the unconditional store writes the row");
     rotate_expiring_relay_certificates(&w.deriver).await?;
     let rotated = leaf_of(&w, &f.osaka_hop.node.id).await;
     assert_eq!(rotated.version, 3);
@@ -757,5 +761,52 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
     .await?;
     w.derive(&f.canvas).await?;
     assert_eq!(history(&f.ingress.node.id).await?.len(), 1);
+    Ok(())
+}
+
+/// Two consumers handed the same rotation signal, or one handed a duplicate: the
+/// pass selects the expiring leaves without locking them, so only the version
+/// fence on the write keeps a leaf from being re-issued twice and shipping two
+/// revisions for the same rotation.
+#[tokio::test]
+async fn two_overlapping_rotation_passes_rotate_a_leaf_once() -> TestResult {
+    let w = world().await?;
+    w.ca.process(InitInternalCa).await?;
+    let pod = orchestration::utils::ids::node_id("pod_a");
+    let leaf =
+        w.ca.process(EnsureRelayCertificates {
+            pods: vec![pod.clone()],
+        })
+        .await?
+        .remove(0);
+    // Backdate it into the renewal window so both passes select it.
+    w.db.process(StoreRelayCertificate {
+        pod: pod.clone(),
+        sni: leaf.sni.clone(),
+        private_key_pem: leaf.private_key_pem.clone(),
+        certificate_pem: leaf.certificate_pem.clone(),
+        not_before: leaf.not_before,
+        not_after: Utc::now() + chrono::Duration::hours(1),
+        expected_version: None,
+    })
+    .await?
+    .expect("the unconditional store writes the row");
+    let before = leaf_of(&w, &pod).await;
+    assert_eq!(before.version, 2);
+
+    let (first, second) = tokio::join!(
+        rotate_expiring_relay_certificates(&w.deriver),
+        rotate_expiring_relay_certificates(&w.deriver)
+    );
+    first?;
+    second?;
+
+    let after = leaf_of(&w, &pod).await;
+    assert_eq!(
+        after.version, 3,
+        "one rotation across both passes, not one each"
+    );
+    assert_ne!(after.certificate_pem, before.certificate_pem);
+    assert!(after.not_after > Utc::now() + chrono::Duration::days(1));
     Ok(())
 }

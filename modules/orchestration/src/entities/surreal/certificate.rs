@@ -193,6 +193,13 @@ impl Processor<ListCertificatesByIds> for SurrealProcessor {
 /// rows whose `not_after` is before `renew_before` (throttled the same way after
 /// a failed renewal) or whose `last_attempt_at` was cleared by
 /// [`RetryCertificateRow`] (a forced renewal).
+///
+/// A `pending` row is listed on every pass — it has nothing to throttle on yet.
+/// What bounds its attempts is [`ClaimCertificateAttempt`], which the cron hook
+/// calls before every order: the claim stamps `last_attempt_at`, so the row is
+/// only retried once per `acme_retry_after` even though it stays listed. That is
+/// what keeps two consumers handed the same signal, or a pass that crashed
+/// mid-order, from hammering a rate-limited CA.
 #[derive(Debug)]
 pub struct ListCertificatesDue {
     pub renew_before: DateTime<Utc>,
@@ -220,6 +227,40 @@ impl Processor<ListCertificatesDue> for SurrealProcessor {
             .bind(("retry_before", input.retry_before))
             .await?;
         resp.take::<Vec<CertificateEntity>>(0)
+    }
+}
+
+/// Claims the next ACME attempt for one row: succeeds when `last_attempt_at` is
+/// unset or older than `claim_before`, stamping `now` so a second consumer
+/// handed the same pass cannot start a second order for the same certificate.
+///
+/// An order takes minutes, so the job-level run claim is not enough on its own:
+/// two passes can legitimately overlap, and this is what serialises them per
+/// certificate.
+#[derive(Debug)]
+pub struct ClaimCertificateAttempt {
+    pub id: CertificateId,
+    pub now: DateTime<Utc>,
+    pub claim_before: DateTime<Utc>,
+}
+
+impl Processor<ClaimCertificateAttempt> for SurrealProcessor {
+    type Output = bool;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:ClaimCertificateAttempt", skip_all, err, fields(certificate = ?input.id))]
+    async fn process(&self, input: ClaimCertificateAttempt) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "UPDATE $id SET last_attempt_at = $now
+                 WHERE last_attempt_at = NONE OR last_attempt_at < $claim_before
+                 RETURN AFTER",
+            )
+            .bind(("id", input.id))
+            .bind(("now", input.now))
+            .bind(("claim_before", input.claim_before))
+            .await?;
+        Ok(!resp.take::<Vec<CertificateEntity>>(0)?.is_empty())
     }
 }
 

@@ -17,34 +17,59 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--password` | `SURREALDB_PASSWORD` | `root` |
 | `--namespace` | `SURREALDB_NAMESPACE` | *required* |
 | `--database` | `SURREALDB_NAME` | *required* |
-| `--amqp-uri` | `AMQP_URI` | *required in `dashboard_grpc`, `workers_grpc`, `consumer`* |
-| `--sweep-interval-secs` | `GURU_SWEEP_INTERVAL_SECS` | `30` (must be ≥ 1) |
+| `--amqp-uri` | `AMQP_URI` | *required in every mode* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
-| — | `GURU_MASTER_KEY` | *required* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
-| `--acme-interval-secs` | `GURU_ACME_INTERVAL_SECS` | `60` (must be ≥ 1) |
+| — | `GURU_MASTER_KEY` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
 
 Everything else an operator can tune — health thresholds and retention, the default ACME directory,
-the renewal window — lives in the database, not in the environment. See
-[Module configuration](#module-configuration).
+the renewal window, how often each periodic job runs — lives in the database, not in the
+environment. See [Module configuration](#module-configuration).
 
 `--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer` and `cron`. A broker URI looks like
-`amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost.
+`amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost. The broker is
+required in **every** mode, `cron` included: periodic work is published as a message, so a broker
+outage stalls derivation, liveness and certificate renewal until the broker returns.
 
 `GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
-certificate and CA private keys — and is required in every mode. It is deliberately not a flag:
-argv is visible in process listings. Losing the key means re-entering every DNS provider token and
-re-issuing every certificate; changing it is not supported in place.
+certificate and CA private keys — and is required in the three modes that read one:
+`dashboard_grpc`, `workers_grpc` and `consumer`. `cron` never touches a secret and never reads the
+key. It is deliberately not a flag: argv is visible in process listings. Losing the key means
+re-entering every DNS provider token and re-issuing every certificate; changing it is not supported
+in place.
 
-The `cron` mode runs, besides the derivation sweep: the server liveness sweep (every 30 s — a server
-that has not reported for `health_report_interval_secs × health_offline_after_intervals` is
-`Offline`), health retention (every 5 min, deletes `server_health_record` / `node_health_record`
-rows older than `server_health_ttl_secs` / `node_health_ttl_secs`), ACME issuance and renewal (every
-`--acme-interval-secs`; renews `acme_renew_before_secs` before expiry, retries a failed attempt
-after `acme_retry_after_secs`), and relay-leaf rotation (hourly). A server is `Degraded` while it
-lags its desired revision for longer than `degraded_grace_secs` or while the last acknowledged
-revision failed for any pod. The named values are keys of the stored `orchestration` config, not
-flags.
+The database arguments are required in every mode, but in `cron` only as arguments: the scheduler
+parses `--namespace`/`--database` like every other mode and then opens no connection at all.
+
+### Scheduling versus executing
+
+`cron` is a clock and nothing else. It scans every 5 s, publishes one execution signal per due job,
+and opens no database connection. `consumer` binds one durable queue per signal and runs the pass,
+next to the `CanvasDirty` derivation hook — so periodic work scales, retries and fails over exactly
+like an edit does, and a job that hangs cannot stop the clock.
+
+| Routing key | Queue | Published every | Executed at most every | The pass |
+|---|---|---|---|---|
+| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 s | `sweep_interval_secs` (30) | Re-derives every canvas whose `generation` ran ahead of its `derived_generation` |
+| `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 s | `liveness_interval_secs` (30) | Marks a server `Offline` when it has not reported for `health_report_interval_secs × health_offline_after_intervals` |
+| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes `server_health_record` / `node_health_record` rows older than `server_health_ttl_secs` / `node_health_ttl_secs` |
+| `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs` (60) | ACME issuance and renewal: renews `acme_renew_before_secs` before expiry, retries a failed attempt after `acme_retry_after_secs` |
+| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs` (3600) | Re-issues relay leaves within `relay_cert_renew_before_secs` of expiry and re-derives their canvases |
+
+Two layers, and they are not the same number. The scheduler publishes on the fixed cadence in the
+middle column because it reads no configuration; the consumer claims each run — one
+`orchestration_job_run` row per job, compare-and-set, at most once per configured interval
+fleet-wide — before doing anything. The interval is measured between the *scheduling ticks* the
+signals carry, not between the moments a consumer got round to them, so a busy consumer does not
+silently stretch a cadence. An interval at or below the signal's cadence therefore means "every
+signal", a larger one slows the job down across the whole fleet, and a duplicate or replayed
+delivery is refused rather than run twice, because a tick that already ran can never be claimed
+again. The intervals are values on the stored `orchestration` key, so a change takes effect when
+the consumers restart, like everything else on that key.
+
+A server is `Degraded` while it lags its desired revision for longer than `degraded_grace_secs` or
+while the last acknowledged revision failed for any pod. The named values are keys of the stored
+`orchestration` config, not flags.
 
 ## `guru-worker`
 
@@ -257,7 +282,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs` |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs` |
 
 Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do
@@ -268,6 +293,15 @@ row:
 
 ```sh
 manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
+```
+
+The five `*_interval_secs` fields are how often a periodic job may actually run
+([Scheduling versus executing](#scheduling-versus-executing)). They live here rather than in the
+environment because the whole fleet has to agree on them: the claim that enforces an interval is
+one database row shared by every consumer.
+
+```sh
+manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
 `guru-master` reads both keys once, during startup, and hands the values to its services; there is

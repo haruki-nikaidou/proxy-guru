@@ -7,7 +7,7 @@ description: Crate roles, the Processor abstraction, and the layer rules every m
 
 | Crate | Role |
 |---|---|
-| `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP derivation hook), `cron` (stale-canvas sweep). |
+| `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP hooks — the derivation hook and every periodic job), `cron` (clock: publishes one execution signal per due periodic job). |
 | `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on `SIGHUP`) or in agent mode, streaming configs from the master. |
 | `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`. |
 | `lib/guru_worker_config` | The worker config model, shared by both planes. |
@@ -44,7 +44,7 @@ src/
 │   └── redis/    # Redis key/value types (rkyv-encoded)
 ├── services/     # business logic (stateful Processors)
 ├── events/       # AMQP payloads + routing
-├── hooks/        # background reactors (consumers, cron, loggers)
+├── hooks/        # background reactors (event consumers, periodic-signal consumers, loggers)
 └── rpc/          # gRPC service implementations (transport edge)
 ```
 
@@ -54,7 +54,7 @@ src/
 | A Redis-cached value or ephemeral token | `entities/redis` |
 | A use case that combines queries and rules | `services` |
 | A message other modules react to | `events` |
-| A reaction to an event / a cron job / an audit log | `hooks` |
+| A reaction to an event / a periodic job / an audit log | `hooks` |
 | A gRPC endpoint implementation | `rpc` |
 | A typed setting an operator can change | `config` |
 | A pure helper with no runtime deps | `utils` |
@@ -71,17 +71,24 @@ src/
 - **`services`:** `Clone` structs owning their dependencies, one `Processor` impl per operation,
   returning domain types — never protobuf types.
 - **`events`:** the payload plus `AmqpRouting` (`EXCHANGE`, `EXCHANGE_TYPE`, `ROUTING_KEY`) and
-  `AmqpMessageSend`. The only sanctioned asynchronous channel between modules.
-- **`hooks`:** AMQP consumers implement `AmqpMessageProcessor<E>` with a durable `QUEUE` name; also
-  the home of cron jobs and event loggers.
+  `AmqpMessageSend`. The only sanctioned asynchronous channel between modules — and the channel
+  periodic work travels on too: a due job is an execution signal like `sweep_liveness`, not a call.
+- **`hooks`:** AMQP consumers implement `AmqpMessageProcessor<E>` with a durable `QUEUE` name. A
+  periodic job is one of them: `cron` publishes its signal when it comes due and the hook claims
+  the run (one `orchestration_job_run` row, compare-and-set) before working, so delivery may be
+  duplicated and consumers may be replicated without the pass running twice. The scheduler opens no
+  database connection and reads no configuration; everything that decides *what* happens lives in
+  the consumer. The consequence is that the broker is mandatory in all four modes: with RabbitMQ
+  down, no derivation sweep, liveness sweep or certificate renewal happens until it is back.
 - **`rpc`:** thin adapters — decode request, call a service, encode reply. No business logic.
 - **Errors:** `wakuwaku::Error` at the service/hook boundary; `surrealdb::Error` inside
   `entities/surreal`, which converts with `?` at the service layer.
 - **Lints:** crate-level `deny(clippy::unwrap_used)`, `expect_used` and `panic`. No panics on the
   request path.
 - **Tracing:** `#[tracing::instrument(skip_all, err)]` with an explicit span `name` —
-  `Query:<Input>` (or `Query-Transaction:<Input>`) for entities, `Service:<Input>` for services.
-  gRPC handlers need none; the trait-method name already labels the span.
+  `Query:<Input>` (or `Query-Transaction:<Input>`) for entities, `Service:<Input>` for services,
+  `Hook:<Input>` for hook processors. gRPC handlers need none; the trait-method name already
+  labels the span.
 
 ## SurrealDB notes
 

@@ -9,15 +9,17 @@ per server, and streams every new revision to the workers that registered for it
 ```
 src/
 ├── lib.rs          # crate root: declares the modules below
-├── config.rs       # `OrchestrationConfig` (key `orchestration`): health, ACME and relay knobs
+├── config.rs       # `OrchestrationConfig` (key `orchestration`): health, ACME, relay
+│                   # and periodic-interval knobs
 ├── utils/          # ids (record id ↔ wire string), secret (master-key encryption)
 ├── entities/
 │   └── surreal/    # canvas, server, node, port, connection, view, topology,
 │                   # health, dns, certificate (ACME), ca (internal CA, relay leaves)
 ├── services/       # CRUD, topology rules, derivation, convergence, rollout, agent, watch, ca
-├── events/         # `CanvasDirty`, the derivation trigger
-├── hooks/          # derive.rs (consumer, sweep, relay leaf rotation), health.rs (liveness
-│                   # sweep, retention), acme.rs (issuance/renewal)
+├── events/         # `CanvasDirty` plus the five periodic execution signals
+├── hooks/          # schedule.rs (the `cron` clock and the run claim), derive.rs
+│                   # (derivation, stale-canvas sweep, relay leaf rotation),
+│                   # health.rs (liveness sweep, retention), acme.rs (issuance/renewal)
 └── rpc/            # the operator API and the worker API, plus refresh-key middleware
 ```
 
@@ -77,7 +79,7 @@ mutation ─► validate projected topology ─► write rows + bump canvas gene
                                                     publish CanvasDirty
                                                             │
        hooks::derive ─► derive + converge every server ─────┴─► desired snapshot
-                             (cron sweep re-derives anything the message missed)
+                       (derive_stale_canvases re-derives what the message missed)
                                                                         │
 worker: Register ─► WatchConfig (stream) ─► apply ─► AckConfig ─────────┘
 ```
@@ -86,8 +88,41 @@ Derivation is fenced by `orchestration_canvas.generation`: a pass derives at the
 generation it read and commits only while the canvas is still there, so a
 concurrent edit is never overwritten — the pass just loses and is redone. The
 `CanvasDirty` message is only latency: `generation > derived_generation` is what
-actually decides, and the cron sweep acts on it, so a broker outage costs delay
-and never correctness.
+actually decides, and the periodic `derive_stale_canvases` pass acts on it, so a
+dropped message costs delay and never correctness. That backstop is itself a
+message, so a broker outage stalls derivation until the broker returns; the
+generation counters make the catch-up automatic once it does.
+
+## Periodic jobs
+
+Nothing periodic runs in the process that schedules it. `--mode cron` holds one
+`hooks::schedule::IntervalJob` per signal type — its own last-fire timestamp, so
+a 30 s job and an hourly one do not flatten each other — and publishes the due
+ones. It reads no configuration and opens no database connection. `--mode
+consumer` binds one durable queue per signal and runs the pass:
+
+| Signal / routing key | Queue | Hook | Interval |
+|---|---|---|---|
+| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | `hooks::derive::CanvasDeriver` | `sweep_interval()` |
+| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | `hooks::derive::CanvasDeriver` | `relay_rotation_interval()` |
+| `sweep_liveness` | `guru_orchestration_sweep_liveness` | `hooks::health::HealthCronHook` | `liveness_interval()` |
+| `trim_health_history` | `guru_orchestration_trim_health_history` | `hooks::health::HealthCronHook` | `health_retention_interval()` |
+| `renew_certificates` | `guru_orchestration_renew_certificates` | `hooks::acme::AcmeCronHook` | `acme_interval()` |
+
+Delivery is at-least-once and consumers are replicated, so every hook calls
+`hooks::schedule::claim_run` first: a compare-and-set on one
+`orchestration_job_run` row per job. Whoever wins runs the pass, everybody else
+returns having touched nothing, and a job cannot run twice for the same tick nor
+more often than its configured interval. That is why the publication cadence is
+a constant and the interval is configuration: the constant is a floor the
+scheduler can honour without reading the database, the interval is what an
+operator actually sees.
+
+A pass that iterates rows claims them individually as well, so two consumers
+working the same backlog do not collide: ACME claims each certificate attempt
+(`ClaimCertificateAttempt`) and relay rotation writes each leaf against the
+version it read (`RotateRelayCertificate`, `None` when another consumer got
+there first).
 
 ## Seamless switching
 
@@ -132,10 +167,10 @@ row (byte and connection deltas, status `Online`/`Degraded`) and one
 revision, and `Failed`/`Ready` rows the moment an ack lands, so status never
 waits for the next report. Every write is one transaction fenced on the
 server's `refresh_key_generation`, like the rest of the agent path. The stream
-closing marks the server `Offline`; `hooks::health::run_liveness_sweep` catches a
-worker that vanished without closing (no report for
-`health_report_interval × health_offline_after_intervals`), and
-`run_health_retention` trims both tables to their TTLs. The current status is
+closing marks the server `Offline`; `hooks::health::HealthCronHook` catches a
+worker that vanished without closing on the `sweep_liveness` signal (no report
+for `health_report_interval × health_offline_after_intervals`) and trims both
+tables to their TTLs on `trim_health_history`. The current status is
 denormalised on `orchestration_server.health_status` for listings.
 
 ## Certificates
@@ -164,9 +199,9 @@ the renewal produced follows right behind it.
 The internal CA is created once by `manage-tool orchestration init-ca`
 (`CaService` / `InitInternalCa`, which also touches every tree with a TLS/QUIC
 relay). The derivation hook issues relay leaves before deriving
-(`EnsureRelayCertificates`, SAN `<pod-key>.relay.guru.internal`), and
-`run_relay_cert_rotation` re-issues leaves within `relay_cert_renew_before` of
-expiry and re-derives their canvases.
+(`EnsureRelayCertificates`, SAN `<pod-key>.relay.guru.internal`), and on the
+`rotate_relay_certificates` signal `hooks::derive::CanvasDeriver` re-issues
+leaves within `relay_cert_renew_before` of expiry and re-derives their canvases.
 
 ## Dependency direction
 
