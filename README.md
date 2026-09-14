@@ -8,7 +8,7 @@ up every new revision automatically.
 
 | Crate | Role |
 |---|---|
-| `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP derivation hook), `cron` (stale-canvas sweep). |
+| `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP hooks — derivation and every periodic job), `cron` (clock: publishes one execution signal per due job). |
 | `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on SIGHUP) or in agent mode, streaming configs from the master. |
 | `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`. |
 | `lib/guru_worker_config` | The worker config model, shared by both planes: the master derives it, the worker consumes it. |
@@ -28,12 +28,19 @@ ends.
 ## Rollout model
 
 Mutations bump the canvas generation and publish `CanvasDirty`; the derivation
-hook re-derives the whole canvas (a cron sweep catches anything a lost message
-missed). Every server has one config view holding three snapshots — `desired`,
-`in_flight`, `applied`. A worker stream promotes `desired` → `in_flight`, and
-its `AckConfig` promotes `in_flight` → `applied`. Derivation is convergent: a
-server only switches destination once the target actually serves it, so no
-revision drops traffic mid-rollout.
+hook re-derives the whole canvas. A lost message is caught by the periodic
+`derive_stale_canvases` signal, which the same hook consumes. Every server has
+one config view holding three snapshots — `desired`, `in_flight`, `applied`. A
+worker stream promotes `desired` → `in_flight`, and its `AckConfig` promotes
+`in_flight` → `applied`. Derivation is convergent: a server only switches
+destination once the target actually serves it, so no revision drops traffic
+mid-rollout.
+
+Periodic work is scheduled and executed by different processes. `cron` is a
+clock: it opens no database connection and only publishes `derive_stale_canvases`,
+`rotate_relay_certificates`, `sweep_liveness`, `trim_health_history` and
+`renew_certificates` when they come due. `consumer` runs them, claiming each run
+at most once fleet-wide, so periodic work scales and fails over like an edit.
 
 ## Releases
 
@@ -56,8 +63,9 @@ docker build -f frontend.Dockerfile -t guru-frontend .
 
 `guru-master` is configured entirely through the environment (`GURU_WORKER_MODE`
 selects the mode; `SURREALDB_NAMESPACE`, `SURREALDB_NAME` and `AMQP_URI` have no
-defaults). The frontend listens on `:3000` and reaches the control plane through
-`GURU_GRPC_URL`.
+defaults). The broker is required in every mode — periodic work is a message, so
+a broker outage stalls derivation, liveness and renewal until it returns. The
+frontend listens on `:3000` and reaches the control plane through `GURU_GRPC_URL`.
 
 ## Documentation
 

@@ -61,6 +61,18 @@ cargo run -p manage-tool -- \
 
 ## 4. Control plane
 
+Every mode that touches the database decrypts secrets with `GURU_MASTER_KEY`, and it has no
+default: without it the process aborts at startup with
+`Error: "master key: GURU_MASTER_KEY is not set"`. Generate one once — the subcommand needs no
+database — and keep it in the shell you start the masters from:
+
+```sh
+cargo run -p manage-tool -- generate-master-key
+# j7ILadgGjBy+jYMIJuiPBl5eai65t7G8G4XimNcyLpU=
+
+export GURU_MASTER_KEY='<the printed value>'
+```
+
 Each mode is a separate process. The operator API the dashboard talks to is `dashboard_grpc`:
 
 ```sh
@@ -71,8 +83,39 @@ cargo run -p guru-master -- \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
 ```
 
-Swap `--mode` for `workers_grpc`, `consumer` or `cron` to run the other workers; `consumer` is what
-re-derives configs after a canvas edit.
+Nothing derives a canvas until a `consumer` runs, so start one in a second shell — it is both the
+edit hook and the executor of every periodic job (the stale-canvas sweep, the liveness sweep,
+health retention, ACME and relay-leaf rotation):
+
+```sh
+cargo run -p guru-master -- \
+  --mode consumer \
+  --address ws://127.0.0.1:8000 --username root --password root \
+  --namespace guru --database guru \
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+```
+
+In a third shell, the clock. `cron` publishes one execution signal per due job and nothing else:
+it opens no database connection and never reads `GURU_MASTER_KEY`, so leaving it out of this one
+command is not an oversight. The database arguments are still parsed, so they still have to be
+there:
+
+```sh
+env -u GURU_MASTER_KEY cargo run -p guru-master -- \
+  --mode cron \
+  --address ws://127.0.0.1:8000 --username root --password root \
+  --namespace guru --database guru \
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+```
+
+`workers_grpc` is the fourth mode — the worker API plus the config-view poller — and takes exactly
+the same arguments as `dashboard_grpc`. Every mode needs the broker: with RabbitMQ down, nothing
+starts, and with `cron` or the `consumer` down, no periodic job happens.
+
+To make a periodic job run without waiting for its interval, delete its claim row — the table is
+`orchestration_job_run`, one row per job keyed by the job name, so
+`DELETE orchestration_job_run:sweep_liveness` makes the next `sweep_liveness` signal the one that
+runs.
 
 ## 5. Dashboard
 

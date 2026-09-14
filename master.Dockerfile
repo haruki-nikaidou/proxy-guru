@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1.7
 #
 # `bin/guru-master` — the control plane. One image, four run modes selected with
-# `GURU_WORKER_MODE` (dashboard_grpc | workers_grpc | consumer | cron).
+# `GURU_WORKER_MODE` (dashboard_grpc | workers_grpc | consumer | cron). `cron` is
+# only a clock: it publishes one execution signal per due periodic job, opens no
+# database connection and reads no GURU_MASTER_KEY. `consumer` is what runs the
+# derivation hook and every periodic job.
 #
 # Build from the repository root:
 #   docker build -f master.Dockerfile -t guru-master .
@@ -33,7 +36,9 @@ FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 COPY --from=builder /guru-master /usr/local/bin/guru-master
 
 # Required at run time, no sane default: SURREALDB_NAMESPACE, SURREALDB_NAME,
-# and AMQP_URI (every mode except `cron` talks to the broker).
+# and AMQP_URI. The broker is required in *every* mode — periodic work is a
+# message, so a broker outage stalls derivation, liveness and renewal until it
+# returns.
 ENV GURU_WORKER_MODE="dashboard_grpc"
 ENV GURU_DASHBOARD_GRPC_ADDR="0.0.0.0:50051"
 ENV GURU_WORKERS_GRPC_ADDR="0.0.0.0:50052"

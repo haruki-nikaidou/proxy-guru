@@ -15,6 +15,7 @@ use orchestration::entities::surreal::certificate::{
 };
 use orchestration::entities::surreal::dns::{DnsProvider, FindDnsProviderById};
 use orchestration::entities::surreal::node::{DeleteNodeRow, EntryConfig, NodeSpec, TlsConfig};
+use orchestration::hooks::acme::renew_due;
 use orchestration::services::OrchestrationError;
 use orchestration::services::acme::{
     AcmeError, AcmeIssuer, AcmeService, BoxFuture, DeleteCertificate, EnsureRequestedCertificates,
@@ -785,5 +786,42 @@ async fn issue_certificate_records_a_failure_without_touching_anything() -> Test
         matches!(missing, OrchestrationError::NotFound),
         "{missing:?}"
     );
+    Ok(())
+}
+
+/// The job claim cannot protect the ACME pass on its own: an order takes minutes
+/// and the interval is a minute, so a second signal legitimately claims a run
+/// while the first pass is still working. The per-row claim is what keeps a
+/// rate-limited CA from being handed two orders for one certificate.
+#[tokio::test]
+async fn two_overlapping_renewal_passes_order_one_certificate_per_row() -> TestResult {
+    let w = world().await?;
+    let provider = create_provider(&w, "cf", "cf-token").await;
+    let c = canvas(&w.db, "prod").await?;
+    node(
+        &w.db,
+        &c,
+        "edge",
+        entry_spec(&provider, "a.example.com", DIRECTORY),
+        entry_ports(),
+    )
+    .await?;
+    let issuer = Arc::new(FakeIssuer {
+        seen: Mutex::new(Vec::new()),
+        fail_with: None,
+    });
+    let acme = with_issuer(&w, issuer.clone());
+
+    tokio::join!(renew_due(&acme), renew_due(&acme));
+
+    let seen = issuer.seen.lock().await;
+    assert_eq!(
+        seen.len(),
+        1,
+        "one order for the one certificate that was due: {seen:?}"
+    );
+    let rows = acme.process(ListCertificates { actor: operator() }).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, CertificateStatus::Issued);
     Ok(())
 }

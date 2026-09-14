@@ -117,6 +117,14 @@ pub struct RelayCertificateEntity {
 }
 
 /// Creates the leaf for a pod, or replaces it and bumps `version` (rotation).
+///
+/// `expected_version` fences the rotation path: duplicate delivery of the
+/// rotation signal hands two consumers the same expiring leaf, and only the one
+/// whose read is still current may ship a new revision. With `Some(v)` the write
+/// lands only while the pod's leaf is still at `version = v` — a lost race (and
+/// a leaf that has since been deleted) writes nothing and returns `None`. With
+/// `None` the write is unconditional: that is the issuance path, which has no
+/// prior version to fence against and must create the row when it is missing.
 #[derive(Debug)]
 pub struct StoreRelayCertificate {
     pub pod: NodeId,
@@ -125,31 +133,39 @@ pub struct StoreRelayCertificate {
     pub certificate_pem: String,
     pub not_before: DateTime<Utc>,
     pub not_after: DateTime<Utc>,
+    pub expected_version: Option<i64>,
 }
 
 impl Processor<StoreRelayCertificate> for SurrealProcessor {
-    type Output = RelayCertificateEntity;
+    /// `None` when the compare-and-set lost.
+    type Output = Option<RelayCertificateEntity>;
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:StoreRelayCertificate", skip_all, err)]
     async fn process(&self, input: StoreRelayCertificate) -> Result<Self::Output, Self::Error> {
         // Statement 0 is BEGIN, 1-2 the LETs; the RETURN is statement 3.
+        // The UPDATE returns an array indexed with [0] because `UPDATE ONLY`
+        // errors when the WHERE fences the write out, which is a lost race and
+        // not a failure.
         let mut resp = self
             .db()
             .query(
                 "BEGIN TRANSACTION;
                  LET $existing = (SELECT VALUE id FROM relay_certificate WHERE pod = $pod LIMIT 1)[0];
                  LET $row = IF $existing = NONE {
-                     CREATE ONLY relay_certificate CONTENT {
-                         pod: $pod, sni: $sni, private_key_pem: $private_key_pem,
-                         certificate_pem: $certificate_pem, not_before: $not_before,
-                         not_after: $not_after, version: 1
+                     IF $expected_version = NONE {
+                         CREATE ONLY relay_certificate CONTENT {
+                             pod: $pod, sni: $sni, private_key_pem: $private_key_pem,
+                             certificate_pem: $certificate_pem, not_before: $not_before,
+                             not_after: $not_after, version: 1
+                         }
                      }
                  } ELSE {
-                     UPDATE ONLY $existing SET
+                     (UPDATE $existing SET
                          sni = $sni, private_key_pem = $private_key_pem,
                          certificate_pem = $certificate_pem, not_before = $not_before,
                          not_after = $not_after, version += 1
-                     RETURN AFTER
+                     WHERE $expected_version = NONE OR version = $expected_version
+                     RETURN AFTER)[0]
                  };
                  RETURN $row;
                  COMMIT TRANSACTION;",
@@ -160,11 +176,9 @@ impl Processor<StoreRelayCertificate> for SurrealProcessor {
             .bind(("certificate_pem", input.certificate_pem))
             .bind(("not_before", input.not_before))
             .bind(("not_after", input.not_after))
+            .bind(("expected_version", input.expected_version))
             .await?;
-        resp.take::<Option<RelayCertificateEntity>>(3)?
-            .ok_or_else(|| {
-                surrealdb::Error::internal("relay certificate row was not written".to_string())
-            })
+        resp.take::<Option<RelayCertificateEntity>>(3)
     }
 }
 

@@ -4,6 +4,7 @@ pub mod certificate;
 pub mod connection;
 pub mod dns;
 pub mod health;
+pub mod job_run;
 pub mod node;
 pub mod port;
 pub mod server;

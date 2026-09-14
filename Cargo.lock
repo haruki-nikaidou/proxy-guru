@@ -2184,6 +2184,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surrealdb",
+ "time",
  "tokio",
  "tokio-util",
  "tonic",
@@ -3907,6 +3908,7 @@ name = "orchestration"
 version = "0.1.0-alpha"
 dependencies = [
  "amqprs",
+ "anyhow",
  "auth",
  "base",
  "base64 0.22.1",

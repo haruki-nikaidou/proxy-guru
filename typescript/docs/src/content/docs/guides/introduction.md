@@ -16,8 +16,13 @@ every new revision automatically.
 |---|---|
 | `dashboard_grpc` | Operator API consumed by the frontend |
 | `workers_grpc` | Worker API plus the config-view poller |
-| `consumer` | AMQP derivation hook |
-| `cron` | Stale-canvas sweep |
+| `consumer` | Every AMQP hook: the derivation hook, and all five periodic jobs |
+| `cron` | The clock: publishes one execution signal per due periodic job |
+
+The last two are one job split in half on purpose. `cron` reads no configuration and opens no
+database connection; the `consumer` that receives a signal claims the run and does the work, so a
+sweep, a liveness check or a certificate renewal scales and fails over exactly like a canvas edit.
+All four modes need the broker.
 
 **Data plane** — `bin/guru-worker`. Terminates listeners and forwards traffic. It runs either
 standalone from a TOML file (reloaded on `SIGHUP`) or in agent mode, streaming configs from the

@@ -4,9 +4,9 @@
 //!
 //! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration`),
 //! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller,
-//! - `consumer` — the AMQP derivation hook,
-//! - `cron` — periodic jobs: the stale-canvas derivation sweep, the health
-//!   liveness sweep and retention, ACME issuance/renewal and relay leaf rotation.
+//! - `consumer` — the AMQP derivation hook and every periodic job,
+//! - `cron` — the scheduler: it publishes one execution signal per due job and
+//!   opens neither a database connection nor the master key.
 //!
 //! Wiring only: every rule lives in the modules under `modules/`.
 
@@ -15,7 +15,7 @@
 #![deny(clippy::panic)]
 
 use amqprs::callbacks::{DefaultChannelCallback, DefaultConnectionCallback};
-use amqprs::channel::BasicQosArguments;
+use amqprs::channel::{BasicQosArguments, Channel};
 use amqprs::connection::{Connection, OpenConnectionArguments};
 use auth::config::AuthConfig;
 use auth::rpc::{AuthGrpc, AuthLayer};
@@ -25,11 +25,17 @@ use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
 use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
+use kanau::message::MessageDe;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::events::CanvasDirty;
-use orchestration::hooks::derive::{self, CanvasDeriver};
-use orchestration::hooks::{acme as acme_hooks, health as health_hooks};
+use orchestration::events::{
+    CanvasDirty, DeriveStaleCanvasesSignal, RenewCertificatesSignal, RotateRelayCertificatesSignal,
+    SweepLivenessSignal, TrimHealthHistorySignal,
+};
+use orchestration::hooks::acme::AcmeCronHook;
+use orchestration::hooks::derive::CanvasDeriver;
+use orchestration::hooks::health::HealthCronHook;
+use orchestration::hooks::schedule::IntervalJob;
 use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::rpc::{OrchestrationGrpc, WorkerAgentGrpc};
 use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
@@ -51,10 +57,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use surrealdb::opt::auth::Root;
+use time::OffsetDateTime;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
-use wakuwaku::amqp::{AmqpMessageProcessor, AmqpPool, AmqpRouting, setup_consumer};
+use wakuwaku::amqp::{
+    AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting, setup_consumer,
+};
+use wakuwaku::interval_job::IntervalJobExecutionSignal;
 use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -101,19 +112,12 @@ struct Cli {
         long,
         env = "AMQP_URI",
         help = "Broker URI, e.g. amqp://guru:guru@127.0.0.1:5672/%2f. Required in \
-                every mode that talks to the broker: dashboard_grpc, workers_grpc \
-                and consumer."
+                every mode: dashboard_grpc and workers_grpc publish, consumer \
+                consumes, and cron publishes the periodic execution signals."
     )]
     amqp_uri: Option<String>,
     // A zero interval panics `tokio::time::interval`, so the range is enforced
     // here: clap applies the parser to the environment variable as well.
-    #[arg(
-        long,
-        env = "GURU_SWEEP_INTERVAL_SECS",
-        default_value = "30",
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    sweep_interval_secs: u64,
     #[arg(
         long,
         env = "GURU_WATCH_POLL_MS",
@@ -123,13 +127,6 @@ struct Cli {
     watch_poll_ms: u64,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     log_level: String,
-    #[arg(
-        long,
-        env = "GURU_ACME_INTERVAL_SECS",
-        default_value = "60",
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    acme_interval_secs: u64,
 }
 
 #[tokio::main]
@@ -138,6 +135,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(&cli.log_level))
         .init();
+
+    // Dispatched before the database, the master key and the configuration: the
+    // scheduler needs none of them. It only decides when a job is due and
+    // publishes a signal; `--mode consumer` loads the configuration, claims the
+    // run and does the work.
+    if let WorkerMode::Cron = cli.mode {
+        return run_cron(&cli).await;
+    }
 
     let db = surrealdb::engine::any::connect(&cli.address).await?;
     db.signin(Root {
@@ -296,22 +301,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         WorkerMode::Consumer => {
             let uri = amqp_uri(cli.amqp_uri.as_deref())?;
             let (connection, pool) = amqp_pool(uri).await?;
-            let channel = CanvasDeriver::ensure_queue(&pool).await?;
-            channel
-                .register_callback(DefaultChannelCallback)
-                .await
-                .map_err(|e| format!("registering the channel callback failed: {e}"))?;
-            // A bounded prefetch keeps one consumer from hoarding the whole backlog
-            // while its peers idle; derivation is a database transaction, not a
-            // cheap ack.
-            channel
-                .basic_qos(BasicQosArguments::new(0, 8, false))
-                .await
-                .map_err(|e| format!("setting the consumer prefetch failed: {e}"))?;
-            setup_consumer::<CanvasDirty, CanvasDeriver>(&channel, Arc::new(deriver))
-                .await
-                .map_err(|e| format!("binding the consumer failed: {e}"))?;
-            tracing::info!(queue = CanvasDeriver::QUEUE, "consuming canvas edits");
+            // This mode publishes as well as consumes: an issuance touches the
+            // canvases of everything it re-certified, and those need deriving.
+            let notifier = DirtyNotifier {
+                amqp: Some(pool.clone()),
+            };
+            let acme = AcmeCronHook {
+                acme: AcmeService {
+                    db: db.clone(),
+                    secrets,
+                    config,
+                    notifier,
+                    http: reqwest::Client::new(),
+                    issuer: Arc::new(InstantAcmeIssuer),
+                },
+            };
+            let health = HealthCronHook { health };
+            // Every channel is kept alive for the lifetime of the mode: dropping
+            // one cancels its consumer without a word.
+            let channels = vec![
+                bind_consumer::<CanvasDirty, _>(&pool, &deriver).await?,
+                bind_consumer::<DeriveStaleCanvasesSignal, _>(&pool, &deriver).await?,
+                bind_consumer::<RotateRelayCertificatesSignal, _>(&pool, &deriver).await?,
+                bind_consumer::<SweepLivenessSignal, _>(&pool, &health).await?,
+                bind_consumer::<TrimHealthHistorySignal, _>(&pool, &health).await?,
+                bind_consumer::<RenewCertificatesSignal, _>(&pool, &acme).await?,
+            ];
             // `amqprs` does not reconnect, and a dead consumer in a live process
             // is silent: broker loss ends this mode so the supervisor restarts it.
             let lost = tokio::select! {
@@ -323,76 +338,173 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             at AMQP_URI is reachable again"
                     .into());
             }
-            drop(channel);
+            drop(channels);
             connection
                 .close()
                 .await
                 .map_err(|e| format!("closing the AMQP connection failed: {e}"))?;
         }
+        // Dispatched above, before any of the setup this arm would otherwise
+        // share: the scheduler opens no database. Reaching it would mean that
+        // early return was removed, which is a wiring bug, not a mode.
         WorkerMode::Cron => {
-            // The broker stays optional here: an issuance touches its canvases, and
-            // the sweeper in this very process picks them up; the message only
-            // shortens the delay when a broker is configured.
-            let (_connection, notifier) = match cli.amqp_uri.as_deref() {
-                Some(_) => {
-                    let (connection, notifier) = notifier(cli.amqp_uri.as_deref()).await?;
-                    (Some(connection), notifier)
-                }
-                None => (None, DirtyNotifier::default()),
-            };
-            let token = CancellationToken::new();
-            let acme = AcmeService {
-                db: db.clone(),
-                secrets,
-                config,
-                notifier,
-                http: reqwest::Client::new(),
-                issuer: Arc::new(InstantAcmeIssuer),
-            };
-            let mut jobs = tokio::task::JoinSet::new();
-            jobs.spawn(derive::run_sweeper(
-                deriver.clone(),
-                Duration::from_secs(cli.sweep_interval_secs),
-                token.clone(),
-            ));
-            jobs.spawn(health_hooks::run_liveness_sweep(
-                health.clone(),
-                Duration::from_secs(30),
-                token.clone(),
-            ));
-            jobs.spawn(health_hooks::run_health_retention(
-                health,
-                Duration::from_secs(300),
-                token.clone(),
-            ));
-            jobs.spawn(acme_hooks::run_acme_renewal(
-                acme,
-                Duration::from_secs(cli.acme_interval_secs),
-                token.clone(),
-            ));
-            jobs.spawn(derive::run_relay_cert_rotation(
-                deriver,
-                Duration::from_secs(3600),
-                token.clone(),
-            ));
-            tracing::info!(
-                sweep_interval_secs = cli.sweep_interval_secs,
-                acme_interval_secs = cli.acme_interval_secs,
-                "running cron worker"
-            );
-            shutdown().await;
-            token.cancel();
-            // A panicking job must not be absorbed: the process exits non-zero so
-            // the supervisor restarts it.
-            while let Some(joined) = jobs.join_next().await {
-                if let Err(error) = joined {
-                    tracing::error!(%error, "a cron job task failed");
-                    return Err(error.into());
-                }
-            }
+            return Err("cron is dispatched before the database setup: \
+                        the early return in main was lost"
+                .into());
         }
     }
     Ok(())
+}
+
+/// How often the scheduler asks every job whether it is due.
+///
+/// This is the scan resolution, not a cadence: each signal's period is its own
+/// `EVERY_SECS`, and a job fires on the first scan at or after it elapses. Five
+/// seconds keeps the shortest period (30 s) within a sixth of itself while
+/// costing one wakeup per five seconds in an idle fleet.
+const SCAN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// `--mode cron`: a clock with a broker and nothing else.
+///
+/// It opens no database connection and reads no master key, because it runs no
+/// periodic work — it publishes one execution signal per due job and the
+/// `consumer` fleet claims and runs the passes. The broker is therefore
+/// mandatory here: the signal *is* the work.
+async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let uri = amqp_uri(cli.amqp_uri.as_deref())?;
+    let (connection, pool) = amqp_pool(uri).await?;
+    // Declared before the first publication, and by the publisher: the exchange
+    // is direct, so a signal sent while no consumer has ever bound its queue is
+    // silently discarded. This makes a scheduler that starts first harmless.
+    declare_queue::<DeriveStaleCanvasesSignal, CanvasDeriver>(&pool).await?;
+    declare_queue::<RotateRelayCertificatesSignal, CanvasDeriver>(&pool).await?;
+    declare_queue::<SweepLivenessSignal, HealthCronHook>(&pool).await?;
+    declare_queue::<TrimHealthHistorySignal, HealthCronHook>(&pool).await?;
+    declare_queue::<RenewCertificatesSignal, AcmeCronHook>(&pool).await?;
+
+    // One clock per job, so a scan that visits all five does not flatten their
+    // cadences: the hourly rotation fires on one scan in 720, not on every scan
+    // that the 30 s sweep fires on.
+    let mut derive_stale = IntervalJob::<DeriveStaleCanvasesSignal>::default();
+    let mut rotate_relay = IntervalJob::<RotateRelayCertificatesSignal>::default();
+    let mut sweep_liveness = IntervalJob::<SweepLivenessSignal>::default();
+    let mut trim_health = IntervalJob::<TrimHealthHistorySignal>::default();
+    let mut renew_certificates = IntervalJob::<RenewCertificatesSignal>::default();
+
+    // `Delay` rather than the default burst: a scan that ran late has nothing to
+    // catch up on, because a job compares timestamps instead of counting ticks.
+    let mut scan = tokio::time::interval(SCAN_INTERVAL);
+    scan.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    tracing::info!(
+        scan_interval_secs = SCAN_INTERVAL.as_secs(),
+        derive_stale_canvases_secs = DeriveStaleCanvasesSignal::EVERY_SECS,
+        rotate_relay_certificates_secs = RotateRelayCertificatesSignal::EVERY_SECS,
+        sweep_liveness_secs = SweepLivenessSignal::EVERY_SECS,
+        trim_health_history_secs = TrimHealthHistorySignal::EVERY_SECS,
+        renew_certificates_secs = RenewCertificatesSignal::EVERY_SECS,
+        "scheduling periodic execution signals"
+    );
+
+    let lost = {
+        let mut stop = std::pin::pin!(shutdown());
+        // Subscribed once, outside the loop: re-subscribing per scan would miss
+        // a failure that happened between two scans.
+        let mut broker_lost = std::pin::pin!(connection.listen_network_io_failure());
+        loop {
+            tokio::select! {
+                () = &mut stop => break false,
+                _ = &mut broker_lost => break true,
+                _ = scan.tick() => {
+                    let now = OffsetDateTime::now_utc();
+                    publish_due(&mut derive_stale, &pool, now).await;
+                    publish_due(&mut rotate_relay, &pool, now).await;
+                    publish_due(&mut sweep_liveness, &pool, now).await;
+                    publish_due(&mut trim_health, &pool, now).await;
+                    publish_due(&mut renew_certificates, &pool, now).await;
+                }
+            }
+        }
+    };
+    if lost {
+        return Err("the AMQP connection was lost: restart once the broker \
+                    at AMQP_URI is reachable again"
+            .into());
+    }
+    drop(pool);
+    connection
+        .close()
+        .await
+        .map_err(|e| format!("closing the AMQP connection failed: {e}"))?;
+    Ok(())
+}
+
+/// Declares the queue `H` consumes `S` from and drops the channel: the scheduler
+/// publishes and never consumes, it only needs the topology to exist.
+async fn declare_queue<S, H>(pool: &AmqpPool) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AmqpMessageSend + MessageDe,
+    H: AmqpMessageProcessor<S>,
+{
+    let channel = H::ensure_queue(pool)
+        .await
+        .map_err(|e| format!("declaring the queue {} failed: {e}", H::QUEUE))?;
+    drop(channel);
+    Ok(())
+}
+
+/// Publishes one job's signal when its cadence has elapsed.
+///
+/// A publish failure is logged and the scan continues: the broker may be briefly
+/// gone, and the job's next cadence publishes again. Ending the scheduler over a
+/// single failed publish would stop the other four jobs too.
+async fn publish_due<S: IntervalJobExecutionSignal>(
+    job: &mut IntervalJob<S>,
+    pool: &AmqpPool,
+    now: OffsetDateTime,
+) {
+    match job.publish(pool, now).await {
+        Ok(true) => tracing::debug!(job = S::ROUTING_KEY, "published an execution signal"),
+        Ok(false) => {}
+        Err(error) => tracing::error!(
+            %error,
+            job = S::ROUTING_KEY,
+            "publishing an execution signal failed"
+        ),
+    }
+}
+
+/// Binds one consumer on its own channel and returns the channel, which the
+/// caller must keep alive: dropping it cancels the consumer.
+///
+/// The prefetch is bounded so one consumer cannot hoard a backlog its idle peers
+/// could be working through; every pass here is a database transaction, not a
+/// cheap ack.
+async fn bind_consumer<M, H>(
+    pool: &AmqpPool,
+    hook: &H,
+) -> Result<Channel, Box<dyn std::error::Error>>
+where
+    M: AmqpMessageSend + MessageDe + Send + Sync + 'static,
+    M::DeError: Send,
+    H: AmqpMessageProcessor<M> + Clone + Send + Sync + 'static,
+{
+    let channel = H::ensure_queue(pool)
+        .await
+        .map_err(|e| format!("declaring the queue {} failed: {e}", H::QUEUE))?;
+    channel
+        .register_callback(DefaultChannelCallback)
+        .await
+        .map_err(|e| format!("registering the channel callback failed: {e}"))?;
+    channel
+        .basic_qos(BasicQosArguments::new(0, 8, false))
+        .await
+        .map_err(|e| format!("setting the consumer prefetch failed: {e}"))?;
+    setup_consumer::<M, H>(&channel, Arc::new(hook.clone()))
+        .await
+        .map_err(|e| format!("binding the consumer failed: {e}"))?;
+    tracing::info!(queue = H::QUEUE, key = M::ROUTING_KEY, "consuming");
+    Ok(channel)
 }
 
 /// Opens an AMQP connection and its channel pool, declaring the exchange.

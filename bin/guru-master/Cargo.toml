@@ -28,6 +28,8 @@ amqprs = { workspace = true }
 
 # Shared dependencies
 surrealdb = { workspace = true }
+# The scheduler's clock: `IntervalJob::publish` takes a `time::OffsetDateTime`.
+time = { workspace = true }
 
 # CLI
 clap = { workspace = true }

@@ -213,19 +213,34 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 Some(signer) => signer,
                 None => issuer.insert(self.issuer(&ca)?),
             };
-            leaves.push(self.issue_leaf(signer, pod, sni, now).await?);
+            let leaf = self
+                .issue_leaf(signer, pod, sni, now, None)
+                .await?
+                .ok_or_else(|| {
+                    // Unfenced, so the row is always written: a missing one is a bug.
+                    OrchestrationError::Db(surrealdb::Error::internal(
+                        "relay certificate row was not written".to_string(),
+                    ))
+                })?;
+            leaves.push(leaf);
         }
         Ok(leaves)
     }
 }
 
 /// Re-issues one leaf regardless of its expiry: the rotation cron's step.
+///
+/// `expected_version` is the version the caller read. Rotation runs from an
+/// AMQP signal that may be delivered more than once, so the re-issue is fenced
+/// on it: `None` means another consumer rotated this leaf first and this pass
+/// must leave it alone.
 pub struct RotateRelayCertificate {
     pub pod: NodeId,
+    pub expected_version: i64,
 }
 
 impl Processor<RotateRelayCertificate> for CaService {
-    type Output = RelayCertificateEntity;
+    type Output = Option<RelayCertificateEntity>;
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:RotateRelayCertificate", skip_all, err)]
     async fn process(&self, input: RotateRelayCertificate) -> Result<Self::Output, Self::Error> {
@@ -234,7 +249,14 @@ impl Processor<RotateRelayCertificate> for CaService {
         })?;
         let issuer = self.issuer(&ca)?;
         let sni = relay_sni(&input.pod);
-        self.issue_leaf(&issuer, input.pod, sni, Utc::now()).await
+        self.issue_leaf(
+            &issuer,
+            input.pod,
+            sni,
+            Utc::now(),
+            Some(input.expected_version),
+        )
+        .await
     }
 }
 
@@ -248,13 +270,16 @@ impl CaService {
         Ok(Issuer::new(ca_params(), key))
     }
 
+    /// Signs a fresh leaf for `pod` and stores it. `expected_version` fences the
+    /// write for rotation; `None` output is a lost race, never a failure.
     async fn issue_leaf(
         &self,
         issuer: &Issuer<'_, KeyPair>,
         pod: NodeId,
         sni: String,
         now: DateTime<Utc>,
-    ) -> Result<RelayCertificateEntity, OrchestrationError> {
+        expected_version: Option<i64>,
+    ) -> Result<Option<RelayCertificateEntity>, OrchestrationError> {
         let not_before = now
             .checked_sub_signed(ChronoDuration::seconds(NOT_BEFORE_SKEW_SECS))
             .unwrap_or(DateTime::<Utc>::MIN_UTC);
@@ -289,6 +314,7 @@ impl CaService {
                 certificate_pem: certificate.pem(),
                 not_before,
                 not_after,
+                expected_version,
             })
             .await?)
     }

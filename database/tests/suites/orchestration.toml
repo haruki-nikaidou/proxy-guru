@@ -5,7 +5,7 @@ tags = ["orchestration"]
 name = "orchestration_tables_visible"
 kind = "schema_metadata"
 sql = "INFO FOR DB;"
-contains = ["orchestration_canvas", "orchestration_server", "server_ip_record", "orchestration_node", "orchestration_port", "orchestration_edge_connection", "orchestration_server_config_view"]
+contains = ["orchestration_canvas", "orchestration_server", "server_ip_record", "orchestration_node", "orchestration_port", "orchestration_edge_connection", "orchestration_server_config_view", "orchestration_job_run"]
 
 # The "at most one edge per port" invariant is enforced by the database, not only
 # by the topology checker: without UNIQUE, two concurrent connects both persist.
@@ -208,5 +208,53 @@ actor = "root"
 sql = """
 CREATE orchestration_canvas:no_ip CONTENT { name: "c", description: "" };
 CREATE orchestration_node:no_ip CONTENT { canvas: orchestration_canvas:no_ip, name: "entry", comment: "", spec: { type: "entry", config: { receive_proxy_protocol: NONE, tls: NONE } }, position: { x: 0, y: 0 } };
+"""
+allow = true
+
+# The periodic-job claim: both timestamps are mandatory, because the
+# compare-and-set reads `last_signal_tick` in its `WHERE` clause. A row missing
+# it would be claimable by every delivery.
+[[cases]]
+name = "job_run_records_both_timestamps"
+kind = "schema_metadata"
+sql = "INFO FOR TABLE orchestration_job_run;"
+contains = [
+    "DEFINE FIELD last_run_at ON orchestration_job_run TYPE datetime",
+    "DEFINE FIELD last_signal_tick ON orchestration_job_run TYPE datetime",
+]
+
+# The claim is the whole at-most-once guarantee, so exercise the statement the
+# hooks run: the first tick claims, the same tick never claims again, a tick
+# inside the interval is refused, and one a full interval later claims.
+[[cases]]
+name = "a_job_run_is_claimed_once_per_tick_and_interval"
+kind = "sql_expect"
+actor = "root"
+sql = """
+LET $first = (CREATE orchestration_job_run:suite CONTENT {
+    last_run_at: d"2026-01-01T00:00:00Z", last_signal_tick: d"2026-01-01T00:00:00Z"
+} RETURN AFTER);
+-- The same tick, refused by `last_signal_tick < $tick`.
+LET $same = (UPDATE orchestration_job_run:suite
+    SET last_run_at = time::now(), last_signal_tick = d"2026-01-01T00:00:00Z"
+    WHERE last_signal_tick < d"2026-01-01T00:00:00Z"
+      AND last_signal_tick <= d"2026-01-01T00:00:00Z" RETURN AFTER);
+-- A newer tick 5s later with a 30s interval: refused by the interval fence.
+LET $early = (UPDATE orchestration_job_run:suite
+    SET last_run_at = time::now(), last_signal_tick = d"2026-01-01T00:00:05Z"
+    WHERE last_signal_tick < d"2026-01-01T00:00:05Z"
+      AND last_signal_tick <= d"2025-12-31T23:59:35Z" RETURN AFTER);
+-- A tick a full interval later: claimed.
+LET $due = (UPDATE orchestration_job_run:suite
+    SET last_run_at = time::now(), last_signal_tick = d"2026-01-01T00:00:30Z"
+    WHERE last_signal_tick < d"2026-01-01T00:00:30Z"
+      AND last_signal_tick <= d"2026-01-01T00:00:00Z" RETURN AFTER);
+IF array::len($same) != 0 { THROW "a replayed tick claimed the run" };
+IF array::len($early) != 0 { THROW "a tick inside the interval claimed the run" };
+IF array::len($due) != 1 { THROW "a tick a full interval later was refused" };
+IF (SELECT VALUE last_signal_tick FROM ONLY orchestration_job_run:suite) != d"2026-01-01T00:00:30Z" {
+    THROW "the claimed tick was not recorded"
+};
+RETURN "ok";
 """
 allow = true

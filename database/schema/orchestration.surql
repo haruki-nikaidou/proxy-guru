@@ -255,3 +255,13 @@ DEFINE FIELD not_before ON relay_certificate TYPE datetime;
 DEFINE FIELD not_after ON relay_certificate TYPE datetime;
 DEFINE FIELD version ON relay_certificate TYPE int DEFAULT 0;
 DEFINE INDEX relay_certificate_pod ON relay_certificate FIELDS pod UNIQUE;
+
+-- One row per periodic job, the record key being the job name. A consumer that
+-- receives an execution signal claims the run with one compare-and-set over
+-- both fields: `last_signal_tick` makes a redelivered or backlogged signal a
+-- no-op, `last_run_at` enforces the interval from the stored configuration. A
+-- second consumer, a duplicate delivery and a stale backlog therefore cannot run
+-- the same pass twice.
+DEFINE TABLE orchestration_job_run SCHEMAFULL;
+DEFINE FIELD last_run_at ON orchestration_job_run TYPE datetime;
+DEFINE FIELD last_signal_tick ON orchestration_job_run TYPE datetime;

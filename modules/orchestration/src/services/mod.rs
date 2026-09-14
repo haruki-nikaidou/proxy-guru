@@ -87,3 +87,23 @@ impl From<OrchestrationError> for tonic::Status {
         }
     }
 }
+
+/// What a hook hands back to the AMQP consumer, which decides from the variant
+/// whether to requeue the message or ack it:
+///
+/// - a database failure stays a database failure, so the delivery is requeued —
+///   the next consumer may well succeed;
+/// - a missing row, a permission failure and every rule violation become the
+///   matching non-retryable variant, keeping their message, so the delivery is
+///   acked and logged instead of looping forever on work that cannot succeed.
+impl From<OrchestrationError> for wakuwaku::Error {
+    fn from(error: OrchestrationError) -> Self {
+        match error {
+            OrchestrationError::Core(e) => e,
+            OrchestrationError::Db(e) => e.into(),
+            OrchestrationError::NotFound => wakuwaku::Error::NotFound,
+            OrchestrationError::PermissionDenied => wakuwaku::Error::PermissionsDenied,
+            other => wakuwaku::Error::BusinessPanic(anyhow::anyhow!("{other}")),
+        }
+    }
+}
