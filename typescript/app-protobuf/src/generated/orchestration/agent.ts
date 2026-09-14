@@ -10,9 +10,23 @@ import type { CallContext, CallOptions } from "nice-grpc-common";
 
 export const protobufPackage = "guru.orchestration.agent";
 
+/**
+ * What the worker knows about its own addresses. An empty string means the
+ * worker could not learn that address; the master keeps whatever it had.
+ */
+export interface ReportedAddresses {
+  /** Learned from `--public-ip-urls` over IPv4 / IPv6. */
+  publicV4: string;
+  publicV6: string;
+  /** Non-loopback, non-link-local interface addresses, sorted and deduplicated. */
+  interfaces: string[];
+}
+
 export interface RegisterRequest {
   serverId: string;
   runningRevision: bigint;
+  /** Best effort; may be unset. */
+  reportedAddresses: ReportedAddresses | undefined;
 }
 
 export interface RegisterReply {
@@ -79,13 +93,117 @@ export interface HealthReport {
   maxConnections: bigint;
   /** One entry per running `[[forwarding]]`. */
   pods: PodStatus[];
+  /** Set only on a report whose address discovery changed something. */
+  reportedAddresses: ReportedAddresses | undefined;
 }
 
 export interface ReportHealthReply {
 }
 
+function createBaseReportedAddresses(): ReportedAddresses {
+  return { publicV4: "", publicV6: "", interfaces: [] };
+}
+
+export const ReportedAddresses: MessageFns<ReportedAddresses> = {
+  encode(message: ReportedAddresses, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.publicV4 !== "") {
+      writer.uint32(10).string(message.publicV4);
+    }
+    if (message.publicV6 !== "") {
+      writer.uint32(18).string(message.publicV6);
+    }
+    for (const v of message.interfaces) {
+      writer.uint32(26).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReportedAddresses {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReportedAddresses();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.publicV4 = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.publicV6 = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.interfaces.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ReportedAddresses {
+    return {
+      publicV4: isSet(object.publicV4)
+        ? globalThis.String(object.publicV4)
+        : isSet(object.public_v4)
+        ? globalThis.String(object.public_v4)
+        : "",
+      publicV6: isSet(object.publicV6)
+        ? globalThis.String(object.publicV6)
+        : isSet(object.public_v6)
+        ? globalThis.String(object.public_v6)
+        : "",
+      interfaces: globalThis.Array.isArray(object?.interfaces)
+        ? object.interfaces.map((e: any) => globalThis.String(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ReportedAddresses): unknown {
+    const obj: any = {};
+    if (message.publicV4 !== "") {
+      obj.publicV4 = message.publicV4;
+    }
+    if (message.publicV6 !== "") {
+      obj.publicV6 = message.publicV6;
+    }
+    if (message.interfaces?.length) {
+      obj.interfaces = message.interfaces;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ReportedAddresses>): ReportedAddresses {
+    return ReportedAddresses.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ReportedAddresses>): ReportedAddresses {
+    const message = createBaseReportedAddresses();
+    message.publicV4 = object.publicV4 ?? "";
+    message.publicV6 = object.publicV6 ?? "";
+    message.interfaces = object.interfaces?.map((e) => e) || [];
+    return message;
+  },
+};
+
 function createBaseRegisterRequest(): RegisterRequest {
-  return { serverId: "", runningRevision: 0n };
+  return { serverId: "", runningRevision: 0n, reportedAddresses: undefined };
 }
 
 export const RegisterRequest: MessageFns<RegisterRequest> = {
@@ -98,6 +216,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
         throw new globalThis.Error("value provided for field message.runningRevision of type int64 too large");
       }
       writer.uint32(16).int64(message.runningRevision);
+    }
+    if (message.reportedAddresses !== undefined) {
+      ReportedAddresses.encode(message.reportedAddresses, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -125,6 +246,14 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
           message.runningRevision = reader.int64() as bigint;
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.reportedAddresses = ReportedAddresses.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -146,6 +275,11 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
         : isSet(object.running_revision)
         ? BigInt(object.running_revision)
         : 0n,
+      reportedAddresses: isSet(object.reportedAddresses)
+        ? ReportedAddresses.fromJSON(object.reportedAddresses)
+        : isSet(object.reported_addresses)
+        ? ReportedAddresses.fromJSON(object.reported_addresses)
+        : undefined,
     };
   },
 
@@ -156,6 +290,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.runningRevision !== 0n) {
       obj.runningRevision = message.runningRevision.toString();
+    }
+    if (message.reportedAddresses !== undefined) {
+      obj.reportedAddresses = ReportedAddresses.toJSON(message.reportedAddresses);
     }
     return obj;
   },
@@ -169,6 +306,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     message.runningRevision = (object.runningRevision !== undefined && object.runningRevision !== null)
       ? BigInt(object.runningRevision)
       : 0n;
+    message.reportedAddresses = (object.reportedAddresses !== undefined && object.reportedAddresses !== null)
+      ? ReportedAddresses.fromPartial(object.reportedAddresses)
+      : undefined;
     return message;
   },
 };
@@ -693,6 +833,7 @@ function createBaseHealthReport(): HealthReport {
     currentConnections: 0n,
     maxConnections: 0n,
     pods: [],
+    reportedAddresses: undefined,
   };
 }
 
@@ -730,6 +871,9 @@ export const HealthReport: MessageFns<HealthReport> = {
     }
     for (const v of message.pods) {
       PodStatus.encode(v!, writer.uint32(50).fork()).join();
+    }
+    if (message.reportedAddresses !== undefined) {
+      ReportedAddresses.encode(message.reportedAddresses, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -789,6 +933,14 @@ export const HealthReport: MessageFns<HealthReport> = {
           message.pods.push(PodStatus.decode(reader, reader.uint32()));
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.reportedAddresses = ReportedAddresses.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -828,6 +980,11 @@ export const HealthReport: MessageFns<HealthReport> = {
       pods: globalThis.Array.isArray(object?.pods)
         ? object.pods.map((e: any) => PodStatus.fromJSON(e))
         : [],
+      reportedAddresses: isSet(object.reportedAddresses)
+        ? ReportedAddresses.fromJSON(object.reportedAddresses)
+        : isSet(object.reported_addresses)
+        ? ReportedAddresses.fromJSON(object.reported_addresses)
+        : undefined,
     };
   },
 
@@ -850,6 +1007,9 @@ export const HealthReport: MessageFns<HealthReport> = {
     }
     if (message.pods?.length) {
       obj.pods = message.pods.map((e) => PodStatus.toJSON(e));
+    }
+    if (message.reportedAddresses !== undefined) {
+      obj.reportedAddresses = ReportedAddresses.toJSON(message.reportedAddresses);
     }
     return obj;
   },
@@ -875,6 +1035,9 @@ export const HealthReport: MessageFns<HealthReport> = {
       ? BigInt(object.maxConnections)
       : 0n;
     message.pods = object.pods?.map((e) => PodStatus.fromPartial(e)) || [];
+    message.reportedAddresses = (object.reportedAddresses !== undefined && object.reportedAddresses !== null)
+      ? ReportedAddresses.fromPartial(object.reportedAddresses)
+      : undefined;
     return message;
   },
 };

@@ -26,6 +26,12 @@ tokio-openssl = "0.6"
 tokio-util = "0.7"
 rustls-pemfile = "2"
 rustls-native-certs = "0.8"
+# Address discovery for agent mode: interface enumeration and the public-ip
+# lookup (rustls, the TLS stack tonic already links; no second one).
+if-addrs = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+# Dual-stack listeners: `::` must be bound with IPV6_V6ONLY off explicitly.
+socket2 = "0.6"
 moka = { version = "0.12", features = ["future"] }
 guru_worker_config = { path = "../../lib/guru_worker_config" }
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }

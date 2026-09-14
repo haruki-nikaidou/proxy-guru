@@ -32,7 +32,7 @@ use orchestration::services::health::{
     HealthReportInput, MarkServerOffline, RecordHealthReport, SweepLiveness, TrimHealthHistory,
 };
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
-use orchestration::services::server::{AddServerIp, CreateServer};
+use orchestration::services::server::{AddressOverrides, CreateServer};
 
 /// One server, two pods: `web` (443, entry `web-in` → exit `web-out`) and
 /// `api` (8443, entry `api-in` → exit `api-out`).
@@ -118,7 +118,9 @@ async fn wire(
 }
 
 type CanvasId = orchestration::entities::surreal::canvas::CanvasId;
-type ServerIpRecordId = orchestration::entities::surreal::server::ServerIpRecordId;
+// Kept as a name for the third tuple element, now the server id (addresses live
+// on the server).
+type ServerIpRecordId = orchestration::entities::surreal::server::ServerId;
 
 /// A canvas with one server carrying one IP; the topology goes on top.
 async fn base(
@@ -143,24 +145,22 @@ async fn base(
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some("203.0.113.10".to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
-    let ip = w
-        .servers
-        .process(AddServerIp {
-            actor: operator(),
-            server: server.id.clone(),
-            ip: "203.0.113.10".to_string(),
-            country: "jp".to_string(),
-        })
-        .await?;
-    Ok((canvas.id, server.id, ip.id))
+    Ok((canvas.id, server.id.clone(), server.id))
 }
 
-fn pod_spec_on(ip: &ServerIpRecordId, port: u16) -> NodeSpec {
+fn pod_spec_on(server: &ServerIpRecordId, port: u16) -> NodeSpec {
     NodeSpec::Pod(PodConfig {
-        ip: ip.clone(),
+        server: server.clone(),
         port,
+        bind_ip: None,
+        advertise_ip: None,
     })
 }
 
@@ -206,6 +206,8 @@ async fn register(
             actor: machine(),
             server_id: server.clone(),
             running_revision: 0,
+            observed: None,
+            reported: None,
         })
         .await?;
     let row = server_row(w, server).await;
@@ -263,6 +265,7 @@ fn report(running_revision: i64, pods: Vec<PodResult>) -> HealthReportInput {
         current_connections: 3,
         max_connections: 5,
         pods,
+        reported: None,
     }
 }
 
@@ -620,8 +623,10 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
         &f.canvas,
         "fresh",
         NodeSpec::Pod(PodConfig {
-            ip: f.ip.clone(),
+            server: f.ip.clone(),
             port: 9443,
+            bind_ip: None,
+            advertise_ip: None,
         }),
     )
     .await?;

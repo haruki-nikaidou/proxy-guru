@@ -34,7 +34,7 @@ use orchestration::services::ca::{
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::edge::Connect;
 use orchestration::services::node::CreateNode;
-use orchestration::services::server::{AddServerIp, CreateServer};
+use orchestration::services::server::{AddressOverrides, CreateServer};
 use orchestration::utils::ids::record_key;
 use x509_parser::prelude::*;
 
@@ -328,18 +328,14 @@ async fn relay_chain(
                 position: pos0(),
                 ipv6_resolve: ServerIpv6Resolve::Tolerated,
                 log_level: "info".to_string(),
+                addresses: AddressOverrides {
+                    override_v4: Some(ip.to_string()),
+                    override_v6: None,
+                    extra_addresses: Vec::new(),
+                },
             })
             .await?;
-        let record = w
-            .servers
-            .process(AddServerIp {
-                actor: operator(),
-                server: server.id.clone(),
-                ip: ip.to_string(),
-                country: "jp".to_string(),
-            })
-            .await?;
-        servers.push((server.id, record.id));
+        servers.push((server.id.clone(), server.id));
     }
     let (tokyo, tokyo_ip) = servers[0].clone();
     let (osaka, osaka_ip) = servers[1].clone();
@@ -360,8 +356,10 @@ async fn relay_chain(
     let ingress = create(
         "ingress",
         NodeSpec::Pod(PodConfig {
-            ip: tokyo_ip,
+            server: tokyo_ip,
             port: 443,
+            bind_ip: None,
+            advertise_ip: None,
         }),
     )
     .await?;
@@ -385,8 +383,10 @@ async fn relay_chain(
     let osaka_hop = create(
         "osaka-hop",
         NodeSpec::Pod(PodConfig {
-            ip: osaka_ip,
+            server: osaka_ip,
             port: 9443,
+            bind_ip: None,
+            advertise_ip: None,
         }),
     )
     .await?;
@@ -451,6 +451,8 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 actor: machine(),
                 server_id: server.clone(),
                 running_revision: 0,
+                observed: None,
+                reported: None,
             })
             .await?;
     }

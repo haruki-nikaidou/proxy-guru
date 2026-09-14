@@ -18,7 +18,7 @@ use orchestration::entities::surreal::node::{
     RelayConfig, RelayProtocol, TlsConfig,
 };
 use orchestration::entities::surreal::port::PortKind;
-use orchestration::entities::surreal::server::{ServerId, ServerIpRecordId};
+use orchestration::entities::surreal::server::ServerId;
 use orchestration::entities::surreal::topology::CanvasTopology;
 use orchestration::entities::surreal::view::{
     CertificateKind, CertificateRef, InvalidPod, ListenProtocol,
@@ -75,10 +75,12 @@ fn entry(pp: Option<ProxyProtocolVersion>) -> NodeSpec {
     })
 }
 
-fn pod(ip: &ServerIpRecordId, port: u16) -> NodeSpec {
+fn pod(server: &ServerId, port: u16) -> NodeSpec {
     NodeSpec::Pod(PodConfig {
-        ip: ip.clone(),
+        server: server.clone(),
         port,
+        bind_ip: None,
+        advertise_ip: None,
     })
 }
 
@@ -364,7 +366,7 @@ fn a_tls_entry_without_an_issued_certificate_invalidates_only_its_pod() {
     let result = derive(&topology, &s).expect("the server still derives");
     let invalid = only_invalid(&result);
     assert_eq!(invalid.pod, "pod");
-    assert_eq!(invalid.listen, "203.0.113.10:443");
+    assert_eq!(invalid.listen, "[::]:443");
     assert!(
         invalid
             .error
@@ -635,7 +637,7 @@ fn a_broken_pod_leaves_its_neighbour_deriving() {
         panic!("expected exactly one invalid pod, got {:?}", result.invalid);
     };
     assert_eq!(invalid.pod, "half");
-    assert_eq!(invalid.listen, "203.0.113.10:8443");
+    assert_eq!(invalid.listen, "[::]:8443");
 }
 
 /// A load-balance group with no connected members used to reach the worker as an

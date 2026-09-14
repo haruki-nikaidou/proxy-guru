@@ -26,7 +26,7 @@ use orchestration::services::canvas::{CanvasService, CreateCanvas};
 use orchestration::services::edge::{Connect, EdgeService};
 use orchestration::services::node::{CreateNode, NodeService};
 use orchestration::services::rollout::DirtyNotifier;
-use orchestration::services::server::{AddServerIp, CreateServer, ServerService};
+use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,14 +120,11 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
-        })
-        .await?;
-    let ip = servers
-        .process(AddServerIp {
-            actor: operator(),
-            server: server.id.clone(),
-            ip: "203.0.113.10".to_string(),
-            country: "jp".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some("203.0.113.10".to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
     let create = async |name: &str, spec: NodeSpec| {
@@ -146,8 +143,10 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
     let pod = create(
         "edge",
         NodeSpec::Pod(PodConfig {
-            ip: ip.id.clone(),
+            server: server.id.clone(),
             port: 443,
+            bind_ip: None,
+            advertise_ip: None,
         }),
     )
     .await?;
@@ -194,7 +193,7 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
             .await?
             .unwrap();
         match view.desired {
-            Some(desired) if desired.toml.contains("203.0.113.10:443") => break desired,
+            Some(desired) if desired.toml.contains("[::]:443") => break desired,
             other => assert!(
                 std::time::Instant::now() < deadline,
                 "the broker never drove the last edit: desired={:?} error={:?}",
@@ -287,14 +286,11 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
-        })
-        .await?;
-    let ip = servers
-        .process(AddServerIp {
-            actor: operator(),
-            server: server.id.clone(),
-            ip: "203.0.113.20".to_string(),
-            country: "jp".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some("203.0.113.20".to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
     let create = async |name: &str, spec: NodeSpec| {
@@ -313,8 +309,10 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
     let pod = create(
         "edge",
         NodeSpec::Pod(PodConfig {
-            ip: ip.id.clone(),
+            server: server.id.clone(),
             port: 443,
+            bind_ip: None,
+            advertise_ip: None,
         }),
     )
     .await?;
@@ -377,7 +375,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
             .await?
             .unwrap();
         match view.desired {
-            Some(desired) if desired.toml.contains("203.0.113.20:443") => break,
+            Some(desired) if desired.toml.contains("[::]:443") => break,
             other => assert!(
                 std::time::Instant::now() < deadline,
                 "the signal never drove the sweep: desired={:?} error={:?}",

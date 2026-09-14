@@ -12,7 +12,7 @@ use orchestration::entities::surreal::node::{
 };
 use orchestration::entities::surreal::port::{PortDirection, PortKind};
 use orchestration::entities::surreal::server::{
-    CreateServer, CreateServerIp, ServerEntity, ServerId, ServerIpRecordEntity, ServerIpv6Resolve,
+    CreateServer, ServerEntity, ServerId, ServerIpv6Resolve,
 };
 use orchestration::entities::surreal::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
@@ -63,6 +63,17 @@ pub async fn server(
     canvas: &CanvasEntity,
     name: &str,
 ) -> Result<ServerEntity, surrealdb::Error> {
+    server_at(sp, canvas, name, "203.0.113.10").await
+}
+
+/// A server with a pinned IPv4 address, so pods placed on it derive a dialable
+/// destination without a live worker.
+pub async fn server_at(
+    sp: &SurrealProcessor,
+    canvas: &CanvasEntity,
+    name: &str,
+    address: &str,
+) -> Result<ServerEntity, surrealdb::Error> {
     sp.process(CreateServer {
         canvas: canvas.id.clone(),
         name: name.to_string(),
@@ -71,19 +82,9 @@ pub async fn server(
         position: pos(0, 0),
         ipv6_resolve: ServerIpv6Resolve::Tolerated,
         log_level: "info".to_string(),
-    })
-    .await
-}
-
-pub async fn server_ip(
-    sp: &SurrealProcessor,
-    server: &ServerEntity,
-    ip: &str,
-) -> Result<ServerIpRecordEntity, surrealdb::Error> {
-    sp.process(CreateServerIp {
-        server: server.id.clone(),
-        ip: ip.to_string(),
-        country: "jp".to_string(),
+        override_v4: Some(address.to_string()),
+        override_v6: None,
+        extra_addresses: Vec::new(),
     })
     .await
 }
@@ -142,10 +143,12 @@ pub async fn node(
     .await
 }
 
-pub fn pod_spec(ip: &ServerIpRecordEntity, port: u16) -> NodeSpec {
+pub fn pod_spec(server: &ServerEntity, port: u16) -> NodeSpec {
     NodeSpec::Pod(PodConfig {
-        ip: ip.id.clone(),
+        server: server.id.clone(),
         port,
+        bind_ip: None,
+        advertise_ip: None,
     })
 }
 

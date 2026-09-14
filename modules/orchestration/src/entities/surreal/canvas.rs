@@ -1,6 +1,6 @@
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::node::NodeWithPorts;
-use crate::entities::surreal::server::ServerWithIp;
+use crate::entities::surreal::server::ServerEntity;
 use crate::utils::ids::record_key;
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
@@ -35,7 +35,7 @@ pub struct CanvasContents {
     pub ancestors: Vec<CanvasEntity>,
     /// The canvases this canvas's import nodes embed.
     pub import_targets: Vec<CanvasEntity>,
-    pub servers: Vec<ServerWithIp>,
+    pub servers: Vec<ServerEntity>,
     pub nodes: Vec<NodeWithPorts>,
     pub edges: Vec<EdgeConnectionEntity>,
 }

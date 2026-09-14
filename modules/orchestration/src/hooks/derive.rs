@@ -164,10 +164,6 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
             }
             let certificates = self.certificates(&state.topology).await?;
 
-            let mut server_of_ip: HashMap<String, ServerId> = HashMap::new();
-            for ip in &state.topology.ips {
-                server_of_ip.insert(ip.ip.clone(), ip.server.clone());
-            }
             let views_by_server: HashMap<String, &ServerConfigViewEntity> = state
                 .views
                 .iter()
@@ -190,7 +186,6 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                     view,
                     &state.topology,
                     &state.views,
-                    &server_of_ip,
                     &certificates,
                     &self.config,
                     now,
@@ -286,7 +281,6 @@ fn derive_one(
     view: &ServerConfigViewEntity,
     topology: &CanvasTopology,
     views: &[ServerConfigViewEntity],
-    server_of_ip: &HashMap<String, ServerId>,
     certificates: &DerivationCertificates,
     config: &OrchestrationConfig,
     now: DateTime<Utc>,
@@ -304,7 +298,7 @@ fn derive_one(
         Ok(ideal) => ideal,
         Err(e) => return failed(e.to_string()),
     };
-    let converged = match converge(ideal, view, views, server_of_ip) {
+    let converged = match converge(ideal, view, views) {
         Ok(converged) => converged,
         Err(e) => return failed(e.to_string()),
     };

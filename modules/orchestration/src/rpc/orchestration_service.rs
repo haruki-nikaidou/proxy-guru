@@ -16,7 +16,7 @@ use crate::entities::surreal::node::{
     NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig, RelayProtocol, TlsConfig,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use crate::entities::surreal::server::{ServerIpRecordEntity, ServerIpv6Resolve, ServerWithIp};
+use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
 use crate::entities::surreal::view::{ConfigSnapshot, ListenProtocol, ListenerCap};
 use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
@@ -122,15 +122,6 @@ fn canvas_to_proto(canvas: &CanvasEntity) -> pb::Canvas {
         id: ids::record_key(&canvas.id.0),
         name: canvas.name.clone(),
         description: canvas.description.clone(),
-    }
-}
-
-fn ip_to_proto(ip: &ServerIpRecordEntity) -> pb::ServerIp {
-    pb::ServerIp {
-        id: ids::record_key(&ip.id.0),
-        server_id: ids::record_key(&ip.server.0),
-        ip: ip.ip.clone(),
-        country: ip.country.clone(),
     }
 }
 
@@ -274,23 +265,61 @@ fn ipv6_from_proto(value: i32) -> Result<ServerIpv6Resolve, Status> {
     }
 }
 
-fn server_to_proto(server: &ServerWithIp) -> pb::Server {
+fn server_to_proto(server: &ServerEntity) -> pb::Server {
     pb::Server {
-        id: ids::record_key(&server.server.id.0),
-        canvas_id: ids::record_key(&server.server.canvas.0),
-        name: server.server.name.clone(),
-        icon: server.server.icon.clone(),
-        comment: server.server.comment.clone(),
-        position: Some(position_to_proto(server.server.position)),
-        ipv6_resolve: ipv6_to_proto(server.server.ipv6_resolve),
-        log_level: server.server.log_level.clone(),
+        id: ids::record_key(&server.id.0),
+        canvas_id: ids::record_key(&server.canvas.0),
+        name: server.name.clone(),
+        icon: server.icon.clone(),
+        comment: server.comment.clone(),
+        position: Some(position_to_proto(server.position)),
+        ipv6_resolve: ipv6_to_proto(server.ipv6_resolve),
+        log_level: server.log_level.clone(),
         last_seen_at: server
-            .server
             .last_seen_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_default(),
-        health_status: server_health_to_proto(server.server.health_status),
-        ips: server.ips.iter().map(ip_to_proto).collect(),
+        health_status: server_health_to_proto(server.health_status),
+        addresses: Some(addresses_to_proto(server)),
+    }
+}
+
+fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
+    let reported = server.reported_addresses.as_ref();
+    let effective = server.effective_address();
+    pb::ServerAddresses {
+        v4: Some(pb::AddressSlot {
+            reported: reported
+                .and_then(|r| r.public_v4.clone())
+                .unwrap_or_default(),
+            pinned: server.override_v4.clone().unwrap_or_default(),
+        }),
+        v6: Some(pb::AddressSlot {
+            reported: reported
+                .and_then(|r| r.public_v6.clone())
+                .unwrap_or_default(),
+            pinned: server.override_v6.clone().unwrap_or_default(),
+        }),
+        extra: server.extra_addresses.clone(),
+        reported_interfaces: reported.map(|r| r.interfaces.clone()).unwrap_or_default(),
+        reported_at: reported
+            .map(|r| r.reported_at.to_rfc3339())
+            .unwrap_or_default(),
+        observed_address: server.observed_address.clone().unwrap_or_default(),
+        observed_at: server
+            .observed_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
+        effective_address: effective
+            .map(|(address, _)| address.to_string())
+            .unwrap_or_default(),
+        effective_source: match effective.map(|(_, source)| source) {
+            None => pb::AddressSource::Unspecified,
+            Some(AddressSource::Override) => pb::AddressSource::AddressOverride,
+            Some(AddressSource::Reported) => pb::AddressSource::AddressReported,
+            Some(AddressSource::Observed) => pb::AddressSource::AddressObserved,
+        }
+        .into(),
     }
 }
 
@@ -338,8 +367,10 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
     use pb::node_spec::Spec;
     let spec = match spec {
         NodeSpec::Pod(cfg) => Spec::Pod(pb::PodConfig {
-            ip_record_id: ids::record_key(&cfg.ip.0),
+            server_id: ids::record_key(&cfg.server.0),
             port: u32::from(cfg.port),
+            bind_ip: cfg.bind_ip.clone().unwrap_or_default(),
+            advertise_ip: cfg.advertise_ip.clone().unwrap_or_default(),
         }),
         NodeSpec::Entry(cfg) => Spec::Entry(pb::EntryConfig {
             receive_proxy_protocol: proxy_to_proto(cfg.receive_proxy_protocol),
@@ -397,6 +428,18 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
     pb::NodeSpec { spec: Some(spec) }
 }
 
+/// An optional IP on the wire: empty is unset, anything else must parse and is
+/// stored in its canonical form.
+fn optional_ip(label: &str, raw: &str) -> Result<Option<String>, Status> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<std::net::IpAddr>()
+        .map(|ip| Some(ip.to_string()))
+        .map_err(|_| Status::invalid_argument(format!("{label}: '{raw}' is not an IP address")))
+}
+
 fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
     use pb::node_spec::Spec;
     let spec = spec
@@ -404,7 +447,14 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
         .ok_or_else(|| Status::invalid_argument("spec is required"))?;
     Ok(match spec {
         Spec::Pod(cfg) => NodeSpec::Pod(PodConfig {
-            ip: ids::server_ip_id(&cfg.ip_record_id),
+            server: {
+                if cfg.server_id.is_empty() {
+                    return Err(Status::invalid_argument("server_id is required"));
+                }
+                ids::server_id(&cfg.server_id)
+            },
+            bind_ip: optional_ip("bind_ip", &cfg.bind_ip)?,
+            advertise_ip: optional_ip("advertise_ip", &cfg.advertise_ip)?,
             port: match u16::try_from(cfg.port) {
                 Ok(port) if port != 0 => port,
                 _ => {
@@ -555,7 +605,7 @@ fn edge_to_proto(edge: &EdgeConnectionEntity) -> pb::Edge {
 
 fn listener_cap_to_proto(cap: &ListenerCap) -> pb::ListenerCap {
     pb::ListenerCap {
-        ip: cap.ip.clone(),
+        server_id: cap.server_key(),
         port: u32::try_from(cap.port).unwrap_or_default(),
         protocol: match cap.protocol {
             ListenProtocol::Raw => "raw",
@@ -598,7 +648,8 @@ fn problem_to_proto(problem: &TopologyProblem) -> pb::Problem {
             ProblemKind::PortShapeInvalid => pb::ProblemKind::PortShapeInvalid,
             ProblemKind::Cycle => pb::ProblemKind::Cycle,
             ProblemKind::DuplicateListen => pb::ProblemKind::DuplicateListen,
-            ProblemKind::PodIpForeign => pb::ProblemKind::PodIpForeign,
+            ProblemKind::PodServerForeign => pb::ProblemKind::PodServerForeign,
+            ProblemKind::ServerNoAddress => pb::ProblemKind::ServerNoAddress,
             ProblemKind::ExitDestinationInvalid => pb::ProblemKind::ExitDestinationInvalid,
             ProblemKind::IpHashWithoutClientIp => pb::ProblemKind::IpHashWithoutClientIp,
             ProblemKind::CanvasImportSelf => pb::ProblemKind::CanvasImportSelf,
@@ -784,13 +835,15 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 position: position_or_origin(input.position),
                 ipv6_resolve: ipv6_from_proto(input.ipv6_resolve)?,
                 log_level: input.log_level,
+                addresses: server::AddressOverrides::parse(
+                    &input.override_v4,
+                    &input.override_v6,
+                    &input.extra_addresses,
+                )?,
             })
             .await?;
         Ok(Response::new(pb::CreateServerReply {
-            server: Some(server_to_proto(&ServerWithIp {
-                server,
-                ips: Vec::new(),
-            })),
+            server: Some(server_to_proto(&server)),
         }))
     }
 
@@ -810,6 +863,11 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 comment: input.comment,
                 ipv6_resolve: ipv6_from_proto(input.ipv6_resolve)?,
                 log_level: input.log_level,
+                addresses: server::AddressOverrides::parse(
+                    &input.override_v4,
+                    &input.override_v6,
+                    &input.extra_addresses,
+                )?,
             })
             .await?;
         Ok(Response::new(pb::UpdateServerReply {
@@ -846,41 +904,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             })
             .await?;
         Ok(Response::new(pb::MoveServerReply {}))
-    }
-
-    async fn add_server_ip(
-        &self,
-        request: Request<pb::AddServerIpRequest>,
-    ) -> Result<Response<pb::AddServerIpReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let ip = self
-            .servers
-            .process(server::AddServerIp {
-                actor,
-                server: ids::server_id(&input.server_id),
-                ip: input.ip,
-                country: input.country,
-            })
-            .await?;
-        Ok(Response::new(pb::AddServerIpReply {
-            ip: Some(ip_to_proto(&ip)),
-        }))
-    }
-
-    async fn remove_server_ip(
-        &self,
-        request: Request<pb::RemoveServerIpRequest>,
-    ) -> Result<Response<pb::RemoveServerIpReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        self.servers
-            .process(server::RemoveServerIp {
-                actor,
-                ip_record: ids::server_ip_id(&input.ip_record_id),
-            })
-            .await?;
-        Ok(Response::new(pb::RemoveServerIpReply {}))
     }
 
     async fn create_node(

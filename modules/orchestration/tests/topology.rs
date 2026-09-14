@@ -6,13 +6,13 @@
 mod mem;
 
 use mem::*;
+use orchestration::entities::surreal::server::ServerId;
 use orchestration::entities::surreal::node::{
     CanvasExportAs, EntryConfig, ExitConfig, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeSpec, PodConfig, ProxyProtocolVersion,
     RelayConfig, RelayProtocol,
 };
 use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use orchestration::entities::surreal::server::ServerIpRecordId;
 use orchestration::services::topology::{
     ProblemKind, ProblemSeverity, TopologyProblem, analyze, ensure_valid,
 };
@@ -48,10 +48,12 @@ fn entry(pp: Option<ProxyProtocolVersion>) -> NodeSpec {
     })
 }
 
-fn pod(ip: &ServerIpRecordId, port: u16) -> NodeSpec {
+fn pod(server: &ServerId, port: u16) -> NodeSpec {
     NodeSpec::Pod(PodConfig {
-        ip: ip.clone(),
+        server: server.clone(),
         port,
+        bind_ip: None,
+        advertise_ip: None,
     })
 }
 
@@ -256,13 +258,13 @@ fn a_pod_must_reference_an_ip_of_this_canvas() {
     let mut b = Builder::new("prod");
     let s = b.server("tokyo");
     b.ip("ip1", &s, "203.0.113.10");
-    b.node("pod", pod(&ids::server_ip_id("foreign"), 443), pod_ports());
+    b.node("pod", pod(&ids::server_id("foreign"), 443), pod_ports());
     b.node("entry", entry(None), entry_ports());
     b.node("exit", exit("10.0.0.5:8080"), exit_ports());
     b.connect("pod-listen", "entry-listen");
     b.connect("exit-destination", "pod-destination");
     let problems = analyze(&b.build());
-    assert_eq!(errors(&problems), vec![ProblemKind::PodIpForeign]);
+    assert_eq!(errors(&problems), vec![ProblemKind::PodServerForeign]);
 }
 
 /// A pod in a subcanvas listening on a server of the root, with its whole chain
@@ -292,7 +294,7 @@ fn a_pod_may_use_a_server_anywhere_in_its_tree() {
 #[test]
 fn a_pod_may_not_use_a_server_of_another_tree() {
     let problems = analyze(&pod_in_sub_on_root_server(false).build());
-    assert_eq!(errors(&problems), vec![ProblemKind::PodIpForeign]);
+    assert_eq!(errors(&problems), vec![ProblemKind::PodServerForeign]);
 }
 
 /// pod -> relay in root; the relay's destination goes into `sub`, whose export
@@ -572,8 +574,10 @@ fn ip_hash_behind_an_aggregate_is_still_reachable() {
     assert!(errors(&problems).contains(&ProblemKind::IpHashWithoutClientIp));
 }
 
+/// Every server starts with unwired transport pods, so an unconnected pod is the
+/// normal state: it derives nothing and is not reported.
 #[test]
-fn an_unconnected_pod_port_is_a_warning() {
+fn an_unconnected_pod_port_is_not_reported() {
     let mut b = Builder::new("prod");
     let s = b.server("tokyo");
     let ip = b.ip("ip1", &s, "203.0.113.10");
@@ -581,7 +585,7 @@ fn an_unconnected_pod_port_is_a_warning() {
     let topology = b.build();
     let problems = analyze(&topology);
     assert!(errors(&problems).is_empty(), "{problems:?}");
-    assert_eq!(warnings(&problems), vec![ProblemKind::PodPortUnconnected]);
+    assert!(warnings(&problems).is_empty(), "{problems:?}");
     assert!(
         ensure_valid(&topology).is_ok(),
         "warnings never block a write"

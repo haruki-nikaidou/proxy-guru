@@ -16,9 +16,20 @@ service WorkerAgent {
   rpc ReportHealth(stream HealthReport) returns (ReportHealthReply);
 }
 
+// What the worker knows about its own addresses. An empty string means the
+// worker could not learn that address; the master keeps whatever it had.
+message ReportedAddresses {
+  // Learned from `--public-ip-urls` over IPv4 / IPv6.
+  string public_v4 = 1;
+  string public_v6 = 2;
+  // Non-loopback, non-link-local interface addresses, sorted and deduplicated.
+  repeated string interfaces = 3;
+}
 message RegisterRequest {
   string server_id = 1;
   int64 running_revision = 2;
+  // Best effort; may be unset.
+  ReportedAddresses reported_addresses = 3;
 }
 message RegisterReply {
   string refresh_key = 1;
@@ -67,5 +78,7 @@ message HealthReport {
   int64 max_connections = 5;
   // One entry per running `[[forwarding]]`.
   repeated PodStatus pods = 6;
+  // Set only on a report whose address discovery changed something.
+  ReportedAddresses reported_addresses = 7;
 }
 message ReportHealthReply {}

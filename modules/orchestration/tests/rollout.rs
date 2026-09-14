@@ -19,7 +19,7 @@ use orchestration::services::agent::RegisterWorker;
 use orchestration::services::edge::{Connect, Disconnect};
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
 use orchestration::services::rollout::ForgetServerApplied;
-use orchestration::services::server::{AddServerIp, CreateServer};
+use orchestration::services::server::{AddressOverrides, CreateServer};
 use orchestration::services::{OrchestrationError, canvas as canvas_service};
 
 /// Takes and acknowledges whatever the database offers this server, the way a
@@ -38,6 +38,8 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 actor: machine(),
                 server_id: server.clone(),
                 running_revision: 0,
+                observed: None,
+                reported: None,
             })
             .await?;
     }
@@ -96,9 +98,9 @@ async fn settle(w: &World, f: &Fixture) -> Result<(), Box<dyn std::error::Error>
     panic!("the fabric never settled")
 }
 
-fn cap(ip: &str, port: i64, protocol: ListenProtocol) -> ListenerCap {
+fn cap(server: &ServerId, port: i64, protocol: ListenProtocol) -> ListenerCap {
     ListenerCap {
-        ip: ip.to_string(),
+        server: server.clone(),
         port,
         protocol,
     }
@@ -161,18 +163,14 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
                 position: pos0(),
                 ipv6_resolve: ServerIpv6Resolve::Tolerated,
                 log_level: "info".to_string(),
+                addresses: AddressOverrides {
+                    override_v4: Some(ip.to_string()),
+                    override_v6: None,
+                    extra_addresses: Vec::new(),
+                },
             })
             .await?;
-        let record = w
-            .servers
-            .process(AddServerIp {
-                actor: operator(),
-                server: server.id.clone(),
-                ip: ip.to_string(),
-                country: "jp".to_string(),
-            })
-            .await?;
-        servers.push((server.id, record.id));
+        servers.push((server.id.clone(), server.id));
     }
     let (tokyo, tokyo_ip) = servers[0].clone();
     let (osaka, osaka_ip) = servers[1].clone();
@@ -194,9 +192,11 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     let ingress = create(
         "ingress",
         NodeSpec::Pod(PodConfig {
-            ip: tokyo_ip,
-            port: 443,
-        }),
+                server: tokyo_ip,
+                port: 443,
+                bind_ip: None,
+                advertise_ip: None,
+            }),
     )
     .await?;
     let entry = create(
@@ -219,9 +219,11 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     let osaka_hop = create(
         "osaka-hop",
         NodeSpec::Pod(PodConfig {
-            ip: osaka_ip,
-            port: 9443,
-        }),
+                server: osaka_ip,
+                port: 9443,
+                bind_ip: None,
+                advertise_ip: None,
+            }),
     )
     .await?;
     let exit = create(
@@ -290,11 +292,13 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
             actor: operator(),
             node: f.osaka_hop.node.id.clone(),
             spec: NodeSpec::Pod(PodConfig {
-                ip: match &f.osaka_hop.node.spec {
-                    NodeSpec::Pod(cfg) => cfg.ip.clone(),
+                server: match &f.osaka_hop.node.spec {
+                    NodeSpec::Pod(cfg) => cfg.server.clone(),
                     other => panic!("expected a pod, got {other:?}"),
                 },
                 port: 9444,
+                bind_ip: None,
+                advertise_ip: None,
             }),
             item_count: 0,
         })
@@ -304,18 +308,18 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
     let osaka_view = w.view(&f.osaka).await?;
     let osaka_serves = serves(&osaka_view, &osaka_view.desired);
     assert!(
-        osaka_serves.contains(&cap("198.51.100.10", 9443, ListenProtocol::RelayTcp)),
+        osaka_serves.contains(&cap(&f.osaka, 9443, ListenProtocol::RelayTcp)),
         "the old listener stays up while tokyo still dials it: {osaka_serves:?}"
     );
     assert!(
-        osaka_serves.contains(&cap("198.51.100.10", 9444, ListenProtocol::RelayTcp)),
+        osaka_serves.contains(&cap(&f.osaka, 9444, ListenProtocol::RelayTcp)),
         "and the new one comes up alongside it: {osaka_serves:?}"
     );
 
     let tokyo_view = w.view(&f.tokyo).await?;
     assert_eq!(
         points_at(&tokyo_view.desired),
-        vec![cap("198.51.100.10", 9443, ListenProtocol::RelayTcp)],
+        vec![cap(&f.osaka, 9443, ListenProtocol::RelayTcp)],
         "tokyo must not be pointed at a listener nobody serves yet"
     );
     assert_eq!(
@@ -339,13 +343,13 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
     let tokyo_view = w.view(&f.tokyo).await?;
     assert_eq!(
         points_at(&tokyo_view.desired),
-        vec![cap("198.51.100.10", 9444, ListenProtocol::RelayTcp)],
+        vec![cap(&f.osaka, 9444, ListenProtocol::RelayTcp)],
         "the switch happens once the target is proven to serve the new listener"
     );
     assert!(tokyo_view.waiting_for.is_empty());
     let osaka_serves = serves(&osaka_view, &w.view(&f.osaka).await?.desired);
     assert!(
-        osaka_serves.contains(&cap("198.51.100.10", 9443, ListenProtocol::RelayTcp)),
+        osaka_serves.contains(&cap(&f.osaka, 9443, ListenProtocol::RelayTcp)),
         "osaka may not drop the old listener while tokyo still runs a config using it"
     );
 
@@ -355,7 +359,7 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
     let osaka_serves = serves(&osaka_view, &w.view(&f.osaka).await?.desired);
     assert_eq!(
         osaka_serves,
-        vec![cap("198.51.100.10", 9444, ListenProtocol::RelayTcp)],
+        vec![cap(&f.osaka, 9444, ListenProtocol::RelayTcp)],
         "nothing points at 9443 any more, so it is dropped"
     );
 
@@ -436,8 +440,8 @@ async fn a_protocol_change_on_a_referenced_listener_is_rejected() -> TestResult 
     match err {
         OrchestrationError::Conflict(message) => {
             assert!(
-                message.contains("198.51.100.10:9443"),
-                "the error names the listener: {message}"
+                message.contains("osaka:9443"),
+                "the error names the listener by server and port: {message}"
             );
         }
         other => panic!("expected a conflict, got {other:?}"),
@@ -517,6 +521,11 @@ async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some("203.0.113.10".to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
     let err = w
@@ -525,6 +534,8 @@ async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
             actor: operator(),
             server_id: server.id,
             running_revision: 0,
+            observed: None,
+            reported: None,
         })
         .await
         .expect_err("human sessions may not register workers");
@@ -545,7 +556,7 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener() -> TestResult {
     let served = serves(&before, &before.applied);
     assert_eq!(
         served,
-        vec![cap("203.0.113.10", 443, ListenProtocol::Raw)],
+        vec![cap(&f.tokyo, 443, ListenProtocol::Raw)],
         "tokyo serves its ingress listener before the edit"
     );
     assert!(before.invalid_pods.is_empty(), "{:?}", before.invalid_pods);
@@ -587,7 +598,7 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener() -> TestResult {
         );
     };
     assert_eq!(invalid.pod, "ingress");
-    assert_eq!(invalid.listen, "203.0.113.10:443");
+    assert_eq!(invalid.listen, "[::]:443");
     assert_eq!(
         serves(&after, &after.desired),
         served,

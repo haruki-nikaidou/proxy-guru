@@ -8,6 +8,7 @@
 //! The binary is a thin wrapper around [`run`]; everything else lives here so that
 //! integration tests can drive the supervisor and the control-plane agent directly.
 
+pub mod addresses;
 pub mod agent;
 pub mod certs;
 pub mod cli;
@@ -186,6 +187,7 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
             state_dir: cli.state_dir.clone(),
             applied_revision,
             health_interval: std::time::Duration::from_secs(cli.health_interval),
+            public_ip_urls: cli.public_ip_urls.clone(),
         },
         sup.clone(),
         shutdown.clone(),

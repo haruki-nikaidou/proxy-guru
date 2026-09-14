@@ -3,10 +3,10 @@
 
 use crate::entities::surreal::server::{
     ClaimServerWatchSession, FindServerById, ReleaseServerWatchSession, RenewServerWatchSession,
-    ServerEntity, ServerId,
+    ReportedAddresses, ServerEntity, ServerId,
 };
 use crate::entities::surreal::view::TakeInFlight;
-use crate::rpc::agent_middleware::agent_from_request;
+use crate::rpc::agent_middleware::{agent_from_request, peer_address};
 use crate::services::agent::{AckConfig, AgentService, PodResult, RegisterWorker};
 use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
@@ -32,6 +32,17 @@ pub struct WorkerAgentGrpc {
     pub db: SurrealProcessor,
     pub hub: WatchHub,
     pub lease: SessionLease,
+}
+
+/// Empty strings on the wire mean "unknown".
+fn reported_from_proto(reported: pb::ReportedAddresses) -> ReportedAddresses {
+    let non_empty = |s: String| (!s.is_empty()).then_some(s);
+    ReportedAddresses {
+        public_v4: non_empty(reported.public_v4),
+        public_v6: non_empty(reported.public_v6),
+        interfaces: reported.interfaces,
+        reported_at: chrono::Utc::now(),
+    }
 }
 
 fn pod_result(pod: pb::PodStatus) -> PodResult {
@@ -144,6 +155,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         request: Request<pb::RegisterRequest>,
     ) -> Result<Response<pb::RegisterReply>, Status> {
         let actor = auth::rpc::middleware::from_request(&request)?;
+        let observed = peer_address(&request, self.health.config.trust_proxy_address_headers);
         let input = request.into_inner();
         let refresh_key = self
             .agents
@@ -151,6 +163,8 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 actor,
                 server_id: ids::server_id(&input.server_id),
                 running_revision: input.running_revision,
+                observed,
+                reported: input.reported_addresses.map(reported_from_proto),
             })
             .await?;
         Ok(Response::new(pb::RegisterReply {
@@ -313,6 +327,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                                 current_connections: report.current_connections,
                                 max_connections: report.max_connections,
                                 pods: report.pods.into_iter().map(pod_result).collect(),
+                                reported: report.reported_addresses.map(reported_from_proto),
                             },
                         })
                         .await;

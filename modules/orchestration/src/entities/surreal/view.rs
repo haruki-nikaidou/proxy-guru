@@ -13,7 +13,6 @@ use crate::entities::surreal::topology::CanvasTopology;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
-use std::net::{AddrParseError, SocketAddr};
 use surrealdb_types::SurrealValue;
 use wakuwaku::surreal::SurrealProcessor;
 
@@ -31,12 +30,13 @@ pub enum ListenProtocol {
 
 /// A listener another server can point at.
 ///
-/// Identity is by content: the same ip/port/protocol is the same capability
-/// whichever node row produced it. That is what lets a server keep serving a
-/// listener across an unrelated edit while its dependants still reference it.
+/// Identity is by content: the same server/port/protocol is the same capability
+/// whichever node row produced it, and whatever address the server is dialed on
+/// today. That is what lets a server keep serving a listener across an unrelated
+/// edit (or an address change) while its dependants still reference it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SurrealValue)]
 pub struct ListenerCap {
-    pub ip: String,
+    pub server: ServerId,
     pub port: i64,
     pub protocol: ListenProtocol,
 }
@@ -45,10 +45,15 @@ impl ListenerCap {
     /// Same socket, different protocol: the two cannot coexist on one worker, so a
     /// switch between them can never be made seamlessly.
     pub fn conflicts(&self, other: &Self) -> bool {
-        self.ip == other.ip
+        self.server == other.server
             && self.port == other.port
             && self.transport() == other.transport()
             && self.protocol != other.protocol
+    }
+
+    /// The server's record key, for messages and ordering.
+    pub fn server_key(&self) -> String {
+        crate::utils::ids::record_key(&self.server.0)
     }
 
     pub fn transport(&self) -> guru_worker_config::Transport {
@@ -56,10 +61,6 @@ impl ListenerCap {
             ListenProtocol::RelayQuic => guru_worker_config::Transport::Quic,
             _ => guru_worker_config::Transport::Tcp,
         }
-    }
-
-    pub fn socket(&self) -> Result<SocketAddr, AddrParseError> {
-        format!("{}:{}", self.ip, self.port).parse()
     }
 }
 
@@ -372,7 +373,7 @@ impl Processor<LoadCanvasDerivationInput> for SurrealProcessor {
     #[tracing::instrument(name = "Query-Transaction:LoadCanvasDerivationInput", skip_all, err)]
     async fn process(&self, input: LoadCanvasDerivationInput) -> Result<Self::Output, Self::Error> {
         // Statement 0 is BEGIN, 1-2 the LETs, 3 the root's counters, 4 the
-        // canvases, 5-9 the row reads, 10 the views, 11 the root.
+        // canvases, 5-8 the row reads, 9 the views, 10 the root.
         let mut resp = self
             .db()
             .query(include_str!(
@@ -384,10 +385,10 @@ impl Processor<LoadCanvasDerivationInput> for SurrealProcessor {
             return Ok(None);
         };
         let root = resp
-            .take::<Option<CanvasId>>(11)?
+            .take::<Option<CanvasId>>(10)?
             .unwrap_or_else(|| input.canvas.clone());
         let rows = crate::entities::surreal::topology::group_rows(&mut resp, 4, root.clone())?;
-        let views = resp.take::<Vec<ServerConfigViewEntity>>(10)?;
+        let views = resp.take::<Vec<ServerConfigViewEntity>>(9)?;
         Ok(Some(DerivationInput {
             root: root.clone(),
             generation: generations.generation,
@@ -396,7 +397,6 @@ impl Processor<LoadCanvasDerivationInput> for SurrealProcessor {
                 root,
                 canvases: rows.canvases,
                 servers: rows.servers,
-                ips: rows.ips,
                 nodes: rows.nodes,
                 edges: rows.edges,
             },

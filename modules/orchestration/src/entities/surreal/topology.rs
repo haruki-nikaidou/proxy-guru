@@ -4,9 +4,7 @@ use crate::entities::surreal::canvas::{CanvasContents, CanvasEntity, CanvasId};
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::node::{NodeEntity, NodeWithPorts};
 use crate::entities::surreal::port::PortEntity;
-use crate::entities::surreal::server::{
-    ServerEntity, ServerId, ServerIpRecordEntity, ServerWithIp,
-};
+use crate::entities::surreal::server::{ServerEntity, ServerId};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use wakuwaku::surreal::SurrealProcessor;
@@ -19,7 +17,6 @@ pub struct CanvasTopology {
     /// Every canvas of the tree, root first.
     pub canvases: Vec<CanvasEntity>,
     pub servers: Vec<ServerEntity>,
-    pub ips: Vec<ServerIpRecordEntity>,
     pub nodes: Vec<NodeWithPorts>,
     pub edges: Vec<EdgeConnectionEntity>,
 }
@@ -46,7 +43,6 @@ impl Processor<LoadCanvasTopology> for SurrealProcessor {
             root: rows.root,
             canvases: rows.canvases,
             servers: rows.servers,
-            ips: rows.ips,
             nodes: rows.nodes,
             edges: rows.edges,
         })
@@ -120,23 +116,10 @@ impl Processor<LoadCanvasContents> for SurrealProcessor {
             .cloned()
             .collect();
 
-        let mut by_server: HashMap<String, Vec<ServerIpRecordEntity>> = HashMap::new();
-        for ip in rows.ips {
-            by_server
-                .entry(crate::utils::ids::record_key(&ip.server.0))
-                .or_default()
-                .push(ip);
-        }
         let servers = rows
             .servers
             .into_iter()
             .filter(|s| mine(&s.canvas))
-            .map(|server| {
-                let ips = by_server
-                    .remove(crate::utils::ids::record_key(&server.id.0).as_str())
-                    .unwrap_or_default();
-                ServerWithIp { server, ips }
-            })
             .collect();
         let port_owners: std::collections::HashSet<String> = nodes
             .iter()
@@ -184,13 +167,12 @@ pub(crate) struct CanvasRows {
     pub root: CanvasId,
     pub canvases: Vec<CanvasEntity>,
     pub servers: Vec<ServerEntity>,
-    pub ips: Vec<ServerIpRecordEntity>,
     pub nodes: Vec<NodeWithPorts>,
     pub edges: Vec<EdgeConnectionEntity>,
 }
 
-/// Reads the canvases, servers, ip records, nodes (with their ports) and edges
-/// of one canvas tree in one transaction.
+/// Reads the canvases, servers, nodes (with their ports) and edges of one canvas
+/// tree in one transaction.
 async fn load_canvas(
     sp: &SurrealProcessor,
     canvas: &CanvasId,
@@ -200,14 +182,14 @@ async fn load_canvas(
         .query(include_str!("../../../sql/topology/load_canvas.surql"))
         .bind(("canvas", canvas.clone()))
         .await?;
-    // Statement 0 is BEGIN, 1-2 the LETs; the canvases are at 3 and the root at 9.
+    // Statement 0 is BEGIN, 1-2 the LETs; the canvases are at 3 and the root at 8.
     let root = resp
-        .take::<Option<CanvasId>>(9)?
+        .take::<Option<CanvasId>>(8)?
         .unwrap_or_else(|| canvas.clone());
     group_rows(&mut resp, 3, root)
 }
 
-/// Groups the canvas read at `offset` and the five row reads that follow it (the
+/// Groups the canvas read at `offset` and the four row reads that follow it (the
 /// statement shape of `load_canvas.surql`) into ports-per-node shape. Shared with
 /// the derivation read, which wraps the same statements in a transaction.
 pub(crate) fn group_rows(
@@ -222,10 +204,9 @@ pub(crate) fn group_rows(
         (key != root_key, key)
     });
     let servers = resp.take::<Vec<ServerEntity>>(offset.saturating_add(1))?;
-    let ips = resp.take::<Vec<ServerIpRecordEntity>>(offset.saturating_add(2))?;
-    let node_rows = resp.take::<Vec<NodeEntity>>(offset.saturating_add(3))?;
-    let port_rows = resp.take::<Vec<PortEntity>>(offset.saturating_add(4))?;
-    let edges = resp.take::<Vec<EdgeConnectionEntity>>(offset.saturating_add(5))?;
+    let node_rows = resp.take::<Vec<NodeEntity>>(offset.saturating_add(2))?;
+    let port_rows = resp.take::<Vec<PortEntity>>(offset.saturating_add(3))?;
+    let edges = resp.take::<Vec<EdgeConnectionEntity>>(offset.saturating_add(4))?;
 
     let mut ports_by_node: HashMap<String, Vec<PortEntity>> = HashMap::new();
     for port in port_rows {
@@ -247,7 +228,6 @@ pub(crate) fn group_rows(
         root,
         canvases,
         servers,
-        ips,
         nodes,
         edges,
     })

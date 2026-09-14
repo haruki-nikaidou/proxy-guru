@@ -1,4 +1,5 @@
 use crate::prepared::PreparedForwarding;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -79,22 +80,70 @@ async fn handle_quic_connection(incoming: quinn::Incoming, cfg: Arc<PreparedForw
     }
 }
 
-/// Binds a TCP listener with `SO_REUSEADDR` so a restart does not trip over `TIME_WAIT`.
-pub fn bind_tcp(addr: SocketAddr) -> Result<tokio::net::TcpListener, crate::BoxError> {
-    let socket = if addr.is_ipv4() {
-        tokio::net::TcpSocket::new_v4()?
-    } else {
-        tokio::net::TcpSocket::new_v6()?
-    };
-    socket.set_reuseaddr(true)?;
-    socket.bind(addr)?;
-    Ok(socket.listen(1024)?)
+/// Whether an address is the IPv6 wildcard `[::]`, which we bind dual-stack.
+fn is_v6_wildcard(addr: SocketAddr) -> bool {
+    matches!(addr.ip(), std::net::IpAddr::V6(ip) if ip.is_unspecified())
 }
 
-/// Binds a QUIC (UDP) endpoint serving the given config.
+/// Binds a `socket2` socket for `addr`. A `[::]` bind is made dual-stack
+/// (`IPV6_V6ONLY` off) so one listener serves both families; the caller falls
+/// back to `0.0.0.0` when the host has no IPv6. `SO_REUSEADDR` keeps a restart
+/// from tripping over `TIME_WAIT`.
+fn bind_socket(addr: SocketAddr, ty: Type, protocol: Protocol) -> std::io::Result<Socket> {
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let socket = Socket::new(domain, ty, Some(protocol))?;
+    socket.set_reuse_address(true)?;
+    if is_v6_wildcard(addr) {
+        socket.set_only_v6(false)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    Ok(socket)
+}
+
+/// Binds a TCP listener, dual-stack for a `[::]` address, falling back to the
+/// IPv4 wildcard on a host with no IPv6.
+pub fn bind_tcp(addr: SocketAddr) -> Result<tokio::net::TcpListener, crate::BoxError> {
+    let addr = with_v6_fallback(addr, |addr| {
+        let socket = bind_socket(addr, Type::STREAM, Protocol::TCP)?;
+        socket.listen(1024)?;
+        Ok(socket)
+    })?;
+    Ok(tokio::net::TcpListener::from_std(addr.into())?)
+}
+
+/// Binds a QUIC (UDP) endpoint serving the given config, dual-stack for `[::]`,
+/// falling back to the IPv4 wildcard on a host with no IPv6.
 pub fn bind_quic(
     addr: SocketAddr,
     server_cfg: quinn::ServerConfig,
 ) -> Result<quinn::Endpoint, crate::BoxError> {
-    Ok(quinn::Endpoint::server(server_cfg, addr)?)
+    let socket = with_v6_fallback(addr, |addr| bind_socket(addr, Type::DGRAM, Protocol::UDP))?;
+    Ok(quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_cfg),
+        socket.into(),
+        std::sync::Arc::new(quinn::TokioRuntime),
+    )?)
+}
+
+/// Runs `bind` for `addr`; if a `[::]` bind fails (a host without IPv6), retries
+/// once on `0.0.0.0` and warns. The dedup key stays the configured address.
+fn with_v6_fallback(
+    addr: SocketAddr,
+    bind: impl Fn(SocketAddr) -> std::io::Result<Socket>,
+) -> Result<Socket, crate::BoxError> {
+    match bind(addr) {
+        Ok(socket) => Ok(socket),
+        Err(error) if is_v6_wildcard(addr) => {
+            let fallback = SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), addr.port());
+            tracing::warn!(%addr, %error, "binding [::] failed; falling back to 0.0.0.0 (no IPv6?)");
+            Ok(bind(fallback)?)
+        }
+        Err(error) => Err(error.into()),
+    }
 }

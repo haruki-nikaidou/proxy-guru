@@ -18,10 +18,9 @@ use orchestration::entities::surreal::node::{
 };
 use orchestration::entities::surreal::port::PortId;
 use orchestration::entities::surreal::server::{
-    ClaimServerWatchSession, DeleteServerIpRow, DeleteServerRow, FindServerById,
-    FindServerByRefreshKeyDigest, FindServerIpById, ListServerIpsByCanvas, ListServersByCanvas,
-    MoveServerPosition, RegisterWorkerSession, ReleaseServerWatchSession, RenewServerWatchSession,
-    ServerIpRecordId, ServerIpv6Resolve, UpdateServerSettings,
+    ClaimServerWatchSession, DeleteServerRow, FindServerById, FindServerByRefreshKeyDigest,
+    ListServersByCanvas, MoveServerPosition, RegisterWorkerSession, ReleaseServerWatchSession,
+    RenewServerWatchSession, ServerIpv6Resolve, UpdateServerSettings,
 };
 use orchestration::entities::surreal::topology::{
     FindCanvasOfServer, LoadCanvasContents, LoadCanvasTopology,
@@ -67,7 +66,6 @@ async fn canvas_crud_round_trip() -> TestResult {
     );
 
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
     sp.process(DeleteCanvasRow { id: c.id.clone() }).await?;
     assert!(sp.process(FindCanvasById { id: c.id }).await?.is_none());
     assert!(
@@ -79,12 +77,6 @@ async fn canvas_crud_round_trip() -> TestResult {
         "the cascade takes the config view with the server"
     );
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
-    // By id, not through `server.canvas`: a dereference of a deleted parent is
-    // NONE, so a canvas-scoped query cannot see the rows the cascade orphaned.
-    assert!(
-        sp.process(FindServerIpById { id: ip.id }).await?.is_none(),
-        "and the ip records of the servers it took with it"
-    );
     Ok(())
 }
 
@@ -117,6 +109,9 @@ async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
             comment: "primary".to_string(),
             ipv6_resolve: ServerIpv6Resolve::Preferred,
             log_level: "debug".to_string(),
+            override_v4: None,
+            override_v6: None,
+            extra_addresses: Vec::new(),
         })
         .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);
@@ -169,6 +164,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
         now,
         lease_until: now + lease,
         running_revision: 0,
+        observed: None,
+        reported: None,
     };
 
     let row = sp
@@ -501,6 +498,8 @@ async fn register_promotes_a_reported_desired_revision() -> TestResult {
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
         running_revision: 3,
+        observed: None,
+        reported: None,
     })
     .await?
     .expect("the free session is taken");
@@ -553,6 +552,8 @@ async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
         running_revision: 1,
+        observed: None,
+        reported: None,
     })
     .await?
     .expect("the free session is taken");
@@ -600,6 +601,8 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
         running_revision: 7,
+        observed: None,
+        reported: None,
     })
     .await?
     .expect("the free session is taken");
@@ -626,93 +629,17 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
     Ok(())
 }
 
+/// A server delete is refused while a pod is still placed on it, so derivation
+/// can never end up with a pod whose server is gone. Called directly, as a
+/// racing caller would reach it: the service pre-check runs in an earlier
+/// transaction, so the invariant has to hold inside the delete itself.
 #[tokio::test]
-async fn server_ip_records_are_scoped_to_their_canvas() -> TestResult {
-    let sp = setup().await?;
-    let c = canvas(&sp, "prod").await?;
-    let other = canvas(&sp, "staging").await?;
-    let s = server(&sp, &c, "tokyo").await?;
-    let s2 = server(&sp, &other, "osaka").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    let ip2 = server_ip(&sp, &s2, "198.51.100.10").await?;
-
-    let ips = sp
-        .process(ListServerIpsByCanvas {
-            canvas: c.id.clone(),
-        })
-        .await?;
-    assert_eq!(ips.len(), 1);
-    assert_eq!(ips[0].ip, "203.0.113.10");
-    assert!(
-        sp.process(FindServerIpById { id: ip.id.clone() })
-            .await?
-            .is_some()
-    );
-
-    sp.process(DeleteServerIpRow {
-        id: ip.id.clone(),
-        canvas: c.id.clone(),
-    })
-    .await?;
-    assert!(sp.process(FindServerIpById { id: ip.id }).await?.is_none());
-
-    sp.process(DeleteServerRow {
-        id: s2.id.clone(),
-        canvas: other.id.clone(),
-    })
-    .await?;
-    assert!(
-        sp.process(FindServerConfigView {
-            server: s2.id.clone()
-        })
-        .await?
-        .is_none(),
-        "deleting a server deletes its config view"
-    );
-    assert!(sp.process(FindServerById { id: s2.id }).await?.is_none());
-    // By id and unfiltered: `ListServerIpsByCanvas` reaches the canvas through
-    // `server`, which dereferences to NONE once the server row is gone, so it
-    // can never see an ip record the cascade left behind.
-    assert!(
-        sp.process(FindServerIpById { id: ip2.id }).await?.is_none(),
-        "deleting a server deletes its ip records"
-    );
-    let mut resp = sp
-        .db()
-        .query("SELECT VALUE id FROM server_ip_record")
-        .await?;
-    assert!(
-        resp.take::<Vec<ServerIpRecordId>>(0)?.is_empty(),
-        "and leaves no orphaned ip rows in the table"
-    );
-    Ok(())
-}
-
-/// The two deletes that can strand a pod. Both are called here directly, exactly
-/// as a racing caller would reach them: the service-layer pre-checks run in an
-/// earlier transaction, so the invariant has to hold inside the delete itself.
-#[tokio::test]
-async fn deleting_an_ip_a_pod_listens_on_is_refused() -> TestResult {
+async fn deleting_a_server_with_a_live_pod_is_refused() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
 
-    sp.process(DeleteServerIpRow {
-        id: ip.id.clone(),
-        canvas: c.id.clone(),
-    })
-    .await
-    .expect_err("the ip record is still listened on");
-    assert!(
-        sp.process(FindServerIpById { id: ip.id.clone() })
-            .await?
-            .is_some(),
-        "the refused delete left the ip record in place"
-    );
-
-    // The same holds for the server cascade, which removes those ip rows.
     sp.process(DeleteServerRow {
         id: s.id.clone(),
         canvas: c.id.clone(),
@@ -723,10 +650,10 @@ async fn deleting_an_ip_a_pod_listens_on_is_refused() -> TestResult {
         sp.process(FindServerById { id: s.id.clone() })
             .await?
             .is_some(),
-        "the refused cascade left the server in place"
+        "the refused delete left the server in place"
     );
 
-    // Once the pod is gone, both succeed and nothing is left dangling.
+    // Once the pod is gone the delete succeeds.
     sp.process(DeleteNodeRow {
         id: pod.node.id.clone(),
         canvas: c.id.clone(),
@@ -739,46 +666,43 @@ async fn deleting_an_ip_a_pod_listens_on_is_refused() -> TestResult {
         canvas: c.id.clone(),
     })
     .await?;
-    assert!(
-        sp.process(FindServerIpById { id: ip.id }).await?.is_none(),
-        "the cascade removed the ip record with its server"
-    );
+    assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
     Ok(())
 }
 
 /// The pod -> server link is what lets derivation attribute a per-pod failure to
 /// a server, so the schema refuses a link that is dangling or points into another
 /// canvas. Written through the real `CreateNodeRow` path on purpose: the guard
-/// sits on `spec.config.ip`, and only the actual `NodeSpec` encoding proves it
-/// guards where the rows really land.
+/// sits on `spec.config.server`, and only the actual `NodeSpec` encoding proves
+/// it guards where the rows really land.
 #[tokio::test]
-async fn a_pod_cannot_reference_a_missing_ip_record() -> TestResult {
+async fn a_pod_cannot_reference_a_server_outside_its_tree() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let other = canvas(&sp, "staging").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
 
     // A sound reference is accepted...
-    node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
 
-    // ...an ip record in another canvas is not: derivation loads one canvas at a
-    // time, so a foreign link reads exactly like a missing one.
-    node(&sp, &other, "foreign-pod", pod_spec(&ip, 443), pod_ports())
+    // ...placing a pod in another canvas on this server is not: derivation loads
+    // one tree at a time, so a cross-tree link reads exactly like a missing one.
+    node(&sp, &other, "foreign-pod", pod_spec(&s, 443), pod_ports())
         .await
-        .expect_err("a pod may not reach into another canvas for its ip");
+        .expect_err("a pod may not reach into another tree for its server");
 
-    // ...and one pointing at an id no row carries is refused. The assertion runs
-    // inside `CreateNodeRow`'s transaction, so what surfaces is the cancellation;
-    // what matters is that nothing was written.
-    let ghost = orchestration::utils::ids::server_ip_id("ghost");
+    // ...and one pointing at a server id no row carries is refused inside
+    // `CreateNodeRow`'s transaction, so nothing is written.
+    let ghost = orchestration::utils::ids::server_id("ghost");
     let spec = NodeSpec::Pod(PodConfig {
-        ip: ghost,
+        server: ghost,
         port: 443,
+        bind_ip: None,
+        advertise_ip: None,
     });
     node(&sp, &c, "ghost-pod", spec, pod_ports())
         .await
-        .expect_err("a dangling ip link must not be storable");
+        .expect_err("a dangling server link must not be storable");
     let topology = sp
         .process(LoadCanvasTopology {
             canvas: c.id.clone(),
@@ -792,13 +716,7 @@ async fn a_pod_cannot_reference_a_missing_ip_record() -> TestResult {
     assert_eq!(
         names,
         ["pod"],
-        "the rejected pod left no row behind, and the sound one is untouched"
-    );
-    assert!(
-        sp.process(FindServerIpById { id: ip.id.clone() })
-            .await?
-            .is_some(),
-        "the sound ip record is untouched"
+        "the rejected pods left no row behind, and the sound one is untouched"
     );
     Ok(())
 }
@@ -808,9 +726,8 @@ async fn create_node_writes_node_and_ports_together() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
 
-    let pod = node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
     assert_eq!(pod.ports.len(), 2);
 
     let loaded = sp
@@ -823,7 +740,7 @@ async fn create_node_writes_node_and_ports_together() -> TestResult {
     match loaded.node.spec {
         NodeSpec::Pod(cfg) => {
             assert_eq!(cfg.port, 443);
-            assert_eq!(cfg.ip.0, ip.id.0);
+            assert_eq!(cfg.server.0, s.id.0);
         }
         other => panic!("expected pod spec, got {other:?}"),
     }
@@ -888,8 +805,7 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
     let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
     let edge = sp
         .process(ConnectPorts {
@@ -965,8 +881,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
     let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
     let edge = sp
         .process(ConnectPorts {
@@ -981,7 +896,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
         .process(UpdateNodeSpecRow {
             id: pod.node.id.clone(),
             canvas: c.id.clone(),
-            spec: pod_spec(&ip, 8443),
+            spec: pod_spec(&s, 8443),
             ports: pod_ports(),
             import_sync: None,
         })
@@ -1014,7 +929,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
         .process(UpdateNodeSpecRow {
             id: pod.node.id.clone(),
             canvas: c.id.clone(),
-            spec: pod_spec(&ip, 8443),
+            spec: pod_spec(&s, 8443),
             ports: narrowed,
             import_sync: None,
         })
@@ -1030,8 +945,7 @@ async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
     let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
     let before = sp
         .process(FindCanvasById { id: c.id.clone() })
@@ -1077,8 +991,7 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
     let sp = setup().await?;
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let ip = server_ip(&sp, &s, "203.0.113.10").await?;
-    node(&sp, &c, "pod", pod_spec(&ip, 443), pod_ports()).await?;
+    node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
 
     let contents = sp
         .process(LoadCanvasContents {
@@ -1088,7 +1001,6 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
         .unwrap();
     assert_eq!(contents.canvas.name, "prod");
     assert_eq!(contents.servers.len(), 1);
-    assert_eq!(contents.servers[0].ips.len(), 1);
     assert_eq!(contents.nodes.len(), 1);
 
     let topology = sp
@@ -1099,7 +1011,6 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
     assert_eq!(topology.root.0, c.id.0);
     assert_eq!(topology.canvases.len(), 1);
     assert_eq!(topology.nodes.len(), 1);
-    assert_eq!(topology.ips.len(), 1);
     assert_eq!(topology.servers.len(), 1);
     Ok(())
 }

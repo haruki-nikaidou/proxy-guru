@@ -43,40 +43,49 @@ DEFINE FIELD last_seen_at ON orchestration_server TYPE option<datetime>;
 -- scan history.
 DEFINE FIELD last_health_report_at ON orchestration_server TYPE option<datetime>;
 DEFINE FIELD health_status ON orchestration_server TYPE string DEFAULT "offline" ASSERT $value INSIDE ["online", "degraded", "offline"];
+-- Where the server can be reached. The worker reports its own addresses on
+-- registration and whenever they change (`reported_addresses`), the master
+-- records the peer address it saw the registration come from
+-- (`observed_address`), and the operator may pin either family (`override_*`)
+-- or add further addresses (`extra_addresses`). What other servers dial is
+-- computed from these, never stored: see `ServerEntity::effective_address`.
+DEFINE FIELD override_v4 ON orchestration_server TYPE option<string>;
+DEFINE FIELD override_v6 ON orchestration_server TYPE option<string>;
+DEFINE FIELD extra_addresses ON orchestration_server TYPE array<string> DEFAULT [];
+DEFINE FIELD reported_addresses ON orchestration_server TYPE option<object> FLEXIBLE;
+DEFINE FIELD observed_address ON orchestration_server TYPE option<string>;
+DEFINE FIELD observed_at ON orchestration_server TYPE option<datetime>;
 DEFINE INDEX orchestration_server_canvas ON orchestration_server FIELDS canvas;
 DEFINE INDEX orchestration_server_refresh_key ON orchestration_server FIELDS current_dynamic_refresh_key;
-
-DEFINE TABLE server_ip_record SCHEMAFULL;
-DEFINE FIELD server ON server_ip_record TYPE record<orchestration_server>;
-DEFINE FIELD ip ON server_ip_record TYPE string;
-DEFINE FIELD country ON server_ip_record TYPE string;
-DEFINE INDEX server_ip_record_server ON server_ip_record FIELDS server;
 
 DEFINE TABLE orchestration_node SCHEMAFULL;
 DEFINE FIELD canvas ON orchestration_node TYPE record<orchestration_canvas>;
 DEFINE FIELD name ON orchestration_node TYPE string;
 DEFINE FIELD comment ON orchestration_node TYPE string;
 DEFINE FIELD spec ON orchestration_node TYPE object FLEXIBLE;
--- A pod's spec carries `ip`, the `server_ip_record` it listens on, and that link
--- is what attributes the pod to a server: derivation resolves the pod's server
+-- A pod's spec carries `server`, the server it listens on, and that link is
+-- what attributes the pod to a server: derivation resolves the pod's server
 -- through it, so a per-pod failure can be recorded on that server's
 -- `orchestration_server_config_view` row. A dangling link has no server to
 -- attribute it to, making it the one derivation failure that can be neither
 -- published nor reported, so the database refuses to store one. The same applies
--- to an ip record outside the pod's canvas tree: derivation loads one tree at a
+-- to a server outside the pod's canvas tree: derivation loads one tree at a
 -- time, so a foreign link is indistinguishable from a missing one. A server
 -- anywhere in the tree is fine: a parent sees a child canvas as a black box, but
 -- the flattened graph is derived as a whole.
 --
--- The path is `spec.config.ip`, not `spec.ip`: `NodeSpec` is a tagged enum
--- (`#[surreal(tag = "type", content = "config")]`), so a pod row reads
--- `spec: { type: "pod", config: { ip, port } }`. `spec` stays FLEXIBLE — an
--- Entry, Exit or Relay carries a different `config` shape with no `ip` key at
--- all, hence `option<...>` and the explicit `NONE` arm in the assertion.
-DEFINE FIELD spec.config.ip ON orchestration_node TYPE option<record<server_ip_record>>
+-- The path is `spec.config.server`, not `spec.server`: `NodeSpec` is a tagged
+-- enum (`#[surreal(tag = "type", content = "config")]`), so a pod row reads
+-- `spec: { type: "pod", config: { server, port, bind_ip, advertise_ip } }`.
+-- `spec` stays FLEXIBLE — an Entry, Exit or Relay carries a different `config`
+-- shape with no `server` key at all, hence `option<...>` and the explicit `NONE`
+-- arm in the assertion. `bind_ip` / `advertise_ip` are validated by the service
+-- layer.
+DEFINE FIELD spec.config.server ON orchestration_node TYPE option<record<orchestration_server>>
     ASSERT $value == NONE
         OR (record::exists($value)
-            AND $value.server.canvas IN fn::orchestration_tree(fn::orchestration_root($this.canvas), 0));
+            AND $value.canvas IN fn::orchestration_tree(fn::orchestration_root($this.canvas), 0));
+DEFINE INDEX orchestration_node_server ON orchestration_node FIELDS spec.config.server;
 DEFINE FIELD position ON orchestration_node TYPE object;
 DEFINE FIELD position.x ON orchestration_node TYPE int;
 DEFINE FIELD position.y ON orchestration_node TYPE int;

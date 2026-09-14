@@ -21,7 +21,7 @@ use crate::entities::surreal::node::{
     NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayProtocol as EntityRelayProtocol,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity};
-use crate::entities::surreal::server::{ServerId, ServerIpRecordEntity};
+use crate::entities::surreal::server::ServerId;
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::entities::surreal::view::{
     CertificateKind, CertificateRef, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
@@ -33,7 +33,7 @@ use guru_worker_config::{
     Config, Forwarding, ForwardingTo, ListenAs, LoadBalanceGroup, LogConfig, RelayHost,
     RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
 };
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -48,10 +48,12 @@ pub enum DeriveError {
     UnsupportedSpec { node: String },
     #[error("pod {node}: the import/export chain on one of its ports is not connected through")]
     DanglingBoundary { node: String },
-    #[error("pod {node} references missing ip record {ip}")]
-    MissingIpRecord { node: String, ip: String },
-    #[error("ip record {ip} holds '{value}', which is not an IP address")]
-    InvalidIp { ip: String, value: String },
+    #[error("pod {node} bind address '{value}' is not an IP address")]
+    InvalidBindIp { node: String, value: String },
+    #[error("pod {node} advertise address '{value}' is not an IP address")]
+    InvalidAdvertiseIp { node: String, value: String },
+    #[error("server {server} has no address yet: wait for its worker to register, or pin one")]
+    ServerNoAddress { server: String },
     #[error("exit {node} destination '{destination}' is not host:port")]
     InvalidDestination { node: String, destination: String },
     #[error("relay {node} listen input is not fed by a pod")]
@@ -199,16 +201,9 @@ pub fn derive_server_config(
         let NodeSpec::Pod(cfg) = &pod.node.spec else {
             continue;
         };
-        // Unattributable rather than pod-level: the ip record is what says which
-        // server owns this pod, so a dangling link cannot be blamed on one server.
-        // The schema rejects such a link, which is why this stays a hard failure.
-        let ip = index
-            .ip(&record_key(&cfg.ip.0))
-            .ok_or_else(|| DeriveError::MissingIpRecord {
-                node: pod.node.name.clone(),
-                ip: record_key(&cfg.ip.0),
-            })?;
-        if record_key(&ip.server.0) != server_key {
+        // The pod's server link is its attribution; the schema guarantees it
+        // resolves, so a pod on another server is simply not this server's.
+        if record_key(&cfg.server.0) != server_key {
             continue;
         }
         let (Some(listen_port), Some(destination_port)) = (
@@ -218,7 +213,8 @@ pub fn derive_server_config(
             continue;
         };
         if index.edge_on(listen_port).is_none() || index.edge_on(destination_port).is_none() {
-            // A pod with an unconnected port is reported as a warning and skipped.
+            // A pod with an unconnected port is not a rule yet (every server starts
+            // with unwired transport pods) and is skipped.
             continue;
         }
 
@@ -226,7 +222,6 @@ pub fn derive_server_config(
             &index,
             pod,
             cfg,
-            ip,
             listen_port,
             destination_port,
             certificates,
@@ -239,7 +234,7 @@ pub fn derive_server_config(
             Err(error) => invalid.push(InvalidPod {
                 node: pod.node.id.clone(),
                 pod: pod.node.name.clone(),
-                listen: format!("{}:{}", ip.ip, cfg.port),
+                listen: cfg.listen_display(),
                 error: error.to_string(),
             }),
         }
@@ -266,21 +261,24 @@ pub fn derive_server_config(
 }
 
 /// One pod's `[[forwarding]]` entry, or why that pod alone cannot be derived.
-#[allow(clippy::too_many_arguments)]
 fn derive_pod(
     index: &Index<'_>,
     pod: &NodeWithPorts,
     cfg: &PodConfig,
-    ip: &ServerIpRecordEntity,
     listen_port: &PortEntity,
     destination_port: &PortEntity,
     certificates: &DerivationCertificates,
     config: &OrchestrationConfig,
 ) -> Result<(Forwarding, ForwardingDeps), DeriveError> {
-    let address: IpAddr = ip.ip.parse().map_err(|_| DeriveError::InvalidIp {
-        ip: record_key(&ip.id.0),
-        value: ip.ip.clone(),
-    })?;
+    // No bind means every address of the host: the worker binds `::` dual-stack
+    // and falls back to `0.0.0.0` on a host without IPv6.
+    let address: IpAddr = cfg
+        .bind_ip()
+        .map_err(|value| DeriveError::InvalidBindIp {
+            node: pod.node.name.clone(),
+            value,
+        })?
+        .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
     let mut nodes = Vec::new();
     let mut refs = Vec::new();
     let (listen_as, listen_protocol, receive_proxy_protocol) = derive_listen(
@@ -324,7 +322,7 @@ fn derive_pod(
     let deps = ForwardingDeps {
         pod: pod.node.id.clone(),
         serves: ListenerCap {
-            ip: ip.ip.clone(),
+            server: cfg.server.clone(),
             port: i64::from(cfg.port),
             protocol: listen_protocol,
         },
@@ -509,23 +507,38 @@ fn derive_destination(
                     node: node.node.name.clone(),
                 });
             };
-            let pod_ip = index.ip(&record_key(&pod_cfg.ip.0)).ok_or_else(|| {
-                DeriveError::MissingIpRecord {
-                    node: pod.node.name.clone(),
-                    ip: record_key(&pod_cfg.ip.0),
-                }
-            })?;
-            // The override says *how* to reach the pod; the pod's own socket is
-            // what identifies the listener we depend on.
+            let far_key = record_key(&pod_cfg.server.0);
+            let far = index
+                .servers
+                .get(&far_key)
+                .ok_or_else(|| DeriveError::UnknownServer {
+                    server: far_key.clone(),
+                })?;
+            // The override says *how* to reach the pod; the pod's identity
+            // (server, port, protocol) is what identifies the listener we depend
+            // on, whatever address it is dialed on today.
             points_at.push(ListenerCap {
-                ip: pod_ip.ip.clone(),
+                server: pod_cfg.server.clone(),
                 port: i64::from(pod_cfg.port),
                 protocol: listen_protocol,
             });
-            let host = cfg
-                .override_ip_address
-                .clone()
-                .unwrap_or_else(|| pod_ip.ip.clone());
+            let host = match &cfg.override_ip_address {
+                Some(host) => host.clone(),
+                None => {
+                    let advertised = pod_cfg.advertise_ip().map_err(|value| {
+                        DeriveError::InvalidAdvertiseIp {
+                            node: pod.node.name.clone(),
+                            value,
+                        }
+                    })?;
+                    advertised
+                        .or_else(|| far.effective_address().map(|(address, _)| address))
+                        .ok_or_else(|| DeriveError::ServerNoAddress {
+                            server: far.name.clone(),
+                        })?
+                        .to_string()
+                }
+            };
             let port = cfg.override_port.unwrap_or(pod_cfg.port);
             // An IP literal becomes a socket address directly: an unbracketed IPv6
             // host would otherwise round-trip through `Remote::parse` as a domain

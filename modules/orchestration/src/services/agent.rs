@@ -9,7 +9,8 @@ use crate::entities::surreal::health::{
     SetServerHealthStatus,
 };
 use crate::entities::surreal::server::{
-    FindServerById, FindServerByRefreshKeyDigest, RegisterWorkerSession, ServerId,
+    FindServerById, FindServerByRefreshKeyDigest, RegisterWorkerSession, ReportedAddresses,
+    ServerId,
 };
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
@@ -46,6 +47,10 @@ pub struct RegisterWorker {
     pub actor: Identity,
     pub server_id: ServerId,
     pub running_revision: i64,
+    /// The peer address the registration arrived from, if the transport knows.
+    pub observed: Option<std::net::IpAddr>,
+    /// What the worker discovered about its own addresses.
+    pub reported: Option<ReportedAddresses>,
 }
 
 impl Processor<RegisterWorker> for AgentService {
@@ -78,6 +83,8 @@ impl Processor<RegisterWorker> for AgentService {
                 now,
                 lease_until: self.lease.until(now),
                 running_revision: input.running_revision,
+                observed: input.observed.map(|a| a.to_string()),
+                reported: input.reported,
             })
             .await?
             .ok_or_else(|| {

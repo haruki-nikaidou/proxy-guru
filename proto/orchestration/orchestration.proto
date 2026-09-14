@@ -62,7 +62,7 @@ enum ProblemKind {
   PORT_SHAPE_INVALID = 6;
   CYCLE = 7;
   DUPLICATE_LISTEN = 8;
-  POD_IP_FOREIGN = 9;
+  reserved 9; // POD_IP_FOREIGN: pods are attributed to a server directly now
   EXIT_DESTINATION_INVALID = 10;
   IP_HASH_WITHOUT_CLIENT_IP = 11;
   reserved 12; // UNSUPPORTED_SPEC: import/export nodes are supported since stage 2
@@ -73,6 +73,8 @@ enum ProblemKind {
   CANVAS_IMPORT_ANCESTOR = 17;
   CANVAS_IMPORT_DUPLICATE = 18;
   CANVAS_IMPORT_UNRESOLVED = 19;
+  POD_SERVER_FOREIGN = 20;
+  SERVER_NO_ADDRESS = 21;
 }
 enum ServerHealthStatus {
   SERVER_HEALTH_STATUS_UNSPECIFIED = 0;
@@ -108,9 +110,14 @@ message TlsConfig {
   string domain_id = 3;
   string acme_directory = 4;
 }
+// One listener on one server. `bind_ip` empty means every address of the host
+// (dual-stack `::`); `advertise_ip` empty means the server's effective address.
 message PodConfig {
-  string ip_record_id = 1;
+  reserved 1; // ip_record_id
   uint32 port = 2;
+  string server_id = 3;
+  string bind_ip = 4;
+  string advertise_ip = 5;
 }
 message EntryConfig {
   ProxyProtocolVersion receive_proxy_protocol = 1;
@@ -174,11 +181,32 @@ message Edge {
   string source_port_id = 2;
   string target_port_id = 3;
 }
-message ServerIp {
-  string id = 1;
-  string server_id = 2;
-  string ip = 3;
-  string country = 4;
+// One of the two fixed address slots of a server (IPv4, IPv6): what the worker
+// reported and what the operator typed over it. Empty strings mean unset.
+message AddressSlot {
+  string reported = 1;
+  string pinned = 2;
+}
+enum AddressSource {
+  ADDRESS_SOURCE_UNSPECIFIED = 0;
+  ADDRESS_OVERRIDE = 1;
+  ADDRESS_REPORTED = 2;
+  ADDRESS_OBSERVED = 3;
+}
+// Where a server can be reached. `effective_address` is what other servers
+// dial by default: v4 override, else reported v4, else the address the master
+// observed on registration, else the v6 slot.
+message ServerAddresses {
+  AddressSlot v4 = 1;
+  AddressSlot v6 = 2;
+  // Operator-added extra addresses (a second public IP, an overlay address).
+  repeated string extra = 3;
+  repeated string reported_interfaces = 4;
+  string reported_at = 5;
+  string observed_address = 6;
+  string observed_at = 7;
+  string effective_address = 8;
+  AddressSource effective_source = 9;
 }
 message Server {
   string id = 1;
@@ -191,7 +219,8 @@ message Server {
   string log_level = 8;
   string last_seen_at = 9;
   ServerHealthStatus health_status = 11;
-  repeated ServerIp ips = 10;
+  reserved 10; // ips
+  ServerAddresses addresses = 12;
 }
 message Canvas {
   string id = 1;
@@ -206,12 +235,14 @@ message Problem {
   repeated string edge_ids = 5;
   repeated string port_ids = 6;
 }
-// A listener a server serves, or that another server points at.
-// `protocol` is one of `raw`, `relay_tcp`, `relay_tls`, `relay_quic`.
+// A listener a server serves, or that another server points at, identified by
+// the server it lives on. `protocol` is one of `raw`, `relay_tcp`, `relay_tls`,
+// `relay_quic`.
 message ListenerCap {
-  string ip = 1;
+  reserved 1; // ip
   uint32 port = 2;
   string protocol = 3;
+  string server_id = 4;
 }
 message ForwardingDeps {
   ListenerCap serves = 1;
@@ -286,6 +317,10 @@ message CreateServerRequest {
   CanvasUiPosition position = 5;
   Ipv6Resolve ipv6_resolve = 6;
   string log_level = 7;
+  // Empty strings clear the slot.
+  string override_v4 = 8;
+  string override_v6 = 9;
+  repeated string extra_addresses = 10;
 }
 message CreateServerReply {
   Server server = 1;
@@ -297,6 +332,10 @@ message UpdateServerRequest {
   string comment = 4;
   Ipv6Resolve ipv6_resolve = 5;
   string log_level = 6;
+  // Empty strings clear the slot; `extra_addresses` replaces the whole list.
+  string override_v4 = 7;
+  string override_v6 = 8;
+  repeated string extra_addresses = 9;
 }
 message UpdateServerReply {
   Server server = 1;
@@ -310,18 +349,6 @@ message MoveServerRequest {
   CanvasUiPosition position = 2;
 }
 message MoveServerReply {}
-message AddServerIpRequest {
-  string server_id = 1;
-  string ip = 2;
-  string country = 3;
-}
-message AddServerIpReply {
-  ServerIp ip = 1;
-}
-message RemoveServerIpRequest {
-  string ip_record_id = 1;
-}
-message RemoveServerIpReply {}
 
 message CreateNodeRequest {
   string canvas_id = 1;
@@ -386,8 +413,9 @@ message GetServerConfigReply {
 message GetServerRolloutStatusRequest {
   string server_id = 1;
 }
-// One pod that failed to derive on its own. `listen` is the `ip:port` it would
-// have served, `error` the rendered derivation error.
+// One pod that failed to derive on its own. `listen` is the `bind:port` it would
+// have served (`[::]:port` for a wildcard bind), `error` the rendered derivation
+// error.
 message InvalidPod {
   string node_id = 1;
   string pod_name = 2;
@@ -561,8 +589,6 @@ service Orchestration {
   rpc UpdateServer(UpdateServerRequest) returns (UpdateServerReply);
   rpc DeleteServer(DeleteServerRequest) returns (DeleteServerReply);
   rpc MoveServer(MoveServerRequest) returns (MoveServerReply);
-  rpc AddServerIp(AddServerIpRequest) returns (AddServerIpReply);
-  rpc RemoveServerIp(RemoveServerIpRequest) returns (RemoveServerIpReply);
   rpc CreateNode(CreateNodeRequest) returns (CreateNodeReply);
   rpc ReplaceNodeSpec(ReplaceNodeSpecRequest) returns (ReplaceNodeSpecReply);
   rpc UpdateNodeMeta(UpdateNodeMetaRequest) returns (UpdateNodeMetaReply);

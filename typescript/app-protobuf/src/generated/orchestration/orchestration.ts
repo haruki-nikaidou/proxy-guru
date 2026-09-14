@@ -363,7 +363,6 @@ export enum ProblemKind {
   PORT_SHAPE_INVALID = 6,
   CYCLE = 7,
   DUPLICATE_LISTEN = 8,
-  POD_IP_FOREIGN = 9,
   EXIT_DESTINATION_INVALID = 10,
   IP_HASH_WITHOUT_CLIENT_IP = 11,
   POD_PORT_UNCONNECTED = 13,
@@ -373,6 +372,8 @@ export enum ProblemKind {
   CANVAS_IMPORT_ANCESTOR = 17,
   CANVAS_IMPORT_DUPLICATE = 18,
   CANVAS_IMPORT_UNRESOLVED = 19,
+  POD_SERVER_FOREIGN = 20,
+  SERVER_NO_ADDRESS = 21,
   UNRECOGNIZED = -1,
 }
 
@@ -405,9 +406,6 @@ export function problemKindFromJSON(object: any): ProblemKind {
     case 8:
     case "DUPLICATE_LISTEN":
       return ProblemKind.DUPLICATE_LISTEN;
-    case 9:
-    case "POD_IP_FOREIGN":
-      return ProblemKind.POD_IP_FOREIGN;
     case 10:
     case "EXIT_DESTINATION_INVALID":
       return ProblemKind.EXIT_DESTINATION_INVALID;
@@ -435,6 +433,12 @@ export function problemKindFromJSON(object: any): ProblemKind {
     case 19:
     case "CANVAS_IMPORT_UNRESOLVED":
       return ProblemKind.CANVAS_IMPORT_UNRESOLVED;
+    case 20:
+    case "POD_SERVER_FOREIGN":
+      return ProblemKind.POD_SERVER_FOREIGN;
+    case 21:
+    case "SERVER_NO_ADDRESS":
+      return ProblemKind.SERVER_NO_ADDRESS;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -462,8 +466,6 @@ export function problemKindToJSON(object: ProblemKind): string {
       return "CYCLE";
     case ProblemKind.DUPLICATE_LISTEN:
       return "DUPLICATE_LISTEN";
-    case ProblemKind.POD_IP_FOREIGN:
-      return "POD_IP_FOREIGN";
     case ProblemKind.EXIT_DESTINATION_INVALID:
       return "EXIT_DESTINATION_INVALID";
     case ProblemKind.IP_HASH_WITHOUT_CLIENT_IP:
@@ -482,6 +484,10 @@ export function problemKindToJSON(object: ProblemKind): string {
       return "CANVAS_IMPORT_DUPLICATE";
     case ProblemKind.CANVAS_IMPORT_UNRESOLVED:
       return "CANVAS_IMPORT_UNRESOLVED";
+    case ProblemKind.POD_SERVER_FOREIGN:
+      return "POD_SERVER_FOREIGN";
+    case ProblemKind.SERVER_NO_ADDRESS:
+      return "SERVER_NO_ADDRESS";
     case ProblemKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -662,6 +668,51 @@ export function certificateStatusToJSON(object: CertificateStatus): string {
   }
 }
 
+export enum AddressSource {
+  UNSPECIFIED = 0,
+  ADDRESS_OVERRIDE = 1,
+  ADDRESS_REPORTED = 2,
+  ADDRESS_OBSERVED = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function addressSourceFromJSON(object: any): AddressSource {
+  switch (object) {
+    case 0:
+    case "ADDRESS_SOURCE_UNSPECIFIED":
+      return AddressSource.UNSPECIFIED;
+    case 1:
+    case "ADDRESS_OVERRIDE":
+      return AddressSource.ADDRESS_OVERRIDE;
+    case 2:
+    case "ADDRESS_REPORTED":
+      return AddressSource.ADDRESS_REPORTED;
+    case 3:
+    case "ADDRESS_OBSERVED":
+      return AddressSource.ADDRESS_OBSERVED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return AddressSource.UNRECOGNIZED;
+  }
+}
+
+export function addressSourceToJSON(object: AddressSource): string {
+  switch (object) {
+    case AddressSource.UNSPECIFIED:
+      return "ADDRESS_SOURCE_UNSPECIFIED";
+    case AddressSource.ADDRESS_OVERRIDE:
+      return "ADDRESS_OVERRIDE";
+    case AddressSource.ADDRESS_REPORTED:
+      return "ADDRESS_REPORTED";
+    case AddressSource.ADDRESS_OBSERVED:
+      return "ADDRESS_OBSERVED";
+    case AddressSource.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface CanvasUiPosition {
   x: bigint;
   y: bigint;
@@ -674,9 +725,15 @@ export interface TlsConfig {
   acmeDirectory: string;
 }
 
+/**
+ * One listener on one server. `bind_ip` empty means every address of the host
+ * (dual-stack `::`); `advertise_ip` empty means the server's effective address.
+ */
 export interface PodConfig {
-  ipRecordId: string;
   port: number;
+  serverId: string;
+  bindIp: string;
+  advertiseIp: string;
 }
 
 export interface EntryConfig {
@@ -752,11 +809,33 @@ export interface Edge {
   targetPortId: string;
 }
 
-export interface ServerIp {
-  id: string;
-  serverId: string;
-  ip: string;
-  country: string;
+/**
+ * One of the two fixed address slots of a server (IPv4, IPv6): what the worker
+ * reported and what the operator typed over it. Empty strings mean unset.
+ */
+export interface AddressSlot {
+  reported: string;
+  pinned: string;
+}
+
+/**
+ * Where a server can be reached. `effective_address` is what other servers
+ * dial by default: v4 override, else reported v4, else the address the master
+ * observed on registration, else the v6 slot.
+ */
+export interface ServerAddresses {
+  v4: AddressSlot | undefined;
+  v6:
+    | AddressSlot
+    | undefined;
+  /** Operator-added extra addresses (a second public IP, an overlay address). */
+  extra: string[];
+  reportedInterfaces: string[];
+  reportedAt: string;
+  observedAddress: string;
+  observedAt: string;
+  effectiveAddress: string;
+  effectiveSource: AddressSource;
 }
 
 export interface Server {
@@ -770,7 +849,7 @@ export interface Server {
   logLevel: string;
   lastSeenAt: string;
   healthStatus: ServerHealthStatus;
-  ips: ServerIp[];
+  addresses: ServerAddresses | undefined;
 }
 
 export interface Canvas {
@@ -789,13 +868,14 @@ export interface Problem {
 }
 
 /**
- * A listener a server serves, or that another server points at.
- * `protocol` is one of `raw`, `relay_tcp`, `relay_tls`, `relay_quic`.
+ * A listener a server serves, or that another server points at, identified by
+ * the server it lives on. `protocol` is one of `raw`, `relay_tcp`, `relay_tls`,
+ * `relay_quic`.
  */
 export interface ListenerCap {
-  ip: string;
   port: number;
   protocol: string;
+  serverId: string;
 }
 
 export interface ForwardingDeps {
@@ -887,6 +967,10 @@ export interface CreateServerRequest {
   position: CanvasUiPosition | undefined;
   ipv6Resolve: Ipv6Resolve;
   logLevel: string;
+  /** Empty strings clear the slot. */
+  overrideV4: string;
+  overrideV6: string;
+  extraAddresses: string[];
 }
 
 export interface CreateServerReply {
@@ -900,6 +984,10 @@ export interface UpdateServerRequest {
   comment: string;
   ipv6Resolve: Ipv6Resolve;
   logLevel: string;
+  /** Empty strings clear the slot; `extra_addresses` replaces the whole list. */
+  overrideV4: string;
+  overrideV6: string;
+  extraAddresses: string[];
 }
 
 export interface UpdateServerReply {
@@ -919,23 +1007,6 @@ export interface MoveServerRequest {
 }
 
 export interface MoveServerReply {
-}
-
-export interface AddServerIpRequest {
-  serverId: string;
-  ip: string;
-  country: string;
-}
-
-export interface AddServerIpReply {
-  ip: ServerIp | undefined;
-}
-
-export interface RemoveServerIpRequest {
-  ipRecordId: string;
-}
-
-export interface RemoveServerIpReply {
 }
 
 export interface CreateNodeRequest {
@@ -1023,8 +1094,9 @@ export interface GetServerRolloutStatusRequest {
 }
 
 /**
- * One pod that failed to derive on its own. `listen` is the `ip:port` it would
- * have served, `error` the rendered derivation error.
+ * One pod that failed to derive on its own. `listen` is the `bind:port` it would
+ * have served (`[::]:port` for a wildcard bind), `error` the rendered derivation
+ * error.
  */
 export interface InvalidPod {
   nodeId: string;
@@ -1438,16 +1510,22 @@ export const TlsConfig: MessageFns<TlsConfig> = {
 };
 
 function createBasePodConfig(): PodConfig {
-  return { ipRecordId: "", port: 0 };
+  return { port: 0, serverId: "", bindIp: "", advertiseIp: "" };
 }
 
 export const PodConfig: MessageFns<PodConfig> = {
   encode(message: PodConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.ipRecordId !== "") {
-      writer.uint32(10).string(message.ipRecordId);
-    }
     if (message.port !== 0) {
       writer.uint32(16).uint32(message.port);
+    }
+    if (message.serverId !== "") {
+      writer.uint32(26).string(message.serverId);
+    }
+    if (message.bindIp !== "") {
+      writer.uint32(34).string(message.bindIp);
+    }
+    if (message.advertiseIp !== "") {
+      writer.uint32(42).string(message.advertiseIp);
     }
     return writer;
   },
@@ -1459,20 +1537,36 @@ export const PodConfig: MessageFns<PodConfig> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.ipRecordId = reader.string();
-          continue;
-        }
         case 2: {
           if (tag !== 16) {
             break;
           }
 
           message.port = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.bindIp = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.advertiseIp = reader.string();
           continue;
         }
       }
@@ -1486,22 +1580,38 @@ export const PodConfig: MessageFns<PodConfig> = {
 
   fromJSON(object: any): PodConfig {
     return {
-      ipRecordId: isSet(object.ipRecordId)
-        ? globalThis.String(object.ipRecordId)
-        : isSet(object.ip_record_id)
-        ? globalThis.String(object.ip_record_id)
-        : "",
       port: isSet(object.port) ? globalThis.Number(object.port) : 0,
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      bindIp: isSet(object.bindIp)
+        ? globalThis.String(object.bindIp)
+        : isSet(object.bind_ip)
+        ? globalThis.String(object.bind_ip)
+        : "",
+      advertiseIp: isSet(object.advertiseIp)
+        ? globalThis.String(object.advertiseIp)
+        : isSet(object.advertise_ip)
+        ? globalThis.String(object.advertise_ip)
+        : "",
     };
   },
 
   toJSON(message: PodConfig): unknown {
     const obj: any = {};
-    if (message.ipRecordId !== "") {
-      obj.ipRecordId = message.ipRecordId;
-    }
     if (message.port !== 0) {
       obj.port = Math.round(message.port);
+    }
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.bindIp !== "") {
+      obj.bindIp = message.bindIp;
+    }
+    if (message.advertiseIp !== "") {
+      obj.advertiseIp = message.advertiseIp;
     }
     return obj;
   },
@@ -1511,8 +1621,10 @@ export const PodConfig: MessageFns<PodConfig> = {
   },
   fromPartial(object: DeepPartial<PodConfig>): PodConfig {
     const message = createBasePodConfig();
-    message.ipRecordId = object.ipRecordId ?? "";
     message.port = object.port ?? 0;
+    message.serverId = object.serverId ?? "";
+    message.bindIp = object.bindIp ?? "";
+    message.advertiseIp = object.advertiseIp ?? "";
     return message;
   },
 };
@@ -2670,31 +2782,25 @@ export const Edge: MessageFns<Edge> = {
   },
 };
 
-function createBaseServerIp(): ServerIp {
-  return { id: "", serverId: "", ip: "", country: "" };
+function createBaseAddressSlot(): AddressSlot {
+  return { reported: "", pinned: "" };
 }
 
-export const ServerIp: MessageFns<ServerIp> = {
-  encode(message: ServerIp, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.id !== "") {
-      writer.uint32(10).string(message.id);
+export const AddressSlot: MessageFns<AddressSlot> = {
+  encode(message: AddressSlot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.reported !== "") {
+      writer.uint32(10).string(message.reported);
     }
-    if (message.serverId !== "") {
-      writer.uint32(18).string(message.serverId);
-    }
-    if (message.ip !== "") {
-      writer.uint32(26).string(message.ip);
-    }
-    if (message.country !== "") {
-      writer.uint32(34).string(message.country);
+    if (message.pinned !== "") {
+      writer.uint32(18).string(message.pinned);
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): ServerIp {
+  decode(input: BinaryReader | Uint8Array, length?: number): AddressSlot {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseServerIp();
+    const message = createBaseAddressSlot();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -2703,7 +2809,7 @@ export const ServerIp: MessageFns<ServerIp> = {
             break;
           }
 
-          message.id = reader.string();
+          message.reported = reader.string();
           continue;
         }
         case 2: {
@@ -2711,23 +2817,7 @@ export const ServerIp: MessageFns<ServerIp> = {
             break;
           }
 
-          message.serverId = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.ip = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.country = reader.string();
+          message.pinned = reader.string();
           continue;
         }
       }
@@ -2739,45 +2829,253 @@ export const ServerIp: MessageFns<ServerIp> = {
     return message;
   },
 
-  fromJSON(object: any): ServerIp {
+  fromJSON(object: any): AddressSlot {
     return {
-      id: isSet(object.id) ? globalThis.String(object.id) : "",
-      serverId: isSet(object.serverId)
-        ? globalThis.String(object.serverId)
-        : isSet(object.server_id)
-        ? globalThis.String(object.server_id)
-        : "",
-      ip: isSet(object.ip) ? globalThis.String(object.ip) : "",
-      country: isSet(object.country) ? globalThis.String(object.country) : "",
+      reported: isSet(object.reported) ? globalThis.String(object.reported) : "",
+      pinned: isSet(object.pinned) ? globalThis.String(object.pinned) : "",
     };
   },
 
-  toJSON(message: ServerIp): unknown {
+  toJSON(message: AddressSlot): unknown {
     const obj: any = {};
-    if (message.id !== "") {
-      obj.id = message.id;
+    if (message.reported !== "") {
+      obj.reported = message.reported;
     }
-    if (message.serverId !== "") {
-      obj.serverId = message.serverId;
-    }
-    if (message.ip !== "") {
-      obj.ip = message.ip;
-    }
-    if (message.country !== "") {
-      obj.country = message.country;
+    if (message.pinned !== "") {
+      obj.pinned = message.pinned;
     }
     return obj;
   },
 
-  create(base?: DeepPartial<ServerIp>): ServerIp {
-    return ServerIp.fromPartial(base ?? {});
+  create(base?: DeepPartial<AddressSlot>): AddressSlot {
+    return AddressSlot.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<ServerIp>): ServerIp {
-    const message = createBaseServerIp();
-    message.id = object.id ?? "";
-    message.serverId = object.serverId ?? "";
-    message.ip = object.ip ?? "";
-    message.country = object.country ?? "";
+  fromPartial(object: DeepPartial<AddressSlot>): AddressSlot {
+    const message = createBaseAddressSlot();
+    message.reported = object.reported ?? "";
+    message.pinned = object.pinned ?? "";
+    return message;
+  },
+};
+
+function createBaseServerAddresses(): ServerAddresses {
+  return {
+    v4: undefined,
+    v6: undefined,
+    extra: [],
+    reportedInterfaces: [],
+    reportedAt: "",
+    observedAddress: "",
+    observedAt: "",
+    effectiveAddress: "",
+    effectiveSource: 0,
+  };
+}
+
+export const ServerAddresses: MessageFns<ServerAddresses> = {
+  encode(message: ServerAddresses, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.v4 !== undefined) {
+      AddressSlot.encode(message.v4, writer.uint32(10).fork()).join();
+    }
+    if (message.v6 !== undefined) {
+      AddressSlot.encode(message.v6, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.extra) {
+      writer.uint32(26).string(v!);
+    }
+    for (const v of message.reportedInterfaces) {
+      writer.uint32(34).string(v!);
+    }
+    if (message.reportedAt !== "") {
+      writer.uint32(42).string(message.reportedAt);
+    }
+    if (message.observedAddress !== "") {
+      writer.uint32(50).string(message.observedAddress);
+    }
+    if (message.observedAt !== "") {
+      writer.uint32(58).string(message.observedAt);
+    }
+    if (message.effectiveAddress !== "") {
+      writer.uint32(66).string(message.effectiveAddress);
+    }
+    if (message.effectiveSource !== 0) {
+      writer.uint32(72).int32(message.effectiveSource);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerAddresses {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerAddresses();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.v4 = AddressSlot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.v6 = AddressSlot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.extra.push(reader.string());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.reportedInterfaces.push(reader.string());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.reportedAt = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.observedAddress = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.observedAt = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.effectiveAddress = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.effectiveSource = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerAddresses {
+    return {
+      v4: isSet(object.v4) ? AddressSlot.fromJSON(object.v4) : undefined,
+      v6: isSet(object.v6) ? AddressSlot.fromJSON(object.v6) : undefined,
+      extra: globalThis.Array.isArray(object?.extra) ? object.extra.map((e: any) => globalThis.String(e)) : [],
+      reportedInterfaces: globalThis.Array.isArray(object?.reportedInterfaces)
+        ? object.reportedInterfaces.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.reported_interfaces)
+        ? object.reported_interfaces.map((e: any) => globalThis.String(e))
+        : [],
+      reportedAt: isSet(object.reportedAt)
+        ? globalThis.String(object.reportedAt)
+        : isSet(object.reported_at)
+        ? globalThis.String(object.reported_at)
+        : "",
+      observedAddress: isSet(object.observedAddress)
+        ? globalThis.String(object.observedAddress)
+        : isSet(object.observed_address)
+        ? globalThis.String(object.observed_address)
+        : "",
+      observedAt: isSet(object.observedAt)
+        ? globalThis.String(object.observedAt)
+        : isSet(object.observed_at)
+        ? globalThis.String(object.observed_at)
+        : "",
+      effectiveAddress: isSet(object.effectiveAddress)
+        ? globalThis.String(object.effectiveAddress)
+        : isSet(object.effective_address)
+        ? globalThis.String(object.effective_address)
+        : "",
+      effectiveSource: isSet(object.effectiveSource)
+        ? addressSourceFromJSON(object.effectiveSource)
+        : isSet(object.effective_source)
+        ? addressSourceFromJSON(object.effective_source)
+        : 0,
+    };
+  },
+
+  toJSON(message: ServerAddresses): unknown {
+    const obj: any = {};
+    if (message.v4 !== undefined) {
+      obj.v4 = AddressSlot.toJSON(message.v4);
+    }
+    if (message.v6 !== undefined) {
+      obj.v6 = AddressSlot.toJSON(message.v6);
+    }
+    if (message.extra?.length) {
+      obj.extra = message.extra;
+    }
+    if (message.reportedInterfaces?.length) {
+      obj.reportedInterfaces = message.reportedInterfaces;
+    }
+    if (message.reportedAt !== "") {
+      obj.reportedAt = message.reportedAt;
+    }
+    if (message.observedAddress !== "") {
+      obj.observedAddress = message.observedAddress;
+    }
+    if (message.observedAt !== "") {
+      obj.observedAt = message.observedAt;
+    }
+    if (message.effectiveAddress !== "") {
+      obj.effectiveAddress = message.effectiveAddress;
+    }
+    if (message.effectiveSource !== 0) {
+      obj.effectiveSource = addressSourceToJSON(message.effectiveSource);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ServerAddresses>): ServerAddresses {
+    return ServerAddresses.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ServerAddresses>): ServerAddresses {
+    const message = createBaseServerAddresses();
+    message.v4 = (object.v4 !== undefined && object.v4 !== null) ? AddressSlot.fromPartial(object.v4) : undefined;
+    message.v6 = (object.v6 !== undefined && object.v6 !== null) ? AddressSlot.fromPartial(object.v6) : undefined;
+    message.extra = object.extra?.map((e) => e) || [];
+    message.reportedInterfaces = object.reportedInterfaces?.map((e) => e) || [];
+    message.reportedAt = object.reportedAt ?? "";
+    message.observedAddress = object.observedAddress ?? "";
+    message.observedAt = object.observedAt ?? "";
+    message.effectiveAddress = object.effectiveAddress ?? "";
+    message.effectiveSource = object.effectiveSource ?? 0;
     return message;
   },
 };
@@ -2794,7 +3092,7 @@ function createBaseServer(): Server {
     logLevel: "",
     lastSeenAt: "",
     healthStatus: 0,
-    ips: [],
+    addresses: undefined,
   };
 }
 
@@ -2830,8 +3128,8 @@ export const Server: MessageFns<Server> = {
     if (message.healthStatus !== 0) {
       writer.uint32(88).int32(message.healthStatus);
     }
-    for (const v of message.ips) {
-      ServerIp.encode(v!, writer.uint32(82).fork()).join();
+    if (message.addresses !== undefined) {
+      ServerAddresses.encode(message.addresses, writer.uint32(98).fork()).join();
     }
     return writer;
   },
@@ -2923,12 +3221,12 @@ export const Server: MessageFns<Server> = {
           message.healthStatus = reader.int32() as any;
           continue;
         }
-        case 10: {
-          if (tag !== 82) {
+        case 12: {
+          if (tag !== 98) {
             break;
           }
 
-          message.ips.push(ServerIp.decode(reader, reader.uint32()));
+          message.addresses = ServerAddresses.decode(reader, reader.uint32());
           continue;
         }
       }
@@ -2972,9 +3270,7 @@ export const Server: MessageFns<Server> = {
         : isSet(object.health_status)
         ? serverHealthStatusFromJSON(object.health_status)
         : 0,
-      ips: globalThis.Array.isArray(object?.ips)
-        ? object.ips.map((e: any) => ServerIp.fromJSON(e))
-        : [],
+      addresses: isSet(object.addresses) ? ServerAddresses.fromJSON(object.addresses) : undefined,
     };
   },
 
@@ -3010,8 +3306,8 @@ export const Server: MessageFns<Server> = {
     if (message.healthStatus !== 0) {
       obj.healthStatus = serverHealthStatusToJSON(message.healthStatus);
     }
-    if (message.ips?.length) {
-      obj.ips = message.ips.map((e) => ServerIp.toJSON(e));
+    if (message.addresses !== undefined) {
+      obj.addresses = ServerAddresses.toJSON(message.addresses);
     }
     return obj;
   },
@@ -3033,7 +3329,9 @@ export const Server: MessageFns<Server> = {
     message.logLevel = object.logLevel ?? "";
     message.lastSeenAt = object.lastSeenAt ?? "";
     message.healthStatus = object.healthStatus ?? 0;
-    message.ips = object.ips?.map((e) => ServerIp.fromPartial(e)) || [];
+    message.addresses = (object.addresses !== undefined && object.addresses !== null)
+      ? ServerAddresses.fromPartial(object.addresses)
+      : undefined;
     return message;
   },
 };
@@ -3283,19 +3581,19 @@ export const Problem: MessageFns<Problem> = {
 };
 
 function createBaseListenerCap(): ListenerCap {
-  return { ip: "", port: 0, protocol: "" };
+  return { port: 0, protocol: "", serverId: "" };
 }
 
 export const ListenerCap: MessageFns<ListenerCap> = {
   encode(message: ListenerCap, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.ip !== "") {
-      writer.uint32(10).string(message.ip);
-    }
     if (message.port !== 0) {
       writer.uint32(16).uint32(message.port);
     }
     if (message.protocol !== "") {
       writer.uint32(26).string(message.protocol);
+    }
+    if (message.serverId !== "") {
+      writer.uint32(34).string(message.serverId);
     }
     return writer;
   },
@@ -3307,14 +3605,6 @@ export const ListenerCap: MessageFns<ListenerCap> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.ip = reader.string();
-          continue;
-        }
         case 2: {
           if (tag !== 16) {
             break;
@@ -3331,6 +3621,14 @@ export const ListenerCap: MessageFns<ListenerCap> = {
           message.protocol = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3342,22 +3640,26 @@ export const ListenerCap: MessageFns<ListenerCap> = {
 
   fromJSON(object: any): ListenerCap {
     return {
-      ip: isSet(object.ip) ? globalThis.String(object.ip) : "",
       port: isSet(object.port) ? globalThis.Number(object.port) : 0,
       protocol: isSet(object.protocol) ? globalThis.String(object.protocol) : "",
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
     };
   },
 
   toJSON(message: ListenerCap): unknown {
     const obj: any = {};
-    if (message.ip !== "") {
-      obj.ip = message.ip;
-    }
     if (message.port !== 0) {
       obj.port = Math.round(message.port);
     }
     if (message.protocol !== "") {
       obj.protocol = message.protocol;
+    }
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
     }
     return obj;
   },
@@ -3367,9 +3669,9 @@ export const ListenerCap: MessageFns<ListenerCap> = {
   },
   fromPartial(object: DeepPartial<ListenerCap>): ListenerCap {
     const message = createBaseListenerCap();
-    message.ip = object.ip ?? "";
     message.port = object.port ?? 0;
     message.protocol = object.protocol ?? "";
+    message.serverId = object.serverId ?? "";
     return message;
   },
 };
@@ -4601,7 +4903,18 @@ export const ValidateCanvasReply: MessageFns<ValidateCanvasReply> = {
 };
 
 function createBaseCreateServerRequest(): CreateServerRequest {
-  return { canvasId: "", name: "", icon: "", comment: "", position: undefined, ipv6Resolve: 0, logLevel: "" };
+  return {
+    canvasId: "",
+    name: "",
+    icon: "",
+    comment: "",
+    position: undefined,
+    ipv6Resolve: 0,
+    logLevel: "",
+    overrideV4: "",
+    overrideV6: "",
+    extraAddresses: [],
+  };
 }
 
 export const CreateServerRequest: MessageFns<CreateServerRequest> = {
@@ -4626,6 +4939,15 @@ export const CreateServerRequest: MessageFns<CreateServerRequest> = {
     }
     if (message.logLevel !== "") {
       writer.uint32(58).string(message.logLevel);
+    }
+    if (message.overrideV4 !== "") {
+      writer.uint32(66).string(message.overrideV4);
+    }
+    if (message.overrideV6 !== "") {
+      writer.uint32(74).string(message.overrideV6);
+    }
+    for (const v of message.extraAddresses) {
+      writer.uint32(82).string(v!);
     }
     return writer;
   },
@@ -4693,6 +5015,30 @@ export const CreateServerRequest: MessageFns<CreateServerRequest> = {
           message.logLevel = reader.string();
           continue;
         }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.overrideV4 = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.overrideV6 = reader.string();
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.extraAddresses.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4723,6 +5069,21 @@ export const CreateServerRequest: MessageFns<CreateServerRequest> = {
         : isSet(object.log_level)
         ? globalThis.String(object.log_level)
         : "",
+      overrideV4: isSet(object.overrideV4)
+        ? globalThis.String(object.overrideV4)
+        : isSet(object.override_v4)
+        ? globalThis.String(object.override_v4)
+        : "",
+      overrideV6: isSet(object.overrideV6)
+        ? globalThis.String(object.overrideV6)
+        : isSet(object.override_v6)
+        ? globalThis.String(object.override_v6)
+        : "",
+      extraAddresses: globalThis.Array.isArray(object?.extraAddresses)
+        ? object.extraAddresses.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.extra_addresses)
+        ? object.extra_addresses.map((e: any) => globalThis.String(e))
+        : [],
     };
   },
 
@@ -4749,6 +5110,15 @@ export const CreateServerRequest: MessageFns<CreateServerRequest> = {
     if (message.logLevel !== "") {
       obj.logLevel = message.logLevel;
     }
+    if (message.overrideV4 !== "") {
+      obj.overrideV4 = message.overrideV4;
+    }
+    if (message.overrideV6 !== "") {
+      obj.overrideV6 = message.overrideV6;
+    }
+    if (message.extraAddresses?.length) {
+      obj.extraAddresses = message.extraAddresses;
+    }
     return obj;
   },
 
@@ -4766,6 +5136,9 @@ export const CreateServerRequest: MessageFns<CreateServerRequest> = {
       : undefined;
     message.ipv6Resolve = object.ipv6Resolve ?? 0;
     message.logLevel = object.logLevel ?? "";
+    message.overrideV4 = object.overrideV4 ?? "";
+    message.overrideV6 = object.overrideV6 ?? "";
+    message.extraAddresses = object.extraAddresses?.map((e) => e) || [];
     return message;
   },
 };
@@ -4831,7 +5204,17 @@ export const CreateServerReply: MessageFns<CreateServerReply> = {
 };
 
 function createBaseUpdateServerRequest(): UpdateServerRequest {
-  return { serverId: "", name: "", icon: "", comment: "", ipv6Resolve: 0, logLevel: "" };
+  return {
+    serverId: "",
+    name: "",
+    icon: "",
+    comment: "",
+    ipv6Resolve: 0,
+    logLevel: "",
+    overrideV4: "",
+    overrideV6: "",
+    extraAddresses: [],
+  };
 }
 
 export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
@@ -4853,6 +5236,15 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     }
     if (message.logLevel !== "") {
       writer.uint32(50).string(message.logLevel);
+    }
+    if (message.overrideV4 !== "") {
+      writer.uint32(58).string(message.overrideV4);
+    }
+    if (message.overrideV6 !== "") {
+      writer.uint32(66).string(message.overrideV6);
+    }
+    for (const v of message.extraAddresses) {
+      writer.uint32(74).string(v!);
     }
     return writer;
   },
@@ -4912,6 +5304,30 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
           message.logLevel = reader.string();
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.overrideV4 = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.overrideV6 = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.extraAddresses.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4941,6 +5357,21 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
         : isSet(object.log_level)
         ? globalThis.String(object.log_level)
         : "",
+      overrideV4: isSet(object.overrideV4)
+        ? globalThis.String(object.overrideV4)
+        : isSet(object.override_v4)
+        ? globalThis.String(object.override_v4)
+        : "",
+      overrideV6: isSet(object.overrideV6)
+        ? globalThis.String(object.overrideV6)
+        : isSet(object.override_v6)
+        ? globalThis.String(object.override_v6)
+        : "",
+      extraAddresses: globalThis.Array.isArray(object?.extraAddresses)
+        ? object.extraAddresses.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.extra_addresses)
+        ? object.extra_addresses.map((e: any) => globalThis.String(e))
+        : [],
     };
   },
 
@@ -4964,6 +5395,15 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     if (message.logLevel !== "") {
       obj.logLevel = message.logLevel;
     }
+    if (message.overrideV4 !== "") {
+      obj.overrideV4 = message.overrideV4;
+    }
+    if (message.overrideV6 !== "") {
+      obj.overrideV6 = message.overrideV6;
+    }
+    if (message.extraAddresses?.length) {
+      obj.extraAddresses = message.extraAddresses;
+    }
     return obj;
   },
 
@@ -4978,6 +5418,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     message.comment = object.comment ?? "";
     message.ipv6Resolve = object.ipv6Resolve ?? 0;
     message.logLevel = object.logLevel ?? "";
+    message.overrideV4 = object.overrideV4 ?? "";
+    message.overrideV6 = object.overrideV6 ?? "";
+    message.extraAddresses = object.extraAddresses?.map((e) => e) || [];
     return message;
   },
 };
@@ -5270,267 +5713,6 @@ export const MoveServerReply: MessageFns<MoveServerReply> = {
   },
   fromPartial(_: DeepPartial<MoveServerReply>): MoveServerReply {
     const message = createBaseMoveServerReply();
-    return message;
-  },
-};
-
-function createBaseAddServerIpRequest(): AddServerIpRequest {
-  return { serverId: "", ip: "", country: "" };
-}
-
-export const AddServerIpRequest: MessageFns<AddServerIpRequest> = {
-  encode(message: AddServerIpRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.serverId !== "") {
-      writer.uint32(10).string(message.serverId);
-    }
-    if (message.ip !== "") {
-      writer.uint32(18).string(message.ip);
-    }
-    if (message.country !== "") {
-      writer.uint32(26).string(message.country);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): AddServerIpRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseAddServerIpRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.serverId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.ip = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.country = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): AddServerIpRequest {
-    return {
-      serverId: isSet(object.serverId)
-        ? globalThis.String(object.serverId)
-        : isSet(object.server_id)
-        ? globalThis.String(object.server_id)
-        : "",
-      ip: isSet(object.ip) ? globalThis.String(object.ip) : "",
-      country: isSet(object.country) ? globalThis.String(object.country) : "",
-    };
-  },
-
-  toJSON(message: AddServerIpRequest): unknown {
-    const obj: any = {};
-    if (message.serverId !== "") {
-      obj.serverId = message.serverId;
-    }
-    if (message.ip !== "") {
-      obj.ip = message.ip;
-    }
-    if (message.country !== "") {
-      obj.country = message.country;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<AddServerIpRequest>): AddServerIpRequest {
-    return AddServerIpRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<AddServerIpRequest>): AddServerIpRequest {
-    const message = createBaseAddServerIpRequest();
-    message.serverId = object.serverId ?? "";
-    message.ip = object.ip ?? "";
-    message.country = object.country ?? "";
-    return message;
-  },
-};
-
-function createBaseAddServerIpReply(): AddServerIpReply {
-  return { ip: undefined };
-}
-
-export const AddServerIpReply: MessageFns<AddServerIpReply> = {
-  encode(message: AddServerIpReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.ip !== undefined) {
-      ServerIp.encode(message.ip, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): AddServerIpReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseAddServerIpReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.ip = ServerIp.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): AddServerIpReply {
-    return { ip: isSet(object.ip) ? ServerIp.fromJSON(object.ip) : undefined };
-  },
-
-  toJSON(message: AddServerIpReply): unknown {
-    const obj: any = {};
-    if (message.ip !== undefined) {
-      obj.ip = ServerIp.toJSON(message.ip);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<AddServerIpReply>): AddServerIpReply {
-    return AddServerIpReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<AddServerIpReply>): AddServerIpReply {
-    const message = createBaseAddServerIpReply();
-    message.ip = (object.ip !== undefined && object.ip !== null) ? ServerIp.fromPartial(object.ip) : undefined;
-    return message;
-  },
-};
-
-function createBaseRemoveServerIpRequest(): RemoveServerIpRequest {
-  return { ipRecordId: "" };
-}
-
-export const RemoveServerIpRequest: MessageFns<RemoveServerIpRequest> = {
-  encode(message: RemoveServerIpRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.ipRecordId !== "") {
-      writer.uint32(10).string(message.ipRecordId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): RemoveServerIpRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseRemoveServerIpRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.ipRecordId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): RemoveServerIpRequest {
-    return {
-      ipRecordId: isSet(object.ipRecordId)
-        ? globalThis.String(object.ipRecordId)
-        : isSet(object.ip_record_id)
-        ? globalThis.String(object.ip_record_id)
-        : "",
-    };
-  },
-
-  toJSON(message: RemoveServerIpRequest): unknown {
-    const obj: any = {};
-    if (message.ipRecordId !== "") {
-      obj.ipRecordId = message.ipRecordId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<RemoveServerIpRequest>): RemoveServerIpRequest {
-    return RemoveServerIpRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<RemoveServerIpRequest>): RemoveServerIpRequest {
-    const message = createBaseRemoveServerIpRequest();
-    message.ipRecordId = object.ipRecordId ?? "";
-    return message;
-  },
-};
-
-function createBaseRemoveServerIpReply(): RemoveServerIpReply {
-  return {};
-}
-
-export const RemoveServerIpReply: MessageFns<RemoveServerIpReply> = {
-  encode(_: RemoveServerIpReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): RemoveServerIpReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseRemoveServerIpReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): RemoveServerIpReply {
-    return {};
-  },
-
-  toJSON(_: RemoveServerIpReply): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<RemoveServerIpReply>): RemoveServerIpReply {
-    return RemoveServerIpReply.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<RemoveServerIpReply>): RemoveServerIpReply {
-    const message = createBaseRemoveServerIpReply();
     return message;
   },
 };
@@ -9587,22 +9769,6 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
-    addServerIp: {
-      name: "AddServerIp",
-      requestType: AddServerIpRequest as typeof AddServerIpRequest,
-      requestStream: false,
-      responseType: AddServerIpReply as typeof AddServerIpReply,
-      responseStream: false,
-      options: {},
-    },
-    removeServerIp: {
-      name: "RemoveServerIp",
-      requestType: RemoveServerIpRequest as typeof RemoveServerIpRequest,
-      requestStream: false,
-      responseType: RemoveServerIpReply as typeof RemoveServerIpReply,
-      responseStream: false,
-      options: {},
-    },
     createNode: {
       name: "CreateNode",
       requestType: CreateNodeRequest as typeof CreateNodeRequest,
@@ -9825,14 +9991,6 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<DeleteServerReply>>;
   moveServer(request: MoveServerRequest, context: CallContext & CallContextExt): Promise<DeepPartial<MoveServerReply>>;
-  addServerIp(
-    request: AddServerIpRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<AddServerIpReply>>;
-  removeServerIp(
-    request: RemoveServerIpRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<RemoveServerIpReply>>;
   createNode(request: CreateNodeRequest, context: CallContext & CallContextExt): Promise<DeepPartial<CreateNodeReply>>;
   replaceNodeSpec(
     request: ReplaceNodeSpecRequest,
@@ -9954,14 +10112,6 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     options?: CallOptions & CallOptionsExt,
   ): Promise<DeleteServerReply>;
   moveServer(request: DeepPartial<MoveServerRequest>, options?: CallOptions & CallOptionsExt): Promise<MoveServerReply>;
-  addServerIp(
-    request: DeepPartial<AddServerIpRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<AddServerIpReply>;
-  removeServerIp(
-    request: DeepPartial<RemoveServerIpRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<RemoveServerIpReply>;
   createNode(request: DeepPartial<CreateNodeRequest>, options?: CallOptions & CallOptionsExt): Promise<CreateNodeReply>;
   replaceNodeSpec(
     request: DeepPartial<ReplaceNodeSpecRequest>,

@@ -61,6 +61,11 @@ pub struct OrchestrationConfig {
     pub acme_interval_secs: u64,
     /// How often expiring relay leaves are rotated.
     pub relay_rotation_interval_secs: u64,
+    /// Whether the worker API trusts `x-real-ip` / `x-forwarded-for` when it
+    /// records the address a registration came from. Leave on behind the
+    /// documented TLS-terminating proxy; turn off when `:50052` is exposed
+    /// directly, or a worker could spoof its observed address.
+    pub trust_proxy_address_headers: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -81,6 +86,7 @@ impl Default for OrchestrationConfig {
             health_retention_interval_secs: 300,
             acme_interval_secs: 60,
             relay_rotation_interval_secs: 3600,
+            trust_proxy_address_headers: true,
         }
     }
 }

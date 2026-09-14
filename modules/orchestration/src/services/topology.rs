@@ -24,9 +24,7 @@
 use crate::entities::surreal::connection::{EdgeConnectionEntity, EdgeConnectionId};
 use crate::entities::surreal::node::{NodeEntity, NodeId, NodeSpec, NodeWithPorts, RelayProtocol};
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
-use crate::entities::surreal::server::{
-    ServerEntity, ServerId, ServerIpRecordEntity, ServerIpv6Resolve,
-};
+use crate::entities::surreal::server::{ServerEntity, ServerId, ServerIpv6Resolve};
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::services::node::{export_port_direction, import_port_layout};
 use crate::utils::ids::record_key;
@@ -48,7 +46,7 @@ pub enum ProblemKind {
     PortShapeInvalid,
     Cycle,
     DuplicateListen,
-    PodIpForeign,
+    PodServerForeign,
     ExitDestinationInvalid,
     IpHashWithoutClientIp,
     PodPortUnconnected,
@@ -58,6 +56,7 @@ pub enum ProblemKind {
     CanvasImportAncestor,
     CanvasImportDuplicate,
     CanvasImportUnresolved,
+    ServerNoAddress,
 }
 
 #[derive(Debug, Clone)]
@@ -138,13 +137,13 @@ pub enum TopologyEdit {
     RetireEdge {
         edge: EdgeConnectionId,
     },
-    RemoveIp {
-        ip: crate::entities::surreal::server::ServerIpRecordId,
-    },
     SetServerSettings {
         server: ServerId,
         ipv6_resolve: ServerIpv6Resolve,
         log_level: String,
+        override_v4: Option<String>,
+        override_v6: Option<String>,
+        extra_addresses: Vec<String>,
     },
 }
 
@@ -199,20 +198,22 @@ impl CanvasTopology {
                     let key = record_key(&edge.0);
                     out.edges.retain(|e| record_key(&e.id.0) != key);
                 }
-                TopologyEdit::RemoveIp { ip } => {
-                    let key = record_key(&ip.0);
-                    out.ips.retain(|row| record_key(&row.id.0) != key);
-                }
                 TopologyEdit::SetServerSettings {
                     server,
                     ipv6_resolve,
                     log_level,
+                    override_v4,
+                    override_v6,
+                    extra_addresses,
                 } => {
                     let key = record_key(&server.0);
                     for s in out.servers.iter_mut() {
                         if record_key(&s.id.0) == key {
                             s.ipv6_resolve = *ipv6_resolve;
                             s.log_level = log_level.clone();
+                            s.override_v4 = override_v4.clone();
+                            s.override_v6 = override_v6.clone();
+                            s.extra_addresses = extra_addresses.clone();
                         }
                     }
                 }
@@ -235,6 +236,7 @@ pub fn analyze(topology: &CanvasTopology) -> Vec<TopologyProblem> {
     check_duplicate_listen(&index, &mut errors);
     check_cycles(&index, &mut errors);
     check_ip_hash(&index, &mut errors);
+    check_server_addresses(&index, &mut warnings);
     check_warnings(&index, &mut warnings);
 
     errors.append(&mut warnings);
@@ -265,7 +267,6 @@ pub(crate) struct Index<'a> {
     pub(crate) nodes: HashMap<String, &'a NodeWithPorts>,
     /// port key -> (port, owning node)
     pub(crate) ports: HashMap<String, (&'a PortEntity, &'a NodeWithPorts)>,
-    pub(crate) ips: HashMap<String, &'a ServerIpRecordEntity>,
     pub(crate) servers: HashMap<String, &'a ServerEntity>,
     pub(crate) canvases: HashSet<String>,
     /// port key -> live edges touching it
@@ -315,11 +316,6 @@ impl<'a> Index<'a> {
         Self {
             nodes,
             ports,
-            ips: topology
-                .ips
-                .iter()
-                .map(|ip| (record_key(&ip.id.0), ip))
-                .collect(),
             servers: topology
                 .servers
                 .iter()
@@ -338,10 +334,6 @@ impl<'a> Index<'a> {
 
     fn port(&self, id: &PortId) -> Option<(&'a PortEntity, &'a NodeWithPorts)> {
         self.ports.get(&record_key(&id.0)).copied()
-    }
-
-    pub(crate) fn ip(&self, key: &str) -> Option<&'a ServerIpRecordEntity> {
-        self.ips.get(key).copied()
     }
 
     /// The single live edge on a port, if any. Raw: does not look through
@@ -665,9 +657,8 @@ fn check_specs(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
             // child as a black box, but the tree is derived as one graph.
             NodeSpec::Pod(cfg) => {
                 let server_canvas = index
-                    .ips
-                    .get(&record_key(&cfg.ip.0))
-                    .and_then(|ip| index.servers.get(&record_key(&ip.server.0)))
+                    .servers
+                    .get(&record_key(&cfg.server.0))
                     .map(|server| record_key(&server.canvas.0));
                 let foreign = match server_canvas {
                     None => true,
@@ -678,14 +669,30 @@ fn check_specs(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                 if foreign {
                     out.push(
                         TopologyProblem::error(
-                            ProblemKind::PodIpForeign,
+                            ProblemKind::PodServerForeign,
                             format!(
-                                "pod {} references an ip record outside this canvas tree",
+                                "pod {} is placed on a server outside this canvas tree",
                                 node.node.name
                             ),
                         )
                         .with_nodes(vec![node.node.id.clone()]),
                     );
+                }
+                for (label, value) in [("bind_ip", &cfg.bind_ip), ("advertise_ip", &cfg.advertise_ip)] {
+                    if let Some(raw) = value
+                        && raw.parse::<std::net::IpAddr>().is_err()
+                    {
+                        out.push(
+                            TopologyProblem::error(
+                                ProblemKind::PortShapeInvalid,
+                                format!(
+                                    "pod {} {label} '{raw}' is not an IP address",
+                                    node.node.name
+                                ),
+                            )
+                            .with_nodes(vec![node.node.id.clone()]),
+                        );
+                    }
                 }
             }
             // An exit whose destination is not filled in yet is the half-drawn case
@@ -731,36 +738,81 @@ fn pod_transport(index: &Index<'_>, pod: &NodeWithPorts) -> &'static str {
     if quic { "quic" } else { "tcp" }
 }
 
+/// Two pods of one server may not claim one socket. A wildcard bind (`None`,
+/// `0.0.0.0` or `::`) covers every address, so it clashes with any bind on the
+/// same port and transport; two distinct literal addresses may share a port.
 fn check_duplicate_listen(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
-    let mut seen: HashMap<(String, u16, &'static str), &NodeWithPorts> = HashMap::new();
+    type Bind = Option<std::net::IpAddr>;
+    /// `(server key, port, transport)` -> the pods already seen on that socket.
+    type Claims<'a> = HashMap<(String, u16, &'static str), Vec<(Bind, &'a NodeWithPorts)>>;
+    let mut seen: Claims<'_> = HashMap::new();
     for node in sorted_nodes(index) {
         let NodeSpec::Pod(cfg) = &node.node.spec else {
             continue;
         };
         let transport = pod_transport(index, node);
-        let key = (record_key(&cfg.ip.0), cfg.port, transport);
-        match seen.get(&key) {
-            Some(first) => {
-                let ip = index
-                    .ips
-                    .get(&key.0)
-                    .map(|ip| ip.ip.clone())
-                    .unwrap_or_else(|| key.0.clone());
-                out.push(
-                    TopologyProblem::error(
-                        ProblemKind::DuplicateListen,
-                        format!(
-                            "pods {} and {} both listen on {}:{} ({})",
-                            first.node.name, node.node.name, ip, cfg.port, transport
-                        ),
-                    )
-                    .with_nodes(vec![first.node.id.clone(), node.node.id.clone()]),
-                );
-            }
-            None => {
-                seen.insert(key, node);
-            }
+        // An unparsable bind is reported by `check_specs`; treat it as a wildcard.
+        let bind: Bind = match cfg.bind_ip() {
+            Ok(Some(ip)) if !ip.is_unspecified() => Some(ip),
+            _ => None,
+        };
+        let key = (record_key(&cfg.server.0), cfg.port, transport);
+        let entry = seen.entry(key).or_default();
+        let clash = entry.iter().find(|(other, _)| match (other, &bind) {
+            (None, _) | (_, None) => true,
+            (Some(a), Some(b)) => a == b,
+        });
+        if let Some((_, first)) = clash {
+            out.push(
+                TopologyProblem::error(
+                    ProblemKind::DuplicateListen,
+                    format!(
+                        "pods {} and {} both listen on {} ({})",
+                        first.node.name,
+                        node.node.name,
+                        cfg.listen_display(),
+                        transport
+                    ),
+                )
+                .with_nodes(vec![first.node.id.clone(), node.node.id.clone()]),
+            );
         }
+        entry.push((bind, node));
+    }
+}
+
+/// A server nobody can dial yet: its worker has not registered and no address was
+/// pinned. Its pods still derive their listeners; only the pods on *other*
+/// servers that dial it stay invalid until an address is known.
+fn check_server_addresses(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
+    let mut pods_by_server: HashMap<String, Vec<NodeId>> = HashMap::new();
+    for node in sorted_nodes(index) {
+        if let NodeSpec::Pod(cfg) = &node.node.spec {
+            pods_by_server
+                .entry(record_key(&cfg.server.0))
+                .or_default()
+                .push(node.node.id.clone());
+        }
+    }
+    let mut keys: Vec<&String> = index.servers.keys().collect();
+    keys.sort();
+    for key in keys {
+        let Some(server) = index.servers.get(key) else {
+            continue;
+        };
+        if server.effective_address().is_some() {
+            continue;
+        }
+        out.push(
+            TopologyProblem::warning(
+                ProblemKind::ServerNoAddress,
+                format!(
+                    "server {} has no address yet: wait for its worker to register, or pin one",
+                    server.name
+                ),
+            )
+            .with_nodes(pods_by_server.remove(key).unwrap_or_default()),
+        );
     }
 }
 
@@ -931,20 +983,10 @@ fn check_ip_hash(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
 fn check_warnings(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
     for node in sorted_nodes(index) {
         match &node.node.spec {
-            NodeSpec::Pod(_) => {
-                if node.ports.iter().any(|p| index.edge_on(p).is_none()) {
-                    out.push(
-                        TopologyProblem::warning(
-                            ProblemKind::PodPortUnconnected,
-                            format!(
-                                "pod {} has an unconnected port; it will be skipped",
-                                node.node.name
-                            ),
-                        )
-                        .with_nodes(vec![node.node.id.clone()]),
-                    );
-                }
-            }
+            // A pod with an unconnected port is simply not derived: every server
+            // starts with its transport pods unwired, so that is the normal state,
+            // not a warning.
+            NodeSpec::Pod(_) => {}
             NodeSpec::Relay(_) => {
                 let listen_pod = index
                     .port_by_key(node, "listen")
@@ -953,7 +995,7 @@ fn check_warnings(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                     .port_by_key(node, "destination")
                     .and_then(|p| index.peer(p));
                 if let (Some(a), Some(b)) = (listen_pod, target_pod)
-                    && let (Some(sa), Some(sb)) = (pod_server(index, a), pod_server(index, b))
+                    && let (Some(sa), Some(sb)) = (pod_server(a), pod_server(b))
                     && sa == sb
                 {
                     out.push(
@@ -988,14 +1030,11 @@ fn check_warnings(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
 }
 
 /// The server key a pod listens on.
-fn pod_server(index: &Index<'_>, pod: &NodeWithPorts) -> Option<String> {
+fn pod_server(pod: &NodeWithPorts) -> Option<String> {
     let NodeSpec::Pod(cfg) = &pod.node.spec else {
         return None;
     };
-    index
-        .ips
-        .get(&record_key(&cfg.ip.0))
-        .map(|ip| record_key(&ip.server.0))
+    Some(record_key(&cfg.server.0))
 }
 
 /// Nodes in record-key order, so problems are reported deterministically.

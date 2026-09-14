@@ -5,7 +5,7 @@ level = "info"
 
 [[forwarding]]
 tag = "osaka-hop"
-listen = "198.51.100.10:9443"
+listen = "[::]:9443"
 
 [forwarding.listen_as.relay]
 relay_type = "tcp"

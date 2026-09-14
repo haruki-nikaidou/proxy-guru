@@ -21,7 +21,7 @@
 #[macro_export]
 macro_rules! table_record {
     ($name:ident, $table:literal) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $name(pub ::surrealdb::types::RecordId);
 
         impl $name {

@@ -6,6 +6,7 @@
 
 use crate::services::agent::{AgentIdentity, AgentService, AuthenticateRefreshKey};
 use kanau::processor::Processor;
+use std::net::IpAddr;
 use std::task::{Context, Poll};
 use tonic::Status;
 use tonic::codegen::http;
@@ -83,4 +84,23 @@ pub fn agent_from_request<T>(req: &tonic::Request<T>) -> Result<AgentIdentity, S
         .get::<AgentIdentity>()
         .cloned()
         .ok_or_else(|| Status::unauthenticated("Missing refresh key"))
+}
+
+/// The worker's address as the master saw it.
+///
+/// Behind the documented TLS-terminating proxy the socket peer is the proxy, so
+/// `x-real-ip`, else the first hop of `x-forwarded-for`, is preferred while
+/// `trust_proxy_headers` is on; otherwise, and when neither header parses, the
+/// socket peer is used. IPv4-mapped IPv6 peers are unmapped.
+pub fn peer_address<T>(req: &tonic::Request<T>, trust_proxy_headers: bool) -> Option<IpAddr> {
+    let header = |name: &str| -> Option<IpAddr> {
+        let value = req.metadata().get(name)?.to_str().ok()?;
+        value.split(',').next()?.trim().parse::<IpAddr>().ok()
+    };
+    let forwarded = trust_proxy_headers
+        .then(|| header("x-real-ip").or_else(|| header("x-forwarded-for")))
+        .flatten();
+    forwarded
+        .or_else(|| req.remote_addr().map(|addr| addr.ip()))
+        .map(|ip| ip.to_canonical())
 }

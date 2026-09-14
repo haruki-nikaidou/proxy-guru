@@ -37,7 +37,7 @@ use crate::services::derive::{
 };
 use crate::utils::ids::record_key;
 use guru_worker_config::{Config, Forwarding};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// One server's config as it may be rolled out right now.
 #[derive(Debug, Clone)]
@@ -58,10 +58,10 @@ pub struct Converged {
 #[derive(Debug, thiserror::Error)]
 pub enum ConvergeError {
     #[error(
-        "listener {ip}:{port} is still referenced as {old:?} and cannot become {new:?}; change the port"
+        "listener {server}:{port} is still referenced as {old:?} and cannot become {new:?}; change the port"
     )]
     ListenerConflict {
-        ip: String,
+        server: String,
         port: i64,
         old: ListenProtocol,
         new: ListenProtocol,
@@ -80,8 +80,10 @@ pub fn converge(
     ideal: DerivedConfig,
     own: &ServerConfigViewEntity,
     views: &[ServerConfigViewEntity],
-    server_of_ip: &HashMap<String, ServerId>,
 ) -> Result<Converged, ConvergeError> {
+    // `ListenerCap` holds a `RecordId`, whose key type carries interior
+    // mutability clippy cannot see through; the ids are never mutated here.
+    #[allow(clippy::mutable_key_type)]
     let mut served_now: HashSet<ListenerCap> = HashSet::new();
     for view in views {
         if let Some(applied) = &view.applied {
@@ -92,6 +94,7 @@ pub fn converge(
     }
 
     let own_key = record_key(&own.server.0);
+    #[allow(clippy::mutable_key_type)]
     let mut referenced: HashSet<ListenerCap> = HashSet::new();
     for view in views {
         let is_own = record_key(&view.server.0) == own_key;
@@ -126,11 +129,8 @@ pub fn converge(
             continue;
         }
         for cap in unready {
-            if let Some(target) = server_of_ip.get(&cap.ip) {
-                let key = record_key(&target.0);
-                if waiting_keys.insert(key) {
-                    waiting.push(target.clone());
-                }
+            if waiting_keys.insert(cap.server_key()) {
+                waiting.push(cap.server.clone());
             }
         }
         // Hold the previous shape of this listener until the target catches up.
@@ -151,15 +151,10 @@ pub fn converge(
     let mut stale: Vec<&ListenerCap> = referenced
         .iter()
         .filter(|cap| {
-            server_of_ip
-                .get(&cap.ip)
-                .map(|s| record_key(&s.0))
-                .as_deref()
-                == Some(own_key.as_str())
-                && !merged.iter().any(|(_, deps)| &deps.serves == *cap)
+            cap.server_key() == own_key && !merged.iter().any(|(_, deps)| &deps.serves == *cap)
         })
         .collect();
-    stale.sort_by(|a, b| (&a.ip, a.port).cmp(&(&b.ip, b.port)));
+    stale.sort_by_key(|cap| (cap.port, cap.protocol as u8));
     for cap in stale {
         if let Some(previous) = old_forwarding(own, cap)? {
             merged.push(previous);
@@ -178,7 +173,7 @@ pub fn converge(
         let (a, b) = (&pair[0].0, &pair[1].0);
         if a.listen_key() == b.listen_key() {
             return Err(ConvergeError::ListenerConflict {
-                ip: pair[0].1.serves.ip.clone(),
+                server: pair[0].1.serves.server_key(),
                 port: pair[0].1.serves.port,
                 old: pair[0].1.serves.protocol,
                 new: pair[1].1.serves.protocol,
@@ -304,7 +299,7 @@ pub fn ensure_switch_safe(
             if let Some(old) = referenced.iter().find(|cap| cap.conflicts(&deps.serves)) {
                 return Err(OrchestrationError::Conflict(format!(
                     "listener {}:{} is still in use as {:?}; use a new port instead of changing its protocol",
-                    deps.serves.ip, deps.serves.port, old.protocol
+                    server.name, deps.serves.port, old.protocol
                 )));
             }
         }

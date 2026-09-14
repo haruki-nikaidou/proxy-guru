@@ -15,7 +15,6 @@ DELETE relay_certificate WHERE pod IN $nodes;
 DELETE orchestration_node WHERE id IN $nodes;
 DELETE orchestration_server_config_view WHERE server IN $servers;
 DELETE server_health_record WHERE server IN $servers;
-DELETE server_ip_record WHERE server IN $servers;
 DELETE orchestration_server WHERE id IN $servers;
 DELETE orchestration_canvas WHERE id IN $tree;
 COMMIT TRANSACTION;

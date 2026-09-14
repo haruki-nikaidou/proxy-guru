@@ -14,14 +14,14 @@ use orchestration::entities::surreal::node::{
     FindNodeWithPorts, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
 use orchestration::entities::surreal::port::{PortDirection, PortId, PortKind};
-use orchestration::entities::surreal::server::{ServerId, ServerIpRecordId, ServerIpv6Resolve};
+use orchestration::entities::surreal::server::{ServerId, ServerIpv6Resolve};
 use orchestration::services::OrchestrationError;
 use orchestration::services::canvas::{
     CreateCanvas, DeleteCanvas, GetCanvas, GetCanvasTree, ListCanvases,
 };
 use orchestration::services::edge::Connect;
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec, RetireNode};
-use orchestration::services::server::{AddServerIp, CreateServer};
+use orchestration::services::server::{AddressOverrides, CreateServer};
 use orchestration::services::topology::ProblemKind;
 use orchestration::utils::ids::record_key;
 
@@ -40,7 +40,7 @@ async fn server(
     canvas: &CanvasId,
     name: &str,
     ip: &str,
-) -> Result<(ServerId, ServerIpRecordId), Box<dyn std::error::Error>> {
+) -> Result<(ServerId, ServerId), Box<dyn std::error::Error>> {
     let server = w
         .servers
         .process(CreateServer {
@@ -52,18 +52,14 @@ async fn server(
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some(ip.to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
-    let record = w
-        .servers
-        .process(AddServerIp {
-            actor: operator(),
-            server: server.id.clone(),
-            ip: ip.to_string(),
-            country: "jp".to_string(),
-        })
-        .await?;
-    Ok((server.id, record.id))
+    Ok((server.id.clone(), server.id))
 }
 
 async fn create(
@@ -98,10 +94,12 @@ fn export_out() -> NodeSpec {
     })
 }
 
-fn pod(ip: &ServerIpRecordId, port: u16) -> NodeSpec {
+fn pod(server: &ServerId, port: u16) -> NodeSpec {
     NodeSpec::Pod(PodConfig {
-        ip: ip.clone(),
+        server: server.clone(),
         port,
+        bind_ip: None,
+        advertise_ip: None,
     })
 }
 
@@ -340,7 +338,6 @@ async fn deleting_a_root_deletes_its_whole_tree() -> TestResult {
         "orchestration_port",
         "orchestration_edge_connection",
         "orchestration_server",
-        "server_ip_record",
         "orchestration_server_config_view",
     ] {
         let mut resp =
@@ -518,7 +515,9 @@ async fn list_and_tree() -> TestResult {
     let ancestors: Vec<String> = contents.ancestors.iter().map(|c| c.name.clone()).collect();
     assert_eq!(ancestors, ["root", "sub"]);
     assert!(contents.import_targets.is_empty());
-    assert_eq!(contents.nodes.len(), 3, "only subsub's own nodes");
+    // subsub's own three nodes plus the four transport pods its server was
+    // created with.
+    assert_eq!(contents.nodes.len(), 7, "only subsub's own nodes");
     assert_eq!(contents.servers.len(), 1);
 
     let contents = w

@@ -9,9 +9,7 @@ use orchestration::entities::surreal::node::{
     NodeWithPorts,
 };
 use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::surreal::server::{
-    ServerEntity, ServerId, ServerIpRecordEntity, ServerIpRecordId, ServerIpv6Resolve,
-};
+use orchestration::entities::surreal::server::{ServerEntity, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::topology::CanvasTopology;
 use orchestration::services::node::export_port_direction;
 use orchestration::utils::ids;
@@ -24,7 +22,6 @@ pub struct Builder {
     canvases: Vec<CanvasEntity>,
     current: CanvasId,
     servers: Vec<ServerEntity>,
-    ips: Vec<ServerIpRecordEntity>,
     nodes: Vec<NodeWithPorts>,
     edges: Vec<EdgeConnectionEntity>,
 }
@@ -165,7 +162,6 @@ impl Builder {
             canvases: vec![stub_canvas(canvas)],
             current: ids::canvas_id(canvas),
             servers: Vec::new(),
-            ips: Vec::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
         }
@@ -203,19 +199,34 @@ impl Builder {
             last_seen_at: None,
             last_health_report_at: None,
             health_status: orchestration::entities::surreal::health::ServerHealthStatus::Offline,
+            override_v4: None,
+            override_v6: None,
+            extra_addresses: Vec::new(),
+            reported_addresses: None,
+            observed_address: None,
+            observed_at: None,
         });
         id
     }
 
-    pub fn ip(&mut self, key: &str, server: &ServerId, ip: &str) -> ServerIpRecordId {
-        let id = ids::server_ip_id(key);
-        self.ips.push(ServerIpRecordEntity {
-            id: id.clone(),
-            server: server.clone(),
-            ip: ip.to_string(),
-            country: "jp".to_string(),
-        });
-        id
+    /// Pins an address on a server and hands back its id, so a pod can be placed
+    /// on it with `pod(&server, port)`. The family is inferred from the literal;
+    /// `key` is ignored (kept so existing call sites read unchanged).
+    pub fn ip(&mut self, _key: &str, server: &ServerId, ip: &str) -> ServerId {
+        let is_v4 = ip.parse::<std::net::Ipv4Addr>().is_ok();
+        let server_key = ids::record_key(&server.0);
+        if let Some(row) = self
+            .servers
+            .iter_mut()
+            .find(|s| ids::record_key(&s.id.0) == server_key)
+        {
+            if is_v4 {
+                row.override_v4 = Some(ip.to_string());
+            } else {
+                row.override_v6 = Some(ip.to_string());
+            }
+        }
+        server.clone()
     }
 
     pub fn node(&mut self, key: &str, spec: NodeSpec, ports: Vec<PortSpec>) -> NodeId {
@@ -300,7 +311,6 @@ impl Builder {
             root: self.root.clone(),
             canvases: self.canvases.clone(),
             servers: self.servers.clone(),
-            ips: self.ips.clone(),
             nodes: self.nodes.clone(),
             edges: self.edges.clone(),
         }

@@ -36,7 +36,7 @@ use orchestration::services::edge::{Connect, EdgeService};
 use orchestration::services::health::HealthService;
 use orchestration::services::node::{CreateNode, NodeService, ReplaceNodeSpec};
 use orchestration::services::rollout::DirtyNotifier;
-use orchestration::services::server::{AddServerIp, CreateServer, ServerService};
+use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::ids;
 use orchestration::utils::secret::SecretKey;
@@ -247,7 +247,6 @@ struct Canvas {
     server: ServerId,
     pod: orchestration::entities::surreal::node::NodeId,
     listen: SocketAddr,
-    ip: orchestration::entities::surreal::server::ServerIpRecordId,
 }
 
 /// One server with a single `pod -> entry` / `exit -> pod` chain on loopback.
@@ -289,14 +288,11 @@ async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::erro
             position: pos(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
-        })
-        .await?;
-    let ip = servers
-        .process(AddServerIp {
-            actor: operator(),
-            server: server.id.clone(),
-            ip: "127.0.0.1".to_string(),
-            country: "jp".to_string(),
+            addresses: AddressOverrides {
+                override_v4: Some("127.0.0.1".to_string()),
+                override_v6: None,
+                extra_addresses: Vec::new(),
+            },
         })
         .await?;
     let port = free_port();
@@ -307,8 +303,10 @@ async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::erro
             name: "edge".to_string(),
             comment: String::new(),
             spec: NodeSpec::Pod(PodConfig {
-                ip: ip.id.clone(),
+                server: server.id.clone(),
                 port,
+                bind_ip: Some("127.0.0.1".to_string()),
+                advertise_ip: None,
             }),
             position: pos(),
             item_count: 0,
@@ -368,7 +366,6 @@ async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::erro
         server: server.id,
         pod: pod.node.id,
         listen: format!("127.0.0.1:{port}").parse()?,
-        ip: ip.id,
     })
 }
 
@@ -420,6 +417,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
             state_dir: state_dir.clone(),
             applied_revision: Arc::new(AtomicI64::new(0)),
             health_interval: Duration::from_millis(200),
+            public_ip_urls: String::new(),
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -491,8 +489,10 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
             actor: operator(),
             node: canvas.pod.clone(),
             spec: NodeSpec::Pod(PodConfig {
-                ip: canvas.ip.clone(),
+                server: canvas.server.clone(),
                 port: taken_port,
+                bind_ip: Some("127.0.0.1".to_string()),
+                advertise_ip: None,
             }),
             item_count: 0,
         })
@@ -571,6 +571,7 @@ async fn register(
     let mut request = tonic::Request::new(RegisterRequest {
         server_id: server_key.to_string(),
         running_revision: 0,
+        reported_addresses: None,
     });
     let key = api_key.parse().map_err(|_| Status::internal("api key"))?;
     request.metadata_mut().insert("x-api-key", key);
@@ -980,6 +981,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
             state_dir: state_dir.clone(),
             applied_revision: Arc::new(AtomicI64::new(0)),
             health_interval: Duration::from_millis(200),
+            public_ip_urls: String::new(),
         },
         sup.clone(),
         agent_shutdown.clone(),

@@ -12,7 +12,7 @@ use crate::entities::surreal::dns::DnsProviderId;
 use crate::entities::surreal::health::{NodeHealthRecordId, ServerHealthRecordId};
 use crate::entities::surreal::node::NodeId;
 use crate::entities::surreal::port::PortId;
-use crate::entities::surreal::server::{ServerId, ServerIpRecordId};
+use crate::entities::surreal::server::ServerId;
 use surrealdb::types::{RecordId, RecordIdKey};
 use surrealdb_types::ToSql;
 
@@ -36,7 +36,6 @@ macro_rules! decoder {
 
 decoder!(canvas_id, CanvasId, "orchestration_canvas");
 decoder!(server_id, ServerId, "orchestration_server");
-decoder!(server_ip_id, ServerIpRecordId, "server_ip_record");
 decoder!(node_id, NodeId, "orchestration_node");
 decoder!(port_id, PortId, "orchestration_port");
 decoder!(edge_id, EdgeConnectionId, "orchestration_edge_connection");

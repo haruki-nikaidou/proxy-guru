@@ -15,7 +15,9 @@ use crate::entities::surreal::health::{
     ServerHealthStatus, SetServerHealthStatus,
 };
 use crate::entities::surreal::node::NodeId;
-use crate::entities::surreal::server::ServerId;
+use crate::entities::surreal::server::{
+    FindServerById, ReportedAddresses, ServerId, UpdateReportedAddresses,
+};
 use crate::entities::surreal::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
 };
@@ -102,6 +104,8 @@ pub struct HealthReportInput {
     pub max_connections: i64,
     /// One entry per running `[[forwarding]]`.
     pub pods: Vec<PodResult>,
+    /// A refreshed address set, sent only when the worker's discovery changed.
+    pub reported: Option<ReportedAddresses>,
 }
 
 pub struct RecordHealthReport {
@@ -123,6 +127,7 @@ impl Processor<RecordHealthReport> for HealthService {
             .ok_or(OrchestrationError::NotFound)?;
         let now = Utc::now();
         let report = input.report;
+        let server_id = input.agent.server.clone();
         // The generation is checked inside the write itself, so a report from a
         // session that was superseded between two statements lands nowhere.
         let accepted = self
@@ -146,6 +151,33 @@ impl Processor<RecordHealthReport> for HealthService {
             .await?;
         if !accepted {
             return Err(OrchestrationError::PermissionDenied);
+        }
+        // A changed address set re-derives every destination that dials this
+        // server. The write is fenced on the generation and touches the canvas
+        // only when something actually changed; the stale-canvas sweep picks the
+        // touch up.
+        if let Some(reported) = report.reported {
+            let server = self
+                .db
+                .process(FindServerById {
+                    id: server_id.clone(),
+                })
+                .await?
+                .ok_or(OrchestrationError::NotFound)?;
+            let unchanged = server
+                .reported_addresses
+                .as_ref()
+                .is_some_and(|stored| stored.same_addresses(&reported));
+            if !unchanged {
+                self.db
+                    .process(UpdateReportedAddresses {
+                        server: server_id,
+                        canvas: server.canvas,
+                        generation: input.agent.generation,
+                        reported,
+                    })
+                    .await?;
+            }
         }
         Ok(())
     }

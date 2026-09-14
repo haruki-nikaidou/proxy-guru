@@ -5,12 +5,13 @@
 //! restart always produces a fresh registration and the master can tell it was down.
 
 use crate::BoxError;
+use crate::addresses::{self, Discovered};
 use crate::certs;
 use crate::state::{self, LastKnownGood};
 use crate::supervisor::{ApplyOutcome, Supervisor};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigRequest, HealthReport, PodStatus, RegisterRequest, WatchConfigRequest,
-    worker_agent_client::WorkerAgentClient,
+    AckConfigRequest, HealthReport, PodStatus, RegisterRequest, ReportedAddresses,
+    WatchConfigRequest, worker_agent_client::WorkerAgentClient,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ pub struct AgentOptions {
     /// Time between two health reports when the master's register reply does not
     /// dictate one.
     pub health_interval: Duration,
+    /// Comma-separated URLs that report this host's public IP; empty disables it.
+    pub public_ip_urls: String,
 }
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
@@ -105,9 +108,19 @@ async fn session(
     let mut client = WorkerAgentClient::new(endpoint(&opts.master)?.connect().await?);
 
     let running_revision = opts.applied_revision.load(Ordering::Relaxed);
+    // Best effort and time-bounded: a slow or failed lookup cannot delay the
+    // session past `addresses::LOOKUP_TIMEOUT`.
+    let discovered = addresses::discover(&opts.public_ip_urls).await;
+    tracing::info!(
+        public_v4 = ?discovered.public_v4,
+        public_v6 = ?discovered.public_v6,
+        interfaces = discovered.interfaces.len(),
+        "discovered own addresses"
+    );
     let mut register = tonic::Request::new(RegisterRequest {
         server_id: opts.server_id.clone(),
         running_revision,
+        reported_addresses: Some(discovered.to_proto()),
     });
     register
         .metadata_mut()
@@ -144,6 +157,8 @@ async fn session(
         health_interval,
         sup.clone(),
         opts.applied_revision.clone(),
+        opts.public_ip_urls.clone(),
+        discovered,
         health_token,
     ));
 
@@ -284,12 +299,15 @@ async fn apply_revision(
 
 /// Streams one `HealthReport` per interval until `token` is cancelled or the master
 /// ends the stream. The first report goes out at once.
+#[allow(clippy::too_many_arguments)]
 async fn report_health(
     mut client: WorkerAgentClient<Channel>,
     refresh_key: MetadataValue<Ascii>,
     interval: Duration,
     sup: Arc<Mutex<Supervisor>>,
     applied_revision: Arc<AtomicI64>,
+    public_ip_urls: String,
+    mut last_addresses: Discovered,
     token: CancellationToken,
 ) -> Result<(), BoxError> {
     let (tx, rx) = tokio::sync::mpsc::channel::<HealthReport>(1);
@@ -300,6 +318,12 @@ async fn report_health(
 
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Re-checks own addresses on its own cadence, independent of the report
+    // interval; a changed set rides the next report and the master re-derives.
+    let mut address_ticker = tokio::time::interval(addresses::REFRESH_INTERVAL);
+    address_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    address_ticker.tick().await; // the immediate first tick was covered by Register
+    let mut pending_addresses: Option<ReportedAddresses> = None;
     let stats = sup.lock().await.stats();
     loop {
         tokio::select! {
@@ -307,6 +331,13 @@ async fn report_health(
             reply = &mut call => {
                 reply?;
                 return Err("master closed the health stream".into());
+            }
+            _ = address_ticker.tick() => {
+                let discovered = addresses::discover(&public_ip_urls).await;
+                if discovered != last_addresses {
+                    pending_addresses = Some(discovered.to_proto());
+                    last_addresses = discovered;
+                }
             }
             _ = ticker.tick() => {
                 let report = {
@@ -323,6 +354,7 @@ async fn report_health(
                             .into_iter()
                             .map(|p| PodStatus { tag: p.tag, error: p.error })
                             .collect(),
+                        reported_addresses: pending_addresses.take(),
                     }
                 };
                 if tx.send(report).await.is_err() {

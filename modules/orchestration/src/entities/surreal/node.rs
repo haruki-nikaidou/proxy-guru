@@ -1,7 +1,7 @@
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
 use crate::entities::surreal::dns::DnsProviderId;
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use crate::entities::surreal::server::ServerIpRecordId;
+use crate::entities::surreal::server::ServerId;
 use crate::utils::ids::record_key;
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
@@ -55,11 +55,51 @@ pub struct CanvasImportConfig {
     pub canvas: CanvasId,
 }
 
+/// One listener on one server: a forwarding rule's socket.
 #[derive(Debug, Clone, SurrealValue)]
 pub struct PodConfig {
-    /// The ip record this pod listens on; it pins the pod to exactly one server.
-    pub ip: ServerIpRecordId,
+    /// The server this pod listens on; it pins the pod to exactly one server.
+    pub server: ServerId,
     pub port: u16,
+    /// The address to bind. `None` binds every address of the host (dual-stack
+    /// `::`); `0.0.0.0` restricts it to IPv4; a literal pins one interface.
+    #[surreal(default)]
+    pub bind_ip: Option<String>,
+    /// The address other servers dial for this pod. `None` means the server's
+    /// effective address.
+    #[surreal(default)]
+    pub advertise_ip: Option<String>,
+}
+
+impl PodConfig {
+    /// The parsed bind address, or the value that failed to parse.
+    pub fn bind_ip(&self) -> Result<Option<std::net::IpAddr>, String> {
+        parse_optional_ip(&self.bind_ip)
+    }
+
+    /// The parsed advertise address, or the value that failed to parse.
+    pub fn advertise_ip(&self) -> Result<Option<std::net::IpAddr>, String> {
+        parse_optional_ip(&self.advertise_ip)
+    }
+
+    /// The socket this pod binds, `[::]` standing for "all addresses".
+    pub fn listen_display(&self) -> String {
+        match self.bind_ip.as_deref() {
+            None => format!("[::]:{}", self.port),
+            Some(ip) if ip.contains(':') => format!("[{ip}]:{}", self.port),
+            Some(ip) => format!("{ip}:{}", self.port),
+        }
+    }
+}
+
+fn parse_optional_ip(value: &Option<String>) -> Result<Option<std::net::IpAddr>, String> {
+    match value.as_deref() {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse::<std::net::IpAddr>()
+            .map(Some)
+            .map_err(|_| raw.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, SurrealValue)]

@@ -413,7 +413,6 @@ impl Processor<CreateNode> for NodeService {
                     // which the checker reports as a duplicate import.
                     topology.canvases.extend(target.canvases);
                     topology.servers.extend(target.servers);
-                    topology.ips.extend(target.ips);
                     topology.nodes.extend(target.nodes);
                     topology.edges.extend(target.edges);
                 }

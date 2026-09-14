@@ -47,6 +47,16 @@ pub struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub health_interval: u64,
+    /// Agent mode: comma-separated URLs that answer with the caller's public IP
+    /// as plain text, queried round-robin over IPv4 and IPv6 before registering
+    /// and every minute after. Empty disables the lookup (interface addresses
+    /// are still reported).
+    #[arg(
+        long,
+        env = "GURU_PUBLIC_IP_URLS",
+        default_value = crate::addresses::DEFAULT_PUBLIC_IP_URLS
+    )]
+    pub public_ip_urls: String,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
 }

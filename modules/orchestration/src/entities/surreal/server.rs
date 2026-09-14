@@ -3,6 +3,7 @@ use crate::entities::surreal::health::ServerHealthStatus;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
+use std::net::IpAddr;
 use surrealdb_types::SurrealValue;
 use wakuwaku::surreal::SurrealProcessor;
 
@@ -37,6 +38,79 @@ pub struct ServerEntity {
     /// reports.
     #[surreal(default)]
     pub health_status: ServerHealthStatus,
+    /// Operator-pinned IPv4 / IPv6; wins over whatever the worker reports.
+    #[surreal(default)]
+    pub override_v4: Option<String>,
+    #[surreal(default)]
+    pub override_v6: Option<String>,
+    /// Further addresses the operator added (a second public IP, an overlay
+    /// address); pods may advertise one of them.
+    #[surreal(default)]
+    pub extra_addresses: Vec<String>,
+    /// What the worker last reported about itself.
+    #[surreal(default)]
+    pub reported_addresses: Option<ReportedAddresses>,
+    /// The peer address the master saw the last registration come from.
+    #[surreal(default)]
+    pub observed_address: Option<String>,
+    #[surreal(default)]
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+/// The address set a worker discovers about itself and sends with `Register`
+/// and, when it changes, with a health report.
+#[derive(Debug, Clone, PartialEq, Eq, SurrealValue)]
+pub struct ReportedAddresses {
+    pub public_v4: Option<String>,
+    pub public_v6: Option<String>,
+    pub interfaces: Vec<String>,
+    pub reported_at: DateTime<Utc>,
+}
+
+impl ReportedAddresses {
+    /// Same addresses, whenever they were reported.
+    pub fn same_addresses(&self, other: &Self) -> bool {
+        self.public_v4 == other.public_v4
+            && self.public_v6 == other.public_v6
+            && self.interfaces == other.interfaces
+    }
+}
+
+/// Where a server's effective address came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressSource {
+    Override,
+    Reported,
+    Observed,
+}
+
+impl ServerEntity {
+    /// The address other servers dial by default: the IPv4 override, else the
+    /// reported public IPv4, else the address the master observed, else the same
+    /// chain for IPv6. IPv4 first because that is what most peers can reach; a
+    /// pod that should be dialed over IPv6 sets its own `advertise_ip`.
+    pub fn effective_address(&self) -> Option<(IpAddr, AddressSource)> {
+        let parse = |s: &Option<String>| s.as_deref().and_then(|v| v.parse::<IpAddr>().ok());
+        let reported = self.reported_addresses.as_ref();
+        let observed = parse(&self.observed_address);
+        let candidates = [
+            (parse(&self.override_v4), AddressSource::Override),
+            (
+                reported.and_then(|r| parse(&r.public_v4)),
+                AddressSource::Reported,
+            ),
+            (observed.filter(IpAddr::is_ipv4), AddressSource::Observed),
+            (parse(&self.override_v6), AddressSource::Override),
+            (
+                reported.and_then(|r| parse(&r.public_v6)),
+                AddressSource::Reported,
+            ),
+            (observed.filter(IpAddr::is_ipv6), AddressSource::Observed),
+        ];
+        candidates
+            .into_iter()
+            .find_map(|(address, source)| address.map(|a| (a, source)))
+    }
 }
 
 /// Local mirror of [`guru_worker_config::Ipv6Resolve`]; `SurrealValue` cannot be
@@ -61,22 +135,6 @@ impl From<ServerIpv6Resolve> for guru_worker_config::Ipv6Resolve {
     }
 }
 
-table_record!(ServerIpRecordId, "server_ip_record");
-
-#[derive(Debug, Clone, SurrealValue)]
-pub struct ServerIpRecordEntity {
-    pub id: ServerIpRecordId,
-    pub server: ServerId,
-    pub ip: String,
-    pub country: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerWithIp {
-    pub server: ServerEntity,
-    pub ips: Vec<ServerIpRecordEntity>,
-}
-
 pub struct CreateServer {
     pub canvas: CanvasId,
     pub name: String,
@@ -85,6 +143,9 @@ pub struct CreateServer {
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
+    pub override_v4: Option<String>,
+    pub override_v6: Option<String>,
+    pub extra_addresses: Vec<String>,
 }
 
 impl Processor<CreateServer> for SurrealProcessor {
@@ -105,6 +166,9 @@ impl Processor<CreateServer> for SurrealProcessor {
             .bind(("position", input.position))
             .bind(("ipv6_resolve", input.ipv6_resolve))
             .bind(("log_level", input.log_level))
+            .bind(("override_v4", input.override_v4))
+            .bind(("override_v6", input.override_v6))
+            .bind(("extra_addresses", input.extra_addresses))
             .await?;
         resp.take::<Option<ServerEntity>>(4)?
             .ok_or_else(|| surrealdb::Error::internal("create server returned no row".to_string()))
@@ -157,6 +221,9 @@ pub struct UpdateServerSettings {
     pub comment: String,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
+    pub override_v4: Option<String>,
+    pub override_v6: Option<String>,
+    pub extra_addresses: Vec<String>,
 }
 
 impl Processor<UpdateServerSettings> for SurrealProcessor {
@@ -177,6 +244,9 @@ impl Processor<UpdateServerSettings> for SurrealProcessor {
             .bind(("comment", input.comment))
             .bind(("ipv6_resolve", input.ipv6_resolve))
             .bind(("log_level", input.log_level))
+            .bind(("override_v4", input.override_v4))
+            .bind(("override_v6", input.override_v6))
+            .bind(("extra_addresses", input.extra_addresses))
             .await?;
         resp.take::<Option<ServerEntity>>(1)?
             .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
@@ -224,94 +294,6 @@ impl Processor<DeleteServerRow> for SurrealProcessor {
     }
 }
 
-pub struct CreateServerIp {
-    pub server: ServerId,
-    pub ip: String,
-    pub country: String,
-}
-
-impl Processor<CreateServerIp> for SurrealProcessor {
-    type Output = ServerIpRecordEntity;
-    type Error = surrealdb::Error;
-    #[tracing::instrument(name = "Query:CreateServerIp", skip_all, err, fields(server = ?input.server))]
-    async fn process(&self, input: CreateServerIp) -> Result<Self::Output, Self::Error> {
-        let mut resp = self
-            .db()
-            .query(
-                "CREATE ONLY server_ip_record CONTENT { server: $server, ip: $ip, country: $country }",
-            )
-            .bind(("server", input.server))
-            .bind(("ip", input.ip))
-            .bind(("country", input.country))
-            .await?;
-        resp.take::<Option<ServerIpRecordEntity>>(0)?
-            .ok_or_else(|| {
-                surrealdb::Error::internal("create server ip returned no row".to_string())
-            })
-    }
-}
-
-#[derive(Debug)]
-pub struct FindServerIpById {
-    pub id: ServerIpRecordId,
-}
-
-impl Processor<FindServerIpById> for SurrealProcessor {
-    type Output = Option<ServerIpRecordEntity>;
-    type Error = surrealdb::Error;
-    #[tracing::instrument(name = "Query:FindServerIpById", skip_all, err)]
-    async fn process(&self, input: FindServerIpById) -> Result<Self::Output, Self::Error> {
-        let mut resp = self
-            .db()
-            .query("SELECT * FROM $id")
-            .bind(("id", input.id))
-            .await?;
-        resp.take::<Option<ServerIpRecordEntity>>(0)
-    }
-}
-
-#[derive(Debug)]
-pub struct ListServerIpsByCanvas {
-    pub canvas: CanvasId,
-}
-
-impl Processor<ListServerIpsByCanvas> for SurrealProcessor {
-    type Output = Vec<ServerIpRecordEntity>;
-    type Error = surrealdb::Error;
-    #[tracing::instrument(name = "Query:ListServerIpsByCanvas", skip_all, err)]
-    async fn process(&self, input: ListServerIpsByCanvas) -> Result<Self::Output, Self::Error> {
-        let mut resp = self
-            .db()
-            .query("SELECT * FROM server_ip_record WHERE server.canvas = $canvas")
-            .bind(("canvas", input.canvas))
-            .await?;
-        resp.take::<Vec<ServerIpRecordEntity>>(0)
-    }
-}
-
-#[derive(Debug)]
-pub struct DeleteServerIpRow {
-    pub id: ServerIpRecordId,
-    pub canvas: CanvasId,
-}
-
-impl Processor<DeleteServerIpRow> for SurrealProcessor {
-    type Output = ();
-    type Error = surrealdb::Error;
-    #[tracing::instrument(name = "Query-Transaction:DeleteServerIpRow", skip_all, err)]
-    async fn process(&self, input: DeleteServerIpRow) -> Result<Self::Output, Self::Error> {
-        self.db()
-            .query(include_str!(
-                "../../../sql/server/delete_server_ip_row.surql"
-            ))
-            .bind(("id", input.id))
-            .bind(("canvas", input.canvas))
-            .await?
-            .check()?;
-        Ok(())
-    }
-}
-
 /// Takes the server's session lease and reconciles what the worker reports.
 ///
 /// Registration is the one moment the master learns exactly what a worker runs, so
@@ -335,6 +317,10 @@ pub struct RegisterWorkerSession {
     pub lease_until: DateTime<Utc>,
     /// The revision the worker says it is running; `0` for a fresh worker.
     pub running_revision: i64,
+    /// The peer address this registration arrived from, if known.
+    pub observed: Option<String>,
+    /// What the worker reported about its addresses; `None` keeps the stored set.
+    pub reported: Option<ReportedAddresses>,
 }
 
 impl Processor<RegisterWorkerSession> for SurrealProcessor {
@@ -355,8 +341,42 @@ impl Processor<RegisterWorkerSession> for SurrealProcessor {
             .bind(("now", input.now))
             .bind(("lease_until", input.lease_until))
             .bind(("running_revision", input.running_revision))
+            .bind(("observed", input.observed))
+            .bind(("reported", input.reported))
             .await?;
         resp.take::<Option<ServerEntity>>(3)
+    }
+}
+
+/// Replaces a server's reported address set with what a live session just
+/// discovered. Fenced on the refresh-key generation, and a no-op (no canvas
+/// bump) when nothing changed.
+#[derive(Debug)]
+pub struct UpdateReportedAddresses {
+    pub server: ServerId,
+    pub canvas: CanvasId,
+    pub generation: i64,
+    pub reported: ReportedAddresses,
+}
+
+impl Processor<UpdateReportedAddresses> for SurrealProcessor {
+    /// `true` when the stored set changed (and the canvas was touched).
+    type Output = bool;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query-Transaction:UpdateReportedAddresses", skip_all, err, fields(server = ?input.server))]
+    async fn process(&self, input: UpdateReportedAddresses) -> Result<Self::Output, Self::Error> {
+        // Statement 0 is BEGIN, 1 the LET, 2 the IF; the RETURN is statement 3.
+        let mut resp = self
+            .db()
+            .query(include_str!(
+                "../../../sql/server/update_reported_addresses.surql"
+            ))
+            .bind(("server", input.server))
+            .bind(("canvas", input.canvas))
+            .bind(("generation", input.generation))
+            .bind(("reported", input.reported))
+            .await?;
+        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
     }
 }
 
