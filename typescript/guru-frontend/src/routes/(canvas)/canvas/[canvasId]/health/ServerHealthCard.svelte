@@ -91,7 +91,7 @@ let tab = $state('metrics');
 		</Card.Title>
 		<Card.Description class="flex flex-wrap gap-x-4 gap-y-1">
 			<span>
-				{m.health_connections_now()}:
+				{m.health_connections_last()}:
 				<span class="font-mono text-foreground tabular-nums">
 					{formatCount(latest?.currentConnections ?? 0)}
 				</span>

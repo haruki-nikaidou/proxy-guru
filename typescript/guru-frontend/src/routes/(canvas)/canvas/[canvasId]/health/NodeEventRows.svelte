@@ -10,28 +10,33 @@ import { listNodeHealth } from './health.remote.js';
 
 let {
 	nodeId,
-	podName,
+	label,
 	windowMinutes
-}: { nodeId: string; podName: string; windowMinutes: HealthWindowMinutes } = $props();
+}: { nodeId: string; label: string; windowMinutes: HealthWindowMinutes } = $props();
 
-/** One pod's own history: newest first, exactly as the control plane orders it. */
+/**
+ * One node's own history: newest first, exactly as the control plane orders it.
+ * The control plane records a row for a pod *and* for every node the pod's
+ * config was derived through, so this serves both the per-server pod feed and
+ * the canvas-wide feed over standalone nodes.
+ */
 const events = $derived(listNodeHealth({ nodeId, windowMinutes }));
 </script>
 
 {#if events.current === undefined}
 	<Table.Row>
-		<Table.Cell class="font-medium">{podName}</Table.Cell>
+		<Table.Cell class="font-medium">{label}</Table.Cell>
 		<Table.Cell colspan={3}><Skeleton class="h-4 w-full" /></Table.Cell>
 	</Table.Row>
 {:else if events.current.length === 0}
 	<Table.Row>
-		<Table.Cell class="font-medium">{podName}</Table.Cell>
+		<Table.Cell class="font-medium">{label}</Table.Cell>
 		<Table.Cell colspan={3} class="text-muted-foreground">{m.health_events_empty()}</Table.Cell>
 	</Table.Row>
 {:else}
 	{#each events.current as event, index (event.id)}
 		<Table.Row>
-			<Table.Cell class="font-medium">{index === 0 ? podName : ''}</Table.Cell>
+			<Table.Cell class="font-medium">{index === 0 ? label : ''}</Table.Cell>
 			<Table.Cell>
 				<Badge
 					variant={nodeStatusVariant(event.status)}

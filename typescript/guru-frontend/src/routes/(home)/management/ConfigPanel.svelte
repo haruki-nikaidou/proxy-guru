@@ -40,7 +40,13 @@ let saving = $state<ConfigKeyName | null>(null);
 const docs = $derived(documents.current);
 const active = $derived(docs?.find(entry => entry.key === selected));
 const text = $derived(drafts[selected] ?? active?.json ?? '');
-const dirty = $derived(active !== undefined && text !== active.json);
+/**
+ * An unseeded key has no row, and its `json` is the defaults it would be
+ * created with — identical text, so a plain text comparison would leave `Save`
+ * disabled on exactly the document the panel says saving will create. Until the
+ * row exists, saving is always available.
+ */
+const dirty = $derived(active !== undefined && (!active.stored || text !== active.json));
 /** `undefined` while the text parses; otherwise the parser's own complaint. */
 const syntaxError = $derived.by(() => {
 	try {

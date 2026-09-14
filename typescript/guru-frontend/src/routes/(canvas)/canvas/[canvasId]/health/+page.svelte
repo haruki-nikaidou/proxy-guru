@@ -8,6 +8,7 @@ import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 import { HEALTH_WINDOWS, type HealthWindowMinutes } from '#lib/dto/health.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import CanvasNodeEvents from './CanvasNodeEvents.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
 import { formatCount, serverStatusLabel, windowLabel } from './format.js';
 import { listServerHealth } from './health.remote.js';
@@ -108,6 +109,8 @@ function pickWindow(value: string) {
 			{#each servers as series (series.serverId)}
 				<ServerHealthCard {series} {canvasId} {windowMinutes} />
 			{/each}
+
+			<CanvasNodeEvents {canvasId} {windowMinutes} />
 		{/if}
 
 		{#snippet failed(error)}

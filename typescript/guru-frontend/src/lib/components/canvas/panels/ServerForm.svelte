@@ -172,8 +172,13 @@ let forgetOpen = $state(false);
 const health = $derived(serverHealthBadge(server.healthStatus));
 
 /**
- * The reading the three revisions add up to. An error outranks everything: a
- * server whose derive or apply failed is stuck, not merely behind.
+ * The reading the three revisions add up to. Failure outranks revision
+ * equality, which on its own is not convergence: the master stores a partial
+ * apply as a synthesised mix that keeps the *desired* revision number, so a
+ * server whose pods failed individually reports matching revisions while
+ * `invalidPods` names what is not running. Checking the errors and that list
+ * first is what stops the panel from printing "Converged" directly above a
+ * table of failed pods.
  *
  * Named `rolloutState`, not `state`: a variable called `state` makes every
  * `$state(...)` in this component parse as a store read of it.
@@ -182,8 +187,10 @@ const rolloutState = $derived.by((): 'loading' | 'converged' | 'rolling' | 'stuc
 	const current = rollout.current;
 	if (current === undefined) return 'loading';
 	if (current.applyError !== '' || current.deriveError !== '') return 'stuck';
+	if (current.invalidPods.length > 0) return 'stuck';
 	if (current.desired === null) return 'none';
-	return current.applied?.revision === current.desired.revision ? 'converged' : 'rolling';
+	if (current.applied?.revision !== current.desired.revision) return 'rolling';
+	return 'converged';
 });
 
 const stateLabel = $derived(

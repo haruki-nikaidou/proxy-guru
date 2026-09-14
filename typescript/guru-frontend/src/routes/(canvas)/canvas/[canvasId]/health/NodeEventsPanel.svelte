@@ -6,7 +6,7 @@ import * as Table from '#lib/components/ui/table/index.js';
 import type { HealthWindowMinutes } from '#lib/dto/health.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getCanvasGraph } from '../topology.remote.js';
-import PodEventRows from './PodEventRows.svelte';
+import NodeEventRows from './NodeEventRows.svelte';
 
 let {
 	canvasId,
@@ -42,7 +42,7 @@ const pods = $derived(graph.current?.servers.find(server => server.id === server
 		</Table.Header>
 		<Table.Body>
 			{#each pods as pod (pod.id)}
-				<PodEventRows nodeId={pod.id} podName={pod.name} {windowMinutes} />
+				<NodeEventRows nodeId={pod.id} label={pod.name} {windowMinutes} />
 			{/each}
 		</Table.Body>
 	</Table.Root>

@@ -65,11 +65,14 @@ due. The scheduler holds no state beyond its own clock; the consumer claims each
 `orchestration_job_run` row, so the pass runs once per configured interval however many consumers
 are up.
 
-In the dashboard, a canvas's **Health** page reads both histories: one card per server with its
-status, current and peak connections, and two charts over the selected window (1 h / 6 h / 24 h /
-7 d) — throughput from the per-report upload/download deltas, and connections against the
-high-water mark. Each card's *Pod events* tab lists that server's pods' recent node-health rows,
-including the `message` a `Failed` row carries; it is fetched only when the tab is opened.
+In the dashboard, a canvas's **Health** page reads both histories over a selected window (1 h / 6 h
+/ 24 h / 7 d): one card per server showing its status, the connection count *at its last report* in
+that window and the peak, plus two charts — throughput from the per-report upload/download deltas,
+and connections against the high-water mark. Nothing on the page is live: every number is a stored
+report, so an `Offline` server still shows whatever it last sent. Each card's *Pod events* tab
+lists that server's pods' node-health rows, including the `message` a `Failed` row carries, and a
+canvas-wide *Node events* card covers the other side of the recording rule — the entries, relays,
+exits and load balancers a report was derived through. Both are fetched only once opened.
 
 ## Certificates
 
