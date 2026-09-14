@@ -34,6 +34,16 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 
+/// Generated types for `proto/base/config.proto` (`package guru.base`).
+///
+/// Shared across services: `guru.auth` and `guru.orchestration` both reference
+/// [`base::ConfigDocument`] for their configuration RPCs, and prost resolves
+/// that cross-package reference to this module because the re-exports below
+/// mirror the proto packages' own names.
+pub mod base {
+    tonic::include_proto!("guru.base");
+}
+
 /// Generated types and service traits for `proto/auth/auth.proto`
 /// (`package guru.auth`).
 pub mod auth {

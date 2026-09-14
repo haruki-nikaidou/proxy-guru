@@ -14,6 +14,7 @@
 	"dependencies": {
 		"app-protobuf": "workspace:*",
 		"nice-grpc": "^2.1.16",
+		"svelte-jsoneditor": "^3.13.0",
 		"valibot": "^1.1.0"
 	},
 	"devDependencies": {

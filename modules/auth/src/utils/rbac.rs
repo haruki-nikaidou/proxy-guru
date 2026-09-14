@@ -18,6 +18,8 @@ pub enum Permission {
     ViewWorkspace,
     /// Create and edit canvases and settings.
     EditWorkspace,
+    /// Read and replace installation configuration.
+    ManageConfig,
     /// Machine-to-master calls made by a `guru-worker` (registration).
     ServerCall,
 }
@@ -25,9 +27,10 @@ pub enum Permission {
 impl AccountRole {
     /// Whether this role is granted `permission`.
     ///
-    /// - `Admin` holds every permission (including account management).
+    /// - `Admin` holds every permission (including account management and the
+    ///   installation configuration).
     /// - `Maintainer` may view/edit the workspace and manage API keys, but not
-    ///   accounts.
+    ///   accounts and not the configuration every process in the fleet runs on.
     /// - `Observer` may only view the workspace; notably it cannot manage API
     ///   keys, which is what "Observers may not use API keys" reduces to.
     pub fn can(self, permission: Permission) -> bool {

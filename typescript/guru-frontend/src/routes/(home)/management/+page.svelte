@@ -1,9 +1,10 @@
 <script lang="ts">
 import * as Tabs from '#lib/components/ui/tabs/index.js';
-import { canManageAccounts, canManageApiKeys } from '#lib/permissions.js';
+import { canManageAccounts, canManageApiKeys, canManageConfig } from '#lib/permissions.js';
 import { m } from '#lib/paraglide/messages.js';
 import AccountsPanel from './AccountsPanel.svelte';
 import ApiKeysPanel from './ApiKeysPanel.svelte';
+import ConfigPanel from './ConfigPanel.svelte';
 import ProfilePanel from './ProfilePanel.svelte';
 import type { PageProps } from './$types.js';
 
@@ -15,6 +16,7 @@ const identity = $derived(data.identity);
 const tabs = $derived([
 	...(canManageAccounts(identity.role) ? (['accounts'] as const) : []),
 	...(canManageApiKeys(identity.role) ? (['api-keys'] as const) : []),
+	...(canManageConfig(identity.role) ? (['config'] as const) : []),
 	'profile' as const
 ]);
 
@@ -33,6 +35,7 @@ const active = $derived(tabs.includes(value as (typeof tabs)[number]) ? value : 
 			<Tabs.Trigger value={tab}>
 				{#if tab === 'accounts'}{m.management_tab_accounts()}
 				{:else if tab === 'api-keys'}{m.management_tab_api_keys()}
+				{:else if tab === 'config'}{m.management_tab_config()}
 				{:else}{m.management_tab_profile()}{/if}
 			</Tabs.Trigger>
 		{/each}
@@ -43,6 +46,9 @@ const active = $derived(tabs.includes(value as (typeof tabs)[number]) ? value : 
 	{/if}
 	{#if canManageApiKeys(identity.role)}
 		<Tabs.Content value="api-keys"><ApiKeysPanel /></Tabs.Content>
+	{/if}
+	{#if canManageConfig(identity.role)}
+		<Tabs.Content value="config"><ConfigPanel /></Tabs.Content>
 	{/if}
 	<Tabs.Content value="profile"><ProfilePanel {identity} /></Tabs.Content>
 </Tabs.Root>

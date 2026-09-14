@@ -16,6 +16,7 @@ pub mod acme;
 pub mod agent;
 pub mod ca;
 pub mod canvas;
+pub mod config;
 pub mod converge;
 pub mod derive;
 pub mod dns;

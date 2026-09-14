@@ -43,8 +43,10 @@ type NodeBase = {
 };
 
 /**
- * Round-tripped verbatim: the entry sheet never edits TLS, but `ReplaceNodeSpec`
- * replaces the whole spec, so dropping it here would clobber it.
+ * ACME/TLS termination for an entry, edited by the entry sheet. `null` means the
+ * entry terminates no TLS; sending `null` through `ReplaceNodeSpec` clears it.
+ * The certificate itself is never created here: the derivation pass turns this
+ * config into a certificate row, which is managed on `/tls`.
  */
 export type EntryTls = {
 	sni: string;
@@ -109,6 +111,11 @@ export type PodDto = {
 	ports: CanvasPort[];
 };
 export type ServerIpDto = { id: string; ip: string; country: string };
+/**
+ * How the control plane last judged a worker. `unknown` covers both "never
+ * reported" and an enum value this build does not know.
+ */
+export type ServerHealthStatusName = 'unknown' | 'online' | 'degraded' | 'offline';
 export type ServerDto = {
 	id: string;
 	name: string;
@@ -119,9 +126,48 @@ export type ServerDto = {
 	ipv6Resolve: Ipv6ResolveName;
 	logLevel: string;
 	lastSeenAt: string;
+	healthStatus: ServerHealthStatusName;
 	ips: ServerIpDto[];
 	pods: PodDto[];
 };
+
+/** One listener a forwarding either serves or points at. */
+export type ListenerCapDto = { ip: string; port: number; protocol: string };
+export type ForwardingDepsDto = {
+	/** Absent when the forwarding serves nothing (a pure outbound hop). */
+	serves: ListenerCapDto | null;
+	pointsAt: ListenerCapDto[];
+};
+/** `revision` is an `int64` in the proto, narrowed to a number by the remote. */
+export type ConfigSnapshotDto = {
+	revision: number;
+	createdAt: string;
+	forwardings: ForwardingDepsDto[];
+};
+/**
+ * A pod the derivation pass could not turn into a listener. Only these pods
+ * failed: the rest of the server's config was published normally, and each pod
+ * listed here keeps whatever listener shape it was already serving.
+ */
+export type InvalidPodDto = { nodeId: string; podName: string; listen: string; error: string };
+/**
+ * The three-state view of one server's config rollout: what the control plane
+ * wants, what it handed to the worker, and what the worker confirmed.
+ */
+export type ServerRolloutDto = {
+	desired: ConfigSnapshotDto | null;
+	inFlight: ConfigSnapshotDto | null;
+	applied: ConfigSnapshotDto | null;
+	applyError: string;
+	deriveError: string;
+	/** Servers that must serve a listener this one points at before it converges. */
+	waitingForServerIds: string[];
+	derivationPending: boolean;
+	lastSeenAt: string;
+	invalidPods: InvalidPodDto[];
+};
+/** The rendered worker TOML, fetched on demand. */
+export type ServerConfigTomlDto = { revision: number; toml: string };
 
 export type CanvasEdgeDto = { id: string; sourcePortId: string; targetPortId: string };
 export type TopologyProblem = CanvasProblem & {

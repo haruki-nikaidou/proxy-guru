@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package guru.auth;
 
+import "base/config.proto";
+
 // Account roles, mirroring `auth::entities::surreal::account::AccountRole`.
 enum Role {
   ROLE_UNSPECIFIED = 0;
@@ -130,6 +132,22 @@ message RevokeApiKeyRequest {
 }
 message RevokeApiKeyReply {}
 
+// The `auth` configuration document (`auth::config::AuthConfig`). Admin only:
+// the whole installation reads these values.
+message GetAuthConfigRequest {}
+message GetAuthConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+// `json` replaces the whole document. It is decoded into `AuthConfig` first, so
+// a payload of the wrong shape is rejected and the row keeps its previous
+// contents. Masters pick the new value up on restart.
+message SetAuthConfigRequest {
+  string json = 1;
+}
+message SetAuthConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+
 service Auth {
   rpc Login(LoginRequest) returns (LoginReply);
   rpc Logout(LogoutRequest) returns (LogoutReply);
@@ -143,4 +161,6 @@ service Auth {
   rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyReply);
   rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysReply);
   rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyReply);
+  rpc GetAuthConfig(GetAuthConfigRequest) returns (GetAuthConfigReply);
+  rpc SetAuthConfig(SetAuthConfigRequest) returns (SetAuthConfigReply);
 }

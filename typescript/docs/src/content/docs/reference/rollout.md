@@ -65,6 +65,12 @@ due. The scheduler holds no state beyond its own clock; the consumer claims each
 `orchestration_job_run` row, so the pass runs once per configured interval however many consumers
 are up.
 
+In the dashboard, a canvas's **Health** page reads both histories: one card per server with its
+status, current and peak connections, and two charts over the selected window (1 h / 6 h / 24 h /
+7 d) — throughput from the per-report upload/download deltas, and connections against the
+high-water mark. Each card's *Pod events* tab lists that server's pods' recent node-health rows,
+including the `message` a `Failed` row carries; it is fetched only when the tab is opened.
+
 ## Certificates
 
 An Entry with a `tls` block (`sni`, DNS provider, `domain_id`, optional ACME directory — empty means
@@ -87,6 +93,13 @@ DNS providers, certificates and the CA are Admin-managed through the operator AP
 (`CreateDnsProvider`, `ListCertificates`, `RetryCertificate`, …); secrets are encrypted with
 `GURU_MASTER_KEY` and never returned.
 
+The dashboard's **TLS** page is the Admin-facing side of this: DNS providers are created, edited
+(an empty API token keeps the stored one) and deleted there, and the certificate table shows each
+row's status, resolved provider, validity window with an expiry hint, and the `last_error` of a
+failure, with *Retry* (clear a failure or force a renewal) and *Delete* per row. It never issues a
+certificate: a row appears once the derivation pass reads an Entry's `tls` block, which is edited
+on the Entry node in the canvas editor.
+
 ## Inspecting a derived config
 
 `manage-tool` prints the exact TOML the master derived for one server:
@@ -100,6 +113,12 @@ cargo run -p manage-tool -- \
 
 The same model backs standalone workers: the printed file can be handed to
 `guru-worker --config`.
+
+The dashboard shows the same TOML — server panel, *Worker config* — next to the rollout reading it
+belongs to: the desired, in-flight and applied revisions with their timestamps, `derive_error` and
+`apply_error`, the servers this one is waiting for (resolved to names), and `invalid_pods` as a
+table of pod, listen address and error. `ForgetServerApplied` sits there too, Admin-only and behind
+a confirmation, since it declares the server dead while it may still be serving.
 
 ## Forwarding shapes
 

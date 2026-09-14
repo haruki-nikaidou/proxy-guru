@@ -20,6 +20,7 @@ use crate::entities::surreal::server::{ServerIpRecordEntity, ServerIpv6Resolve, 
 use crate::entities::surreal::view::{ConfigSnapshot, ListenProtocol, ListenerCap};
 use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
+use crate::services::config::{self, OrchestrationConfigService};
 use crate::services::dns::{self, DnsProviderService, DnsProviderSummary};
 use crate::services::edge::{self, EdgeService};
 use crate::services::health::{self, HealthService};
@@ -43,6 +44,7 @@ pub struct OrchestrationGrpc {
     pub health: HealthService,
     pub dns: DnsProviderService,
     pub certificates: AcmeService,
+    pub configs: OrchestrationConfigService,
 }
 
 impl OrchestrationGrpc {
@@ -66,6 +68,30 @@ impl OrchestrationGrpc {
             .into_iter()
             .collect())
     }
+}
+
+/// Both document fields are pretty-printed: an operator edits this text.
+fn config_to_proto(
+    document: config::ConfigDocument,
+) -> Result<rpguru_sdk::base::ConfigDocument, Status> {
+    let encode = |value: &serde_json::Value| {
+        serde_json::to_string_pretty(value).map_err(|error| {
+            tracing::error!(error = %error, "serializing orchestration config document");
+            Status::internal("Internal server error")
+        })
+    };
+    Ok(rpguru_sdk::base::ConfigDocument {
+        stored: document.stored,
+        json: encode(&document.json)?,
+        defaults_json: encode(&document.defaults)?,
+    })
+}
+
+/// The payload an operator typed. Not valid JSON is their typo, not a bug.
+fn config_json(json: &str) -> Result<serde_json::Value, Status> {
+    serde_json::from_str(json).map_err(|error| {
+        Status::invalid_argument(format!("the payload is not valid JSON: {error}"))
+    })
 }
 
 // --- encoding ---------------------------------------------------------------
@@ -1241,5 +1267,35 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             })
             .await?;
         Ok(Response::new(pb::DeleteCertificateReply {}))
+    }
+
+    async fn get_orchestration_config(
+        &self,
+        request: Request<pb::GetOrchestrationConfigRequest>,
+    ) -> Result<Response<pb::GetOrchestrationConfigReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let document = self
+            .configs
+            .process(config::GetModuleConfig { actor })
+            .await?;
+        Ok(Response::new(pb::GetOrchestrationConfigReply {
+            config: Some(config_to_proto(document)?),
+        }))
+    }
+
+    async fn set_orchestration_config(
+        &self,
+        request: Request<pb::SetOrchestrationConfigRequest>,
+    ) -> Result<Response<pb::SetOrchestrationConfigReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let json = config_json(&input.json)?;
+        let document = self
+            .configs
+            .process(config::SetModuleConfig { actor, json })
+            .await?;
+        Ok(Response::new(pb::SetOrchestrationConfigReply {
+            config: Some(config_to_proto(document)?),
+        }))
     }
 }

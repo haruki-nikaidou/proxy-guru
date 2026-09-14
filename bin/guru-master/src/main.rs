@@ -21,6 +21,7 @@ use auth::config::AuthConfig;
 use auth::rpc::{AuthGrpc, AuthLayer};
 use auth::services::account::AccountService;
 use auth::services::api_key::ApiKeyService;
+use auth::services::config::AuthConfigService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
 use base::services::config::{ConfigStore, LoadConfig};
@@ -42,6 +43,7 @@ use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
 use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
 use orchestration::services::canvas::CanvasService;
+use orchestration::services::config::OrchestrationConfigService;
 use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
 use orchestration::services::health::HealthService;
@@ -254,11 +256,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     http: reqwest::Client::new(),
                     issuer: Arc::new(InstantAcmeIssuer),
                 },
+                // The same store the startup read above used: the dashboard
+                // hands an Admin the row itself, and the value it writes is
+                // what the next restart loads.
+                configs: OrchestrationConfigService {
+                    configs: configs.clone(),
+                },
             };
             let auth = AuthGrpc {
                 accounts,
                 sessions: sessions.clone(),
                 api_keys: api_keys.clone(),
+                configs: AuthConfigService { configs },
             };
             tracing::info!(addr = %cli.dashboard_addr, "serving operator API");
             Server::builder()

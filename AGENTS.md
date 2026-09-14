@@ -141,6 +141,11 @@ src/
 - Carry `#[serde(default)]` on the struct so a row written before a field was
   added still loads. Register the key as a `ConfigKey` variant in
   `manage-tool`, whose match arms then force every operation to handle it.
+  A key an Admin should also be able to read and replace from the dashboard
+  needs a typed `Get<Module>Config` / `Set<Module>Config` pair on that module's
+  own gRPC service, answering with `guru.base.ConfigDocument` — the module that
+  names the config type is the one that validates a payload for it, so nothing
+  has to be type-erased. The `ConfigKey` enum stays the CLI's registry.
 
 ## Cross-cutting conventions
 

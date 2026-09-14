@@ -1,5 +1,6 @@
 import type {
 	CanvasTreeNode as ProtoCanvasTreeNode,
+	ConfigSnapshot as ProtoConfigSnapshot,
 	Node as ProtoNode,
 	Server as ProtoServer
 } from 'app-protobuf/orchestration/orchestration';
@@ -12,7 +13,8 @@ import {
 	ProblemKind,
 	ProblemSeverity,
 	ProxyProtocolVersion,
-	RelayProtocol
+	RelayProtocol,
+	ServerHealthStatus
 } from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
 import type { CanvasOption } from '#lib/dto/canvas.js';
@@ -20,6 +22,7 @@ import type {
 	CanvasExportAsName,
 	CanvasGraph,
 	CanvasPort,
+	ConfigSnapshotDto,
 	Ipv6ResolveName,
 	LoadBalanceModeName,
 	PodDto,
@@ -27,7 +30,10 @@ import type {
 	PortKindName,
 	ProxyProtocolName,
 	RelayProtocolName,
+	ServerConfigTomlDto,
 	ServerDto,
+	ServerHealthStatusName,
+	ServerRolloutDto,
 	StandaloneNode,
 	TopologyProblem
 } from '#lib/dto/topology.js';
@@ -72,12 +78,31 @@ const proxySchema = v.picklist(['none', 'v1', 'v2'] as const);
 const relayProtocolSchema = v.picklist(['tcp_raw', 'tcp_tls', 'quic'] as const);
 const balanceModeSchema = v.picklist(['round_robin', 'random', 'ip_hash', 'fallback'] as const);
 const ipv6Schema = v.picklist(['required', 'preferred', 'tolerated', 'forbidden'] as const);
+/**
+ * One hostname, optionally with a leading `*.` wildcard label. Deliberately
+ * narrower than the RFC: the ACME order is built from this verbatim.
+ */
+const SNI_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+/**
+ * `null` clears TLS termination on the entry. Every field is required except
+ * `acme_directory`, where empty means "use the installation default".
+ */
 const tlsSchema = v.nullable(
 	v.object({
-		sni: v.string(),
-		dnsProviderId: v.string(),
-		domainId: v.string(),
-		acmeDirectory: v.string()
+		sni: v.pipe(
+			v.string(),
+			v.trim(),
+			v.minLength(1, 'sni_required'),
+			v.maxLength(253, 'sni_too_long'),
+			v.regex(SNI_PATTERN, 'sni_invalid')
+		),
+		dnsProviderId: v.pipe(v.string(), v.trim(), v.minLength(1, 'dns_provider_required')),
+		domainId: v.pipe(v.string(), v.trim(), v.minLength(1, 'domain_id_required')),
+		acmeDirectory: v.pipe(
+			v.string(),
+			v.trim(),
+			v.check(value => value === '' || /^https:\/\/[^\s]+$/.test(value), 'acme_directory_invalid')
+		)
 	})
 );
 
@@ -169,6 +194,22 @@ function fromIpv6(value: Ipv6ResolveName): Ipv6Resolve {
 			return Ipv6Resolve.IPV6_FORBIDDEN;
 		default:
 			return Ipv6Resolve.IPV6_TOLERATED;
+	}
+}
+/**
+ * A server that never reported, and any status this build does not know, both
+ * read as `unknown`: the dashboard must not claim a worker is online.
+ */
+function toServerHealth(value: ServerHealthStatus): ServerHealthStatusName {
+	switch (value) {
+		case ServerHealthStatus.SERVER_ONLINE:
+			return 'online';
+		case ServerHealthStatus.SERVER_DEGRADED:
+			return 'degraded';
+		case ServerHealthStatus.SERVER_OFFLINE:
+			return 'offline';
+		default:
+			return 'unknown';
 	}
 }
 const toPortKind = (value: PortKind): PortKindName =>
@@ -326,6 +367,7 @@ const toServer = (server: ProtoServer, pods: PodDto[]): ServerDto => ({
 	ipv6Resolve: toIpv6(server.ipv6Resolve),
 	logLevel: server.logLevel,
 	lastSeenAt: server.lastSeenAt,
+	healthStatus: toServerHealth(server.healthStatus),
 	ips: server.ips.map(ip => ({ id: ip.id, ip: ip.ip, country: ip.country })),
 	pods
 });
@@ -540,6 +582,89 @@ export const removeServerIpAddress = command(
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() => orchestrationClient().removeServerIp({ ipRecordId }, { metadata }));
 		await getCanvasGraph({ canvasId }).refresh();
+		return { ok: true as const };
+	}
+);
+
+/** `revision` is an `int64`: it is narrowed here so no bigint reaches a client. */
+const toSnapshot = (snapshot: ProtoConfigSnapshot | undefined): ConfigSnapshotDto | null =>
+	snapshot === undefined
+		? null
+		: {
+				revision: Number(snapshot.revision),
+				createdAt: snapshot.createdAt,
+				forwardings: snapshot.forwardings.map(forwarding => ({
+					serves: forwarding.serves
+						? {
+								ip: forwarding.serves.ip,
+								port: forwarding.serves.port,
+								protocol: forwarding.serves.protocol
+							}
+						: null,
+					pointsAt: forwarding.pointsAt.map(cap => ({
+						ip: cap.ip,
+						port: cap.port,
+						protocol: cap.protocol
+					}))
+				}))
+			};
+
+/**
+ * Where one server stands between the config the control plane derived and the
+ * config its worker confirmed. Read by the server panel while it is open.
+ */
+export const getServerRollout = query(
+	v.object({ serverId: idSchema }),
+	async ({ serverId }): Promise<ServerRolloutDto> => {
+		const metadata = sessionMetadata(requireSessionId());
+		const reply = await callGrpc(() =>
+			orchestrationClient().getServerRolloutStatus({ serverId }, { metadata })
+		);
+		return {
+			desired: toSnapshot(reply.desired),
+			inFlight: toSnapshot(reply.inFlight),
+			applied: toSnapshot(reply.applied),
+			applyError: reply.applyError,
+			deriveError: reply.deriveError,
+			waitingForServerIds: [...reply.waitingForServerIds],
+			derivationPending: reply.derivationPending,
+			lastSeenAt: reply.lastSeenAt,
+			invalidPods: reply.invalidPods.map(pod => ({
+				nodeId: pod.nodeId,
+				podName: pod.podName,
+				listen: pod.listen,
+				error: pod.error
+			}))
+		};
+	}
+);
+
+/** The worker TOML as rendered for this server, fetched only when asked for. */
+export const getServerConfigToml = query(
+	v.object({ serverId: idSchema }),
+	async ({ serverId }): Promise<ServerConfigTomlDto> => {
+		const metadata = sessionMetadata(requireSessionId());
+		const reply = await callGrpc(() =>
+			orchestrationClient().getServerConfig({ serverId }, { metadata })
+		);
+		return { revision: Number(reply.revision), toml: reply.toml };
+	}
+);
+
+/**
+ * Admin only, destructive: declares the server dead so its dependants may
+ * switch away from listeners it might still be serving. The graph goes stale
+ * with the rollout, because forgetting re-derives every dependant.
+ */
+export const forgetServerApplied = command(
+	v.object({ canvasId: idSchema, serverId: idSchema }),
+	async ({ canvasId, serverId }) => {
+		const metadata = sessionMetadata(requireSessionId());
+		await callGrpc(() => orchestrationClient().forgetServerApplied({ serverId }, { metadata }));
+		await Promise.all([
+			getServerRollout({ serverId }).refresh(),
+			getCanvasGraph({ canvasId }).refresh()
+		]);
 		return { ok: true as const };
 	}
 );
@@ -915,6 +1040,11 @@ export const moveNode = command(
 	}
 );
 
+/**
+ * A `null` `tls` drops TLS termination from the spec, which clears it. The
+ * certificate itself is not touched: the derivation pass creates a certificate
+ * row from this config, and `/tls` manages the result.
+ */
 export const replaceEntrySpec = command(
 	v.object({
 		canvasId: idSchema,
@@ -928,7 +1058,7 @@ export const replaceEntrySpec = command(
 			orchestrationClient().replaceNodeSpec(
 				{
 					nodeId,
-					// TLS is not editable here; it is round-tripped so the replace keeps it.
+					// `tls: undefined` is the wire form of "no TLS on this entry".
 					spec: {
 						entry: { receiveProxyProtocol: fromProxy(receiveProxyProtocol), tls: tls ?? undefined }
 					},
