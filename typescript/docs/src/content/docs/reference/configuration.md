@@ -38,8 +38,9 @@ key. It is deliberately not a flag: argv is visible in process listings. Losing 
 re-entering every DNS provider token and re-issuing every certificate; changing it is not supported
 in place.
 
-The database arguments are required in every mode, but in `cron` only as arguments: the scheduler
-parses `--namespace`/`--database` like every other mode and then opens no connection at all.
+The database arguments are required only in the three modes that open a connection. `cron` ignores
+them and starts without a namespace at all: a clock that refused to start without one would carry
+a database dependency, just an unused one.
 
 ### Scheduling versus executing
 
@@ -304,8 +305,11 @@ one database row shared by every consumer.
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
-`guru-master` reads both keys once, during startup, and hands the values to its services; there is
-no live reload. An unseeded installation runs the defaults. A row that does not deserialize fails
-startup naming the key — substituting defaults for a corrupt document would silently swap an
-operator's whole config, for instance moving ACME from staging to the production directory.
+The three database-backed modes — `dashboard_grpc`, `workers_grpc` and `consumer` — read both keys
+once, during startup, and hand the values to their services; there is no live reload. `cron` opens
+no database connection and so reads neither key: it only publishes execution signals, and the
+consumer that receives one applies the stored interval. An unseeded installation runs the defaults.
+A row that does not deserialize fails startup naming the key — substituting defaults for a corrupt
+document would silently swap an operator's whole config, for instance moving ACME from staging to
+the production directory.
 Fields added in a later release are read with their default value, so an older row keeps working.

@@ -96,15 +96,12 @@ cargo run -p guru-master -- \
 ```
 
 In a third shell, the clock. `cron` publishes one execution signal per due job and nothing else:
-it opens no database connection and never reads `GURU_MASTER_KEY`, so leaving it out of this one
-command is not an oversight. The database arguments are still parsed, so they still have to be
-there:
+it opens no database connection, never reads `GURU_MASTER_KEY`, and takes no database arguments,
+so the broker URI is the whole configuration:
 
 ```sh
 env -u GURU_MASTER_KEY cargo run -p guru-master -- \
   --mode cron \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
 ```
 

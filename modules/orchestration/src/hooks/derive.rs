@@ -34,6 +34,7 @@ use crate::entities::surreal::certificate::{ListCertificatesBySnis, TouchCanvase
 use crate::entities::surreal::health::{
     InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus,
 };
+use crate::entities::surreal::job_run::ClaimJobRun;
 use crate::entities::surreal::node::{ListCanvasesOfNodes, NodeId};
 use crate::entities::surreal::server::ServerId;
 use crate::entities::surreal::topology::CanvasTopology;
@@ -42,7 +43,6 @@ use crate::entities::surreal::view::{
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
 use crate::events::{CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertificatesSignal};
-use crate::hooks::schedule;
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
@@ -101,13 +101,14 @@ impl Processor<DeriveStaleCanvasesSignal> for CanvasDeriver {
     type Error = wakuwaku::Error;
     #[tracing::instrument(name = "Hook:DeriveStaleCanvasesSignal", skip_all, err)]
     async fn process(&self, input: DeriveStaleCanvasesSignal) -> Result<Self::Output, Self::Error> {
-        if !schedule::claim_run(
-            &self.db,
-            "derive_stale_canvases",
-            self.config.sweep_interval(),
-            input.tick_time(),
-        )
-        .await?
+        if !self
+            .db
+            .process(ClaimJobRun::for_tick(
+                "derive_stale_canvases",
+                self.config.sweep_interval(),
+                input.tick_time(),
+            ))
+            .await?
         {
             return Ok(());
         }
@@ -127,13 +128,14 @@ impl Processor<RotateRelayCertificatesSignal> for CanvasDeriver {
         &self,
         input: RotateRelayCertificatesSignal,
     ) -> Result<Self::Output, Self::Error> {
-        if !schedule::claim_run(
-            &self.db,
-            "rotate_relay_certificates",
-            self.config.relay_rotation_interval(),
-            input.tick_time(),
-        )
-        .await?
+        if !self
+            .db
+            .process(ClaimJobRun::for_tick(
+                "rotate_relay_certificates",
+                self.config.relay_rotation_interval(),
+                input.tick_time(),
+            ))
+            .await?
         {
             return Ok(());
         }

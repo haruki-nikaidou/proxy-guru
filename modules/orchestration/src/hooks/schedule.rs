@@ -1,27 +1,23 @@
-//! The two halves of periodic execution: the scheduler's clock and the
-//! consumer's run claim.
+//! The scheduler's clock.
 //!
 //! `--mode cron` holds one [`IntervalJob`] per signal type and publishes the ones
 //! that are due. Each job keeps its *own* last-fire timestamp, so a scan that
 //! visits every job does not flatten their cadences: a 30 s job fires on most
-//! scans while an hourly one fires on one in 120.
+//! scans while an hourly one fires on one in 720.
 //!
-//! `--mode consumer` receives the signal and calls [`claim_run`] before doing any
-//! work. The claim is what makes the split safe: AMQP is at-least-once and the
-//! consumer is horizontally scaled, so the same pass can be delivered twice, to
-//! two consumers, or late after a backlog. Whoever wins the compare-and-set runs
-//! it; everybody else returns without touching anything.
+//! The other half of periodic execution lives in
+//! [`crate::entities::surreal::job_run::ClaimJobRun`]: every hook claims its run
+//! before doing any work, because AMQP is at-least-once and the consumer is
+//! horizontally scaled, so the same pass can be delivered twice, to two
+//! consumers, or late after a backlog.
+//!
+//! Deciding *whether* a signal is due is pure, and publishing is the signal's own
+//! `send`: there is no state here beyond the five timestamps.
 
-use crate::entities::surreal::job_run::ClaimJobRun;
-use chrono::{DateTime, Utc};
-use kanau::processor::Processor;
 use std::marker::PhantomData;
 use std::task::Poll;
-use std::time::Duration;
 use time::OffsetDateTime;
-use wakuwaku::amqp::AmqpPool;
 use wakuwaku::interval_job::IntervalJobExecutionSignal;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// One periodic signal's clock: the last tick it was published for.
 pub struct IntervalJob<S> {
@@ -53,64 +49,6 @@ impl<S: IntervalJobExecutionSignal> IntervalJob<S> {
         self.last = Some(now);
         Some(signal)
     }
-
-    /// Publishes the signal when it is due; `false` when it is not.
-    ///
-    /// A publish failure leaves the job marked as fired: retrying inside the scan
-    /// would double-publish once the broker recovers, and the next scan is at
-    /// most one cadence away.
-    pub async fn publish(
-        &mut self,
-        pool: &AmqpPool,
-        now: OffsetDateTime,
-    ) -> Result<bool, wakuwaku::Error> {
-        match self.due(now) {
-            Some(signal) => {
-                signal.send(pool).await?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-}
-
-/// Claims the run of `job` for the signal published at `tick`: at most once per
-/// `every`, and never twice for the same tick.
-///
-/// `every` is measured between ticks, not between runs: a consumer stamps the row
-/// when it gets to the message, so measuring from that would subtract the
-/// processing delay from every period and refuse every other signal whenever the
-/// interval equals the publication cadence.
-///
-/// The tick's age is logged when a claim is refused, which is what makes a
-/// consumer backlog visible.
-pub async fn claim_run(
-    db: &SurrealProcessor,
-    job: &'static str,
-    every: Duration,
-    tick: DateTime<Utc>,
-) -> Result<bool, wakuwaku::Error> {
-    let now = Utc::now();
-    let tick_not_before = chrono::Duration::from_std(every)
-        .ok()
-        .and_then(|every| tick.checked_sub_signed(every))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC);
-    let claimed = db
-        .process(ClaimJobRun {
-            job,
-            now,
-            tick,
-            tick_not_before,
-        })
-        .await?;
-    if !claimed {
-        tracing::debug!(
-            job,
-            tick_age_secs = now.signed_duration_since(tick).num_seconds(),
-            "skipping a periodic signal: the job already ran within its interval"
-        );
-    }
-    Ok(claimed)
 }
 
 #[cfg(test)]

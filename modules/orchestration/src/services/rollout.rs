@@ -19,11 +19,18 @@ use wakuwaku::surreal::SurrealProcessor;
 
 /// Tells the derivation hook that a canvas has pending edits.
 ///
-/// The notification is pure latency optimisation: the write that precedes it has
-/// already bumped the canvas generation, and the cron sweep re-derives anything
-/// whose generation ran ahead of its derivation. A publish failure is therefore
-/// logged and swallowed rather than failing the operator's edit, and a deployment
-/// with no broker at all (`amqp: None`) still converges on the sweep.
+/// Publishing is mandatory in every serving mode: since periodic work became
+/// AMQP-driven, the `derive_stale_canvases` sweep is itself a message from the
+/// broker, so a master with no broker derives nothing at all. `amqp: None` —
+/// and with it `Default` — is for tests that drive `CanvasDeriver` directly
+/// instead of through a consumer, not for a broker-less deployment.
+///
+/// Correctness still lives in the canvas generation counters — the write that
+/// precedes the publish has already bumped the generation, and the hook
+/// re-derives anything whose generation ran ahead of its derivation. That is
+/// why a publish failure is logged and swallowed rather than failing the
+/// operator's edit: what a lost message costs is latency, provided delivery
+/// resumes.
 #[derive(Clone, Default)]
 pub struct DirtyNotifier {
     pub amqp: Option<AmqpPool>,
@@ -38,7 +45,7 @@ impl DirtyNotifier {
             canvas: record_key(&canvas.0),
         };
         if let Err(e) = event.send(pool).await {
-            tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep will catch up");
+            tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once the broker is back");
         }
     }
 }

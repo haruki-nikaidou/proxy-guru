@@ -768,6 +768,13 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
 /// pass selects the expiring leaves without locking them, so only the version
 /// fence on the write keeps a leaf from being re-issued twice and shipping two
 /// revisions for the same rotation.
+///
+/// This is integration coverage of the cron path: depending on which future the
+/// executor polls first, either both passes select the leaf and the fence
+/// refuses one write, or the second pass runs after the first and finds nothing
+/// expiring left to select. Both orders end with one rotation, which is what is
+/// asserted here; `two_stores_fenced_on_the_same_version_write_once` pins the
+/// fence itself with no scheduling assumption at all.
 #[tokio::test]
 async fn two_overlapping_rotation_passes_rotate_a_leaf_once() -> TestResult {
     let w = world().await?;
@@ -808,5 +815,134 @@ async fn two_overlapping_rotation_passes_rotate_a_leaf_once() -> TestResult {
     );
     assert_ne!(after.certificate_pem, before.certificate_pem);
     assert!(after.not_after > Utc::now() + chrono::Duration::days(1));
+    Ok(())
+}
+
+/// The fence itself, with no scheduling assumption: both writes carry the same
+/// `expected_version`, so only one of them can land. That is what keeps a
+/// renewal or a rotation from overwriting material another writer just stored,
+/// and it holds whichever future the executor polls first.
+///
+/// This is the entity level, where a lost race can also arrive as the engine
+/// aborting the losing transaction rather than matching nothing — SurrealDB does
+/// not serialise two transactions writing one row. Either way exactly one write
+/// lands, and the version is the witness. (The service turns that abort back
+/// into a refusal, which is what `two_overlapping_ensures_replace_an_expiring_leaf_once`
+/// pins.)
+#[tokio::test]
+async fn two_stores_fenced_on_the_same_version_write_once() -> TestResult {
+    let w = world().await?;
+    w.ca.process(InitInternalCa).await?;
+    let pod = orchestration::utils::ids::node_id("pod_a");
+    let leaf =
+        w.ca.process(EnsureRelayCertificates {
+            pods: vec![pod.clone()],
+        })
+        .await?
+        .remove(0);
+    assert_eq!(leaf.version, 1);
+
+    // Same input but for the material, so the stored row names its winner.
+    let store = |certificate_pem: &str| StoreRelayCertificate {
+        pod: pod.clone(),
+        sni: leaf.sni.clone(),
+        private_key_pem: leaf.private_key_pem.clone(),
+        certificate_pem: certificate_pem.to_string(),
+        not_before: leaf.not_before,
+        not_after: leaf.not_after,
+        expected_version: Some(leaf.version),
+    };
+    let (first, second) = tokio::join!(w.db.process(store("first")), w.db.process(store("second")));
+    let landed: Vec<RelayCertificateEntity> = [first, second]
+        .into_iter()
+        // A refused fence is `Ok(None)`; an aborted losing transaction is an
+        // `Err`. Both mean "did not land", and neither may be two.
+        .filter_map(|outcome| outcome.ok().flatten())
+        .collect();
+    assert_eq!(
+        landed.len(),
+        1,
+        "exactly one of the two compare-and-sets lands: {landed:?}"
+    );
+
+    let stored = leaf_of(&w, &pod).await;
+    assert_eq!(
+        stored.version,
+        leaf.version + 1,
+        "the version moved once, not once per writer"
+    );
+    assert_eq!(
+        stored.certificate_pem, landed[0].certificate_pem,
+        "the row holds the material of the writer that won"
+    );
+    assert!(matches!(
+        stored.certificate_pem.as_str(),
+        "first" | "second"
+    ));
+    Ok(())
+}
+
+/// Two derivation passes over the same pod overlap (two canvases derived at
+/// once, or one derivation racing the rotation cron) and both see a leaf inside
+/// the renewal window. The ensure path fences its replacement on the version it
+/// read, so the pod ends with exactly one new leaf however the race falls.
+///
+/// Both passes must succeed. SurrealDB aborts the losing transaction instead of
+/// letting its `WHERE` match nothing, so the service translates that abort back
+/// into a lost race by re-reading the row: an overlap it is built to absorb must
+/// not surface as a failed derivation pass.
+#[tokio::test]
+async fn two_overlapping_ensures_replace_an_expiring_leaf_once() -> TestResult {
+    let w = world().await?;
+    let ca = w.ca.process(InitInternalCa).await?;
+    let pod = orchestration::utils::ids::node_id("pod_a");
+    let leaf =
+        w.ca.process(EnsureRelayCertificates {
+            pods: vec![pod.clone()],
+        })
+        .await?
+        .remove(0);
+    // Backdate it into the renewal window so both passes want to replace it.
+    w.db.process(StoreRelayCertificate {
+        pod: pod.clone(),
+        sni: leaf.sni.clone(),
+        private_key_pem: leaf.private_key_pem.clone(),
+        certificate_pem: leaf.certificate_pem.clone(),
+        not_before: leaf.not_before,
+        not_after: Utc::now() + chrono::Duration::hours(1),
+        expected_version: None,
+    })
+    .await?
+    .expect("the unconditional store writes the row");
+    let before = leaf_of(&w, &pod).await;
+    assert_eq!(before.version, 2);
+
+    let (first, second) = tokio::join!(
+        w.ca.process(EnsureRelayCertificates {
+            pods: vec![pod.clone()]
+        }),
+        w.ca.process(EnsureRelayCertificates {
+            pods: vec![pod.clone()]
+        })
+    );
+    let outcomes = [("first", first?), ("second", second?)];
+
+    let stored = leaf_of(&w, &pod).await;
+    assert_eq!(
+        stored.version, 3,
+        "one replacement across both passes, not one each"
+    );
+    assert_ne!(stored.certificate_pem, before.certificate_pem);
+    assert_leaf_signed_by(&stored.certificate_pem, &ca.certificate_pem, &leaf.sni);
+    for (label, leaves) in outcomes {
+        let [returned] = leaves.as_slice() else {
+            panic!("one leaf per pod from the {label} pass: {leaves:?}");
+        };
+        assert_eq!(
+            returned.certificate_pem, stored.certificate_pem,
+            "the {label} pass returned the leaf that is stored, not one it lost"
+        );
+        assert_eq!(returned.version, stored.version);
+    }
     Ok(())
 }

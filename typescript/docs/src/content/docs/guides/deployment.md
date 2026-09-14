@@ -378,10 +378,11 @@ What each mode is for, and how it scales:
 - **`cron`** — the clock, and only the clock. It scans every 5 s and publishes one execution signal
   per due job: `derive_stale_canvases` and `sweep_liveness` every 30 s,
   `renew_certificates` every 60 s, `trim_health_history` every 5 min,
-  `rotate_relay_certificates` hourly. It opens no database connection and never reads
-  `GURU_MASTER_KEY`, so it has nothing to scale and nothing to secure; one replica is enough, and a
-  second is harmless because the consumer's run claim discards the duplicate. How often a job may
-  actually run is a stored setting, not a flag — see step 8.
+  `rotate_relay_certificates` hourly. It opens no database connection, never reads
+  `GURU_MASTER_KEY` and keeps no local state, so the only secret it holds is the broker credential
+  in `AMQP_URI` — which is also the one thing it cannot run without. There is nothing to scale:
+  one replica is enough, and a second is harmless because the consumer's run claim discards the
+  duplicate. How often a job may actually run is a stored setting, not a flag — see step 8.
 
 Relay links over TLS or QUIC need the internal CA before their pods derive. Run this once from the
 operator machine, with the same `GURU_MASTER_KEY` the master uses:
