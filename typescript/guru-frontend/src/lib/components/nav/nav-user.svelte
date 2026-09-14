@@ -12,7 +12,8 @@ import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 import { roleLabel } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
-import { getLocale, setLocale } from '#lib/paraglide/runtime.js';
+import { LOCALE_LABELS } from '#lib/i18n/locales.js';
+import { getLocale, locales, setLocale } from '#lib/paraglide/runtime.js';
 import { logout } from '../../../routes/auth/auth.remote.js';
 
 let { identity }: { identity: Identity } = $props();
@@ -73,12 +74,11 @@ async function handleLogout() {
 				{m.nav_language()}
 			</DropdownMenu.SubTrigger>
 			<DropdownMenu.SubContent>
-				<DropdownMenu.Item disabled={getLocale() === 'en'} onSelect={() => setLocale('en')}>
-					{m.nav_language_en()}
-				</DropdownMenu.Item>
-				<DropdownMenu.Item disabled={getLocale() === 'ja'} onSelect={() => setLocale('ja')}>
-					{m.nav_language_ja()}
-				</DropdownMenu.Item>
+				{#each locales as locale (locale)}
+					<DropdownMenu.Item disabled={getLocale() === locale} onSelect={() => setLocale(locale)}>
+						{LOCALE_LABELS[locale]()}
+					</DropdownMenu.Item>
+				{/each}
 			</DropdownMenu.SubContent>
 		</DropdownMenu.Sub>
 

@@ -3,7 +3,8 @@ import LanguagesIcon from '@lucide/svelte/icons/languages';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 import { m } from '#lib/paraglide/messages.js';
-import { getLocale, setLocale } from '#lib/paraglide/runtime.js';
+import { LOCALE_LABELS } from '#lib/i18n/locales.js';
+import { getLocale, locales, setLocale } from '#lib/paraglide/runtime.js';
 </script>
 
 <DropdownMenu.Root>
@@ -18,12 +19,11 @@ import { getLocale, setLocale } from '#lib/paraglide/runtime.js';
 		<DropdownMenu.Group>
 			<DropdownMenu.GroupHeading>{m.nav_language()}</DropdownMenu.GroupHeading>
 			<DropdownMenu.Separator />
-			<DropdownMenu.Item disabled={getLocale() === 'en'} onSelect={() => setLocale('en')}>
-				{m.nav_language_en()}
-			</DropdownMenu.Item>
-			<DropdownMenu.Item disabled={getLocale() === 'ja'} onSelect={() => setLocale('ja')}>
-				{m.nav_language_ja()}
-			</DropdownMenu.Item>
+			{#each locales as locale (locale)}
+				<DropdownMenu.Item disabled={getLocale() === locale} onSelect={() => setLocale(locale)}>
+					{LOCALE_LABELS[locale]()}
+				</DropdownMenu.Item>
+			{/each}
 		</DropdownMenu.Group>
 	</DropdownMenu.Content>
 </DropdownMenu.Root>

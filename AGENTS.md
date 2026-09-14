@@ -238,6 +238,23 @@ under a subpath, `base` — then prefix the root-relative links in
 Document behaviour here, not in new top-level Markdown files — `README.md` stays
 a short overview and this file stays the code-organisation contract.
 
+### i18n in `guru-frontend`
+
+Paraglide (inlang) generates `src/lib/paraglide/` at build time from
+`messages/<locale>.json`; the locale comes from the `guru_locale` cookie, then
+`Accept-Language`, then the base locale (no URL prefixes).
+
+- Every user-visible string goes through `m.<key>()` from
+  `#lib/paraglide/messages.js`. Never hard-code UI text in `.svelte` files.
+- Remote functions return stable codes, never sentences; the client maps them
+  to messages in `src/lib/i18n/codes.ts`.
+- Adding a locale touches four places: `project.inlang/settings.json`
+  (`locales`), a full `messages/<locale>.json`, its label in
+  `src/lib/i18n/locales.ts` (the switchers iterate `locales` from the runtime),
+  and optionally a colour/animal dictionary in `src/lib/i18n/naming.ts`.
+- `bun run check:messages` (first step of `bun run check`) fails when any
+  locale is missing a key or has different `{placeholders}` than `en`.
+
 ### Adding a frontend package
 
 1. Create it under `typescript/<name>/` with its own `package.json`; the Bun
