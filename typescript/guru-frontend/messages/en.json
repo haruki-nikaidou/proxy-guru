@@ -37,6 +37,9 @@
 	"nav_language": "Language",
 	"nav_language_en": "English",
 	"nav_language_ja": "日本語",
+	"nav_language_zh_cn": "简体中文",
+	"nav_language_zh_tw": "繁體中文",
+	"nav_language_ko": "한국어",
 
 	"role_admin": "Admin",
 	"role_maintainer": "Maintainer",
