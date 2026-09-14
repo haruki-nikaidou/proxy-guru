@@ -23,7 +23,8 @@ export default defineConfig({
 					items: [
 						{ label: 'Introduction', link: '/guides/introduction/' },
 						{ label: 'Local Development', link: '/guides/local-development/' },
-						{ label: 'Deployment', link: '/guides/deployment/' }
+						{ label: 'Deployment', link: '/guides/deployment/' },
+						{ label: 'Single-Host Native Deployment', link: '/guides/single-host/' }
 					]
 				},
 				{
