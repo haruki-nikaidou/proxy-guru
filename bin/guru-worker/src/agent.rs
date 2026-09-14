@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::Ascii;
 use tonic::metadata::MetadataValue;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 pub struct AgentOptions {
     pub master: String,
@@ -41,6 +41,29 @@ pub struct AgentOptions {
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// HTTP/2 PING cadence towards whatever answers `--master` — the master itself or a
+/// TLS-terminating proxy in front of it. A path that stops answering is torn down after
+/// `KEEPALIVE_INTERVAL + KEEPALIVE_TIMEOUT` and the session reconnects, instead of a
+/// silent `WatchConfig` stream hiding a dead link for hours.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The channel builder for `--master`. `http://` is plaintext h2c, unchanged. `https://`
+/// verifies the peer against the system roots with SNI taken from the URI host, so a
+/// TLS-terminating proxy with a public certificate needs no extra flag.
+fn endpoint(master: &str) -> Result<Endpoint, BoxError> {
+    let endpoint = Endpoint::from_shared(master.to_owned())?
+        .connect_timeout(CONNECT_TIMEOUT)
+        .http2_keep_alive_interval(KEEPALIVE_INTERVAL)
+        .keep_alive_timeout(KEEPALIVE_TIMEOUT)
+        .keep_alive_while_idle(true);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Ok(endpoint);
+    }
+    // `with_native_roots` reads the platform store here, so a host without
+    // `ca-certificates` fails with a clear error instead of at the handshake.
+    Ok(endpoint.tls_config(ClientTlsConfig::new().with_native_roots())?)
+}
 
 /// Keeps a session with the master alive, reconnecting with capped exponential backoff.
 pub async fn run(
@@ -79,9 +102,7 @@ async fn session(
     shutdown: &CancellationToken,
     backoff: &mut Duration,
 ) -> Result<(), BoxError> {
-    let endpoint = tonic::transport::Endpoint::from_shared(opts.master.clone())?
-        .connect_timeout(CONNECT_TIMEOUT);
-    let mut client = WorkerAgentClient::new(endpoint.connect().await?);
+    let mut client = WorkerAgentClient::new(endpoint(&opts.master)?.connect().await?);
 
     let running_revision = opts.applied_revision.load(Ordering::Relaxed);
     let mut register = tonic::Request::new(RegisterRequest {

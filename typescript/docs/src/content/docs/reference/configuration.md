@@ -77,7 +77,7 @@ while the last acknowledged revision failed for any pod. The named values are ke
 | Flag | Environment | Default |
 |---|---|---|
 | `-c`, `--config` | `GURU_WORKER_CONFIG` | — (standalone mode; reloaded on `SIGHUP`) |
-| `--master` | `GURU_MASTER` | — (agent mode; requires `--server`) |
+| `--master` | `GURU_MASTER` | — (agent mode; requires `--server`; `http://host:50052` is plaintext h2c, `https://host` is TLS verified against the system roots) |
 | `--server` | `GURU_SERVER_ID` | — (`orchestration_server` record key) |
 | `--api-key-file` | `GURU_API_KEY_FILE` | — (alternative to `GURU_API_KEY`) |
 | `--state-dir` | `GURU_STATE_DIR` | `/var/lib/guru-worker` |

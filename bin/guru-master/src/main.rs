@@ -135,6 +135,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A workspace build that also compiles `guru-worker` unifies rustls to both the
+    // `aws-lc-rs` and `ring` providers; `instant-acme` then panics in
+    // `ClientConfig::builder()` unless one is installed process-wide.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(&cli.log_level))

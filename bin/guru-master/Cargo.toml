@@ -30,6 +30,9 @@ amqprs = { workspace = true }
 surrealdb = { workspace = true }
 # The scheduler's clock: `IntervalJob::publish` takes a `time::OffsetDateTime`.
 time = { workspace = true }
+# Built together with `guru-worker` (ring for QUIC) this binary carries two rustls
+# providers; `instant-acme` panics unless one is installed process-wide (see main).
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
 
 # CLI
 clap = { workspace = true }

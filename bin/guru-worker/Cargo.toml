@@ -29,7 +29,7 @@ rustls-native-certs = "0.8"
 moka = { version = "0.12", features = ["future"] }
 guru_worker_config = { path = "../../lib/guru_worker_config" }
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }
-tonic = { workspace = true, features = ["channel"] }
+tonic = { workspace = true, features = ["channel", "tls-ring", "tls-native-roots"] }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tokio-stream = { workspace = true }

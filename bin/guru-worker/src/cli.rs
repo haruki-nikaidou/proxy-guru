@@ -23,7 +23,9 @@ pub struct Cli {
         conflicts_with = "master"
     )]
     pub config: Option<PathBuf>,
-    /// Agent mode: `guru-master` worker endpoint, e.g. `http://10.0.0.1:50052`.
+    /// Agent mode: `guru-master` worker endpoint — `http://10.0.0.1:50052` on a private
+    /// network (plaintext h2c), or `https://guru.example.com` behind a TLS-terminating
+    /// proxy (certificate verified against the system roots; SNI is the URI host).
     #[arg(long, env = "GURU_MASTER", requires_all = ["server"])]
     pub master: Option<String>,
     /// File holding the operator API key used once per session to register with the
