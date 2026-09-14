@@ -305,6 +305,13 @@ one database row shared by every consumer.
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
+The same two documents are readable and replaceable from the dashboard: an **Admin** (and only an
+Admin — no other role holds the permission, and an API key never does) gets the row as stored, the
+payload seeding would write, and a form that replaces the whole document. It validates exactly as
+`manage-tool config set` does, so a payload of the wrong shape is rejected and the row keeps its
+previous contents. Saving from the dashboard is not a live reload either: **restart `guru-master`**
+for the new values to take effect.
+
 The three database-backed modes — `dashboard_grpc`, `workers_grpc` and `consumer` — read both keys
 once, during startup, and hand the values to their services; there is no live reload. `cron` opens
 no database connection and so reads neither key: it only publishes execution signals, and the

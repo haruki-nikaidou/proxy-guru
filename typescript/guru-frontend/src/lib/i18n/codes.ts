@@ -47,6 +47,34 @@ export function issueMessage(code: string): string {
 			return m.issue_ip_required();
 		case 'log_level_required':
 			return m.issue_log_level_required();
+		case 'sni_required':
+			return m.issue_sni_required();
+		case 'sni_too_long':
+			return m.issue_sni_too_long();
+		case 'sni_invalid':
+			return m.issue_sni_invalid();
+		case 'dns_provider_required':
+			return m.issue_dns_provider_required();
+		case 'domain_id_required':
+			return m.issue_domain_id_required();
+		case 'acme_directory_invalid':
+			return m.issue_acme_directory_invalid();
+		case 'dns_provider_name_required':
+			return m.issue_dns_provider_name_required();
+		case 'dns_provider_name_too_long':
+			return m.issue_dns_provider_name_too_long();
+		case 'dns_provider_invalid':
+			return m.issue_dns_provider_invalid();
+		case 'dns_api_secret_required':
+			return m.issue_dns_api_secret_required();
+		case 'health_window_invalid':
+			return m.issue_health_window_invalid();
+		case 'config_key_invalid':
+			return m.issue_config_key_invalid();
+		case 'config_json_required':
+			return m.issue_config_json_required();
+		case 'config_json_invalid':
+			return m.issue_config_json_invalid();
 		default:
 			return code;
 	}

@@ -7,6 +7,7 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import type { CallContext, CallOptions } from "nice-grpc-common";
+import { ConfigDocument } from "../base/config.js";
 
 export const protobufPackage = "guru.auth";
 
@@ -371,6 +372,30 @@ export interface RevokeApiKeyRequest {
 }
 
 export interface RevokeApiKeyReply {
+}
+
+/**
+ * The `auth` configuration document (`auth::config::AuthConfig`). Admin only:
+ * the whole installation reads these values.
+ */
+export interface GetAuthConfigRequest {
+}
+
+export interface GetAuthConfigReply {
+  config: ConfigDocument | undefined;
+}
+
+/**
+ * `json` replaces the whole document. It is decoded into `AuthConfig` first, so
+ * a payload of the wrong shape is rejected and the row keeps its previous
+ * contents. Masters pick the new value up on restart.
+ */
+export interface SetAuthConfigRequest {
+  json: string;
+}
+
+export interface SetAuthConfigReply {
+  config: ConfigDocument | undefined;
 }
 
 function createBaseAccount(): Account {
@@ -2140,6 +2165,227 @@ export const RevokeApiKeyReply: MessageFns<RevokeApiKeyReply> = {
   },
 };
 
+function createBaseGetAuthConfigRequest(): GetAuthConfigRequest {
+  return {};
+}
+
+export const GetAuthConfigRequest: MessageFns<GetAuthConfigRequest> = {
+  encode(_: GetAuthConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetAuthConfigRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetAuthConfigRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetAuthConfigRequest {
+    return {};
+  },
+
+  toJSON(_: GetAuthConfigRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetAuthConfigRequest>): GetAuthConfigRequest {
+    return GetAuthConfigRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<GetAuthConfigRequest>): GetAuthConfigRequest {
+    const message = createBaseGetAuthConfigRequest();
+    return message;
+  },
+};
+
+function createBaseGetAuthConfigReply(): GetAuthConfigReply {
+  return { config: undefined };
+}
+
+export const GetAuthConfigReply: MessageFns<GetAuthConfigReply> = {
+  encode(message: GetAuthConfigReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.config !== undefined) {
+      ConfigDocument.encode(message.config, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetAuthConfigReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetAuthConfigReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.config = ConfigDocument.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetAuthConfigReply {
+    return { config: isSet(object.config) ? ConfigDocument.fromJSON(object.config) : undefined };
+  },
+
+  toJSON(message: GetAuthConfigReply): unknown {
+    const obj: any = {};
+    if (message.config !== undefined) {
+      obj.config = ConfigDocument.toJSON(message.config);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetAuthConfigReply>): GetAuthConfigReply {
+    return GetAuthConfigReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetAuthConfigReply>): GetAuthConfigReply {
+    const message = createBaseGetAuthConfigReply();
+    message.config = (object.config !== undefined && object.config !== null)
+      ? ConfigDocument.fromPartial(object.config)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseSetAuthConfigRequest(): SetAuthConfigRequest {
+  return { json: "" };
+}
+
+export const SetAuthConfigRequest: MessageFns<SetAuthConfigRequest> = {
+  encode(message: SetAuthConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.json !== "") {
+      writer.uint32(10).string(message.json);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SetAuthConfigRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSetAuthConfigRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.json = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SetAuthConfigRequest {
+    return { json: isSet(object.json) ? globalThis.String(object.json) : "" };
+  },
+
+  toJSON(message: SetAuthConfigRequest): unknown {
+    const obj: any = {};
+    if (message.json !== "") {
+      obj.json = message.json;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SetAuthConfigRequest>): SetAuthConfigRequest {
+    return SetAuthConfigRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SetAuthConfigRequest>): SetAuthConfigRequest {
+    const message = createBaseSetAuthConfigRequest();
+    message.json = object.json ?? "";
+    return message;
+  },
+};
+
+function createBaseSetAuthConfigReply(): SetAuthConfigReply {
+  return { config: undefined };
+}
+
+export const SetAuthConfigReply: MessageFns<SetAuthConfigReply> = {
+  encode(message: SetAuthConfigReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.config !== undefined) {
+      ConfigDocument.encode(message.config, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SetAuthConfigReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSetAuthConfigReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.config = ConfigDocument.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SetAuthConfigReply {
+    return { config: isSet(object.config) ? ConfigDocument.fromJSON(object.config) : undefined };
+  },
+
+  toJSON(message: SetAuthConfigReply): unknown {
+    const obj: any = {};
+    if (message.config !== undefined) {
+      obj.config = ConfigDocument.toJSON(message.config);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SetAuthConfigReply>): SetAuthConfigReply {
+    return SetAuthConfigReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SetAuthConfigReply>): SetAuthConfigReply {
+    const message = createBaseSetAuthConfigReply();
+    message.config = (object.config !== undefined && object.config !== null)
+      ? ConfigDocument.fromPartial(object.config)
+      : undefined;
+    return message;
+  },
+};
+
 export type AuthDefinition = typeof AuthDefinition;
 export const AuthDefinition = {
   name: "Auth",
@@ -2241,6 +2487,22 @@ export const AuthDefinition = {
       responseStream: false,
       options: {},
     },
+    getAuthConfig: {
+      name: "GetAuthConfig",
+      requestType: GetAuthConfigRequest as typeof GetAuthConfigRequest,
+      requestStream: false,
+      responseType: GetAuthConfigReply as typeof GetAuthConfigReply,
+      responseStream: false,
+      options: {},
+    },
+    setAuthConfig: {
+      name: "SetAuthConfig",
+      requestType: SetAuthConfigRequest as typeof SetAuthConfigRequest,
+      requestStream: false,
+      responseType: SetAuthConfigReply as typeof SetAuthConfigReply,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
@@ -2287,6 +2549,14 @@ export interface AuthServiceImplementation<CallContextExt = {}> {
     request: RevokeApiKeyRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<RevokeApiKeyReply>>;
+  getAuthConfig(
+    request: GetAuthConfigRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<GetAuthConfigReply>>;
+  setAuthConfig(
+    request: SetAuthConfigRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<SetAuthConfigReply>>;
 }
 
 export interface AuthClient<CallOptionsExt = {}> {
@@ -2332,6 +2602,14 @@ export interface AuthClient<CallOptionsExt = {}> {
     request: DeepPartial<RevokeApiKeyRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<RevokeApiKeyReply>;
+  getAuthConfig(
+    request: DeepPartial<GetAuthConfigRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<GetAuthConfigReply>;
+  setAuthConfig(
+    request: DeepPartial<SetAuthConfigRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<SetAuthConfigReply>;
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

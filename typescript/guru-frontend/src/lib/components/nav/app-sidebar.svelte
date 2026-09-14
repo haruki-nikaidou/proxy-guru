@@ -1,6 +1,7 @@
 <script lang="ts">
 import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 import NetworkIcon from '@lucide/svelte/icons/network';
+import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 import UsersIcon from '@lucide/svelte/icons/users';
 import { page } from '$app/state';
 import NavUser from '#lib/components/nav/nav-user.svelte';
@@ -12,6 +13,7 @@ let { identity }: { identity: Identity } = $props();
 
 const items = [
 	{ href: '/', label: () => m.nav_canvases(), icon: LayoutDashboardIcon },
+	{ href: '/tls', label: () => m.nav_tls(), icon: ShieldCheckIcon },
 	{ href: '/management', label: () => m.nav_management(), icon: UsersIcon }
 ];
 

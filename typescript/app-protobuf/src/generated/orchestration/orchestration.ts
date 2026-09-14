@@ -7,6 +7,7 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import type { CallContext, CallOptions } from "nice-grpc-common";
+import { ConfigDocument } from "../base/config.js";
 
 export const protobufPackage = "guru.orchestration";
 
@@ -1209,6 +1210,32 @@ export interface DeleteCertificateRequest {
 }
 
 export interface DeleteCertificateReply {
+}
+
+/**
+ * The `orchestration` configuration document
+ * (`orchestration::config::OrchestrationConfig`). Admin only: these values size
+ * every health threshold, retention window and certificate lifetime in the
+ * fleet.
+ */
+export interface GetOrchestrationConfigRequest {
+}
+
+export interface GetOrchestrationConfigReply {
+  config: ConfigDocument | undefined;
+}
+
+/**
+ * `json` replaces the whole document. It is decoded into `OrchestrationConfig`
+ * first, so a payload of the wrong shape is rejected and the row keeps its
+ * previous contents. Masters pick the new values up on restart.
+ */
+export interface SetOrchestrationConfigRequest {
+  json: string;
+}
+
+export interface SetOrchestrationConfigReply {
+  config: ConfigDocument | undefined;
 }
 
 function createBaseCanvasUiPosition(): CanvasUiPosition {
@@ -9246,6 +9273,227 @@ export const DeleteCertificateReply: MessageFns<DeleteCertificateReply> = {
   },
 };
 
+function createBaseGetOrchestrationConfigRequest(): GetOrchestrationConfigRequest {
+  return {};
+}
+
+export const GetOrchestrationConfigRequest: MessageFns<GetOrchestrationConfigRequest> = {
+  encode(_: GetOrchestrationConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetOrchestrationConfigRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetOrchestrationConfigRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetOrchestrationConfigRequest {
+    return {};
+  },
+
+  toJSON(_: GetOrchestrationConfigRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetOrchestrationConfigRequest>): GetOrchestrationConfigRequest {
+    return GetOrchestrationConfigRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<GetOrchestrationConfigRequest>): GetOrchestrationConfigRequest {
+    const message = createBaseGetOrchestrationConfigRequest();
+    return message;
+  },
+};
+
+function createBaseGetOrchestrationConfigReply(): GetOrchestrationConfigReply {
+  return { config: undefined };
+}
+
+export const GetOrchestrationConfigReply: MessageFns<GetOrchestrationConfigReply> = {
+  encode(message: GetOrchestrationConfigReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.config !== undefined) {
+      ConfigDocument.encode(message.config, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetOrchestrationConfigReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetOrchestrationConfigReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.config = ConfigDocument.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetOrchestrationConfigReply {
+    return { config: isSet(object.config) ? ConfigDocument.fromJSON(object.config) : undefined };
+  },
+
+  toJSON(message: GetOrchestrationConfigReply): unknown {
+    const obj: any = {};
+    if (message.config !== undefined) {
+      obj.config = ConfigDocument.toJSON(message.config);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetOrchestrationConfigReply>): GetOrchestrationConfigReply {
+    return GetOrchestrationConfigReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetOrchestrationConfigReply>): GetOrchestrationConfigReply {
+    const message = createBaseGetOrchestrationConfigReply();
+    message.config = (object.config !== undefined && object.config !== null)
+      ? ConfigDocument.fromPartial(object.config)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseSetOrchestrationConfigRequest(): SetOrchestrationConfigRequest {
+  return { json: "" };
+}
+
+export const SetOrchestrationConfigRequest: MessageFns<SetOrchestrationConfigRequest> = {
+  encode(message: SetOrchestrationConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.json !== "") {
+      writer.uint32(10).string(message.json);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SetOrchestrationConfigRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSetOrchestrationConfigRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.json = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SetOrchestrationConfigRequest {
+    return { json: isSet(object.json) ? globalThis.String(object.json) : "" };
+  },
+
+  toJSON(message: SetOrchestrationConfigRequest): unknown {
+    const obj: any = {};
+    if (message.json !== "") {
+      obj.json = message.json;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SetOrchestrationConfigRequest>): SetOrchestrationConfigRequest {
+    return SetOrchestrationConfigRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SetOrchestrationConfigRequest>): SetOrchestrationConfigRequest {
+    const message = createBaseSetOrchestrationConfigRequest();
+    message.json = object.json ?? "";
+    return message;
+  },
+};
+
+function createBaseSetOrchestrationConfigReply(): SetOrchestrationConfigReply {
+  return { config: undefined };
+}
+
+export const SetOrchestrationConfigReply: MessageFns<SetOrchestrationConfigReply> = {
+  encode(message: SetOrchestrationConfigReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.config !== undefined) {
+      ConfigDocument.encode(message.config, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SetOrchestrationConfigReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSetOrchestrationConfigReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.config = ConfigDocument.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SetOrchestrationConfigReply {
+    return { config: isSet(object.config) ? ConfigDocument.fromJSON(object.config) : undefined };
+  },
+
+  toJSON(message: SetOrchestrationConfigReply): unknown {
+    const obj: any = {};
+    if (message.config !== undefined) {
+      obj.config = ConfigDocument.toJSON(message.config);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SetOrchestrationConfigReply>): SetOrchestrationConfigReply {
+    return SetOrchestrationConfigReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SetOrchestrationConfigReply>): SetOrchestrationConfigReply {
+    const message = createBaseSetOrchestrationConfigReply();
+    message.config = (object.config !== undefined && object.config !== null)
+      ? ConfigDocument.fromPartial(object.config)
+      : undefined;
+    return message;
+  },
+};
+
 export type OrchestrationDefinition = typeof OrchestrationDefinition;
 export const OrchestrationDefinition = {
   name: "Orchestration",
@@ -9519,6 +9767,22 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    getOrchestrationConfig: {
+      name: "GetOrchestrationConfig",
+      requestType: GetOrchestrationConfigRequest as typeof GetOrchestrationConfigRequest,
+      requestStream: false,
+      responseType: GetOrchestrationConfigReply as typeof GetOrchestrationConfigReply,
+      responseStream: false,
+      options: {},
+    },
+    setOrchestrationConfig: {
+      name: "SetOrchestrationConfig",
+      requestType: SetOrchestrationConfigRequest as typeof SetOrchestrationConfigRequest,
+      requestStream: false,
+      responseType: SetOrchestrationConfigReply as typeof SetOrchestrationConfigReply,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
@@ -9641,6 +9905,14 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: DeleteCertificateRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<DeleteCertificateReply>>;
+  getOrchestrationConfig(
+    request: GetOrchestrationConfigRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<GetOrchestrationConfigReply>>;
+  setOrchestrationConfig(
+    request: SetOrchestrationConfigRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<SetOrchestrationConfigReply>>;
 }
 
 export interface OrchestrationClient<CallOptionsExt = {}> {
@@ -9762,6 +10034,14 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<DeleteCertificateRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<DeleteCertificateReply>;
+  getOrchestrationConfig(
+    request: DeepPartial<GetOrchestrationConfigRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<GetOrchestrationConfigReply>;
+  setOrchestrationConfig(
+    request: DeepPartial<SetOrchestrationConfigRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<SetOrchestrationConfigReply>;
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

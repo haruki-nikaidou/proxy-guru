@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package guru.base;
+
+// One `app_config` row as the dashboard sees it.
+//
+// Every module that exposes its configuration does so with a typed
+// `Get<Module>Config` / `Set<Module>Config` pair on its own service, and both
+// answer with this message.
+//
+// Reads are deliberately **undecoded**: a row that no longer matches its type is
+// exactly what an operator must see, and `Set` is the way back out. Decoding on
+// read would either hide the corruption behind `Default` or make the document
+// unreadable at the moment it most needs repairing.
+message ConfigDocument {
+  // Whether the key has a row at all. An unseeded installation is a normal
+  // state, not an error.
+  bool stored = 1;
+  // The document as stored (pretty-printed), or `defaults_json` when `stored`
+  // is false.
+  string json = 2;
+  // What `manage-tool config seed` would write, always filled in, so the UI can
+  // offer "reset to defaults".
+  string defaults_json = 3;
+}

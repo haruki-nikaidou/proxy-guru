@@ -5,8 +5,10 @@
 
 mod common;
 
+use base::services::config::ConfigStore;
 use common::*;
 use orchestration::rpc::OrchestrationGrpc;
+use orchestration::services::config::OrchestrationConfigService;
 use rpguru_sdk::orchestration as pb;
 use rpguru_sdk::orchestration::orchestration_server::Orchestration;
 use tonic::Request;
@@ -21,6 +23,9 @@ fn grpc(w: &World) -> OrchestrationGrpc {
         health: w.health.clone(),
         dns: w.dns.clone(),
         certificates: w.certificates.clone(),
+        configs: OrchestrationConfigService {
+            configs: ConfigStore { db: w.db.clone() },
+        },
     }
 }
 

@@ -35,6 +35,7 @@
 
 pub mod account;
 pub mod api_key;
+pub mod config;
 pub mod identity;
 pub mod session;
 
@@ -45,5 +46,6 @@ pub use account::{
 pub use api_key::{
     ApiKeyService, AuthenticateApiKey, CreateApiKey, CreatedApiKey, ListApiKeys, RevokeApiKey,
 };
+pub use config::{AuthConfigService, ConfigDocument, GetModuleConfig, SetModuleConfig};
 pub use identity::{Identity, IdentityKind};
 pub use session::{AuthenticateSession, Login, LoginResult, Logout, SessionService};

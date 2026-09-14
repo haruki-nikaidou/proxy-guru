@@ -28,4 +28,7 @@
 //!
 //! Load it once during startup with `base::services::config::LoadConfig` and
 //! hand the value to the services; register the key in `manage-tool`'s
-//! `ConfigKey` enum.
+//! `ConfigKey` enum. To let an Admin read and replace it from the dashboard,
+//! add a typed `Get<Module>Config` / `Set<Module>Config` pair to this module's
+//! gRPC service, answering with `guru.base.ConfigDocument`; the module that
+//! names `ExampleConfig` is the one that validates a payload for it.

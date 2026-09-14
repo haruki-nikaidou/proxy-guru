@@ -412,6 +412,7 @@ dependencies = [
  "rand 0.9.5",
  "rpguru_sdk",
  "serde",
+ "serde_json",
  "sha2",
  "surrealdb",
  "surrealdb-types",

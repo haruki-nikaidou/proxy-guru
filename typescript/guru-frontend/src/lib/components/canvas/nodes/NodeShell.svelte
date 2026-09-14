@@ -13,6 +13,7 @@ let {
 	background,
 	width = 'w-[260px]',
 	icon,
+	badge,
 	children
 }: {
 	/** Flow node id, matched against the panel's target to draw the focus ring. */
@@ -25,6 +26,8 @@ let {
 	background: string;
 	width?: string;
 	icon: Snippet;
+	/** Rendered right after the title: a status the operator reads at a glance. */
+	badge?: Snippet;
 	children: Snippet;
 } = $props();
 
@@ -49,6 +52,7 @@ const outline = $derived(
 	<div class="flex items-center gap-2 px-3">
 		{@render icon()}
 		<span class="truncate text-sm font-medium">{title}</span>
+		{#if badge}{@render badge()}{/if}
 		<span class="ms-auto text-[10px] uppercase text-muted-foreground">{kindLabel}</span>
 	</div>
 	{#if comment}

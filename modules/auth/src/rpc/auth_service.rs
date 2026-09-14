@@ -10,22 +10,25 @@ use crate::entities::surreal::account::{AccountEntity, AccountId, AccountRole, F
 use crate::entities::surreal::api_key::{ApiKeyId, ApiKeyOmitSecret};
 use crate::rpc::middleware::{SESSION_ID_METADATA, from_request};
 use crate::services::api_key::ListApiKeys;
+use crate::services::config::{AuthConfigService, GetModuleConfig, SetModuleConfig};
 use crate::services::identity::IdentityKind;
 use crate::services::{
     AccountService, ApiKeyService, ChangeEmailResult, ChangeOwnEmail, ChangeOwnPassword,
-    ChangePasswordResult, CreateApiKey, DeleteAccount, ListAccounts, Login, LoginResult, Logout,
-    RegisterAccount, RegisterResult, RevokeApiKey, SessionService, SetAccountRole,
+    ChangePasswordResult, ConfigDocument, CreateApiKey, DeleteAccount, ListAccounts, Login,
+    LoginResult, Logout, RegisterAccount, RegisterResult, RevokeApiKey, SessionService,
+    SetAccountRole,
 };
 
 const ACCOUNT_TABLE: &str = "auth_account";
 const API_KEY_TABLE: &str = "api_key";
 
-/// The concrete gRPC `Auth` service, wiring the three auth services together.
+/// The concrete gRPC `Auth` service, wiring the auth services together.
 #[derive(Clone)]
 pub struct AuthGrpc {
     pub accounts: AccountService,
     pub sessions: SessionService,
     pub api_keys: ApiKeyService,
+    pub configs: AuthConfigService,
 }
 
 /// Extract the raw record key (without the table prefix) for the wire.
@@ -79,6 +82,28 @@ fn api_key_to_proto(key: ApiKeyOmitSecret) -> pb::ApiKeySummary {
         owner_account_id: record_key(&key.owner.0),
         created_at: key.created_at.to_rfc3339(),
     }
+}
+
+/// Both document fields are pretty-printed: an operator edits this text.
+fn config_to_proto(document: ConfigDocument) -> Result<rpguru_sdk::base::ConfigDocument, Status> {
+    let encode = |value: &serde_json::Value| {
+        serde_json::to_string_pretty(value).map_err(|error| {
+            tracing::error!(error = %error, "serializing auth config document");
+            Status::internal("Internal server error")
+        })
+    };
+    Ok(rpguru_sdk::base::ConfigDocument {
+        stored: document.stored,
+        json: encode(&document.json)?,
+        defaults_json: encode(&document.defaults)?,
+    })
+}
+
+/// The payload an operator typed. Not valid JSON is their typo, not a bug.
+fn config_json(json: &str) -> Result<serde_json::Value, Status> {
+    serde_json::from_str(json).map_err(|error| {
+        Status::invalid_argument(format!("the payload is not valid JSON: {error}"))
+    })
 }
 
 #[tonic::async_trait]
@@ -316,5 +341,32 @@ impl pb::auth_server::Auth for AuthGrpc {
         let id = api_key_id_from_key(&req.id);
         self.api_keys.process(RevokeApiKey { actor, id }).await?;
         Ok(Response::new(pb::RevokeApiKeyReply {}))
+    }
+
+    async fn get_auth_config(
+        &self,
+        request: Request<pb::GetAuthConfigRequest>,
+    ) -> Result<Response<pb::GetAuthConfigReply>, Status> {
+        let actor = from_request(&request)?;
+        let document = self.configs.process(GetModuleConfig { actor }).await?;
+        Ok(Response::new(pb::GetAuthConfigReply {
+            config: Some(config_to_proto(document)?),
+        }))
+    }
+
+    async fn set_auth_config(
+        &self,
+        request: Request<pb::SetAuthConfigRequest>,
+    ) -> Result<Response<pb::SetAuthConfigReply>, Status> {
+        let actor = from_request(&request)?;
+        let req = request.into_inner();
+        let json = config_json(&req.json)?;
+        let document = self
+            .configs
+            .process(SetModuleConfig { actor, json })
+            .await?;
+        Ok(Response::new(pb::SetAuthConfigReply {
+            config: Some(config_to_proto(document)?),
+        }))
     }
 }

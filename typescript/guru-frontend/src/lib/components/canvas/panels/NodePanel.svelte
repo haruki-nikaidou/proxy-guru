@@ -17,11 +17,14 @@ let {
 	target = $bindable(null),
 	canvasId,
 	editable,
+	admin,
 	graph
 }: {
 	target?: PanelTarget | null;
 	canvasId: string;
 	editable: boolean;
+	/** Admin-only affordances (forgetting an applied config, listing DNS providers). */
+	admin: boolean;
 	graph: CanvasGraph | undefined;
 } = $props();
 
@@ -33,6 +36,10 @@ const server = $derived(
 const node = $derived(
 	target?.kind === 'node' ? graph?.nodes.find(entry => entry.id === target?.id) : undefined
 );
+
+// A rollout names the servers it waits for by id; only this canvas's servers can
+// be resolved to a name here, which is what the panel shows.
+const serverNames = $derived(new Map((graph?.servers ?? []).map(entry => [entry.id, entry.name])));
 
 // A deleted entity closes its own panel.
 $effect(() => {
@@ -79,9 +86,9 @@ const kindLabel = $derived(
 
 	<div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
 		{#if server}
-			<ServerForm {canvasId} {server} {editable} />
+			<ServerForm {canvasId} {server} {editable} {admin} {serverNames} />
 		{:else if node?.kind === 'entry'}
-			<EntryForm {canvasId} {node} {editable} />
+			<EntryForm {canvasId} {node} {editable} {admin} />
 		{:else if node?.kind === 'relay'}
 			<RelayForm {canvasId} {node} {editable} />
 		{:else if node?.kind === 'exit'}

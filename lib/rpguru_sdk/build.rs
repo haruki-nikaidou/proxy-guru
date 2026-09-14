@@ -5,6 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .compile_protos(
             &[
+                proto_root.join("base/config.proto"),
                 proto_root.join("auth/auth.proto"),
                 proto_root.join("orchestration/orchestration.proto"),
                 proto_root.join("orchestration/agent.proto"),

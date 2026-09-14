@@ -632,7 +632,7 @@ $effect(() => {
 			{#if panelTarget}
 				<Resizable.Handle withHandle />
 				<Resizable.Pane defaultSize={30} minSize={20} maxSize={50} order={2}>
-					<NodePanel bind:target={panelTarget} {canvasId} {editable} graph={current} />
+					<NodePanel bind:target={panelTarget} {canvasId} {editable} {admin} graph={current} />
 				</Resizable.Pane>
 			{/if}
 		</Resizable.PaneGroup>

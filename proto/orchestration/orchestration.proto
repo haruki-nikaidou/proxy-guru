@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package guru.orchestration;
 
+import "base/config.proto";
+
 // Optional values are encoded uniformly: a `*_UNSPECIFIED` enum value, an unset
 // message field, an empty `string` and a `0` `uint32` all mean "none".
 
@@ -529,6 +531,24 @@ message DeleteCertificateRequest {
 }
 message DeleteCertificateReply {}
 
+// The `orchestration` configuration document
+// (`orchestration::config::OrchestrationConfig`). Admin only: these values size
+// every health threshold, retention window and certificate lifetime in the
+// fleet.
+message GetOrchestrationConfigRequest {}
+message GetOrchestrationConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+// `json` replaces the whole document. It is decoded into `OrchestrationConfig`
+// first, so a payload of the wrong shape is rejected and the row keeps its
+// previous contents. Masters pick the new values up on restart.
+message SetOrchestrationConfigRequest {
+  string json = 1;
+}
+message SetOrchestrationConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
   rpc ListCanvases(ListCanvasesRequest) returns (ListCanvasesReply);
@@ -565,4 +585,6 @@ service Orchestration {
   rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesReply);
   rpc RetryCertificate(RetryCertificateRequest) returns (RetryCertificateReply);
   rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateReply);
+  rpc GetOrchestrationConfig(GetOrchestrationConfigRequest) returns (GetOrchestrationConfigReply);
+  rpc SetOrchestrationConfig(SetOrchestrationConfigRequest) returns (SetOrchestrationConfigReply);
 }
