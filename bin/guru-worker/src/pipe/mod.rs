@@ -96,12 +96,12 @@ pub async fn read_proxy_header<S: AsyncRead + Unpin>(
             HeaderResult::V2(Ok(h)) => {
                 let src = v2_source(&h.addresses).ok_or("unsupported proxy v2 address family")?;
                 let used = h.len();
-                return Ok((src, buf[used..].to_vec()));
+                return Ok((crate::listener::canonical(src), buf[used..].to_vec()));
             }
             HeaderResult::V1(Ok(h)) => {
                 let src = v1_source(&h.addresses).ok_or("unsupported proxy v1 address")?;
                 let used = h.header.len();
-                return Ok((src, buf[used..].to_vec()));
+                return Ok((crate::listener::canonical(src), buf[used..].to_vec()));
             }
             _ => return Err("malformed proxy protocol header".into()),
         }
@@ -152,13 +152,31 @@ pub async fn write_proxy_header<S: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// A PROXY header carries one address family. A client and a destination of
+/// different families (an IPv6 client relayed to an IPv4 hop, or the reverse)
+/// are both expressed as IPv6, the IPv4 side as `::ffff:a.b.c.d`, which the
+/// receiving side unmaps again in `read_proxy_header`.
+fn same_family(src: SocketAddr, dst: SocketAddr) -> (SocketAddr, SocketAddr) {
+    let (src, dst) = (crate::listener::canonical(src), crate::listener::canonical(dst));
+    if src.is_ipv4() == dst.is_ipv4() {
+        return (src, dst);
+    }
+    let mapped = |addr: SocketAddr| match addr.ip() {
+        IpAddr::V4(v4) => SocketAddr::new(IpAddr::V6(v4.to_ipv6_mapped()), addr.port()),
+        IpAddr::V6(_) => addr,
+    };
+    (mapped(src), mapped(dst))
+}
+
 fn build_v2(src: SocketAddr, dst: SocketAddr) -> Result<Vec<u8>, BoxError> {
     use ppp::v2::{Builder, Command, Protocol, Version};
+    let (src, dst) = same_family(src, dst);
     let addrs: ppp::v2::Addresses = (src, dst).into();
     Ok(Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addrs).build()?)
 }
 
 fn build_v1(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
+    let (src, dst) = same_family(src, dst);
     let proto = if src.is_ipv4() && dst.is_ipv4() {
         "TCP4"
     } else {

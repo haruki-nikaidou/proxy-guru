@@ -19,6 +19,10 @@ pub async fn run_tcp(
             accept = listener.accept() => match accept {
                 Ok((stream, peer)) => {
                     let cfg = cfg_rx.borrow().clone();
+                    // A dual-stack `[::]` listener reports IPv4 peers as
+                    // `::ffff:a.b.c.d`; every consumer (PROXY headers, ip_hash,
+                    // logs) wants the plain IPv4 address.
+                    let peer = canonical(peer);
                     tokio::spawn(crate::pipe::handle_tcp_connection(stream, peer, cfg));
                 }
                 Err(e) => {
@@ -69,7 +73,7 @@ async fn handle_quic_connection(incoming: quinn::Incoming, cfg: Arc<PreparedForw
             return;
         }
     };
-    let remote = conn.remote_address();
+    let remote = canonical(conn.remote_address());
     while let Ok((send, recv)) = conn.accept_bi().await {
         let joined = Box::new(tokio::io::join(recv, send));
         tokio::spawn(crate::pipe::handle_relay_quic_stream_logged(
@@ -78,6 +82,11 @@ async fn handle_quic_connection(incoming: quinn::Incoming, cfg: Arc<PreparedForw
             cfg.clone(),
         ));
     }
+}
+
+/// `::ffff:a.b.c.d` becomes `a.b.c.d`; anything else is returned unchanged.
+pub fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
 }
 
 /// Whether an address is the IPv6 wildcard `[::]`, which we bind dual-stack.
