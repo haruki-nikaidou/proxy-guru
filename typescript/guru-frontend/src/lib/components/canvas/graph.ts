@@ -378,3 +378,25 @@ export function buildBackendIndex(
 	}
 	return index;
 }
+
+/** Where suggested pod ports come from: the same high range the control plane
+ * uses for a server's default transport pods. */
+export const POD_PORT_RANGE: readonly [number, number] = [40000, 59999];
+
+/**
+ * A random port in [`POD_PORT_RANGE`] that no pod in `used` holds. Collisions
+ * with anything else on the host surface as an apply error on the pod, which is
+ * what the re-roll button is for.
+ */
+export function randomFreePort(used: Iterable<number>): number {
+	const taken = new Set(used);
+	const [low, high] = POD_PORT_RANGE;
+	const span = high - low + 1;
+	const buffer = new Uint32Array(1);
+	for (let attempt = 0; attempt < 64; attempt += 1) {
+		crypto.getRandomValues(buffer);
+		const port = low + ((buffer[0] ?? 0) % span);
+		if (!taken.has(port)) return port;
+	}
+	return low;
+}

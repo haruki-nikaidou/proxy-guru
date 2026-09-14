@@ -1,4 +1,5 @@
 <script lang="ts">
+import DicesIcon from '@lucide/svelte/icons/dices';
 import FileTextIcon from '@lucide/svelte/icons/file-text';
 import PlusIcon from '@lucide/svelte/icons/plus';
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
@@ -6,15 +7,18 @@ import { untrack } from 'svelte';
 import { toast } from 'svelte-sonner';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import {
-	addServerIpAddress,
 	createPodNode,
+	deleteServerNode,
 	forgetServerApplied,
 	getServerConfigToml,
 	getServerRollout,
-	removeServerIpAddress,
 	updateServerNode
 } from '#lib/components/canvas/commands.js';
-import { serverHealthBadge, serverHealthLabel } from '#lib/components/canvas/graph.js';
+import {
+	randomFreePort,
+	serverHealthBadge,
+	serverHealthLabel
+} from '#lib/components/canvas/graph.js';
 import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
@@ -32,6 +36,7 @@ import type { ConfigSnapshotDto, Ipv6ResolveName, ServerDto } from '#lib/dto/top
 import { errorMessage } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 import ServerPodRow from './ServerPodRow.svelte';
 
 let {
@@ -65,16 +70,25 @@ let icon = $state('');
 let comment = $state('');
 let ipv6Resolve = $state<Ipv6ResolveName>('tolerated');
 let logLevel = $state('info');
+// The two fixed address slots are learned from the worker; a pin overrides what
+// it reported. Extras are whatever else the operator wants pods to advertise.
+let pinV4 = $state('');
+let pinV6 = $state('');
+let extraAddresses = $state<string[]>([]);
+let newExtra = $state('');
 let pending = $state(false);
+let deleteOpen = $state(false);
 
-// Draft rows for the two "add" forms.
-let newIp = $state('');
-let newCountry = $state('');
+// Draft row for the "add pod" form.
 let newPodName = $state('');
-/** Empty until the operator picks one; resolved through `podIp` below. */
-let newPodIp = $state('');
+let newPodBind = $state('');
+let newPodAdvertise = $state('');
 // `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
-let newPodPort = $state('8080');
+let newPodPort = $state('');
+
+const rerollPort = () => {
+	newPodPort = String(randomFreePort(server.pods.map(pod => pod.port)));
+};
 
 let seededFor = $state('');
 $effect(() => {
@@ -87,22 +101,58 @@ $effect(() => {
 		comment = snapshot.comment;
 		ipv6Resolve = snapshot.ipv6Resolve;
 		logLevel = snapshot.logLevel;
-		newIp = '';
-		newCountry = '';
+		pinV4 = snapshot.addresses.v4.pinned;
+		pinV6 = snapshot.addresses.v6.pinned;
+		extraAddresses = [...snapshot.addresses.extra];
+		newExtra = '';
 		newPodName = '';
-		newPodIp = '';
-		newPodPort = '8080';
+		newPodBind = '';
+		newPodAdvertise = '';
+		rerollPort();
 	});
 });
 
-const addressOf = (id: string): string => server.ips.find(ip => ip.id === id)?.ip ?? id;
-
-// The draft pod always points at a real ip record: the operator's choice while it
-// still exists, otherwise the server's first address. Seeding this once would
-// leave the draft empty for a server whose first ip is added in this same sheet.
-const podIp = $derived(
-	server.ips.some(ip => ip.id === newPodIp) ? newPodIp : (server.ips[0]?.id ?? '')
+const addresses = $derived(server.addresses);
+/** Every address the server is known by, pinned values first, deduplicated. */
+const knownAddresses = $derived([
+	...new Set(
+		[
+			addresses.v4.pinned,
+			addresses.v4.reported,
+			addresses.v6.pinned,
+			addresses.v6.reported,
+			...addresses.extra,
+			addresses.observedAddress
+		].filter(value => value !== '')
+	)
+]);
+/** What a pod may bind: any address the host actually has, plus the extras. */
+const bindChoices = $derived([
+	...new Set([...addresses.reportedInterfaces, ...addresses.extra])
+]);
+const sourceLabel = $derived(
+	addresses.effectiveSource === 'override'
+		? m.editor_server_address_source_override()
+		: addresses.effectiveSource === 'reported'
+			? m.editor_server_address_source_reported()
+			: addresses.effectiveSource === 'observed'
+				? m.editor_server_address_source_observed()
+				: ''
 );
+const bindLabel = (value: string): string =>
+	value === '' ? m.editor_pod_bind_all() : value === '0.0.0.0' ? m.editor_pod_bind_v4() : value;
+const advertiseLabel = (value: string): string =>
+	value === '' ? m.editor_pod_advertise_auto() : value;
+
+const addExtra = () => {
+	const value = newExtra.trim();
+	if (value === '' || extraAddresses.includes(value)) return;
+	extraAddresses = [...extraAddresses, value];
+	newExtra = '';
+};
+const removeExtra = (value: string) => {
+	extraAddresses = extraAddresses.filter(entry => entry !== value);
+};
 
 /** Every mutation here reports the control plane's own text on failure. */
 async function run(action: () => Promise<unknown>, success: string) {
@@ -128,35 +178,39 @@ const save = () =>
 				icon,
 				comment,
 				ipv6Resolve,
-				logLevel
+				logLevel,
+				overrideV4: pinV4,
+				overrideV6: pinV6,
+				extraAddresses
 			}),
 		m.editor_saved()
 	);
 
-const addIp = () =>
-	run(async () => {
-		await addServerIpAddress({ canvasId, serverId: server.id, ip: newIp, country: newCountry });
-		newIp = '';
-		newCountry = '';
-	}, m.editor_saved());
-
-const removeIp = (ipRecordId: string) =>
-	run(() => removeServerIpAddress({ canvasId, ipRecordId }), m.editor_deleted());
-
-// A pod only exists against one of this server's ip records, so pods are created
-// here. Their stored position is unused: they render inside the server node.
+// A pod is placed on exactly one server, so pods are created here. Their stored
+// position is unused: they render inside the server node.
 const addPod = () =>
 	run(async () => {
 		await createPodNode({
 			canvasId,
 			name: newPodName,
-			ipRecordId: podIp,
+			serverId: server.id,
 			port: Number(newPodPort),
+			bindIp: newPodBind,
+			advertiseIp: newPodAdvertise,
 			x: server.x,
 			y: server.y
 		});
 		newPodName = '';
+		rerollPort();
 	}, m.editor_saved());
+
+// The command retires the server's pods first; the panel closes on its own once
+// the refreshed graph no longer holds the server.
+const removeServer = () =>
+	run(async () => {
+		await deleteServerNode({ canvasId, serverId: server.id, force: false });
+		deleteOpen = false;
+	}, m.editor_deleted());
 
 // The panel is only mounted while it is open for this server, so the rollout is
 // fetched exactly then; a different target re-runs the query through its arg.
@@ -283,6 +337,7 @@ const forget = () =>
 				</Select.Group>
 			</Select.Content>
 		</Select.Root>
+		<Field.FieldDescription>{m.editor_server_ipv6_hint()}</Field.FieldDescription>
 	</Field.Field>
 
 	<Field.Field>
@@ -291,27 +346,63 @@ const forget = () =>
 	</Field.Field>
 </Field.FieldGroup>
 
-<Button class="mt-4 w-full" disabled={!editable || pending} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
-	{m.common_save()}
-</Button>
-
 <Separator class="my-6" />
 
-<h3 class="text-sm font-medium">{m.editor_server_ips()}</h3>
-{#if server.ips.length === 0}
-	<p class="mt-2 text-sm text-muted-foreground">{m.editor_server_no_ips()}</p>
-{:else}
-	<ul class="mt-2 grid gap-2">
-		{#each server.ips as ip (ip.id)}
+<h3 class="text-sm font-medium">{m.editor_server_addresses()}</h3>
+<p class="mt-1 text-sm">
+	<span class="text-muted-foreground">{m.editor_server_address_effective()}:</span>
+	{#if addresses.effectiveAddress}
+		<span class="font-mono">{addresses.effectiveAddress}</span>
+		<Badge variant="outline" class="ms-1">{sourceLabel}</Badge>
+	{:else}
+		<span class="text-muted-foreground">{m.editor_server_address_none()}</span>
+	{/if}
+</p>
+
+<div class="mt-3 grid gap-3">
+	<Field.Field>
+		<Field.FieldLabel for="server-address-v4">{m.editor_server_address_v4()}</Field.FieldLabel>
+		<Input
+			id="server-address-v4"
+			class="font-mono"
+			placeholder={m.editor_server_address_pin()}
+			bind:value={pinV4}
+			disabled={!editable}
+		/>
+		<Field.FieldDescription class="font-mono">
+			{addresses.v4.reported
+				? `${m.editor_server_address_reported()}: ${addresses.v4.reported}`
+				: m.editor_server_address_unreported()}
+		</Field.FieldDescription>
+	</Field.Field>
+	<Field.Field>
+		<Field.FieldLabel for="server-address-v6">{m.editor_server_address_v6()}</Field.FieldLabel>
+		<Input
+			id="server-address-v6"
+			class="font-mono"
+			placeholder={m.editor_server_address_pin()}
+			bind:value={pinV6}
+			disabled={!editable}
+		/>
+		<Field.FieldDescription class="font-mono">
+			{addresses.v6.reported
+				? `${m.editor_server_address_reported()}: ${addresses.v6.reported}`
+				: m.editor_server_address_unreported()}
+		</Field.FieldDescription>
+	</Field.Field>
+</div>
+
+<h4 class="mt-4 text-xs font-medium text-muted-foreground">{m.editor_server_address_extra()}</h4>
+{#if extraAddresses.length > 0}
+	<ul class="mt-1 grid gap-1">
+		{#each extraAddresses as extra (extra)}
 			<li class="flex items-center gap-2 text-sm">
-				<span class="flex-1 font-mono">{ip.ip}</span>
-				<span class="text-muted-foreground">{ip.country}</span>
+				<span class="flex-1 font-mono">{extra}</span>
 				<Button
 					size="sm"
 					variant="ghost"
 					disabled={!editable || pending}
-					onclick={() => removeIp(ip.id)}
+					onclick={() => removeExtra(extra)}
 					aria-label={m.common_delete()}
 				>
 					<Trash2Icon />
@@ -320,25 +411,61 @@ const forget = () =>
 		{/each}
 	</ul>
 {/if}
-
-<div class="mt-3 flex items-end gap-2">
-	<Input placeholder={m.editor_server_ip()} bind:value={newIp} disabled={!editable} />
+<div class="mt-2 flex items-end gap-2">
 	<Input
-		placeholder={m.editor_server_country()}
-		class="w-24"
-		bind:value={newCountry}
+		class="font-mono"
+		placeholder={m.editor_server_address_add()}
+		bind:value={newExtra}
 		disabled={!editable}
+		onkeydown={event => {
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				addExtra();
+			}
+		}}
 	/>
 	<Button
 		size="sm"
 		variant="secondary"
-		disabled={!editable || pending || newIp.trim() === ''}
-		onclick={addIp}
+		disabled={!editable || newExtra.trim() === ''}
+		onclick={addExtra}
 	>
 		<PlusIcon />
-		{m.editor_server_add_ip()}
+		{m.editor_server_address_add()}
 	</Button>
 </div>
+
+{#if addresses.observedAddress || addresses.reportedInterfaces.length > 0}
+	<div class="mt-3 grid gap-1 text-xs text-muted-foreground">
+		{#if addresses.observedAddress}
+			<p>
+				{m.editor_server_address_observed()}:
+				<span class="font-mono">{addresses.observedAddress}</span>
+				· {formatTimestamp(addresses.observedAt)}
+			</p>
+		{/if}
+		{#if addresses.reportedInterfaces.length > 0}
+			<p>
+				{m.editor_server_address_interfaces()}:
+				<span class="font-mono">{addresses.reportedInterfaces.join(', ')}</span>
+			</p>
+		{/if}
+	</div>
+{/if}
+
+<Button class="mt-4 w-full" disabled={!editable || pending} onclick={save}>
+	{#if pending}<Spinner data-icon="inline-start" />{/if}
+	{m.common_save()}
+</Button>
+<Button
+	class="mt-2 w-full"
+	variant="outline"
+	disabled={!editable || pending}
+	onclick={() => (deleteOpen = true)}
+>
+	<Trash2Icon />
+	{m.editor_server_delete()}
+</Button>
 
 <Separator class="my-6" />
 
@@ -348,31 +475,25 @@ const forget = () =>
 {:else}
 	<div class="mt-2 grid gap-4">
 		{#each server.pods as pod (pod.id)}
-			<ServerPodRow {canvasId} {pod} ips={server.ips} {editable} />
+			<ServerPodRow
+				{canvasId}
+				{pod}
+				{bindChoices}
+				advertiseChoices={knownAddresses}
+				{editable}
+			/>
 		{/each}
 	</div>
 {/if}
 
 <div class="mt-4 grid gap-2">
-	<Input placeholder={m.editor_node_name()} bind:value={newPodName} disabled={!editable} />
 	<div class="flex gap-2">
-		<Select.Root
-			type="single"
-			value={podIp}
-			disabled={!editable || server.ips.length === 0}
-			onValueChange={next => (newPodIp = next)}
-		>
-			<Select.Trigger class="flex-1">
-				{podIp ? addressOf(podIp) : m.editor_server_ip()}
-			</Select.Trigger>
-			<Select.Content>
-				<Select.Group>
-					{#each server.ips as ip (ip.id)}
-						<Select.Item value={ip.id} label={ip.ip}>{ip.ip}</Select.Item>
-					{/each}
-				</Select.Group>
-			</Select.Content>
-		</Select.Root>
+		<Input
+			class="flex-1"
+			placeholder={m.editor_node_name()}
+			bind:value={newPodName}
+			disabled={!editable}
+		/>
 		<Input
 			type="number"
 			min={1}
@@ -383,9 +504,59 @@ const forget = () =>
 			aria-label={m.editor_pod_port()}
 		/>
 		<Button
+			size="icon-sm"
+			variant="ghost"
+			disabled={!editable}
+			onclick={rerollPort}
+			aria-label={m.editor_pod_port_reroll()}
+			title={m.editor_pod_port_reroll()}
+		>
+			<DicesIcon />
+		</Button>
+	</div>
+	<div class="flex gap-2">
+		<Select.Root
+			type="single"
+			value={newPodBind}
+			disabled={!editable}
+			onValueChange={next => (newPodBind = next)}
+		>
+			<Select.Trigger class="flex-1" aria-label={m.editor_pod_bind()}>
+				{bindLabel(newPodBind)}
+			</Select.Trigger>
+			<Select.Content>
+				<Select.Group>
+					<Select.GroupHeading>{m.editor_pod_bind()}</Select.GroupHeading>
+					{#each ['', '0.0.0.0', ...bindChoices] as option (option)}
+						<Select.Item value={option} label={bindLabel(option)}>{bindLabel(option)}</Select.Item>
+					{/each}
+				</Select.Group>
+			</Select.Content>
+		</Select.Root>
+		<Select.Root
+			type="single"
+			value={newPodAdvertise}
+			disabled={!editable}
+			onValueChange={next => (newPodAdvertise = next)}
+		>
+			<Select.Trigger class="flex-1" aria-label={m.editor_pod_advertise()}>
+				{advertiseLabel(newPodAdvertise)}
+			</Select.Trigger>
+			<Select.Content>
+				<Select.Group>
+					<Select.GroupHeading>{m.editor_pod_advertise()}</Select.GroupHeading>
+					{#each ['', ...knownAddresses] as option (option)}
+						<Select.Item value={option} label={advertiseLabel(option)}>
+							{advertiseLabel(option)}
+						</Select.Item>
+					{/each}
+				</Select.Group>
+			</Select.Content>
+		</Select.Root>
+		<Button
 			size="sm"
 			variant="secondary"
-			disabled={!editable || pending || newPodName.trim() === '' || podIp === ''}
+			disabled={!editable || pending || newPodName.trim() === '' || newPodPort === ''}
 			onclick={addPod}
 		>
 			<PlusIcon />
@@ -393,6 +564,14 @@ const forget = () =>
 		</Button>
 	</div>
 </div>
+
+<ConfirmDeleteDialog
+	bind:open={deleteOpen}
+	title={m.editor_server_delete()}
+	description={m.editor_server_delete_description({ name: server.name, count: server.pods.length })}
+	{pending}
+	onconfirm={removeServer}
+/>
 
 <Separator class="my-6" />
 

@@ -40,8 +40,9 @@ const silent = $derived(
 			: ''
 );
 
-const addressOf = (ipRecordId: string): string =>
-	data.server.ips.find(ip => ip.id === ipRecordId)?.ip ?? '?';
+/** `[::]:port` for a wildcard bind, `[v6]:port` for a literal IPv6. */
+const listenOf = (bindIp: string | null, port: number): string =>
+	bindIp === null ? `[::]:${port}` : bindIp.includes(':') ? `[${bindIp}]:${port}` : `${bindIp}:${port}`;
 </script>
 
 <NodeShell
@@ -65,9 +66,11 @@ const addressOf = (ipRecordId: string): string =>
 			{serverHealthLabel(data.server.healthStatus)}
 		</Badge>
 	{/snippet}
-	<p class="px-3 pt-1 text-xs text-muted-foreground">
-		{data.server.logLevel} · {ipv6} · {data.server.ips.length}
-		{m.editor_server_ips()}
+	<p class="truncate px-3 pt-1 text-xs text-muted-foreground">
+		{data.server.logLevel} · {ipv6} ·
+		<span class="font-mono">
+			{data.server.addresses.effectiveAddress || m.editor_server_address_none_short()}
+		</span>
 	</p>
 	<p class="px-3 text-xs text-muted-foreground">
 		{m.editor_server_last_seen()}: {formatTimestamp(data.server.lastSeenAt)}{silent
@@ -83,7 +86,7 @@ const addressOf = (ipRecordId: string): string =>
 				<p class="truncate px-3 text-xs font-medium">
 					{pod.name}
 					<span class="font-mono text-muted-foreground">
-						{addressOf(pod.ipRecordId)}:{pod.port}
+						{listenOf(pod.bindIp, pod.port)}
 					</span>
 				</p>
 				{#each pod.ports as port (port.id)}

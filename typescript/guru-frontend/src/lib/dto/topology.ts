@@ -106,11 +106,29 @@ export type PodDto = {
 	id: string;
 	name: string;
 	comment: string;
-	ipRecordId: string;
+	serverId: string;
 	port: number;
+	/** `null` binds every address of the host (dual-stack). */
+	bindIp: string | null;
+	/** `null` means the server's effective address. */
+	advertiseIp: string | null;
 	ports: CanvasPort[];
 };
-export type ServerIpDto = { id: string; ip: string; country: string };
+/** One of the two fixed address slots of a server; empty strings mean unset. */
+export type AddressSlotDto = { reported: string; pinned: string };
+export type AddressSourceName = 'override' | 'reported' | 'observed' | 'none';
+export type ServerAddressesDto = {
+	v4: AddressSlotDto;
+	v6: AddressSlotDto;
+	extra: string[];
+	reportedInterfaces: string[];
+	reportedAt: string;
+	observedAddress: string;
+	observedAt: string;
+	/** What other servers dial by default; empty when nothing is known yet. */
+	effectiveAddress: string;
+	effectiveSource: AddressSourceName;
+};
 /**
  * How the control plane last judged a worker. `unknown` covers both "never
  * reported" and an enum value this build does not know.
@@ -127,12 +145,12 @@ export type ServerDto = {
 	logLevel: string;
 	lastSeenAt: string;
 	healthStatus: ServerHealthStatusName;
-	ips: ServerIpDto[];
+	addresses: ServerAddressesDto;
 	pods: PodDto[];
 };
 
-/** One listener a forwarding either serves or points at. */
-export type ListenerCapDto = { ip: string; port: number; protocol: string };
+/** One listener a forwarding either serves or points at, by its server. */
+export type ListenerCapDto = { serverId: string; port: number; protocol: string };
 export type ForwardingDepsDto = {
 	/** Absent when the forwarding serves nothing (a pure outbound hop). */
 	serves: ListenerCapDto | null;
@@ -182,7 +200,7 @@ export type CanvasGraph = {
 	nodes: StandaloneNode[];
 	edges: CanvasEdgeDto[];
 	problems: TopologyProblem[];
-	/** Pods whose `ipRecordId` resolves to no server ip on this canvas. */
+	/** Pods placed on a server that is not on this canvas. */
 	orphanPods: PodDto[];
 	/** Root first, parent last; empty when this canvas is a root. */
 	ancestors: CanvasOption[];

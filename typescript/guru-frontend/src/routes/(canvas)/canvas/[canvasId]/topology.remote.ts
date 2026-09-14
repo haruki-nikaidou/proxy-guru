@@ -2,9 +2,12 @@ import type {
 	CanvasTreeNode as ProtoCanvasTreeNode,
 	ConfigSnapshot as ProtoConfigSnapshot,
 	Node as ProtoNode,
-	Server as ProtoServer
+	PodConfig as ProtoPodConfig,
+	Server as ProtoServer,
+	ServerAddresses as ProtoServerAddresses
 } from 'app-protobuf/orchestration/orchestration';
 import {
+	AddressSource,
 	CanvasExportAs,
 	Ipv6Resolve,
 	LoadBalanceMode,
@@ -19,6 +22,7 @@ import {
 import * as v from 'valibot';
 import type { CanvasOption } from '#lib/dto/canvas.js';
 import type {
+	AddressSourceName,
 	CanvasExportAsName,
 	CanvasGraph,
 	CanvasPort,
@@ -32,6 +36,7 @@ import type {
 	RelayProtocolName,
 	ServerConfigTomlDto,
 	ServerDto,
+	ServerAddressesDto,
 	ServerHealthStatusName,
 	ServerRolloutDto,
 	StandaloneNode,
@@ -72,7 +77,19 @@ const memberCountSchema = v.pipe(
 	v.minValue(2, 'member_count_out_of_range'),
 	v.maxValue(256, 'member_count_out_of_range')
 );
-const ipSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'ip_required'));
+/** An optional IP literal: empty means unset. */
+const optionalIpSchema = v.optional(
+	v.pipe(
+		v.string(),
+		v.trim(),
+		v.check(value => value === '' || v.safeParse(v.pipe(v.string(), v.ip()), value).success, 'ip_invalid')
+	),
+	''
+);
+const extraAddressesSchema = v.optional(
+	v.array(v.pipe(v.string(), v.trim(), v.ip('ip_invalid'))),
+	[]
+);
 const logLevelSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'log_level_required'));
 const proxySchema = v.picklist(['none', 'v1', 'v2'] as const);
 const relayProtocolSchema = v.picklist(['tcp_raw', 'tcp_tls', 'quic'] as const);
@@ -255,13 +272,40 @@ function toProblem(problem: {
 	};
 }
 
-const toPod = (node: ProtoNode, ipRecordId: string, port: number): PodDto => ({
+const toPod = (node: ProtoNode, pod: ProtoPodConfig): PodDto => ({
 	id: node.id,
 	name: node.name,
 	comment: node.comment,
-	ipRecordId,
-	port,
+	serverId: pod.serverId,
+	port: pod.port,
+	bindIp: pod.bindIp === '' ? null : pod.bindIp,
+	advertiseIp: pod.advertiseIp === '' ? null : pod.advertiseIp,
 	ports: toPorts(node, NO_LABELS)
+});
+
+const toAddressSource = (value: AddressSource): AddressSourceName => {
+	switch (value) {
+		case AddressSource.ADDRESS_OVERRIDE:
+			return 'override';
+		case AddressSource.ADDRESS_REPORTED:
+			return 'reported';
+		case AddressSource.ADDRESS_OBSERVED:
+			return 'observed';
+		default:
+			return 'none';
+	}
+};
+
+const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddressesDto => ({
+	v4: { reported: addresses?.v4?.reported ?? '', pinned: addresses?.v4?.pinned ?? '' },
+	v6: { reported: addresses?.v6?.reported ?? '', pinned: addresses?.v6?.pinned ?? '' },
+	extra: addresses?.extra ?? [],
+	reportedInterfaces: addresses?.reportedInterfaces ?? [],
+	reportedAt: addresses?.reportedAt ?? '',
+	observedAddress: addresses?.observedAddress ?? '',
+	observedAt: addresses?.observedAt ?? '',
+	effectiveAddress: addresses?.effectiveAddress ?? '',
+	effectiveSource: toAddressSource(addresses?.effectiveSource ?? AddressSource.UNSPECIFIED)
 });
 
 /**
@@ -368,7 +412,7 @@ const toServer = (server: ProtoServer, pods: PodDto[]): ServerDto => ({
 	logLevel: server.logLevel,
 	lastSeenAt: server.lastSeenAt,
 	healthStatus: toServerHealth(server.healthStatus),
-	ips: server.ips.map(ip => ({ id: ip.id, ip: ip.ip, country: ip.country })),
+	addresses: toAddresses(server.addresses),
 	pods
 });
 
@@ -384,11 +428,9 @@ export const getCanvasGraph = query(
 			])
 		);
 
-		// A pod binds to a server through its ip record; `Server.ips` comes inline.
-		const serverByIpRecord = new Map<string, string>();
-		for (const server of detail.servers) {
-			for (const ip of server.ips) serverByIpRecord.set(ip.id, server.id);
-		}
+		// A pod is placed on a server directly; one on a server of another canvas
+		// in the tree is an orphan here.
+		const serverIds = new Set(detail.servers.map(server => server.id));
 
 		// An import node's ports are keyed by the record id of the export node
 		// they mirror, which is unreadable on screen: the names live on the target
@@ -425,15 +467,14 @@ export const getCanvasGraph = query(
 		for (const node of detail.nodes) {
 			const pod = node.spec?.pod;
 			if (pod) {
-				const dto = toPod(node, pod.ipRecordId, pod.port);
-				const serverId = serverByIpRecord.get(pod.ipRecordId);
-				if (serverId === undefined) {
+				const dto = toPod(node, pod);
+				if (!serverIds.has(pod.serverId)) {
 					orphanPods.push(dto);
 					continue;
 				}
-				const bucket = podsByServer.get(serverId);
+				const bucket = podsByServer.get(pod.serverId);
 				if (bucket) bucket.push(dto);
-				else podsByServer.set(serverId, [dto]);
+				else podsByServer.set(pod.serverId, [dto]);
 				continue;
 			}
 			const target = node.spec?.canvasImport?.canvasId;
@@ -481,7 +522,10 @@ export const createServerNode = command(
 					comment: '',
 					position: { x, y },
 					ipv6Resolve: Ipv6Resolve.IPV6_TOLERATED,
-					logLevel: 'info'
+					logLevel: 'info',
+					overrideV4: '',
+					overrideV6: '',
+					extraAddresses: []
 				},
 				{ metadata }
 			)
@@ -499,13 +543,37 @@ export const updateServerNode = command(
 		icon: v.optional(v.string(), ''),
 		comment: commentSchema,
 		ipv6Resolve: ipv6Schema,
-		logLevel: logLevelSchema
+		logLevel: logLevelSchema,
+		overrideV4: optionalIpSchema,
+		overrideV6: optionalIpSchema,
+		extraAddresses: extraAddressesSchema
 	}),
-	async ({ canvasId, serverId, name, icon, comment, ipv6Resolve, logLevel }) => {
+	async ({
+		canvasId,
+		serverId,
+		name,
+		icon,
+		comment,
+		ipv6Resolve,
+		logLevel,
+		overrideV4,
+		overrideV6,
+		extraAddresses
+	}) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
 			orchestrationClient().updateServer(
-				{ serverId, name, icon, comment, ipv6Resolve: fromIpv6(ipv6Resolve), logLevel },
+				{
+					serverId,
+					name,
+					icon,
+					comment,
+					ipv6Resolve: fromIpv6(ipv6Resolve),
+					logLevel,
+					overrideV4,
+					overrideV6,
+					extraAddresses
+				},
 				{ metadata }
 			)
 		);
@@ -534,18 +602,15 @@ export const deleteServerNode = command(
 	}),
 	async ({ canvasId, serverId, force }) => {
 		const metadata = sessionMetadata(requireSessionId());
-		// `DeleteServer` refuses while any pod still points at one of its ips, so the
-		// pods go first. The list is re-read here rather than taken from the client:
-		// a pod added since the last refresh would otherwise block the delete.
+		// `DeleteServer` refuses while any pod is still placed on it, so the pods go
+		// first. The list is re-read here rather than taken from the client: a pod
+		// added since the last refresh would otherwise block the delete.
 		const detail = await callGrpc(() =>
 			orchestrationClient().getCanvas({ canvasId }, { metadata })
 		);
-		const ownIps = new Set(
-			detail.servers.find(server => server.id === serverId)?.ips.map(ip => ip.id) ?? []
-		);
 		for (const node of detail.nodes) {
 			const pod = node.spec?.pod;
-			if (!pod || !ownIps.has(pod.ipRecordId)) continue;
+			if (!pod || pod.serverId !== serverId) continue;
 			const nodeId = node.id;
 			await callGrpc(() =>
 				force
@@ -554,33 +619,6 @@ export const deleteServerNode = command(
 			);
 		}
 		await callGrpc(() => orchestrationClient().deleteServer({ serverId }, { metadata }));
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
-);
-
-export const addServerIpAddress = command(
-	v.object({
-		canvasId: idSchema,
-		serverId: idSchema,
-		ip: ipSchema,
-		country: v.optional(v.pipe(v.string(), v.trim()), '')
-	}),
-	async ({ canvasId, serverId, ip, country }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().addServerIp({ serverId, ip, country }, { metadata })
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
-);
-
-export const removeServerIpAddress = command(
-	v.object({ canvasId: idSchema, ipRecordId: idSchema }),
-	async ({ canvasId, ipRecordId }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() => orchestrationClient().removeServerIp({ ipRecordId }, { metadata }));
 		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };
 	}
@@ -596,13 +634,13 @@ const toSnapshot = (snapshot: ProtoConfigSnapshot | undefined): ConfigSnapshotDt
 				forwardings: snapshot.forwardings.map(forwarding => ({
 					serves: forwarding.serves
 						? {
-								ip: forwarding.serves.ip,
+								serverId: forwarding.serves.serverId,
 								port: forwarding.serves.port,
 								protocol: forwarding.serves.protocol
 							}
 						: null,
 					pointsAt: forwarding.pointsAt.map(cap => ({
-						ip: cap.ip,
+						serverId: cap.serverId,
 						port: cap.port,
 						protocol: cap.protocol
 					}))
@@ -959,12 +997,14 @@ export const createPodNode = command(
 	v.object({
 		canvasId: idSchema,
 		name: nameSchema,
-		ipRecordId: idSchema,
+		serverId: idSchema,
 		port: portSchema,
+		bindIp: optionalIpSchema,
+		advertiseIp: optionalIpSchema,
 		x: coordSchema,
 		y: coordSchema
 	}),
-	async ({ canvasId, name, ipRecordId, port, x, y }) => {
+	async ({ canvasId, name, serverId, port, bindIp, advertiseIp, x, y }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
 			orchestrationClient().createNode(
@@ -972,7 +1012,7 @@ export const createPodNode = command(
 					canvasId,
 					name,
 					comment: '',
-					spec: { pod: { ipRecordId, port } },
+					spec: { pod: { serverId, port, bindIp, advertiseIp } },
 					position: { x, y },
 					itemCount: 0
 				},
@@ -1156,14 +1196,16 @@ export const replacePodSpec = command(
 	v.object({
 		canvasId: idSchema,
 		nodeId: idSchema,
-		ipRecordId: idSchema,
-		port: portSchema
+		serverId: idSchema,
+		port: portSchema,
+		bindIp: optionalIpSchema,
+		advertiseIp: optionalIpSchema
 	}),
-	async ({ canvasId, nodeId, ipRecordId, port }) => {
+	async ({ canvasId, nodeId, serverId, port, bindIp, advertiseIp }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
 			orchestrationClient().replaceNodeSpec(
-				{ nodeId, spec: { pod: { ipRecordId, port } }, itemCount: 0 },
+				{ nodeId, spec: { pod: { serverId, port, bindIp, advertiseIp } }, itemCount: 0 },
 				{ metadata }
 			)
 		);
