@@ -41,6 +41,7 @@ fn reported_from_proto(reported: pb::ReportedAddresses) -> ReportedAddresses {
         public_v4: non_empty(reported.public_v4),
         public_v6: non_empty(reported.public_v6),
         interfaces: reported.interfaces,
+        country: non_empty(reported.country),
         reported_at: chrono::Utc::now(),
     }
 }

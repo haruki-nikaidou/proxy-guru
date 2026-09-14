@@ -82,6 +82,9 @@ while the last acknowledged revision failed for any pod. The named values are ke
 | `--api-key-file` | `GURU_API_KEY_FILE` | — (alternative to `GURU_API_KEY`) |
 | `--state-dir` | `GURU_STATE_DIR` | `/var/lib/guru-worker` |
 | `--health-interval` | `GURU_HEALTH_INTERVAL_SECS` | `15` (seconds between health reports; agent mode; must be ≥ 1) |
+| `--public-ipv4-urls` | `GURU_PUBLIC_IPV4_URLS` | `https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com` (agent mode; comma-separated providers answering with the caller's IPv4 as text, walked from a rotating start, 3 s each; re-checked every 60 s and reported on change; empty disables the lookup, interface addresses are still reported) |
+| `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip` (the same for IPv6) |
+| `--geo-url` | `GURU_GEO_URL` | `https://ipinfo.io/country` (agent mode; answers with the two-letter country of the public address, shown next to the server; empty disables it) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
@@ -283,7 +286,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs` |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it) |
 
 Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do

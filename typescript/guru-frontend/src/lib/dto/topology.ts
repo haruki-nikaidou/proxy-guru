@@ -128,6 +128,8 @@ export type ServerAddressesDto = {
 	/** What other servers dial by default; empty when nothing is known yet. */
 	effectiveAddress: string;
 	effectiveSource: AddressSourceName;
+	/** ISO 3166-1 alpha-2 of the public address, as the worker reported it. */
+	reportedCountry: string;
 };
 /**
  * How the control plane last judged a worker. `unknown` covers both "never

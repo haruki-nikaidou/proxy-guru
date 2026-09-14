@@ -5,7 +5,7 @@
 //! restart always produces a fresh registration and the master can tell it was down.
 
 use crate::BoxError;
-use crate::addresses::{self, Discovered};
+use crate::addresses::{self, Discovered, Sources};
 use crate::certs;
 use crate::state::{self, LastKnownGood};
 use crate::supervisor::{ApplyOutcome, Supervisor};
@@ -37,8 +37,8 @@ pub struct AgentOptions {
     /// Time between two health reports when the master's register reply does not
     /// dictate one.
     pub health_interval: Duration,
-    /// Comma-separated URLs that report this host's public IP; empty disables it.
-    pub public_ip_urls: String,
+    /// Where the worker learns its own public addresses and country.
+    pub sources: Sources,
 }
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
@@ -110,10 +110,11 @@ async fn session(
     let running_revision = opts.applied_revision.load(Ordering::Relaxed);
     // Best effort and time-bounded: a slow or failed lookup cannot delay the
     // session past `addresses::LOOKUP_TIMEOUT`.
-    let discovered = addresses::discover(&opts.public_ip_urls).await;
+    let discovered = addresses::discover(&opts.sources).await;
     tracing::info!(
         public_v4 = ?discovered.public_v4,
         public_v6 = ?discovered.public_v6,
+        country = ?discovered.country,
         interfaces = discovered.interfaces.len(),
         "discovered own addresses"
     );
@@ -157,7 +158,7 @@ async fn session(
         health_interval,
         sup.clone(),
         opts.applied_revision.clone(),
-        opts.public_ip_urls.clone(),
+        opts.sources.clone(),
         discovered,
         health_token,
     ));
@@ -306,7 +307,7 @@ async fn report_health(
     interval: Duration,
     sup: Arc<Mutex<Supervisor>>,
     applied_revision: Arc<AtomicI64>,
-    public_ip_urls: String,
+    sources: Sources,
     mut last_addresses: Discovered,
     token: CancellationToken,
 ) -> Result<(), BoxError> {
@@ -333,7 +334,7 @@ async fn report_health(
                 return Err("master closed the health stream".into());
             }
             _ = address_ticker.tick() => {
-                let discovered = addresses::discover(&public_ip_urls).await;
+                let discovered = addresses::discover(&sources).await;
                 if discovered != last_addresses {
                     pending_addresses = Some(discovered.to_proto());
                     last_addresses = discovered;

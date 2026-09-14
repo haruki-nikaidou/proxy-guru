@@ -125,6 +125,16 @@ a confirmation, since it declares the server dead while it may still be serving.
 
 ## Forwarding shapes
 
+## Listener identity
+
+Convergence matches listeners by `(server, port, protocol)`, never by address. A server's
+addresses are learned from its worker (or pinned by an operator) and only decide what a relay
+*dials*; changing one re-derives every destination that points at the server without touching
+the seamless-switch protocol, because the listener the dependants reference did not change. A
+per-pod derivation failure names the pod's listener as `bind:port` (`[::]:port` for a wildcard
+bind), and a relay whose target server has no known address yet is reported there as
+`server … has no address yet`.
+
 Each forwarding pairs a listener with a destination:
 
 - **Listener** — `raw`, `tls`, or an inbound relay.

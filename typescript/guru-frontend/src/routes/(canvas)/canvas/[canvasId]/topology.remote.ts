@@ -305,7 +305,8 @@ const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddress
 	observedAddress: addresses?.observedAddress ?? '',
 	observedAt: addresses?.observedAt ?? '',
 	effectiveAddress: addresses?.effectiveAddress ?? '',
-	effectiveSource: toAddressSource(addresses?.effectiveSource ?? AddressSource.UNSPECIFIED)
+	effectiveSource: toAddressSource(addresses?.effectiveSource ?? AddressSource.UNSPECIFIED),
+	reportedCountry: addresses?.reportedCountry ?? ''
 });
 
 /**

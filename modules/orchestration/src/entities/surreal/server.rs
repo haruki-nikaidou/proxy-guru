@@ -64,6 +64,10 @@ pub struct ReportedAddresses {
     pub public_v4: Option<String>,
     pub public_v6: Option<String>,
     pub interfaces: Vec<String>,
+    /// ISO 3166-1 alpha-2 country of the public address, when the worker could
+    /// look it up.
+    #[surreal(default)]
+    pub country: Option<String>,
     pub reported_at: DateTime<Utc>,
 }
 
@@ -73,6 +77,7 @@ impl ReportedAddresses {
         self.public_v4 == other.public_v4
             && self.public_v6 == other.public_v6
             && self.interfaces == other.interfaces
+            && self.country == other.country
     }
 }
 

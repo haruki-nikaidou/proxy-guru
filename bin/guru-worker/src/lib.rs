@@ -187,7 +187,11 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
             state_dir: cli.state_dir.clone(),
             applied_revision,
             health_interval: std::time::Duration::from_secs(cli.health_interval),
-            public_ip_urls: cli.public_ip_urls.clone(),
+            sources: addresses::Sources {
+                ipv4_urls: cli.public_ipv4_urls.clone(),
+                ipv6_urls: cli.public_ipv6_urls.clone(),
+                geo_url: cli.geo_url.clone(),
+            },
         },
         sup.clone(),
         shutdown.clone(),

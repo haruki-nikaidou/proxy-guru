@@ -354,6 +354,9 @@ const forget = () =>
 	{#if addresses.effectiveAddress}
 		<span class="font-mono">{addresses.effectiveAddress}</span>
 		<Badge variant="outline" class="ms-1">{sourceLabel}</Badge>
+		{#if addresses.reportedCountry}
+			<Badge variant="secondary" class="ms-1 font-mono">{addresses.reportedCountry}</Badge>
+		{/if}
 	{:else}
 		<span class="text-muted-foreground">{m.editor_server_address_none()}</span>
 	{/if}

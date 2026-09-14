@@ -8,7 +8,8 @@ LET $m = (UPDATE $server SET reported_addresses = $reported
         AND (reported_addresses == NONE
             OR reported_addresses.public_v4 != $reported.public_v4
             OR reported_addresses.public_v6 != $reported.public_v6
-            OR reported_addresses.interfaces != $reported.interfaces)
+            OR reported_addresses.interfaces != $reported.interfaces
+            OR reported_addresses.country != $reported.country)
     RETURN AFTER);
 IF array::len($m) > 0 { fn::orchestration_touch($canvas); };
 RETURN array::len($m) > 0;

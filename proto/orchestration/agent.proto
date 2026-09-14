@@ -24,6 +24,8 @@ message ReportedAddresses {
   string public_v6 = 2;
   // Non-loopback, non-link-local interface addresses, sorted and deduplicated.
   repeated string interfaces = 3;
+  // ISO 3166-1 alpha-2 country of the public address, from `--geo-url`.
+  string country = 4;
 }
 message RegisterRequest {
   string server_id = 1;

@@ -42,6 +42,21 @@ Each forwarding has a **listener** and a **destination**.
 
 PROXY protocol v1 and v2 are supported on both ends.
 
+### Servers, pods and addresses
+
+A **server** is a machine running `guru-worker`. A **pod** is one listening port on one server —
+one rule's socket. Every server starts with four pods named `tcp`, `tls`, `ws` and `quic`, each on
+a random port above 40000: these are where relays from other servers land, so "relay over QUIC to
+that server" is drawn by connecting to its `quic` pod. Your own ingress rules are pods you add
+(say, `1080` for a SOCKS entry). A pod binds every address of the host by default; it can be
+restricted to IPv4 or pinned to one interface.
+
+Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
+it registers (and every minute after, if they change), the master remembers where the registration
+came from, and other servers dial whatever that yields — IPv4 first. Pin an address on the server
+only when the learned one is wrong for your network (NAT, an overlay), or on a single pod when
+that pod should be reached differently.
+
 ## Modules
 
 Business logic lives in `modules/`, one crate per feature:

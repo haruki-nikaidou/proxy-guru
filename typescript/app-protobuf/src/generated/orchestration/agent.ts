@@ -20,6 +20,8 @@ export interface ReportedAddresses {
   publicV6: string;
   /** Non-loopback, non-link-local interface addresses, sorted and deduplicated. */
   interfaces: string[];
+  /** ISO 3166-1 alpha-2 country of the public address, from `--geo-url`. */
+  country: string;
 }
 
 export interface RegisterRequest {
@@ -101,7 +103,7 @@ export interface ReportHealthReply {
 }
 
 function createBaseReportedAddresses(): ReportedAddresses {
-  return { publicV4: "", publicV6: "", interfaces: [] };
+  return { publicV4: "", publicV6: "", interfaces: [], country: "" };
 }
 
 export const ReportedAddresses: MessageFns<ReportedAddresses> = {
@@ -114,6 +116,9 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
     }
     for (const v of message.interfaces) {
       writer.uint32(26).string(v!);
+    }
+    if (message.country !== "") {
+      writer.uint32(34).string(message.country);
     }
     return writer;
   },
@@ -149,6 +154,14 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
           message.interfaces.push(reader.string());
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.country = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -173,6 +186,7 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
       interfaces: globalThis.Array.isArray(object?.interfaces)
         ? object.interfaces.map((e: any) => globalThis.String(e))
         : [],
+      country: isSet(object.country) ? globalThis.String(object.country) : "",
     };
   },
 
@@ -187,6 +201,9 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
     if (message.interfaces?.length) {
       obj.interfaces = message.interfaces;
     }
+    if (message.country !== "") {
+      obj.country = message.country;
+    }
     return obj;
   },
 
@@ -198,6 +215,7 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
     message.publicV4 = object.publicV4 ?? "";
     message.publicV6 = object.publicV6 ?? "";
     message.interfaces = object.interfaces?.map((e) => e) || [];
+    message.country = object.country ?? "";
     return message;
   },
 };

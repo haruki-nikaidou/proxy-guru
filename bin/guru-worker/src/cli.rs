@@ -47,16 +47,27 @@ pub struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub health_interval: u64,
-    /// Agent mode: comma-separated URLs that answer with the caller's public IP
-    /// as plain text, queried round-robin over IPv4 and IPv6 before registering
-    /// and every minute after. Empty disables the lookup (interface addresses
-    /// are still reported).
+    /// Agent mode: comma-separated URLs answering with the caller's public IPv4
+    /// as plain text, walked from a rotating start before registering and every
+    /// minute after. Empty disables the lookup (interface addresses are still
+    /// reported).
     #[arg(
         long,
-        env = "GURU_PUBLIC_IP_URLS",
-        default_value = crate::addresses::DEFAULT_PUBLIC_IP_URLS
+        env = "GURU_PUBLIC_IPV4_URLS",
+        default_value = crate::addresses::DEFAULT_PUBLIC_IPV4_URLS
     )]
-    pub public_ip_urls: String,
+    pub public_ipv4_urls: String,
+    /// Agent mode: the same for IPv6.
+    #[arg(
+        long,
+        env = "GURU_PUBLIC_IPV6_URLS",
+        default_value = crate::addresses::DEFAULT_PUBLIC_IPV6_URLS
+    )]
+    pub public_ipv6_urls: String,
+    /// Agent mode: a URL answering with the two-letter country of the caller's
+    /// public address, shown next to the server in the dashboard. Empty disables it.
+    #[arg(long, env = "GURU_GEO_URL", default_value = crate::addresses::DEFAULT_GEO_URL)]
+    pub geo_url: String,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
 }

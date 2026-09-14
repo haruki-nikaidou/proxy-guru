@@ -836,6 +836,8 @@ export interface ServerAddresses {
   observedAt: string;
   effectiveAddress: string;
   effectiveSource: AddressSource;
+  /** ISO 3166-1 alpha-2, as the worker reported it; empty when unknown. */
+  reportedCountry: string;
 }
 
 export interface Server {
@@ -2869,6 +2871,7 @@ function createBaseServerAddresses(): ServerAddresses {
     observedAt: "",
     effectiveAddress: "",
     effectiveSource: 0,
+    reportedCountry: "",
   };
 }
 
@@ -2900,6 +2903,9 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     }
     if (message.effectiveSource !== 0) {
       writer.uint32(72).int32(message.effectiveSource);
+    }
+    if (message.reportedCountry !== "") {
+      writer.uint32(82).string(message.reportedCountry);
     }
     return writer;
   },
@@ -2983,6 +2989,14 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
           message.effectiveSource = reader.int32() as any;
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.reportedCountry = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3027,6 +3041,11 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
         : isSet(object.effective_source)
         ? addressSourceFromJSON(object.effective_source)
         : 0,
+      reportedCountry: isSet(object.reportedCountry)
+        ? globalThis.String(object.reportedCountry)
+        : isSet(object.reported_country)
+        ? globalThis.String(object.reported_country)
+        : "",
     };
   },
 
@@ -3059,6 +3078,9 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     if (message.effectiveSource !== 0) {
       obj.effectiveSource = addressSourceToJSON(message.effectiveSource);
     }
+    if (message.reportedCountry !== "") {
+      obj.reportedCountry = message.reportedCountry;
+    }
     return obj;
   },
 
@@ -3076,6 +3098,7 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     message.observedAt = object.observedAt ?? "";
     message.effectiveAddress = object.effectiveAddress ?? "";
     message.effectiveSource = object.effectiveSource ?? 0;
+    message.reportedCountry = object.reportedCountry ?? "";
     return message;
   },
 };

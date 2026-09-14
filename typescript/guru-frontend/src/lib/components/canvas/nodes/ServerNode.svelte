@@ -71,6 +71,9 @@ const listenOf = (bindIp: string | null, port: number): string =>
 		<span class="font-mono">
 			{data.server.addresses.effectiveAddress || m.editor_server_address_none_short()}
 		</span>
+		{#if data.server.addresses.reportedCountry}
+			· <span class="font-mono">{data.server.addresses.reportedCountry}</span>
+		{/if}
 	</p>
 	<p class="px-3 text-xs text-muted-foreground">
 		{m.editor_server_last_seen()}: {formatTimestamp(data.server.lastSeenAt)}{silent

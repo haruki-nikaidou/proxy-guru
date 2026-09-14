@@ -34,6 +34,33 @@ A canvas is a bipartite dataflow over two independent port kinds:
 
 Every port carries at most one edge.
 
+### Servers, pods and addresses
+
+A **pod** is one listener on one server: `{ server, port, bind_ip?, advertise_ip? }`.
+The `server` link is what attributes the pod to a server (the schema asserts it
+resolves within the canvas tree). `bind_ip` unset binds every address of the
+host (`[::]` dual-stack; the worker falls back to `0.0.0.0` without IPv6),
+`0.0.0.0` restricts it to IPv4, a literal pins one interface. Every new server
+gets four transport pods — `tcp`, `tls`, `ws`, `quic` — on random ports in
+40000–59999, so a relay hop is drawn by connecting to the target server's pod
+of the matching protocol. An unwired pod derives nothing and is not a problem.
+
+A server's addresses are learned, not typed: the worker reports its public
+IPv4/IPv6 (looked up through `--public-ipv4-urls` / `--public-ipv6-urls`), its country (`--geo-url`) and interface addresses on
+`Register` and whenever they change; the master records the peer address the
+registration came from (`x-real-ip` behind the documented proxy, see
+`trust_proxy_address_headers`). Operators may pin either family
+(`override_v4`/`override_v6`) or add `extra_addresses`. What another server
+dials is `ServerEntity::effective_address`: v4 pin → reported v4 → observed v4
+→ the same chain for v6; a pod may name one of the known addresses as
+`advertise_ip` instead, and a relay's `override_ip_address` still wins. A server
+with no address at all is a warning, and every pod on *other* servers that dials
+it stays in `invalid_pods` until one is known.
+
+Listener identity — the `ListenerCap` convergence matches on — is
+`(server, port, protocol)`, never an address, so an address change re-derives
+destinations without breaking the seamless-switch protocol.
+
 ## Subcanvases
 
 A `CanvasImport` node embeds another canvas as one node; a `CanvasExport` node
@@ -60,7 +87,7 @@ computed by `fn::orchestration_root` / `_ancestors` / `_tree` in the schema.
   until its import is retired; deleting a root deletes its whole tree.
 - **Servers stay put.** A parent sees a child canvas as a black box, but the
   tree is one graph: a pod anywhere in a tree may listen on any server of that
-  tree (`spec.config.ip` is asserted against the tree, not the canvas).
+  tree (`spec.config.server` is asserted against the tree, not the canvas).
 
 ## The config view
 
@@ -144,7 +171,7 @@ may serve *now*, given what every other server is running:
 
 A multi-hop change therefore converges in as many passes as it has hops, with no
 coordinator and no ordering. An edit that would put a *different protocol* on an
-ip:port some server still dials has no seamless path at all and is rejected at
+server/port some server still dials has no seamless path at all and is rejected at
 edit time. A server that is gone for good is cleared with `ForgetServerApplied`
 (Admin only, like the other operations that bypass a safety invariant), so its
 dependants stop waiting for it.

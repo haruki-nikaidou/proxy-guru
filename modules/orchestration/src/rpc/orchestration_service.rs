@@ -313,6 +313,9 @@ fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
         effective_address: effective
             .map(|(address, _)| address.to_string())
             .unwrap_or_default(),
+        reported_country: reported
+            .and_then(|r| r.country.clone())
+            .unwrap_or_default(),
         effective_source: match effective.map(|(_, source)| source) {
             None => pb::AddressSource::Unspecified,
             Some(AddressSource::Override) => pb::AddressSource::AddressOverride,
