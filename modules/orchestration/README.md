@@ -109,20 +109,27 @@ consumer` binds one durable queue per signal and runs the pass:
 | `trim_health_history` | `guru_orchestration_trim_health_history` | `hooks::health::HealthCronHook` | `health_retention_interval()` |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | `hooks::acme::AcmeCronHook` | `acme_interval()` |
 
-Delivery is at-least-once and consumers are replicated, so every hook calls
-`hooks::schedule::claim_run` first: a compare-and-set on one
-`orchestration_job_run` row per job. Whoever wins runs the pass, everybody else
-returns having touched nothing, and a job cannot run twice for the same tick nor
-more often than its configured interval. That is why the publication cadence is
-a constant and the interval is configuration: the constant is a floor the
-scheduler can honour without reading the database, the interval is what an
-operator actually sees.
+Delivery is at-least-once and consumers are replicated, so every hook gates on
+`entities::surreal::job_run::ClaimJobRun::for_tick` first: one compare-and-set
+on the job's `orchestration_job_run` row, fenced on both the tick the signal was
+published for and the configured interval — which is measured between ticks, not
+between runs, so a pass that takes a minute does not push the next one out.
+Whoever wins runs the pass, everybody else returns having touched nothing, and a
+job cannot run twice for the same tick nor more often than its configured
+interval. That is why the publication cadence is a constant and the interval is
+configuration: the constant is a floor the scheduler can honour without reading
+the database, the interval is what an operator actually sees.
 
-A pass that iterates rows claims them individually as well, so two consumers
-working the same backlog do not collide: ACME claims each certificate attempt
-(`ClaimCertificateAttempt`) and relay rotation writes each leaf against the
-version it read (`RotateRelayCertificate`, `None` when another consumer got
-there first).
+A pass that iterates rows claims them individually as well, and against the
+value it read rather than against a clock: ACME compare-and-sets the
+`last_attempt_at` its listing observed (`ClaimCertificateAttempt`) and relay
+rotation writes each leaf against the version it read (`RotateRelayCertificate`,
+`None` when another consumer got there first). Two consumers working the same
+backlog therefore cannot collide, and neither can a pass whose listing went
+stale while it worked — an ACME order takes minutes. The claim stamps
+`last_attempt_at` before ordering, which is what holds the row out of
+`ListCertificatesDue` for `acme_retry_after` while the attempt runs or after it
+crashed.
 
 ## Seamless switching
 
@@ -202,6 +209,13 @@ relay). The derivation hook issues relay leaves before deriving
 (`EnsureRelayCertificates`, SAN `<pod-key>.relay.guru.internal`), and on the
 `rotate_relay_certificates` signal `hooks::derive::CanvasDeriver` re-issues
 leaves within `relay_cert_renew_before` of expiry and re-derives their canvases.
+Both re-issue paths replace an existing leaf, and both fence the write on the
+`version` they read: a pass whose compare-and-set is refused adopts the winning
+row instead of storing the leaf it signed, so overlapping derivations — or a
+derivation and a duplicate rotation signal — end with one new leaf, not two
+versions of clobbered material. Only a pod's first leaf is written
+unconditionally; two of those collide on the `relay_certificate_pod` unique
+index and one transaction fails, which the caller retries.
 
 ## Dependency direction
 

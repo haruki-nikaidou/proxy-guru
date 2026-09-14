@@ -188,18 +188,19 @@ impl Processor<ListCertificatesByIds> for SurrealProcessor {
     }
 }
 
-/// Certificates the renewal cron should work on: every `Pending` row, `Failed`
-/// rows whose `last_attempt_at` is before `retry_before` (or unset), and `Issued`
+/// Certificates the renewal cron should work on: `Pending` and `Failed` rows
+/// whose `last_attempt_at` is before `retry_before` (or unset), and `Issued`
 /// rows whose `not_after` is before `renew_before` (throttled the same way after
 /// a failed renewal) or whose `last_attempt_at` was cleared by
 /// [`RetryCertificateRow`] (a forced renewal).
 ///
-/// A `pending` row is listed on every pass — it has nothing to throttle on yet.
-/// What bounds its attempts is [`ClaimCertificateAttempt`], which the cron hook
-/// calls before every order: the claim stamps `last_attempt_at`, so the row is
-/// only retried once per `acme_retry_after` even though it stays listed. That is
-/// what keeps two consumers handed the same signal, or a pass that crashed
-/// mid-order, from hammering a rate-limited CA.
+/// `last_attempt_at` is stamped by [`ClaimCertificateAttempt`] before the order
+/// starts, not only when it ends, so this window is what bounds attempts: a row
+/// whose attempt is still running, or whose attempt crashed mid-order, is out of
+/// the listing until `acme_retry_after` has passed. That is what keeps two
+/// consumers handed the same signal from hammering a rate-limited CA. The claim
+/// itself no longer looks at time at all — it only refuses a listing that has
+/// gone stale.
 #[derive(Debug)]
 pub struct ListCertificatesDue {
     pub renew_before: DateTime<Utc>,
@@ -215,7 +216,7 @@ impl Processor<ListCertificatesDue> for SurrealProcessor {
             .db()
             .query(
                 "SELECT * FROM certificate WHERE
-                    status = 'pending'
+                    (status = 'pending' AND (last_attempt_at = NONE OR last_attempt_at < $retry_before))
                     OR (status = 'failed' AND (last_attempt_at = NONE OR last_attempt_at < $retry_before))
                     OR (status = 'issued' AND (
                         last_attempt_at = NONE
@@ -230,18 +231,24 @@ impl Processor<ListCertificatesDue> for SurrealProcessor {
     }
 }
 
-/// Claims the next ACME attempt for one row: succeeds when `last_attempt_at` is
-/// unset or older than `claim_before`, stamping `now` so a second consumer
-/// handed the same pass cannot start a second order for the same certificate.
+/// Claims the next ACME attempt for one row: an exact compare-and-set on
+/// `last_attempt_at`, stamping `now` only when the row still carries the value
+/// the pass observed in [`ListCertificatesDue`].
 ///
-/// An order takes minutes, so the job-level run claim is not enough on its own:
-/// two passes can legitimately overlap, and this is what serialises them per
-/// certificate.
+/// An order takes minutes and rows are ordered one at a time, so a pass holds
+/// its listing for a long time — by the time it reaches a row, another pass may
+/// already have renewed it. A time window would let that happen: once
+/// `acme_retry_after` elapsed, a claim would succeed and order a certificate
+/// that is no longer due. Matching the observed value instead makes a stale
+/// listing harmless, and subsumes the two-consumers case — both read the same
+/// value, only the first `UPDATE` matches.
 #[derive(Debug)]
 pub struct ClaimCertificateAttempt {
     pub id: CertificateId,
     pub now: DateTime<Utc>,
-    pub claim_before: DateTime<Utc>,
+    /// `last_attempt_at` as the pass read it; the claim is refused when anything
+    /// touched the row since, which is what makes a stale listing harmless.
+    pub seen_attempt_at: Option<DateTime<Utc>>,
 }
 
 impl Processor<ClaimCertificateAttempt> for SurrealProcessor {
@@ -253,12 +260,12 @@ impl Processor<ClaimCertificateAttempt> for SurrealProcessor {
             .db()
             .query(
                 "UPDATE $id SET last_attempt_at = $now
-                 WHERE last_attempt_at = NONE OR last_attempt_at < $claim_before
+                 WHERE last_attempt_at = $seen_attempt_at
                  RETURN AFTER",
             )
             .bind(("id", input.id))
             .bind(("now", input.now))
-            .bind(("claim_before", input.claim_before))
+            .bind(("seen_attempt_at", input.seen_attempt_at))
             .await?;
         Ok(!resp.take::<Vec<CertificateEntity>>(0)?.is_empty())
     }

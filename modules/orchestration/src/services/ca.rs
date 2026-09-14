@@ -161,7 +161,15 @@ impl Processor<InitInternalCa> for CaService {
 }
 
 /// Makes sure every given pod has a relay leaf that is not about to expire,
-/// issuing or rotating as needed. Returns the current leaf of every pod.
+/// issuing or rotating as needed. Returns the current leaf of every pod, in the
+/// order the pods were given.
+///
+/// Every replacement is fenced on the version this pass read, because the
+/// rotation cron replaces the same leaves and two derivations of the same
+/// canvas can overlap: the pass that loses adopts the winner's freshly issued
+/// row rather than issuing a leaf of its own. Only the first issuance of a
+/// pod's leaf is unfenced, and two of those collide on the
+/// `relay_certificate_pod` UNIQUE index instead.
 pub struct EnsureRelayCertificates {
     pub pods: Vec<NodeId>,
 }
@@ -202,26 +210,62 @@ impl Processor<EnsureRelayCertificates> for CaService {
         let mut leaves = Vec::with_capacity(input.pods.len());
         for pod in input.pods {
             let sni = relay_sni(&pod);
-            if let Some(leaf) = by_pod.remove(&record_key(&pod.0))
-                && leaf.sni == sni
-                && leaf.not_after > renew_at
-            {
-                leaves.push(leaf);
-                continue;
-            }
+            let pod_key = record_key(&pod.0);
+            let expected_version = match by_pod.remove(&pod_key) {
+                // Still the right SNI and outside the renewal window: untouched.
+                Some(leaf) if leaf.sni == sni && leaf.not_after > renew_at => {
+                    leaves.push(leaf);
+                    continue;
+                }
+                // A leaf that must be replaced. Another derivation pass or the
+                // rotation cron may be replacing the same one right now, so the
+                // write is fenced on the version this pass read: without the
+                // fence both would issue a leaf and the later write would
+                // overwrite the other's material while bumping `version` again.
+                Some(leaf) => Some(leaf.version),
+                // No leaf at all: a `CREATE`, which has no prior version to
+                // fence against. Two concurrent creates for the same pod
+                // collide on the `relay_certificate_pod` UNIQUE index and one
+                // transaction fails; that is pre-existing behaviour and reaches
+                // the caller as a database error it already logs and retries,
+                // so it is deliberately not swallowed here.
+                None => None,
+            };
             let signer = match &issuer {
                 Some(signer) => signer,
                 None => issuer.insert(self.issuer(&ca)?),
             };
-            let leaf = self
-                .issue_leaf(signer, pod, sni, now, None)
-                .await?
-                .ok_or_else(|| {
-                    // Unfenced, so the row is always written: a missing one is a bug.
-                    OrchestrationError::Db(surrealdb::Error::internal(
+            let issued = self
+                .issue_leaf(signer, &pod, sni, now, expected_version)
+                .await?;
+            let leaf = match issued {
+                Some(leaf) => leaf,
+                // The fence refused the write: the other writer replaced this
+                // leaf between our read and our write. Its row is therefore a
+                // freshly issued leaf from the same CA, so this pass adopts it
+                // instead of issuing a second one.
+                None if expected_version.is_some() => {
+                    tracing::debug!(
+                        pod = %pod_key,
+                        "another writer replaced this relay leaf first; using its row"
+                    );
+                    self.db
+                        .process(ListRelayCertificatesByPods { pods: vec![pod] })
+                        .await?
+                        .pop()
+                        .ok_or_else(|| {
+                            OrchestrationError::Conflict(format!(
+                                "the relay certificate of pod {pod_key} was deleted while it was being replaced"
+                            ))
+                        })?
+                }
+                // Unfenced, so the row is always written: a missing one is a bug.
+                None => {
+                    return Err(OrchestrationError::Db(surrealdb::Error::internal(
                         "relay certificate row was not written".to_string(),
-                    ))
-                })?;
+                    )));
+                }
+            };
             leaves.push(leaf);
         }
         Ok(leaves)
@@ -251,7 +295,7 @@ impl Processor<RotateRelayCertificate> for CaService {
         let sni = relay_sni(&input.pod);
         self.issue_leaf(
             &issuer,
-            input.pod,
+            &input.pod,
             sni,
             Utc::now(),
             Some(input.expected_version),
@@ -270,12 +314,15 @@ impl CaService {
         Ok(Issuer::new(ca_params(), key))
     }
 
-    /// Signs a fresh leaf for `pod` and stores it. `expected_version` fences the
-    /// write for rotation; `None` output is a lost race, never a failure.
+    /// Signs a fresh leaf for `pod` and stores it. `expected_version` fences
+    /// the write on the version the caller read, which every path that replaces
+    /// an existing leaf passes; `None` output is that lost race, never a
+    /// failure. Only the create path (no leaf yet) may pass `None`, where the
+    /// write is unconditional.
     async fn issue_leaf(
         &self,
         issuer: &Issuer<'_, KeyPair>,
-        pod: NodeId,
+        pod: &NodeId,
         sni: String,
         now: DateTime<Utc>,
         expected_version: Option<i64>,
@@ -305,10 +352,10 @@ impl CaService {
         params.not_before = to_offset(not_before)?;
         params.not_after = to_offset(not_after)?;
         let certificate = params.signed_by(&key, issuer).map_err(certificate_error)?;
-        Ok(self
+        let stored = self
             .db
             .process(StoreRelayCertificate {
-                pod,
+                pod: pod.clone(),
                 sni,
                 private_key_pem: self.secrets.encrypt_str(&key.serialize_pem())?,
                 certificate_pem: certificate.pem(),
@@ -316,7 +363,31 @@ impl CaService {
                 not_after,
                 expected_version,
             })
-            .await?)
+            .await;
+        match (stored, expected_version) {
+            (Ok(row), _) => Ok(row),
+            // A fenced write whose transaction the engine aborted. SurrealDB does
+            // not serialise two transactions writing one row — it fails the
+            // second instead of letting its `WHERE` match nothing — so this is
+            // the same lost race as an empty result, and reporting it as an error
+            // would make every overlapping derivation fail a pass it is supposed
+            // to absorb. Only the row itself can tell the two apart: past the
+            // version we fenced on means somebody else wrote it.
+            (Err(error), Some(expected)) => {
+                let current = self
+                    .db
+                    .process(ListRelayCertificatesByPods {
+                        pods: vec![pod.clone()],
+                    })
+                    .await?
+                    .pop();
+                match current {
+                    Some(row) if row.version > expected => Ok(None),
+                    _ => Err(error.into()),
+                }
+            }
+            (Err(error), None) => Err(error.into()),
+        }
     }
 }
 

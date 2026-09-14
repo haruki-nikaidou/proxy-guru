@@ -214,10 +214,10 @@ async fn serve(
         Duration::from_millis(50),
         poller_token,
     ));
-    // No broker in the test image: the sweep is the only derivation trigger, which
-    // is exactly the deployment the AMQP path is allowed to degrade to. It stops
-    // with the master, so a test that restarts one never has two sweepers writing
-    // the same canvases.
+    // No broker in the test image, so this calls the consumer's derivation pass
+    // directly on a timer: a harness standing in for `--mode consumer`, not a
+    // supported topology. It stops with the master, so a test that restarts one
+    // never has two sweepers writing the same canvases.
     let deriver = CanvasDeriver {
         db: db.clone(),
         secrets,

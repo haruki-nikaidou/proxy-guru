@@ -10,19 +10,23 @@
 //! [`RenewCertificatesSignal`] and this consumer does the work, so renewal fails
 //! over and scales like any other consumer. That takes two claims, not one:
 //!
-//! * [`schedule::claim_run`] keeps one pass per configured `acme_interval`
-//!   fleet-wide, which is what AMQP's at-least-once delivery and horizontally
-//!   scaled consumers would otherwise break.
-//! * [`ClaimCertificateAttempt`] keeps one *order* per certificate per
-//!   `acme_retry_after`. The job claim alone cannot do it: an order runs for
-//!   minutes, so two consecutive intervals can legitimately overlap, and a
-//!   second order for the same name burns the CA's rate limit for nothing. The
-//!   same claim is what stops a pass that crashed mid-order from retrying
-//!   immediately.
+//! * [`ClaimJobRun`] keeps one pass per configured `acme_interval` fleet-wide,
+//!   which is what AMQP's at-least-once delivery and horizontally scaled
+//!   consumers would otherwise break.
+//! * [`ClaimCertificateAttempt`] keeps one *order* per certificate. It is an
+//!   exact compare-and-set on the `last_attempt_at` the pass observed while
+//!   listing, not a time window: rows are ordered one at a time and an order
+//!   takes minutes, so a listing entry can be minutes stale by the time the pass
+//!   reaches it. A stale entry and a duplicate pass are therefore both no-ops —
+//!   whoever renewed the row in between moved `last_attempt_at`, and only the
+//!   first `UPDATE` matching the observed value wins. A pass that crashed
+//!   mid-order is retried by the next listing instead, because the claim stamped
+//!   `last_attempt_at` before ordering and [`ListCertificatesDue`] holds the row
+//!   back for `acme_retry_after`.
 
 use crate::entities::surreal::certificate::{ClaimCertificateAttempt, ListCertificatesDue};
+use crate::entities::surreal::job_run::ClaimJobRun;
 use crate::events::RenewCertificatesSignal;
-use crate::hooks::schedule;
 use crate::services::acme::{
     AcmeService, EnsureRequestedCertificates, IssueCertificate, IssueOutcome,
 };
@@ -37,8 +41,8 @@ pub async fn renew_due(acme: &AcmeService) {
         tracing::error!(error = %e, "ensuring certificate rows failed");
     }
     let now = Utc::now();
-    // The same bound lists a row and claims its attempt: a row may be listed on
-    // every pass, but only one attempt per `acme_retry_after` gets to run.
+    // The window that lists a row: an attempt is stamped at claim time, so a row
+    // whose order is still running (or crashed) waits out `acme_retry_after`.
     let retry_before = now
         .checked_sub_signed(
             chrono::Duration::from_std(acme.config.acme_retry_after())
@@ -71,7 +75,7 @@ pub async fn renew_due(acme: &AcmeService) {
             .process(ClaimCertificateAttempt {
                 id: row.id.clone(),
                 now: Utc::now(),
-                claim_before: retry_before,
+                seen_attempt_at: row.last_attempt_at,
             })
             .await
         {
@@ -79,7 +83,7 @@ pub async fn renew_due(acme: &AcmeService) {
             Ok(false) => {
                 tracing::debug!(
                     certificate = %id,
-                    "another consumer is already working on this certificate"
+                    "the row moved since it was listed; another pass has it"
                 );
                 continue;
             }
@@ -102,6 +106,9 @@ pub async fn renew_due(acme: &AcmeService) {
     }
 }
 
+/// The `job_run` key this cron claims its fleet-wide pass under.
+const JOB: &str = "renew_certificates";
+
 /// Consumes the ACME renewal execution signal.
 #[derive(Clone)]
 pub struct AcmeCronHook {
@@ -117,13 +124,15 @@ impl Processor<RenewCertificatesSignal> for AcmeCronHook {
     type Error = wakuwaku::Error;
     #[tracing::instrument(name = "Hook:RenewCertificatesSignal", skip_all, err)]
     async fn process(&self, input: RenewCertificatesSignal) -> Result<Self::Output, Self::Error> {
-        if !schedule::claim_run(
-            &self.acme.db,
-            "renew_certificates",
-            self.acme.config.acme_interval(),
-            input.tick_time(),
-        )
-        .await?
+        if !self
+            .acme
+            .db
+            .process(ClaimJobRun::for_tick(
+                JOB,
+                self.acme.config.acme_interval(),
+                input.tick_time(),
+            ))
+            .await?
         {
             return Ok(());
         }

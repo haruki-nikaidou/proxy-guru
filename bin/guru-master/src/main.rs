@@ -104,10 +104,14 @@ struct Cli {
     username: String,
     #[arg(long, env = "SURREALDB_PASSWORD", default_value = "root")]
     password: String,
+    // Optional at parse time, required by every mode that opens the database:
+    // `cron` is a clock with a broker and nothing else, and a clock that refused
+    // to start without a namespace would still have a database dependency, just
+    // an unused one.
     #[arg(long, env = "SURREALDB_NAMESPACE")]
-    namespace: String,
+    namespace: Option<String>,
     #[arg(long, env = "SURREALDB_NAME")]
-    database: String,
+    database: Option<String>,
     #[arg(
         long,
         env = "AMQP_URI",
@@ -144,13 +148,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_cron(&cli).await;
     }
 
+    // An empty value counts as unset: an exported-but-empty `SURREALDB_NAMESPACE`
+    // reaches clap as `Some("")`, and `use_ns("")` fails deep in the driver
+    // instead of here, where the message can say what to do.
+    let namespace = cli.namespace.as_deref().filter(|v| !v.is_empty());
+    let database = cli.database.as_deref().filter(|v| !v.is_empty());
+    let (Some(namespace), Some(database)) = (namespace, database) else {
+        return Err("this mode opens the database: set SURREALDB_NAMESPACE and \
+                    SURREALDB_NAME (or pass --namespace and --database)"
+            .into());
+    };
     let db = surrealdb::engine::any::connect(&cli.address).await?;
     db.signin(Root {
         username: cli.username.clone(),
         password: cli.password.clone(),
     })
     .await?;
-    db.use_ns(&cli.namespace).use_db(&cli.database).await?;
+    db.use_ns(namespace).use_db(database).await?;
     let db = SurrealProcessor::new(db);
     // Environment only, never argv: the key would otherwise be visible in process
     // listings. `manage-tool generate-master-key` prints a fresh one.
@@ -463,13 +477,15 @@ async fn publish_due<S: IntervalJobExecutionSignal>(
     pool: &AmqpPool,
     now: OffsetDateTime,
 ) {
-    match job.publish(pool, now).await {
-        Ok(true) => tracing::debug!(job = S::ROUTING_KEY, "published an execution signal"),
-        Ok(false) => {}
+    let Some(signal) = job.due(now) else {
+        return;
+    };
+    match signal.send(pool).await {
+        Ok(()) => tracing::debug!(job = S::ROUTING_KEY, "published an execution signal"),
         Err(error) => tracing::error!(
             %error,
             job = S::ROUTING_KEY,
-            "publishing an execution signal failed"
+            "publishing an execution signal failed; the next cadence retries"
         ),
     }
 }

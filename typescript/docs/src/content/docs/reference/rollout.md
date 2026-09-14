@@ -7,7 +7,9 @@ description: How a canvas edit becomes a config revision applied by a worker.
 
 Mutations bump the canvas generation and publish `CanvasDirty`. The derivation hook re-derives the
 whole canvas; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches
-anything a lost message missed.
+anything a lost message missed. Both triggers are broker messages, so the backstop is not
+broker-independent: a canvas whose `CanvasDirty` was lost waits for delivery to resume, and a
+master with no broker reachable derives nothing at all.
 
 Every server has **one config view** holding three snapshots — `desired`, `in_flight` and
 `applied`. A worker stream promotes `desired` → `in_flight`, and its `AckConfig` promotes

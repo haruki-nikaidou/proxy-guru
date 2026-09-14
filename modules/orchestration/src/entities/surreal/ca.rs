@@ -116,15 +116,18 @@ pub struct RelayCertificateEntity {
     pub version: i64,
 }
 
-/// Creates the leaf for a pod, or replaces it and bumps `version` (rotation).
+/// Creates the leaf for a pod, or replaces it and bumps `version`.
 ///
-/// `expected_version` fences the rotation path: duplicate delivery of the
-/// rotation signal hands two consumers the same expiring leaf, and only the one
-/// whose read is still current may ship a new revision. With `Some(v)` the write
-/// lands only while the pod's leaf is still at `version = v` — a lost race (and
-/// a leaf that has since been deleted) writes nothing and returns `None`. With
-/// `None` the write is unconditional: that is the issuance path, which has no
-/// prior version to fence against and must create the row when it is missing.
+/// `expected_version` fences every path that replaces a leaf: the rotation cron
+/// (whose signal may be delivered more than once) and the derivation pass that
+/// renews an expiring one both read a leaf before signing its successor, and
+/// only the writer whose read is still current may store its material and ship
+/// a new revision. With `Some(v)` the write lands only while the pod's leaf is
+/// still at `version = v` — a lost race (and a leaf that has since been
+/// deleted) writes nothing and returns `None`. Only a pod's first issuance
+/// passes `None`: it has no prior version to fence against and must create the
+/// row. Two concurrent creates for one pod therefore collide on the
+/// `relay_certificate_pod` UNIQUE index and one transaction fails.
 #[derive(Debug)]
 pub struct StoreRelayCertificate {
     pub pod: NodeId,

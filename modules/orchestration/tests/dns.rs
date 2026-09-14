@@ -10,8 +10,8 @@ use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::surreal::canvas::{CanvasEntity, FindCanvasById};
 use orchestration::entities::surreal::certificate::{
-    CertificateEntity, CertificateStatus, EnsureCertificate, FindCertificateById,
-    ListCertificatesDue, MarkCertificateAttemptFailed, StoreIssuedCertificate,
+    CertificateEntity, CertificateStatus, ClaimCertificateAttempt, EnsureCertificate,
+    FindCertificateById, ListCertificatesDue, MarkCertificateAttemptFailed, StoreIssuedCertificate,
 };
 use orchestration::entities::surreal::dns::{DnsProvider, FindDnsProviderById};
 use orchestration::entities::surreal::node::{DeleteNodeRow, EntryConfig, NodeSpec, TlsConfig};
@@ -418,6 +418,41 @@ async fn list_certificates_due_picks_the_right_rows() -> TestResult {
             forced.clone()
         ])
     );
+
+    // The throttle lives in this predicate, not in the claim: the claim stamps
+    // `last_attempt_at` before the order starts, which is what holds a pending
+    // row back while its attempt is still running — or after it crashed
+    // mid-order.
+    assert!(
+        w.db.process(ClaimCertificateAttempt {
+            id: pending.id.clone(),
+            now: Utc::now(),
+            seen_attempt_at: None,
+        })
+        .await?
+    );
+    let claimed =
+        w.db.process(ListCertificatesDue {
+            renew_before,
+            retry_before: now - TimeDelta::hours(1),
+        })
+        .await?;
+    assert_eq!(
+        keys(&claimed),
+        keys(std::slice::from_ref(&forced)),
+        "a pending row whose attempt was just stamped is not listed again"
+    );
+    let window_passed =
+        w.db.process(ListCertificatesDue {
+            renew_before,
+            retry_before: Utc::now() + TimeDelta::hours(1),
+        })
+        .await?;
+    assert_eq!(
+        keys(&window_passed),
+        keys(&[pending, failed, expiring, forced]),
+        "once the retry window passes it is due again"
+    );
     Ok(())
 }
 
@@ -599,7 +634,7 @@ impl AcmeIssuer for FakeIssuer {
     }
 }
 
-fn with_issuer(w: &World, issuer: Arc<FakeIssuer>) -> AcmeService {
+fn with_issuer(w: &World, issuer: Arc<dyn AcmeIssuer>) -> AcmeService {
     AcmeService {
         issuer,
         ..w.certificates.clone()
@@ -789,10 +824,48 @@ async fn issue_certificate_records_a_failure_without_touching_anything() -> Test
     Ok(())
 }
 
+/// An issuer that parks inside `issue` until the test releases it, so a second
+/// pass provably reaches the row claim while the first one is still ordering.
+struct GatedIssuer {
+    ordered: Mutex<Vec<String>>,
+    /// A permit appears once `issue` has been entered.
+    entered: tokio::sync::Semaphore,
+    /// Lets the parked `issue` finish.
+    release: tokio::sync::Notify,
+}
+
+impl AcmeIssuer for GatedIssuer {
+    fn issue<'a>(
+        &'a self,
+        request: IssueRequest<'a>,
+    ) -> BoxFuture<'a, Result<IssuedMaterial, AcmeError>> {
+        Box::pin(async move {
+            self.ordered.lock().await.push(request.sni.to_string());
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::new(vec![request.sni.to_string()]).unwrap();
+            params.not_before = rcgen::date_time_ymd(2026, 1, 1);
+            params.not_after = rcgen::date_time_ymd(2026, 4, 1);
+            let cert = params.self_signed(&key).unwrap();
+            Ok(IssuedMaterial {
+                account_credentials: format!("creds-for-{}", request.sni),
+                private_key_pem: key.serialize_pem(),
+                full_chain_pem: cert.pem(),
+            })
+        })
+    }
+}
+
 /// The job claim cannot protect the ACME pass on its own: an order takes minutes
 /// and the interval is a minute, so a second signal legitimately claims a run
-/// while the first pass is still working. The per-row claim is what keeps a
-/// rate-limited CA from being handed two orders for one certificate.
+/// while the first pass is still working.
+///
+/// The gated issuer is what makes the overlap real rather than hoped for: pass A
+/// parks inside the order and only then does pass B run, to completion, so B
+/// reaches the row while A holds it. Drop the row claim (and the attempt stamp it
+/// writes) and B lists the row as due and hands the CA a second order for the
+/// same name — the assertion below counts orders, so the test fails.
 #[tokio::test]
 async fn two_overlapping_renewal_passes_order_one_certificate_per_row() -> TestResult {
     let w = world().await?;
@@ -806,22 +879,85 @@ async fn two_overlapping_renewal_passes_order_one_certificate_per_row() -> TestR
         entry_ports(),
     )
     .await?;
-    let issuer = Arc::new(FakeIssuer {
-        seen: Mutex::new(Vec::new()),
-        fail_with: None,
+    let issuer = Arc::new(GatedIssuer {
+        ordered: Mutex::new(Vec::new()),
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Notify::new(),
     });
     let acme = with_issuer(&w, issuer.clone());
 
-    tokio::join!(renew_due(&acme), renew_due(&acme));
+    let pass_a = tokio::spawn({
+        let acme = acme.clone();
+        async move { renew_due(&acme).await }
+    });
+    // A has claimed the row and is inside the order.
+    issuer.entered.acquire().await?.forget();
 
-    let seen = issuer.seen.lock().await;
+    renew_due(&acme).await;
     assert_eq!(
-        seen.len(),
+        issuer.ordered.lock().await.len(),
         1,
-        "one order for the one certificate that was due: {seen:?}"
+        "the second pass must skip the row the first one is ordering"
+    );
+
+    issuer.release.notify_one();
+    pass_a.await?;
+
+    let ordered = issuer.ordered.lock().await.clone();
+    assert_eq!(
+        ordered,
+        vec!["a.example.com".to_string()],
+        "one order for the one certificate that was due"
     );
     let rows = acme.process(ListCertificates { actor: operator() }).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, CertificateStatus::Issued);
+    Ok(())
+}
+
+/// The claim itself, without task scheduling in the way: it is a compare-and-set
+/// on the `last_attempt_at` the pass observed, so two passes holding the same
+/// observation produce exactly one claim, and an observation that the row has
+/// moved past is worthless however old it is.
+#[tokio::test]
+async fn claiming_an_attempt_compares_and_sets_the_observed_value() -> TestResult {
+    let w = world().await?;
+    let provider = create_provider(&w, "cf", "tok").await;
+    let cert = ensure(&w, &provider, "a.example.com", DIRECTORY).await;
+    assert!(cert.last_attempt_at.is_none());
+
+    let claim = |seen| ClaimCertificateAttempt {
+        id: cert.id.clone(),
+        now: Utc::now(),
+        seen_attempt_at: seen,
+    };
+    let (first, second) = tokio::join!(w.db.process(claim(None)), w.db.process(claim(None)));
+    assert_eq!(
+        [first?, second?].into_iter().filter(|won| *won).count(),
+        1,
+        "both passes read `last_attempt_at` as unset; only one UPDATE can match"
+    );
+
+    // What a pass holding a minutes-old listing carries: another pass renewed the
+    // row in between, so the observation is stale and the claim is refused — even
+    // though the retry window has long passed.
+    let stale = find(&w, &cert).await.last_attempt_at;
+    assert!(stale.is_some());
+    store_issued(&w, &cert, Utc::now() + TimeDelta::days(90)).await;
+    assert!(
+        !w.db
+            .process(ClaimCertificateAttempt {
+                id: cert.id.clone(),
+                now: Utc::now() + TimeDelta::days(1),
+                seen_attempt_at: stale,
+            })
+            .await?,
+        "a stale observation cannot claim a row that has been renewed since"
+    );
+
+    // The next listing reads the renewal's stamp, and that claims.
+    let current = find(&w, &cert).await.last_attempt_at;
+    assert_ne!(current, stale);
+    assert!(w.db.process(claim(current)).await?);
     Ok(())
 }

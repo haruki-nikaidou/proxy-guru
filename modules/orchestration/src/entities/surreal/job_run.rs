@@ -29,6 +29,7 @@
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
+use std::time::Duration;
 use surrealdb_types::SurrealValue;
 use wakuwaku::surreal::SurrealProcessor;
 
@@ -57,6 +58,28 @@ pub struct ClaimJobRun {
     /// `tick` minus the configured interval: the newest `last_signal_tick` that
     /// may still be claimed over.
     pub tick_not_before: DateTime<Utc>,
+}
+
+impl ClaimJobRun {
+    /// The claim a hook makes when it receives the signal published at `tick` for
+    /// a job that may run once per `every`.
+    ///
+    /// `every` is applied to the *ticks*, not to `now`: a consumer stamps the row
+    /// when it gets round to the message, so measuring from that would subtract
+    /// the processing delay from every period and refuse every other signal
+    /// whenever the interval equals the publication cadence.
+    pub fn for_tick(job: &'static str, every: Duration, tick: DateTime<Utc>) -> Self {
+        let tick_not_before = chrono::Duration::from_std(every)
+            .ok()
+            .and_then(|every| tick.checked_sub_signed(every))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        Self {
+            job,
+            now: Utc::now(),
+            tick,
+            tick_not_before,
+        }
+    }
 }
 
 impl Processor<ClaimJobRun> for SurrealProcessor {
@@ -91,6 +114,16 @@ impl Processor<ClaimJobRun> for SurrealProcessor {
             .bind(("tick", input.tick))
             .bind(("tick_not_before", input.tick_not_before))
             .await?;
-        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
+        let claimed = resp.take::<Option<bool>>(3)?.unwrap_or(false);
+        if !claimed {
+            // The one place a skipped pass becomes visible, and the age is what
+            // tells an operator whether it was a duplicate or a backlog.
+            tracing::debug!(
+                job = input.job,
+                tick_age_secs = Utc::now().signed_duration_since(input.tick).num_seconds(),
+                "skipping a periodic signal: the job already ran for this tick or interval"
+            );
+        }
+        Ok(claimed)
     }
 }
