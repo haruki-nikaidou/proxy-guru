@@ -226,6 +226,28 @@ impl Processor<ValidateCanvas> for CanvasService {
                 canvas: input.canvas,
             })
             .await?;
-        Ok(analyze(&topology))
+        // A problem on a generated lane is shown on the universal node that
+        // generated it: the lane itself is not on the canvas.
+        let group_of: std::collections::HashMap<String, crate::entities::surreal::node::NodeId> =
+            topology
+                .nodes
+                .iter()
+                .filter_map(|n| {
+                    n.node
+                        .lane
+                        .as_ref()
+                        .map(|lane| (record_key(&n.node.id.0), lane.group.clone()))
+                })
+                .collect();
+        let mut problems = analyze(&topology);
+        for problem in &mut problems {
+            for node in &mut problem.nodes {
+                if let Some(group) = group_of.get(&record_key(&node.0)) {
+                    *node = group.clone();
+                }
+            }
+            problem.nodes.dedup_by_key(|n| record_key(&n.0));
+        }
+        Ok(problems)
     }
 }

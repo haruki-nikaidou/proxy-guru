@@ -40,10 +40,28 @@ A **pod** is one listener on one server: `{ server, port, bind_ip?, advertise_ip
 The `server` link is what attributes the pod to a server (the schema asserts it
 resolves within the canvas tree). `bind_ip` unset binds every address of the
 host (`[::]` dual-stack; the worker falls back to `0.0.0.0` without IPv6),
-`0.0.0.0` restricts it to IPv4, a literal pins one interface. Every new server
-gets four transport pods — `tcp`, `tls`, `ws`, `quic` — on random ports in
-40000–59999, so a relay hop is drawn by connecting to the target server's pod
-of the matching protocol. An unwired pod derives nothing and is not a problem.
+`0.0.0.0` restricts it to IPv4, a literal pins one interface. An unwired pod
+derives nothing and is not a problem.
+
+Every new server also gets its **universal pod** (`universal_pod`), the node
+other *universal nodes* bundle to. A **universal distributor**
+(`universal_distribute`: one load-balance mode, one relay protocol) takes entry
+pods as *channels* on `chan:<pod>` ports and bundles all of them, over `bundle`
+ports, to any number of universal pods; each universal pod lands every channel
+it receives on a generated pod of its server (random port in 40000–59999,
+editable) and bundles on, to another universal pod or to a **universal
+aggregator** (`universal_aggregate`), which exposes one `chan:<pod>` input per
+channel for an exit. None of this is a new traffic model: `services::universal`
+expands the universal nodes into ordinary pod / relay / load-balance **lanes**
+(rows tagged with `lane`) and ordinary edges in the same transaction as the
+edit that changed them (`ApplyTopologyBatch`), and derivation, convergence and
+certificates only ever see the flat graph. The distributor's and aggregator's
+`chan:` ports are paired with hidden `lane:` ports that `Index::peer` looks
+through, exactly like an import/export boundary. Lanes are keyed
+(`group:channel:role:source`), so an edit keeps every lane whose identity
+survives it, with its port ids and its listening port; only a protocol change
+on the distributor re-rolls the landing ports, since a listener cannot change
+protocol in place.
 
 A server's addresses are learned, not typed: the worker reports its public
 IPv4/IPv6 (looked up through `--public-ipv4-urls` / `--public-ipv6-urls`), its country (`--geo-url`) and interface addresses on

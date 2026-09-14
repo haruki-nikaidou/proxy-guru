@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod ca;
 pub mod canvas;
 pub mod certificate;

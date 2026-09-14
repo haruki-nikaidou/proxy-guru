@@ -593,11 +593,15 @@ fn derive_destination(
             };
             derive_destination(index, source, visited, points_at, nodes, certificates)?
         }
-        // Boundary nodes are never reached: `Index::peer` resolves through them.
+        // Boundary and universal nodes are never reached: `Index::peer`
+        // resolves through them (or stops at a bundle).
         NodeSpec::Pod(_)
         | NodeSpec::Entry(_)
         | NodeSpec::CanvasImport(_)
-        | NodeSpec::CanvasExport(_) => {
+        | NodeSpec::CanvasExport(_)
+        | NodeSpec::UniversalPod(_)
+        | NodeSpec::UniversalDistribute(_)
+        | NodeSpec::UniversalAggregate(_) => {
             return Err(DeriveError::UnsupportedSpec {
                 node: node.node.name.clone(),
             });

@@ -26,6 +26,7 @@ pub mod node;
 pub mod rollout;
 pub mod server;
 pub mod topology;
+pub mod universal;
 pub mod watch;
 
 use crate::services::converge::ConvergeError;

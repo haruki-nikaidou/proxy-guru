@@ -121,3 +121,118 @@ async fn mutation_replies_carry_the_import_target() -> TestResult {
     assert!(exit.import_target.is_none());
     Ok(())
 }
+
+/// `ConnectPorts` takes a universal handle in place of a port id; the reply's
+/// edge starts on the port the handle created.
+#[tokio::test]
+async fn connect_ports_accepts_universal_handles() -> TestResult {
+    let w = world().await?;
+    let api = grpc(&w);
+    let root = create_canvas(&api, "root").await;
+    let server = api
+        .create_server(as_operator(pb::CreateServerRequest {
+            canvas_id: root.id.clone(),
+            name: "us".to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: None,
+            ipv6_resolve: pb::Ipv6Resolve::Ipv6Tolerated.into(),
+            log_level: "info".to_string(),
+            override_v4: "198.51.100.1".to_string(),
+            override_v6: String::new(),
+            extra_addresses: Vec::new(),
+        }))
+        .await?
+        .into_inner()
+        .server
+        .unwrap();
+    let create = |name: &str, spec: pb::node_spec::Spec| {
+        as_operator(pb::CreateNodeRequest {
+            canvas_id: root.id.clone(),
+            name: name.to_string(),
+            comment: String::new(),
+            spec: Some(pb::NodeSpec { spec: Some(spec) }),
+            position: None,
+            item_count: 0,
+        })
+    };
+    let pod = api
+        .create_node(create(
+            "p0",
+            pb::node_spec::Spec::Pod(pb::PodConfig {
+                port: 10000,
+                server_id: server.id.clone(),
+                bind_ip: String::new(),
+                advertise_ip: String::new(),
+            }),
+        ))
+        .await?
+        .into_inner()
+        .node
+        .unwrap();
+    let ud = api
+        .create_node(create(
+            "fan",
+            pb::node_spec::Spec::UniversalDistribute(pb::UniversalDistributeConfig {
+                mode: pb::LoadBalanceMode::RoundRobin.into(),
+                protocol: pb::RelayProtocol::RelayTcpRaw.into(),
+            }),
+        ))
+        .await?
+        .into_inner()
+        .node
+        .unwrap();
+    assert!(ud.ports.is_empty(), "a distributor starts without ports");
+    let destination = pod.ports.iter().find(|p| p.key == "destination").unwrap();
+    let edge = api
+        .connect_ports(as_operator(pb::ConnectRequest {
+            output_port_id: String::new(),
+            input_port_id: destination.id.clone(),
+            output_handle: Some(pb::UniversalHandle {
+                node_id: ud.id.clone(),
+                group: pb::UniversalGroup::ChannelOut.into(),
+            }),
+            input_handle: None,
+        }))
+        .await?
+        .into_inner()
+        .edge
+        .unwrap();
+    assert_eq!(edge.target_port_id, destination.id);
+    let canvas = api
+        .get_canvas(as_operator(pb::GetCanvasRequest {
+            canvas_id: root.id.clone(),
+        }))
+        .await?
+        .into_inner();
+    let ud_now = canvas.nodes.iter().find(|n| n.id == ud.id).unwrap();
+    let chan = ud_now
+        .ports
+        .iter()
+        .find(|p| p.id == edge.source_port_id)
+        .expect("the edge starts on the created channel port");
+    assert_eq!(chan.key, format!("chan:{}", pod.id));
+    assert_eq!(chan.kind, i32::from(pb::PortKind::DeriveDestination));
+    // The universal pod the server came with is reported with its fixed port.
+    let up = canvas
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.spec, Some(pb::NodeSpec { spec: Some(pb::node_spec::Spec::UniversalPod(_)) })))
+        .expect("the server's universal pod");
+    assert_eq!(up.ports.len(), 1);
+    assert_eq!(up.ports[0].kind, i32::from(pb::PortKind::Bundle));
+    assert!(up.lane.is_none());
+
+    // A missing end is an argument error, not a crash.
+    let err = api
+        .connect_ports(as_operator(pb::ConnectRequest {
+            output_port_id: String::new(),
+            input_port_id: destination.id.clone(),
+            output_handle: None,
+            input_handle: None,
+        }))
+        .await
+        .expect_err("no port and no handle");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    Ok(())
+}

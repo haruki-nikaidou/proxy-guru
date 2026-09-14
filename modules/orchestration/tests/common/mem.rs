@@ -269,10 +269,18 @@ impl Builder {
                 comment: String::new(),
                 spec,
                 position: CanvasUiPosition { x: 0, y: 0 },
+                lane: None,
             },
             ports,
         });
         id
+    }
+
+    /// Tags the most recently added node as a lane.
+    pub fn lane(&mut self, lane: orchestration::entities::surreal::node::Lane) {
+        if let Some(n) = self.nodes.last_mut() {
+            n.node.lane = Some(lane);
+        }
     }
 
     /// Connects an output port to an input port, both named `<node key>-<port key>`.

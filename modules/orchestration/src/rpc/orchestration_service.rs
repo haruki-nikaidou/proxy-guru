@@ -11,9 +11,11 @@ use crate::entities::surreal::health::{
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use crate::entities::surreal::node::{
-    CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig,
-    LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode, NodeEntity, NodeSpec,
-    NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig, RelayProtocol, TlsConfig,
+    CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
+    LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode,
+    NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig,
+    RelayProtocol, TlsConfig, UniversalAggregateConfig, UniversalDistributeConfig,
+    UniversalPodConfig,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
@@ -326,15 +328,82 @@ fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
     }
 }
 
+fn port_kind_to_proto(kind: PortKind) -> i32 {
+    match kind {
+        PortKind::DeriveListen => pb::PortKind::DeriveListen,
+        PortKind::DeriveDestination => pb::PortKind::DeriveDestination,
+        PortKind::Bundle => pb::PortKind::Bundle,
+    }
+    .into()
+}
+
+fn lb_mode_to_proto(mode: LoadBalanceMode) -> i32 {
+    match mode {
+        LoadBalanceMode::RoundRobin => pb::LoadBalanceMode::RoundRobin,
+        LoadBalanceMode::Random => pb::LoadBalanceMode::Random,
+        LoadBalanceMode::IpHash => pb::LoadBalanceMode::IpHash,
+        LoadBalanceMode::Fallback => pb::LoadBalanceMode::Fallback,
+    }
+    .into()
+}
+
+fn lb_mode_from_proto(mode: i32) -> Result<LoadBalanceMode, Status> {
+    match pb::LoadBalanceMode::try_from(mode) {
+        Ok(pb::LoadBalanceMode::RoundRobin) => Ok(LoadBalanceMode::RoundRobin),
+        Ok(pb::LoadBalanceMode::Random) => Ok(LoadBalanceMode::Random),
+        Ok(pb::LoadBalanceMode::IpHash) => Ok(LoadBalanceMode::IpHash),
+        Ok(pb::LoadBalanceMode::Fallback) => Ok(LoadBalanceMode::Fallback),
+        Ok(pb::LoadBalanceMode::Unspecified) | Err(_) => Err(Status::invalid_argument(format!(
+            "mode: unknown load balance mode {mode}"
+        ))),
+    }
+}
+
+fn relay_protocol_to_proto(protocol: RelayProtocol) -> i32 {
+    match protocol {
+        RelayProtocol::TcpRaw => pb::RelayProtocol::RelayTcpRaw,
+        RelayProtocol::TcpTls => pb::RelayProtocol::RelayTcpTls,
+        RelayProtocol::Quic => pb::RelayProtocol::RelayQuic,
+    }
+    .into()
+}
+
+fn relay_protocol_from_proto(protocol: i32) -> Result<RelayProtocol, Status> {
+    match pb::RelayProtocol::try_from(protocol) {
+        Ok(pb::RelayProtocol::RelayTcpRaw) => Ok(RelayProtocol::TcpRaw),
+        Ok(pb::RelayProtocol::RelayTcpTls) => Ok(RelayProtocol::TcpTls),
+        Ok(pb::RelayProtocol::RelayQuic) => Ok(RelayProtocol::Quic),
+        Ok(pb::RelayProtocol::Unspecified) | Err(_) => Err(Status::invalid_argument(format!(
+            "protocol: unknown relay protocol {protocol}"
+        ))),
+    }
+}
+
+fn lane_to_proto(lane: &Lane) -> pb::Lane {
+    pb::Lane {
+        key: lane.key.clone(),
+        group_node_id: ids::record_key(&lane.group.0),
+        channel_pod_id: ids::record_key(&lane.channel.0),
+        role: match lane.role {
+            LaneRole::Distribute => pb::LaneRole::LaneDistribute,
+            LaneRole::Relay => pb::LaneRole::LaneRelay,
+            LaneRole::Landing => pb::LaneRole::LaneLanding,
+            LaneRole::Aggregate => pb::LaneRole::LaneAggregate,
+        }
+        .into(),
+        source_node_id: lane
+            .source
+            .as_ref()
+            .map(|s| ids::record_key(&s.0))
+            .unwrap_or_default(),
+    }
+}
+
 fn port_to_proto(port: &PortEntity) -> pb::Port {
     pb::Port {
         id: ids::record_key(&port.id.0),
         node_id: ids::record_key(&port.owner.0),
-        kind: match port.kind {
-            PortKind::DeriveListen => pb::PortKind::DeriveListen,
-            PortKind::DeriveDestination => pb::PortKind::DeriveDestination,
-        }
-        .into(),
+        kind: port_kind_to_proto(port.kind),
         direction: match port.direction {
             PortDirection::Input => pb::PortDirection::PortInput,
             PortDirection::Output => pb::PortDirection::PortOutput,
@@ -385,12 +454,7 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
             }),
         }),
         NodeSpec::Relay(cfg) => Spec::Relay(pb::RelayConfig {
-            protocol: match cfg.protocol {
-                RelayProtocol::TcpRaw => pb::RelayProtocol::RelayTcpRaw,
-                RelayProtocol::TcpTls => pb::RelayProtocol::RelayTcpTls,
-                RelayProtocol::Quic => pb::RelayProtocol::RelayQuic,
-            }
-            .into(),
+            protocol: relay_protocol_to_proto(cfg.protocol),
             override_ip_address: cfg.override_ip_address.clone().unwrap_or_default(),
             override_port: cfg.override_port.map(u32::from).unwrap_or_default(),
         }),
@@ -400,27 +464,29 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
         }),
         NodeSpec::LoadBalanceDistribute(cfg) => {
             Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
-                mode: match cfg.mode {
-                    LoadBalanceMode::RoundRobin => pb::LoadBalanceMode::RoundRobin,
-                    LoadBalanceMode::Random => pb::LoadBalanceMode::Random,
-                    LoadBalanceMode::IpHash => pb::LoadBalanceMode::IpHash,
-                    LoadBalanceMode::Fallback => pb::LoadBalanceMode::Fallback,
-                }
-                .into(),
+                mode: lb_mode_to_proto(cfg.mode),
             })
         }
         NodeSpec::LoadBalanceAggregate(_) => {
             Spec::LoadBalanceAggregate(pb::LoadBalanceAggregateConfig {})
         }
+        NodeSpec::UniversalPod(cfg) => Spec::UniversalPod(pb::UniversalPodConfig {
+            server_id: ids::record_key(&cfg.server.0),
+        }),
+        NodeSpec::UniversalDistribute(cfg) => {
+            Spec::UniversalDistribute(pb::UniversalDistributeConfig {
+                mode: lb_mode_to_proto(cfg.mode),
+                protocol: relay_protocol_to_proto(cfg.protocol),
+            })
+        }
+        NodeSpec::UniversalAggregate(_) => {
+            Spec::UniversalAggregate(pb::UniversalAggregateConfig {})
+        }
         NodeSpec::CanvasImport(cfg) => Spec::CanvasImport(pb::CanvasImportConfig {
             canvas_id: ids::record_key(&cfg.canvas.0),
         }),
         NodeSpec::CanvasExport(cfg) => Spec::CanvasExport(pb::CanvasExportConfig {
-            kind: match cfg.kind {
-                PortKind::DeriveListen => pb::PortKind::DeriveListen,
-                PortKind::DeriveDestination => pb::PortKind::DeriveDestination,
-            }
-            .into(),
+            kind: port_kind_to_proto(cfg.kind),
             direction: match cfg.direction {
                 CanvasExportAs::InputIntoCanvas => pb::CanvasExportAs::InputIntoCanvas,
                 CanvasExportAs::OutputOutOfCanvas => pb::CanvasExportAs::OutputOutOfCanvas,
@@ -481,17 +547,7 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
             }),
         }),
         Spec::Relay(cfg) => NodeSpec::Relay(RelayConfig {
-            protocol: match pb::RelayProtocol::try_from(cfg.protocol) {
-                Ok(pb::RelayProtocol::RelayTcpRaw) => RelayProtocol::TcpRaw,
-                Ok(pb::RelayProtocol::RelayTcpTls) => RelayProtocol::TcpTls,
-                Ok(pb::RelayProtocol::RelayQuic) => RelayProtocol::Quic,
-                Ok(pb::RelayProtocol::Unspecified) | Err(_) => {
-                    return Err(Status::invalid_argument(format!(
-                        "protocol: unknown relay protocol {}",
-                        cfg.protocol
-                    )));
-                }
-            },
+            protocol: relay_protocol_from_proto(cfg.protocol)?,
             override_ip_address: (!cfg.override_ip_address.is_empty())
                 .then_some(cfg.override_ip_address),
             override_port: match cfg.override_port {
@@ -508,23 +564,27 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
         }),
         Spec::LoadBalanceDistribute(cfg) => {
             NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
-                mode: match pb::LoadBalanceMode::try_from(cfg.mode) {
-                    Ok(pb::LoadBalanceMode::RoundRobin) => LoadBalanceMode::RoundRobin,
-                    Ok(pb::LoadBalanceMode::Random) => LoadBalanceMode::Random,
-                    Ok(pb::LoadBalanceMode::IpHash) => LoadBalanceMode::IpHash,
-                    Ok(pb::LoadBalanceMode::Fallback) => LoadBalanceMode::Fallback,
-                    Ok(pb::LoadBalanceMode::Unspecified) | Err(_) => {
-                        return Err(Status::invalid_argument(format!(
-                            "mode: unknown load balance mode {}",
-                            cfg.mode
-                        )));
-                    }
-                },
+                mode: lb_mode_from_proto(cfg.mode)?,
             })
         }
         Spec::LoadBalanceAggregate(_) => {
             NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
         }
+        Spec::UniversalPod(cfg) => {
+            if cfg.server_id.is_empty() {
+                return Err(Status::invalid_argument("server_id is required"));
+            }
+            NodeSpec::UniversalPod(UniversalPodConfig {
+                server: ids::server_id(&cfg.server_id),
+            })
+        }
+        Spec::UniversalDistribute(cfg) => {
+            NodeSpec::UniversalDistribute(UniversalDistributeConfig {
+                mode: lb_mode_from_proto(cfg.mode)?,
+                protocol: relay_protocol_from_proto(cfg.protocol)?,
+            })
+        }
+        Spec::UniversalAggregate(_) => NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
         Spec::CanvasImport(cfg) => {
             if cfg.canvas_id.is_empty() {
                 return Err(Status::invalid_argument("canvas_id is required"));
@@ -537,7 +597,7 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
             kind: match pb::PortKind::try_from(cfg.kind) {
                 Ok(pb::PortKind::DeriveListen) => PortKind::DeriveListen,
                 Ok(pb::PortKind::DeriveDestination) => PortKind::DeriveDestination,
-                Ok(pb::PortKind::Unspecified) | Err(_) => {
+                Ok(pb::PortKind::Unspecified | pb::PortKind::Bundle) | Err(_) => {
                     return Err(Status::invalid_argument(format!(
                         "kind: unknown port kind {}",
                         cfg.kind
@@ -584,6 +644,7 @@ fn node_row_to_proto(
         position: Some(position_to_proto(node.position)),
         ports: ports.iter().map(port_to_proto).collect(),
         import_target,
+        lane: node.lane.as_ref().map(lane_to_proto),
     }
 }
 
@@ -662,6 +723,12 @@ fn problem_to_proto(problem: &TopologyProblem) -> pb::Problem {
             ProblemKind::PodPortUnconnected => pb::ProblemKind::PodPortUnconnected,
             ProblemKind::RelaySameServer => pb::ProblemKind::RelaySameServer,
             ProblemKind::DistributeSingleMember => pb::ProblemKind::DistributeSingleMember,
+            ProblemKind::ChannelTargetNotPod => pb::ProblemKind::ChannelTargetNotPod,
+            ProblemKind::BundleEdgeInvalid => pb::ProblemKind::BundleEdgeInvalid,
+            ProblemKind::BundleCycle => pb::ProblemKind::BundleCycle,
+            ProblemKind::ChannelNoExit => pb::ProblemKind::ChannelNoExit,
+            ProblemKind::ChannelNoTransit => pb::ProblemKind::ChannelNoTransit,
+            ProblemKind::LanesStale => pb::ProblemKind::LanesStale,
         }
         .into(),
         message: problem.message.clone(),
@@ -1013,14 +1080,51 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
     ) -> Result<Response<pb::ConnectReply>, Status> {
         let actor = auth::rpc::middleware::from_request(&request)?;
         let input = request.into_inner();
-        let edge = self
-            .edges
-            .process(edge::Connect {
-                actor,
-                output_port: ids::port_id(&input.output_port_id),
-                input_port: ids::port_id(&input.input_port_id),
+        let end = |port: &str, handle: Option<pb::UniversalHandle>| -> Result<edge::ConnectEnd, Status> {
+            if !port.is_empty() {
+                return Ok(edge::ConnectEnd::Port(ids::port_id(port)));
+            }
+            let handle = handle.ok_or_else(|| {
+                Status::invalid_argument("each end needs a port id or a universal handle")
+            })?;
+            if handle.node_id.is_empty() {
+                return Err(Status::invalid_argument("handle: node_id is required"));
+            }
+            let group = match pb::UniversalGroup::try_from(handle.group) {
+                Ok(pb::UniversalGroup::ChannelOut) => edge::UniversalGroup::ChannelOut,
+                Ok(pb::UniversalGroup::BundleIn) => edge::UniversalGroup::BundleIn,
+                Ok(pb::UniversalGroup::BundleOut) => edge::UniversalGroup::BundleOut,
+                Ok(pb::UniversalGroup::Unspecified) | Err(_) => {
+                    return Err(Status::invalid_argument("handle: group is required"));
+                }
+            };
+            Ok(edge::ConnectEnd::Handle {
+                node: ids::node_id(&handle.node_id),
+                group,
             })
-            .await?;
+        };
+        let output = end(&input.output_port_id, input.output_handle)?;
+        let input_end = end(&input.input_port_id, input.input_handle)?;
+        let edge = match (output, input_end) {
+            (edge::ConnectEnd::Port(output_port), edge::ConnectEnd::Port(input_port)) => {
+                self.edges
+                    .process(edge::Connect {
+                        actor,
+                        output_port,
+                        input_port,
+                    })
+                    .await?
+            }
+            (output, input) => {
+                self.edges
+                    .process(edge::ConnectUniversal {
+                        actor,
+                        output,
+                        input,
+                    })
+                    .await?
+            }
+        };
         Ok(Response::new(pb::ConnectReply {
             edge: Some(edge_to_proto(&edge)),
         }))

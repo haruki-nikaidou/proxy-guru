@@ -16,14 +16,17 @@ pub struct PortEntity {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, SurrealValue, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, SurrealValue, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum PortKind {
     DeriveListen,
     DeriveDestination,
+    /// A bundle port joins two universal nodes; it carries every channel of the
+    /// source and is never walked by derivation (see `services::universal`).
+    Bundle,
 }
 
-#[derive(Debug, Clone, SurrealValue, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, SurrealValue, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum PortDirection {
     Input,

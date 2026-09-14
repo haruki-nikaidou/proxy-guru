@@ -201,6 +201,11 @@ export enum PortKind {
   UNSPECIFIED = 0,
   DERIVE_LISTEN = 1,
   DERIVE_DESTINATION = 2,
+  /**
+   * BUNDLE - A bundle carries every channel of a universal node to the next one; it is
+   * expansion metadata, not a traffic port.
+   */
+  BUNDLE = 3,
   UNRECOGNIZED = -1,
 }
 
@@ -215,6 +220,9 @@ export function portKindFromJSON(object: any): PortKind {
     case 2:
     case "DERIVE_DESTINATION":
       return PortKind.DERIVE_DESTINATION;
+    case 3:
+    case "BUNDLE":
+      return PortKind.BUNDLE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -230,6 +238,8 @@ export function portKindToJSON(object: PortKind): string {
       return "DERIVE_LISTEN";
     case PortKind.DERIVE_DESTINATION:
       return "DERIVE_DESTINATION";
+    case PortKind.BUNDLE:
+      return "BUNDLE";
     case PortKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -374,6 +384,12 @@ export enum ProblemKind {
   CANVAS_IMPORT_UNRESOLVED = 19,
   POD_SERVER_FOREIGN = 20,
   SERVER_NO_ADDRESS = 21,
+  CHANNEL_TARGET_NOT_POD = 22,
+  BUNDLE_EDGE_INVALID = 23,
+  BUNDLE_CYCLE = 24,
+  CHANNEL_NO_EXIT = 25,
+  CHANNEL_NO_TRANSIT = 26,
+  LANES_STALE = 27,
   UNRECOGNIZED = -1,
 }
 
@@ -439,6 +455,24 @@ export function problemKindFromJSON(object: any): ProblemKind {
     case 21:
     case "SERVER_NO_ADDRESS":
       return ProblemKind.SERVER_NO_ADDRESS;
+    case 22:
+    case "CHANNEL_TARGET_NOT_POD":
+      return ProblemKind.CHANNEL_TARGET_NOT_POD;
+    case 23:
+    case "BUNDLE_EDGE_INVALID":
+      return ProblemKind.BUNDLE_EDGE_INVALID;
+    case 24:
+    case "BUNDLE_CYCLE":
+      return ProblemKind.BUNDLE_CYCLE;
+    case 25:
+    case "CHANNEL_NO_EXIT":
+      return ProblemKind.CHANNEL_NO_EXIT;
+    case 26:
+    case "CHANNEL_NO_TRANSIT":
+      return ProblemKind.CHANNEL_NO_TRANSIT;
+    case 27:
+    case "LANES_STALE":
+      return ProblemKind.LANES_STALE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -488,7 +522,123 @@ export function problemKindToJSON(object: ProblemKind): string {
       return "POD_SERVER_FOREIGN";
     case ProblemKind.SERVER_NO_ADDRESS:
       return "SERVER_NO_ADDRESS";
+    case ProblemKind.CHANNEL_TARGET_NOT_POD:
+      return "CHANNEL_TARGET_NOT_POD";
+    case ProblemKind.BUNDLE_EDGE_INVALID:
+      return "BUNDLE_EDGE_INVALID";
+    case ProblemKind.BUNDLE_CYCLE:
+      return "BUNDLE_CYCLE";
+    case ProblemKind.CHANNEL_NO_EXIT:
+      return "CHANNEL_NO_EXIT";
+    case ProblemKind.CHANNEL_NO_TRANSIT:
+      return "CHANNEL_NO_TRANSIT";
+    case ProblemKind.LANES_STALE:
+      return "LANES_STALE";
     case ProblemKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/** The role a lane node plays in the expansion of a universal node. */
+export enum LaneRole {
+  UNSPECIFIED = 0,
+  LANE_DISTRIBUTE = 1,
+  LANE_RELAY = 2,
+  LANE_LANDING = 3,
+  LANE_AGGREGATE = 4,
+  UNRECOGNIZED = -1,
+}
+
+export function laneRoleFromJSON(object: any): LaneRole {
+  switch (object) {
+    case 0:
+    case "LANE_ROLE_UNSPECIFIED":
+      return LaneRole.UNSPECIFIED;
+    case 1:
+    case "LANE_DISTRIBUTE":
+      return LaneRole.LANE_DISTRIBUTE;
+    case 2:
+    case "LANE_RELAY":
+      return LaneRole.LANE_RELAY;
+    case 3:
+    case "LANE_LANDING":
+      return LaneRole.LANE_LANDING;
+    case 4:
+    case "LANE_AGGREGATE":
+      return LaneRole.LANE_AGGREGATE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return LaneRole.UNRECOGNIZED;
+  }
+}
+
+export function laneRoleToJSON(object: LaneRole): string {
+  switch (object) {
+    case LaneRole.UNSPECIFIED:
+      return "LANE_ROLE_UNSPECIFIED";
+    case LaneRole.LANE_DISTRIBUTE:
+      return "LANE_DISTRIBUTE";
+    case LaneRole.LANE_RELAY:
+      return "LANE_RELAY";
+    case LaneRole.LANE_LANDING:
+      return "LANE_LANDING";
+    case LaneRole.LANE_AGGREGATE:
+      return "LANE_AGGREGATE";
+    case LaneRole.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/**
+ * The handle groups of a universal node, for connects that create a port on
+ * demand: `CHANNEL_OUT` on a distributor (one port per channel), `BUNDLE_IN` on
+ * a universal pod or aggregator (one port per incoming bundle), `BUNDLE_OUT` on
+ * a distributor (one port per outgoing bundle) or a universal pod (its single
+ * fixed port).
+ */
+export enum UniversalGroup {
+  UNSPECIFIED = 0,
+  CHANNEL_OUT = 1,
+  BUNDLE_IN = 2,
+  BUNDLE_OUT = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function universalGroupFromJSON(object: any): UniversalGroup {
+  switch (object) {
+    case 0:
+    case "UNIVERSAL_GROUP_UNSPECIFIED":
+      return UniversalGroup.UNSPECIFIED;
+    case 1:
+    case "CHANNEL_OUT":
+      return UniversalGroup.CHANNEL_OUT;
+    case 2:
+    case "BUNDLE_IN":
+      return UniversalGroup.BUNDLE_IN;
+    case 3:
+    case "BUNDLE_OUT":
+      return UniversalGroup.BUNDLE_OUT;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return UniversalGroup.UNRECOGNIZED;
+  }
+}
+
+export function universalGroupToJSON(object: UniversalGroup): string {
+  switch (object) {
+    case UniversalGroup.UNSPECIFIED:
+      return "UNIVERSAL_GROUP_UNSPECIFIED";
+    case UniversalGroup.CHANNEL_OUT:
+      return "CHANNEL_OUT";
+    case UniversalGroup.BUNDLE_IN:
+      return "BUNDLE_IN";
+    case UniversalGroup.BUNDLE_OUT:
+      return "BUNDLE_OUT";
+    case UniversalGroup.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
@@ -768,6 +918,31 @@ export interface CanvasExportConfig {
   direction: CanvasExportAs;
 }
 
+/**
+ * The universal pod of a server: created with the server, one per server. It
+ * takes bundles in and lands every channel they carry on a real pod of its own
+ * (a "lane"), then hands the bundle on through `bundle_out`.
+ */
+export interface UniversalPodConfig {
+  serverId: string;
+}
+
+/**
+ * Fans every channel connected to it over every universal pod it is bundled
+ * to, with one strategy and one relay protocol for all of them.
+ */
+export interface UniversalDistributeConfig {
+  mode: LoadBalanceMode;
+  protocol: RelayProtocol;
+}
+
+/**
+ * Exposes one output per channel the incoming bundles carry, to be connected to
+ * an exit.
+ */
+export interface UniversalAggregateConfig {
+}
+
 export interface NodeSpec {
   pod?: PodConfig | undefined;
   entry?: EntryConfig | undefined;
@@ -777,6 +952,27 @@ export interface NodeSpec {
   loadBalanceAggregate?: LoadBalanceAggregateConfig | undefined;
   canvasImport?: CanvasImportConfig | undefined;
   canvasExport?: CanvasExportConfig | undefined;
+  universalPod?: UniversalPodConfig | undefined;
+  universalDistribute?: UniversalDistributeConfig | undefined;
+  universalAggregate?: UniversalAggregateConfig | undefined;
+}
+
+/**
+ * Why a node exists: it was generated by the expansion of a universal node
+ * (`group_node_id`) for one channel (`channel_pod_id`, the entry pod the
+ * channel starts at). Such a node is managed: it cannot be retired or
+ * re-wired by hand, only a landing pod's port may be edited.
+ */
+export interface Lane {
+  key: string;
+  groupNodeId: string;
+  channelPodId: string;
+  role: LaneRole;
+  /**
+   * The universal node the bundle came from (a landing pod) or the universal
+   * pod a relay dials (a distributor's relay); empty otherwise.
+   */
+  sourceNodeId: string;
 }
 
 export interface Port {
@@ -800,7 +996,11 @@ export interface Node {
    * Set only for a canvas_import node: the canvas it embeds. An import node's
    * ports mirror that canvas's export nodes (port key = export node id).
    */
-  importTarget: Canvas | undefined;
+  importTarget:
+    | Canvas
+    | undefined;
+  /** Set only for a node generated by a universal node's expansion. */
+  lane: Lane | undefined;
 }
 
 export interface Edge {
@@ -1059,9 +1259,25 @@ export interface ForceDeleteNodeRequest {
 export interface ForceDeleteNodeReply {
 }
 
+/**
+ * One end of a connect on a universal node's handle group instead of a port: the
+ * port is created on demand (a distributor's `chan:<pod>`, a bundle port) and
+ * the node's lanes are regenerated in the same transaction.
+ */
+export interface UniversalHandle {
+  nodeId: string;
+  group: UniversalGroup;
+}
+
+/**
+ * Each end is either a port id or a universal handle; the handle is used when
+ * the port id is empty.
+ */
 export interface ConnectRequest {
   outputPortId: string;
   inputPortId: string;
+  outputHandle: UniversalHandle | undefined;
+  inputHandle: UniversalHandle | undefined;
 }
 
 export interface ConnectReply {
@@ -2132,6 +2348,189 @@ export const CanvasExportConfig: MessageFns<CanvasExportConfig> = {
   },
 };
 
+function createBaseUniversalPodConfig(): UniversalPodConfig {
+  return { serverId: "" };
+}
+
+export const UniversalPodConfig: MessageFns<UniversalPodConfig> = {
+  encode(message: UniversalPodConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UniversalPodConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUniversalPodConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UniversalPodConfig {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+    };
+  },
+
+  toJSON(message: UniversalPodConfig): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<UniversalPodConfig>): UniversalPodConfig {
+    return UniversalPodConfig.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<UniversalPodConfig>): UniversalPodConfig {
+    const message = createBaseUniversalPodConfig();
+    message.serverId = object.serverId ?? "";
+    return message;
+  },
+};
+
+function createBaseUniversalDistributeConfig(): UniversalDistributeConfig {
+  return { mode: 0, protocol: 0 };
+}
+
+export const UniversalDistributeConfig: MessageFns<UniversalDistributeConfig> = {
+  encode(message: UniversalDistributeConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.mode !== 0) {
+      writer.uint32(8).int32(message.mode);
+    }
+    if (message.protocol !== 0) {
+      writer.uint32(16).int32(message.protocol);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UniversalDistributeConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUniversalDistributeConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.mode = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.protocol = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UniversalDistributeConfig {
+    return {
+      mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0,
+      protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
+    };
+  },
+
+  toJSON(message: UniversalDistributeConfig): unknown {
+    const obj: any = {};
+    if (message.mode !== 0) {
+      obj.mode = loadBalanceModeToJSON(message.mode);
+    }
+    if (message.protocol !== 0) {
+      obj.protocol = relayProtocolToJSON(message.protocol);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<UniversalDistributeConfig>): UniversalDistributeConfig {
+    return UniversalDistributeConfig.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<UniversalDistributeConfig>): UniversalDistributeConfig {
+    const message = createBaseUniversalDistributeConfig();
+    message.mode = object.mode ?? 0;
+    message.protocol = object.protocol ?? 0;
+    return message;
+  },
+};
+
+function createBaseUniversalAggregateConfig(): UniversalAggregateConfig {
+  return {};
+}
+
+export const UniversalAggregateConfig: MessageFns<UniversalAggregateConfig> = {
+  encode(_: UniversalAggregateConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UniversalAggregateConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUniversalAggregateConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): UniversalAggregateConfig {
+    return {};
+  },
+
+  toJSON(_: UniversalAggregateConfig): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<UniversalAggregateConfig>): UniversalAggregateConfig {
+    return UniversalAggregateConfig.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<UniversalAggregateConfig>): UniversalAggregateConfig {
+    const message = createBaseUniversalAggregateConfig();
+    return message;
+  },
+};
+
 function createBaseNodeSpec(): NodeSpec {
   return {
     pod: undefined,
@@ -2142,6 +2541,9 @@ function createBaseNodeSpec(): NodeSpec {
     loadBalanceAggregate: undefined,
     canvasImport: undefined,
     canvasExport: undefined,
+    universalPod: undefined,
+    universalDistribute: undefined,
+    universalAggregate: undefined,
   };
 }
 
@@ -2170,6 +2572,15 @@ export const NodeSpec: MessageFns<NodeSpec> = {
     }
     if (message.canvasExport !== undefined) {
       CanvasExportConfig.encode(message.canvasExport, writer.uint32(66).fork()).join();
+    }
+    if (message.universalPod !== undefined) {
+      UniversalPodConfig.encode(message.universalPod, writer.uint32(74).fork()).join();
+    }
+    if (message.universalDistribute !== undefined) {
+      UniversalDistributeConfig.encode(message.universalDistribute, writer.uint32(82).fork()).join();
+    }
+    if (message.universalAggregate !== undefined) {
+      UniversalAggregateConfig.encode(message.universalAggregate, writer.uint32(90).fork()).join();
     }
     return writer;
   },
@@ -2245,6 +2656,30 @@ export const NodeSpec: MessageFns<NodeSpec> = {
           message.canvasExport = CanvasExportConfig.decode(reader, reader.uint32());
           continue;
         }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.universalPod = UniversalPodConfig.decode(reader, reader.uint32());
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.universalDistribute = UniversalDistributeConfig.decode(reader, reader.uint32());
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.universalAggregate = UniversalAggregateConfig.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2280,6 +2715,21 @@ export const NodeSpec: MessageFns<NodeSpec> = {
         : isSet(object.canvas_export)
         ? CanvasExportConfig.fromJSON(object.canvas_export)
         : undefined,
+      universalPod: isSet(object.universalPod)
+        ? UniversalPodConfig.fromJSON(object.universalPod)
+        : isSet(object.universal_pod)
+        ? UniversalPodConfig.fromJSON(object.universal_pod)
+        : undefined,
+      universalDistribute: isSet(object.universalDistribute)
+        ? UniversalDistributeConfig.fromJSON(object.universalDistribute)
+        : isSet(object.universal_distribute)
+        ? UniversalDistributeConfig.fromJSON(object.universal_distribute)
+        : undefined,
+      universalAggregate: isSet(object.universalAggregate)
+        ? UniversalAggregateConfig.fromJSON(object.universalAggregate)
+        : isSet(object.universal_aggregate)
+        ? UniversalAggregateConfig.fromJSON(object.universal_aggregate)
+        : undefined,
     };
   },
 
@@ -2308,6 +2758,15 @@ export const NodeSpec: MessageFns<NodeSpec> = {
     }
     if (message.canvasExport !== undefined) {
       obj.canvasExport = CanvasExportConfig.toJSON(message.canvasExport);
+    }
+    if (message.universalPod !== undefined) {
+      obj.universalPod = UniversalPodConfig.toJSON(message.universalPod);
+    }
+    if (message.universalDistribute !== undefined) {
+      obj.universalDistribute = UniversalDistributeConfig.toJSON(message.universalDistribute);
+    }
+    if (message.universalAggregate !== undefined) {
+      obj.universalAggregate = UniversalAggregateConfig.toJSON(message.universalAggregate);
     }
     return obj;
   },
@@ -2340,6 +2799,151 @@ export const NodeSpec: MessageFns<NodeSpec> = {
     message.canvasExport = (object.canvasExport !== undefined && object.canvasExport !== null)
       ? CanvasExportConfig.fromPartial(object.canvasExport)
       : undefined;
+    message.universalPod = (object.universalPod !== undefined && object.universalPod !== null)
+      ? UniversalPodConfig.fromPartial(object.universalPod)
+      : undefined;
+    message.universalDistribute = (object.universalDistribute !== undefined && object.universalDistribute !== null)
+      ? UniversalDistributeConfig.fromPartial(object.universalDistribute)
+      : undefined;
+    message.universalAggregate = (object.universalAggregate !== undefined && object.universalAggregate !== null)
+      ? UniversalAggregateConfig.fromPartial(object.universalAggregate)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseLane(): Lane {
+  return { key: "", groupNodeId: "", channelPodId: "", role: 0, sourceNodeId: "" };
+}
+
+export const Lane: MessageFns<Lane> = {
+  encode(message: Lane, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.groupNodeId !== "") {
+      writer.uint32(18).string(message.groupNodeId);
+    }
+    if (message.channelPodId !== "") {
+      writer.uint32(26).string(message.channelPodId);
+    }
+    if (message.role !== 0) {
+      writer.uint32(32).int32(message.role);
+    }
+    if (message.sourceNodeId !== "") {
+      writer.uint32(42).string(message.sourceNodeId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Lane {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseLane();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.groupNodeId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.channelPodId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.role = reader.int32() as any;
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.sourceNodeId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Lane {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      groupNodeId: isSet(object.groupNodeId)
+        ? globalThis.String(object.groupNodeId)
+        : isSet(object.group_node_id)
+        ? globalThis.String(object.group_node_id)
+        : "",
+      channelPodId: isSet(object.channelPodId)
+        ? globalThis.String(object.channelPodId)
+        : isSet(object.channel_pod_id)
+        ? globalThis.String(object.channel_pod_id)
+        : "",
+      role: isSet(object.role) ? laneRoleFromJSON(object.role) : 0,
+      sourceNodeId: isSet(object.sourceNodeId)
+        ? globalThis.String(object.sourceNodeId)
+        : isSet(object.source_node_id)
+        ? globalThis.String(object.source_node_id)
+        : "",
+    };
+  },
+
+  toJSON(message: Lane): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.groupNodeId !== "") {
+      obj.groupNodeId = message.groupNodeId;
+    }
+    if (message.channelPodId !== "") {
+      obj.channelPodId = message.channelPodId;
+    }
+    if (message.role !== 0) {
+      obj.role = laneRoleToJSON(message.role);
+    }
+    if (message.sourceNodeId !== "") {
+      obj.sourceNodeId = message.sourceNodeId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<Lane>): Lane {
+    return Lane.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Lane>): Lane {
+    const message = createBaseLane();
+    message.key = object.key ?? "";
+    message.groupNodeId = object.groupNodeId ?? "";
+    message.channelPodId = object.channelPodId ?? "";
+    message.role = object.role ?? 0;
+    message.sourceNodeId = object.sourceNodeId ?? "";
     return message;
   },
 };
@@ -2501,6 +3105,7 @@ function createBaseNode(): Node {
     position: undefined,
     ports: [],
     importTarget: undefined,
+    lane: undefined,
   };
 }
 
@@ -2529,6 +3134,9 @@ export const Node: MessageFns<Node> = {
     }
     if (message.importTarget !== undefined) {
       Canvas.encode(message.importTarget, writer.uint32(66).fork()).join();
+    }
+    if (message.lane !== undefined) {
+      Lane.encode(message.lane, writer.uint32(74).fork()).join();
     }
     return writer;
   },
@@ -2604,6 +3212,14 @@ export const Node: MessageFns<Node> = {
           message.importTarget = Canvas.decode(reader, reader.uint32());
           continue;
         }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.lane = Lane.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2631,6 +3247,7 @@ export const Node: MessageFns<Node> = {
         : isSet(object.import_target)
         ? Canvas.fromJSON(object.import_target)
         : undefined,
+      lane: isSet(object.lane) ? Lane.fromJSON(object.lane) : undefined,
     };
   },
 
@@ -2660,6 +3277,9 @@ export const Node: MessageFns<Node> = {
     if (message.importTarget !== undefined) {
       obj.importTarget = Canvas.toJSON(message.importTarget);
     }
+    if (message.lane !== undefined) {
+      obj.lane = Lane.toJSON(message.lane);
+    }
     return obj;
   },
 
@@ -2680,6 +3300,7 @@ export const Node: MessageFns<Node> = {
     message.importTarget = (object.importTarget !== undefined && object.importTarget !== null)
       ? Canvas.fromPartial(object.importTarget)
       : undefined;
+    message.lane = (object.lane !== undefined && object.lane !== null) ? Lane.fromPartial(object.lane) : undefined;
     return message;
   },
 };
@@ -6492,8 +7113,88 @@ export const ForceDeleteNodeReply: MessageFns<ForceDeleteNodeReply> = {
   },
 };
 
+function createBaseUniversalHandle(): UniversalHandle {
+  return { nodeId: "", group: 0 };
+}
+
+export const UniversalHandle: MessageFns<UniversalHandle> = {
+  encode(message: UniversalHandle, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    if (message.group !== 0) {
+      writer.uint32(16).int32(message.group);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UniversalHandle {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUniversalHandle();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.group = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UniversalHandle {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      group: isSet(object.group) ? universalGroupFromJSON(object.group) : 0,
+    };
+  },
+
+  toJSON(message: UniversalHandle): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.group !== 0) {
+      obj.group = universalGroupToJSON(message.group);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<UniversalHandle>): UniversalHandle {
+    return UniversalHandle.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<UniversalHandle>): UniversalHandle {
+    const message = createBaseUniversalHandle();
+    message.nodeId = object.nodeId ?? "";
+    message.group = object.group ?? 0;
+    return message;
+  },
+};
+
 function createBaseConnectRequest(): ConnectRequest {
-  return { outputPortId: "", inputPortId: "" };
+  return { outputPortId: "", inputPortId: "", outputHandle: undefined, inputHandle: undefined };
 }
 
 export const ConnectRequest: MessageFns<ConnectRequest> = {
@@ -6503,6 +7204,12 @@ export const ConnectRequest: MessageFns<ConnectRequest> = {
     }
     if (message.inputPortId !== "") {
       writer.uint32(18).string(message.inputPortId);
+    }
+    if (message.outputHandle !== undefined) {
+      UniversalHandle.encode(message.outputHandle, writer.uint32(26).fork()).join();
+    }
+    if (message.inputHandle !== undefined) {
+      UniversalHandle.encode(message.inputHandle, writer.uint32(34).fork()).join();
     }
     return writer;
   },
@@ -6530,6 +7237,22 @@ export const ConnectRequest: MessageFns<ConnectRequest> = {
           message.inputPortId = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.outputHandle = UniversalHandle.decode(reader, reader.uint32());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.inputHandle = UniversalHandle.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -6551,6 +7274,16 @@ export const ConnectRequest: MessageFns<ConnectRequest> = {
         : isSet(object.input_port_id)
         ? globalThis.String(object.input_port_id)
         : "",
+      outputHandle: isSet(object.outputHandle)
+        ? UniversalHandle.fromJSON(object.outputHandle)
+        : isSet(object.output_handle)
+        ? UniversalHandle.fromJSON(object.output_handle)
+        : undefined,
+      inputHandle: isSet(object.inputHandle)
+        ? UniversalHandle.fromJSON(object.inputHandle)
+        : isSet(object.input_handle)
+        ? UniversalHandle.fromJSON(object.input_handle)
+        : undefined,
     };
   },
 
@@ -6562,6 +7295,12 @@ export const ConnectRequest: MessageFns<ConnectRequest> = {
     if (message.inputPortId !== "") {
       obj.inputPortId = message.inputPortId;
     }
+    if (message.outputHandle !== undefined) {
+      obj.outputHandle = UniversalHandle.toJSON(message.outputHandle);
+    }
+    if (message.inputHandle !== undefined) {
+      obj.inputHandle = UniversalHandle.toJSON(message.inputHandle);
+    }
     return obj;
   },
 
@@ -6572,6 +7311,12 @@ export const ConnectRequest: MessageFns<ConnectRequest> = {
     const message = createBaseConnectRequest();
     message.outputPortId = object.outputPortId ?? "";
     message.inputPortId = object.inputPortId ?? "";
+    message.outputHandle = (object.outputHandle !== undefined && object.outputHandle !== null)
+      ? UniversalHandle.fromPartial(object.outputHandle)
+      : undefined;
+    message.inputHandle = (object.inputHandle !== undefined && object.inputHandle !== null)
+      ? UniversalHandle.fromPartial(object.inputHandle)
+      : undefined;
     return message;
   },
 };

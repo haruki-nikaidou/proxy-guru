@@ -45,11 +45,18 @@ PROXY protocol v1 and v2 are supported on both ends.
 ### Servers, pods and addresses
 
 A **server** is a machine running `guru-worker`. A **pod** is one listening port on one server —
-one rule's socket. Every server starts with four pods named `tcp`, `tls`, `ws` and `quic`, each on
-a random port above 40000: these are where relays from other servers land, so "relay over QUIC to
-that server" is drawn by connecting to its `quic` pod. Your own ingress rules are pods you add
-(say, `1080` for a SOCKS entry). A pod binds every address of the host by default; it can be
-restricted to IPv4 or pinned to one interface.
+one rule's socket. Your ingress rules are pods you add (say, `1080` for a SOCKS entry). A pod
+binds every address of the host by default; it can be restricted to IPv4 or pinned to one
+interface.
+
+Every server also comes with a **universal pod**: the place other servers' traffic lands without
+drawing a pod per rule. Connect your ingress pods to a **universal distributor** (one strategy and
+one relay protocol for all of them), bundle the distributor to the universal pods of your transit
+servers, and bundle those to a **universal aggregator**, which gives you one coloured output per
+rule to connect to an exit. Each rule is a *channel* with its own colour along the whole path; a
+bundle is one thick line carrying every channel. Behind the scenes the control plane generates the
+real pods, relays and load balancers ("lanes") — the landing pod of each rule on each transit
+server shows up in that server's panel with an editable port.
 
 Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
 it registers (and every minute after, if they change), the master remembers where the registration

@@ -6,13 +6,13 @@
 //! the learned value is wrong for the fleet (NAT, an overlay network). What other
 //! servers dial is computed from these by [`ServerEntity::effective_address`].
 //!
-//! Every server starts with one pod per transport it can be relayed into
-//! (`tcp`, `tls`, `ws`, `quic`), each on a random high port, so a relay hop is
-//! drawn by connecting to the target server's pod of the matching protocol.
+//! Every server comes with its universal pod (see `services::universal`): the
+//! one node other universal nodes bundle to, which lands every channel it
+//! receives on a generated pod of this server.
 
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
-use crate::entities::surreal::node::{CreateNodeRow, NodeSpec, PodConfig};
+use crate::entities::surreal::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
 use crate::entities::surreal::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
     ServerEntity, ServerId, ServerIpv6Resolve, UpdateServerSettings,
@@ -28,16 +28,12 @@ use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use kanau::processor::Processor;
-use rand::Rng;
 use std::net::IpAddr;
 use std::ops::RangeInclusive;
 use wakuwaku::surreal::SurrealProcessor;
 
-/// The transport pods every new server gets, in the order they are created.
-/// `ws` has no relay protocol yet and is a placeholder for one.
-pub const DEFAULT_POD_NAMES: [&str; 4] = ["tcp", "tls", "ws", "quic"];
-/// Where default pods and the dashboard's suggestions draw their ports from:
-/// high enough to stay clear of anything an operator types by hand.
+/// Where generated landing pods and the dashboard's suggestions draw their
+/// ports from: high enough to stay clear of anything an operator types by hand.
 pub const DEFAULT_POD_PORTS: RangeInclusive<u16> = 40000..=59999;
 
 #[derive(Clone)]
@@ -108,19 +104,6 @@ impl AddressOverrides {
     }
 }
 
-/// `count` distinct random ports from [`DEFAULT_POD_PORTS`].
-pub fn random_default_ports(count: usize) -> Vec<u16> {
-    let mut rng = rand::rng();
-    let mut ports: Vec<u16> = Vec::with_capacity(count);
-    while ports.len() < count {
-        let port = rng.random_range(DEFAULT_POD_PORTS);
-        if !ports.contains(&port) {
-            ports.push(port);
-        }
-    }
-    ports
-}
-
 pub struct CreateServer {
     pub actor: Identity,
     pub canvas: CanvasId,
@@ -167,32 +150,23 @@ impl Processor<CreateServer> for ServerService {
                 extra_addresses: input.addresses.extra_addresses,
             })
             .await?;
-        // The transport pods. Unwired pods derive nothing and clash with nothing
-        // (distinct ports), so no projection is needed; a failure part-way leaves
-        // a server with fewer default pods, which the operator can add by hand.
-        for (name, port) in DEFAULT_POD_NAMES
-            .iter()
-            .zip(random_default_ports(DEFAULT_POD_NAMES.len()))
-        {
-            let spec = NodeSpec::Pod(PodConfig {
-                server: server.id.clone(),
-                port,
-                bind_ip: None,
-                advertise_ip: None,
-            });
-            let ports = port_layout(&spec, 0)?;
-            self.db
-                .process(CreateNodeRow {
-                    canvas: input.canvas.clone(),
-                    name: (*name).to_string(),
-                    comment: String::new(),
-                    spec,
-                    position: server.position,
-                    ports,
-                    import_sync: None,
-                })
-                .await?;
-        }
+        // The universal pod. Unwired it derives nothing and clashes with
+        // nothing, so no projection is needed.
+        let spec = NodeSpec::UniversalPod(UniversalPodConfig {
+            server: server.id.clone(),
+        });
+        let ports = port_layout(&spec, 0)?;
+        self.db
+            .process(CreateNodeRow {
+                canvas: input.canvas.clone(),
+                name: server.name.clone(),
+                comment: String::new(),
+                spec,
+                position: server.position,
+                ports,
+                import_sync: None,
+            })
+            .await?;
         self.notifier.notify(&input.canvas).await;
         Ok(server)
     }
@@ -312,18 +286,56 @@ impl Processor<DeleteServer> for ServerService {
             })
             .await?;
         let server_key = record_key(&input.server.0);
-        let live_pods = topology
+        let mine: Vec<&crate::entities::surreal::node::NodeWithPorts> = topology
             .nodes
             .iter()
             .filter(|node| match &node.node.spec {
                 NodeSpec::Pod(cfg) => record_key(&cfg.server.0) == server_key,
                 _ => false,
             })
-            .count();
+            .collect();
+        // A landing pod is not the operator's to delete: name the channels it
+        // serves, so they know which bundle to cut.
+        let mut channels: Vec<String> = mine
+            .iter()
+            .filter_map(|node| node.node.lane.as_ref())
+            .map(|lane| {
+                let key = record_key(&lane.channel.0);
+                topology
+                    .nodes
+                    .iter()
+                    .find(|n| record_key(&n.node.id.0) == key)
+                    .map(|n| n.node.name.clone())
+                    .unwrap_or(key)
+            })
+            .collect();
+        channels.sort();
+        channels.dedup();
+        if !channels.is_empty() {
+            return Err(OrchestrationError::Conflict(format!(
+                "server still lands channel(s) {}; disconnect the bundles into it first",
+                channels.join(", ")
+            )));
+        }
+        let live_pods = mine.len();
         if live_pods > 0 {
             return Err(OrchestrationError::Conflict(format!(
                 "server still has {live_pods} pod(s); delete them first"
             )));
+        }
+        let universal_ports: std::collections::HashSet<String> = topology
+            .nodes
+            .iter()
+            .filter(|node| matches!(&node.node.spec, NodeSpec::UniversalPod(cfg) if record_key(&cfg.server.0) == server_key))
+            .flat_map(|node| node.ports.iter().map(|p| record_key(&p.id.0)))
+            .collect();
+        if topology.edges.iter().any(|e| {
+            universal_ports.contains(&record_key(&e.source.0))
+                || universal_ports.contains(&record_key(&e.target.0))
+        }) {
+            return Err(OrchestrationError::Conflict(
+                "server's universal pod is still bundled; disconnect its bundles first".into(),
+            ));
         }
 
         self.db

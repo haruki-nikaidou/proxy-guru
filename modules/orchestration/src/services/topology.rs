@@ -27,6 +27,7 @@ use crate::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind
 use crate::entities::surreal::server::{ServerEntity, ServerId, ServerIpv6Resolve};
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::services::node::{export_port_direction, import_port_layout};
+use crate::services::universal::{self, UniversalPort};
 use crate::utils::ids::record_key;
 use std::collections::{HashMap, HashSet};
 
@@ -57,6 +58,19 @@ pub enum ProblemKind {
     CanvasImportDuplicate,
     CanvasImportUnresolved,
     ServerNoAddress,
+    /// A distributor's `chan:` port is connected to something other than the
+    /// `destination` of the pod it is named after.
+    ChannelTargetNotPod,
+    /// A bundle edge between nodes that cannot be bundled, or on mismatched keys.
+    BundleEdgeInvalid,
+    BundleCycle,
+    /// A channel lands on a universal pod that bundles on to nothing (warning).
+    ChannelNoExit,
+    /// A channel on a distributor that bundles to no server (warning).
+    ChannelNoTransit,
+    /// The stored lanes differ from the expansion; the next universal edit
+    /// regenerates them (warning).
+    LanesStale,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +84,7 @@ pub struct TopologyProblem {
 }
 
 impl TopologyProblem {
-    fn error(kind: ProblemKind, message: String) -> Self {
+    pub(crate) fn error(kind: ProblemKind, message: String) -> Self {
         Self {
             severity: ProblemSeverity::Error,
             kind,
@@ -81,7 +95,7 @@ impl TopologyProblem {
         }
     }
 
-    fn warning(kind: ProblemKind, message: String) -> Self {
+    pub(crate) fn warning(kind: ProblemKind, message: String) -> Self {
         Self {
             severity: ProblemSeverity::Warning,
             kind,
@@ -92,7 +106,7 @@ impl TopologyProblem {
         }
     }
 
-    fn with_nodes(mut self, nodes: Vec<NodeId>) -> Self {
+    pub(crate) fn with_nodes(mut self, nodes: Vec<NodeId>) -> Self {
         self.nodes = nodes;
         self
     }
@@ -136,6 +150,11 @@ pub enum TopologyEdit {
     },
     RetireEdge {
         edge: EdgeConnectionId,
+    },
+    /// Rewrites a node's spec, leaving its ports alone.
+    SetSpec {
+        node: NodeId,
+        spec: NodeSpec,
     },
     SetServerSettings {
         server: ServerId,
@@ -198,6 +217,16 @@ impl CanvasTopology {
                     let key = record_key(&edge.0);
                     out.edges.retain(|e| record_key(&e.id.0) != key);
                 }
+                TopologyEdit::SetSpec { node, spec } => {
+                    let key = record_key(&node.0);
+                    if let Some(target) = out
+                        .nodes
+                        .iter_mut()
+                        .find(|n| record_key(&n.node.id.0) == key)
+                    {
+                        target.node.spec = spec.clone();
+                    }
+                }
                 TopologyEdit::SetServerSettings {
                     server,
                     ipv6_resolve,
@@ -238,6 +267,7 @@ pub fn analyze(topology: &CanvasTopology) -> Vec<TopologyProblem> {
     check_ip_hash(&index, &mut errors);
     check_server_addresses(&index, &mut warnings);
     check_warnings(&index, &mut warnings);
+    check_universal(topology, &mut errors, &mut warnings);
 
     errors.append(&mut warnings);
     errors
@@ -332,7 +362,7 @@ impl<'a> Index<'a> {
         }
     }
 
-    fn port(&self, id: &PortId) -> Option<(&'a PortEntity, &'a NodeWithPorts)> {
+    pub(crate) fn port(&self, id: &PortId) -> Option<(&'a PortEntity, &'a NodeWithPorts)> {
         self.ports.get(&record_key(&id.0)).copied()
     }
 
@@ -351,6 +381,11 @@ impl<'a> Index<'a> {
     /// imported canvas, whose single port continues the path; an export node
     /// stands for the mirrored port on the node importing its canvas. `None` when
     /// any hop is missing (no edge, unresolved import, export without importer).
+    ///
+    /// A distributor's or aggregator's channel port pair (`chan:x` / `lane:x`)
+    /// is looked through the same way: the operator's edge on one side continues
+    /// on the generated edge on the other. A universal pod's bundle ports end
+    /// the walk: bundles are not traffic.
     pub(crate) fn peer(&self, port: &PortEntity) -> Option<&'a NodeWithPorts> {
         let mut current: &PortEntity = port;
         for _ in 0..MAX_BOUNDARY_HOPS {
@@ -376,6 +411,11 @@ impl<'a> Index<'a> {
                     let key = record_key(&far_node.node.id.0);
                     current = importer.ports.iter().find(|p| p.key == key)?;
                 }
+                NodeSpec::UniversalDistribute(_) | NodeSpec::UniversalAggregate(_) => {
+                    let twin = universal::channel_twin(&far_port.key)?;
+                    current = far_node.ports.iter().find(|p| p.key == twin)?;
+                }
+                NodeSpec::UniversalPod(_) => return None,
                 _ => return Some(far_node),
             }
         }
@@ -515,6 +555,36 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
                 .with_ports(vec![edge.source.clone(), edge.target.clone()]),
             );
         }
+        if source.kind == PortKind::Bundle
+            && let Some(message) = bundle_edge_problem(source, source_node, target, target_node)
+        {
+            out.push(
+                TopologyProblem::error(
+                    ProblemKind::BundleEdgeInvalid,
+                    format!("edge {edge_key} {message}"),
+                )
+                .with_edges(vec![edge.id.clone()])
+                .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
+            );
+        }
+        if matches!(source_node.node.spec, NodeSpec::UniversalDistribute(_))
+            && let Some(UniversalPort::Chan(pod)) = universal::parse_port_key(&source.key)
+            && (target.key != "destination"
+                || !matches!(target_node.node.spec, NodeSpec::Pod(_))
+                || record_key(&target_node.node.id.0) != pod)
+        {
+            out.push(
+                TopologyProblem::error(
+                    ProblemKind::ChannelTargetNotPod,
+                    format!(
+                        "edge {edge_key}: channel port {} of {} must feed the destination of pod {pod}",
+                        source.key, source_node.node.name
+                    ),
+                )
+                .with_edges(vec![edge.id.clone()])
+                .with_nodes(vec![source_node.node.id.clone()]),
+            );
+        }
         if record_key(&source_node.node.id.0) == record_key(&target_node.node.id.0) {
             out.push(
                 TopologyProblem::error(
@@ -560,9 +630,47 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
     }
 }
 
+/// Why a bundle edge is not one of the three allowed shapes (distributor to
+/// universal pod, universal pod to universal pod, universal pod to aggregator)
+/// on ports named after each other; `None` when it is.
+fn bundle_edge_problem(
+    source: &PortEntity,
+    source_node: &NodeWithPorts,
+    target: &PortEntity,
+    target_node: &NodeWithPorts,
+) -> Option<String> {
+    let source_key = record_key(&source_node.node.id.0);
+    let target_key = record_key(&target_node.node.id.0);
+    let pair_ok = matches!(
+        (&source_node.node.spec, &target_node.node.spec),
+        (NodeSpec::UniversalDistribute(_), NodeSpec::UniversalPod(_))
+            | (NodeSpec::UniversalPod(_), NodeSpec::UniversalPod(_))
+            | (NodeSpec::UniversalPod(_), NodeSpec::UniversalAggregate(_))
+    );
+    if !pair_ok {
+        return Some("bundles nodes that cannot be bundled".to_string());
+    }
+    let source_ok = match universal::parse_port_key(&source.key) {
+        Some(UniversalPort::BundleOut(Some(named))) => named == target_key,
+        Some(UniversalPort::BundleOut(None)) => {
+            matches!(source_node.node.spec, NodeSpec::UniversalPod(_))
+        }
+        _ => false,
+    };
+    let target_ok = matches!(
+        universal::parse_port_key(&target.key),
+        Some(UniversalPort::BundleIn(named)) if named == source_key
+    );
+    if !source_ok || !target_ok {
+        return Some("joins bundle ports not named after each other".to_string());
+    }
+    None
+}
+
 /// `(kind, direction, exact count or "at least 2")` a spec's ports must match.
 /// `None` for an import node, whose ports are checked against its target's
-/// exports instead.
+/// exports instead, and for a universal node, whose ports are created on demand
+/// (see [`universal::universal_port_shape_ok`]).
 fn expected_ports(spec: &NodeSpec) -> Option<Vec<(PortKind, PortDirection, Multiplicity)>> {
     use Multiplicity::{AtLeastTwo, One};
     use PortDirection::{Input, Output};
@@ -583,7 +691,10 @@ fn expected_ports(spec: &NodeSpec) -> Option<Vec<(PortKind, PortDirection, Multi
         NodeSpec::CanvasExport(cfg) => {
             vec![(cfg.kind, export_port_direction(cfg.direction), One)]
         }
-        NodeSpec::CanvasImport(_) => return None,
+        NodeSpec::CanvasImport(_)
+        | NodeSpec::UniversalPod(_)
+        | NodeSpec::UniversalDistribute(_)
+        | NodeSpec::UniversalAggregate(_) => return None,
     })
 }
 
@@ -618,6 +729,7 @@ fn check_port_shapes(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                     .collect();
                 expected == actual && node.ports.len() == actual.len()
             }
+            spec if spec.is_universal() => universal::universal_port_shape_ok(node),
             spec => {
                 let Some(expected) = expected_ports(spec) else {
                     continue;
@@ -816,12 +928,45 @@ fn check_server_addresses(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
     }
 }
 
-/// Whether a node is a vertex of the traffic graph (boundary nodes are not).
+/// Whether a node is a vertex of the traffic graph (boundary nodes and
+/// universal nodes are not: both are looked through).
 fn is_traffic_node(node: &NodeWithPorts) -> bool {
     !matches!(
         node.node.spec,
         NodeSpec::CanvasImport(_) | NodeSpec::CanvasExport(_)
-    )
+    ) && !node.node.spec.is_universal()
+}
+
+/// What the expansion of the universal nodes reports: a bundle cycle is an
+/// error, a channel that is not carried all the way is a warning, and stored
+/// lanes that no longer match the expansion are a warning (the next universal
+/// edit regenerates them).
+fn check_universal(
+    topology: &CanvasTopology,
+    errors: &mut Vec<TopologyProblem>,
+    warnings: &mut Vec<TopologyProblem>,
+) {
+    if !topology.nodes.iter().any(|n| n.node.spec.is_universal()) {
+        return;
+    }
+    let mut desired = universal::expand(topology);
+    for problem in std::mem::take(&mut desired.problems) {
+        match problem.severity {
+            ProblemSeverity::Error => errors.push(problem),
+            ProblemSeverity::Warning => warnings.push(problem),
+        }
+    }
+    let stale = match universal::diff(topology, &desired) {
+        Ok(plan) => !plan.batch.is_empty(),
+        Err(_) => true,
+    };
+    if stale {
+        warnings.push(TopologyProblem::warning(
+            ProblemKind::LanesStale,
+            "generated lanes are out of date; the next edit of a universal node regenerates them"
+                .to_string(),
+        ));
+    }
 }
 
 /// `consumer -> producers`: a node depends on whatever feeds its inputs, and a relay
@@ -1051,5 +1196,6 @@ fn kind_name(kind: PortKind) -> &'static str {
     match kind {
         PortKind::DeriveListen => "derive_listen",
         PortKind::DeriveDestination => "derive_destination",
+        PortKind::Bundle => "bundle",
     }
 }

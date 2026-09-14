@@ -657,3 +657,217 @@ fn projection_validates_a_change_before_it_is_written() {
     let err = ensure_valid(&projected).expect_err("oversubscribed port must be rejected");
     assert_eq!(err.first.kind, ProblemKind::PortOversubscribed);
 }
+
+// --- universal nodes -----------------------------------------------------------
+
+use orchestration::entities::surreal::node::{
+    Lane, LaneRole, UniversalAggregateConfig, UniversalDistributeConfig, UniversalPodConfig,
+};
+use orchestration::services::universal;
+
+fn bundle_port(key: &str, direction: PortDirection) -> (String, PortKind, PortDirection, i64) {
+    (key.to_string(), PortKind::Bundle, direction, 0)
+}
+
+fn channel_ports(pod: &str, out_first: bool, ordinal: i64) -> Vec<(String, PortKind, PortDirection, i64)> {
+    let (chan_dir, lane_dir) = if out_first {
+        (PortDirection::Output, PortDirection::Input)
+    } else {
+        (PortDirection::Input, PortDirection::Output)
+    };
+    vec![
+        (universal::chan_key(pod), PortKind::DeriveDestination, chan_dir, ordinal),
+        (universal::lane_key(pod), PortKind::DeriveDestination, lane_dir, ordinal),
+    ]
+}
+
+fn ud(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
+    NodeSpec::UniversalDistribute(UniversalDistributeConfig { mode, protocol })
+}
+
+fn up(server: &ServerId) -> NodeSpec {
+    NodeSpec::UniversalPod(UniversalPodConfig {
+        server: server.clone(),
+    })
+}
+
+/// A distributor whose one channel is bundled to one universal pod, with the
+/// lanes that expansion calls for drawn by hand: one landing pod, one relay.
+fn expanded_builder() -> Builder {
+    let mut b = Builder::new("prod");
+    let us = b.server("us");
+    b.ip("_", &us, "198.51.100.1");
+    let hk = b.server("hk");
+    b.ip("_", &hk, "203.0.113.1");
+    b.node("p0", pod(&us, 10000), pod_ports());
+    b.node("entry", entry(None), entry_ports());
+    b.connect("p0-listen", "entry-listen");
+    let mut ud_ports = channel_ports("p0", true, 0);
+    ud_ports.push(bundle_port(&universal::bundle_out_key("hk-up"), PortDirection::Output));
+    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), ud_ports);
+    b.connect("ud-chan:p0", "p0-destination");
+    b.node(
+        "hk-up",
+        up(&hk),
+        vec![
+            bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input),
+            bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
+        ],
+    );
+    b.connect("ud-bundle_out:hk-up", "hk-up-bundle_in:ud");
+    // The lanes.
+    let landing = Lane::new(&ids::node_id("hk-up"), &ids::node_id("p0"), LaneRole::Landing, Some(&ids::node_id("ud")));
+    b.node("landing", pod(&hk, 45000), pod_ports());
+    b.lane(landing);
+    let relay_lane = Lane::new(&ids::node_id("ud"), &ids::node_id("p0"), LaneRole::Relay, Some(&ids::node_id("hk-up")));
+    b.node("relay", relay(RelayProtocol::TcpRaw), relay_ports());
+    b.lane(relay_lane);
+    b.connect("landing-listen", "relay-listen");
+    b.connect("relay-destination", "ud-lane:p0");
+    b
+}
+
+/// The hand-drawn expansion is what the reconciler would produce: no lanes to
+/// add or remove, and the checker looks through the channel pair, so the entry
+/// pod's destination resolves to the relay and derivation sees a flat chain.
+#[test]
+fn a_matching_expansion_is_not_stale_and_derives_through_the_channel() {
+    let topology = expanded_builder().build();
+    let problems = analyze(&topology);
+    assert!(errors(&problems).is_empty(), "{problems:?}");
+    assert_eq!(warnings(&problems), [ProblemKind::ChannelNoExit], "{problems:?}");
+    assert!(!universal::is_stale(&topology));
+
+    let derived = orchestration::services::derive::derive_server_config(
+        &topology,
+        &ids::server_id("us"),
+        &orchestration::services::derive::DerivationCertificates::default(),
+        &orchestration::config::OrchestrationConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(derived.forwardings.len(), 1, "{:?}", derived.invalid);
+    assert_eq!(derived.forwardings[0].points_at.len(), 1);
+    assert_eq!(derived.forwardings[0].points_at[0].port, 45000);
+}
+
+/// Dropping a lane by hand leaves the expansion stale (a warning), never an error.
+#[test]
+fn missing_lanes_are_a_warning() {
+    let mut b = expanded_builder();
+    let topology = b.build();
+    let relay_id = ids::node_id("relay");
+    let projected = topology.project(&[orchestration::services::topology::TopologyEdit::RetireNode { node: relay_id }]);
+    let problems = analyze(&projected);
+    assert!(errors(&problems).is_empty(), "{problems:?}");
+    assert!(warnings(&problems).contains(&ProblemKind::LanesStale), "{problems:?}");
+    let _ = &mut b;
+}
+
+#[test]
+fn bundles_only_join_the_allowed_pairs_on_matching_keys() {
+    // A distributor bundled straight into an aggregator.
+    let mut b = Builder::new("prod");
+    b.node(
+        "ud",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        vec![bundle_port(&universal::bundle_out_key("ua"), PortDirection::Output)],
+    );
+    b.node(
+        "ua",
+        NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
+        vec![bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input)],
+    );
+    b.connect("ud-bundle_out:ua", "ua-bundle_in:ud");
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+
+    // The right pair, but the ports are not named after each other.
+    let mut b = Builder::new("prod");
+    let hk = b.server("hk");
+    b.node(
+        "ud",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        vec![bundle_port(&universal::bundle_out_key("other"), PortDirection::Output)],
+    );
+    b.node(
+        "hk-up",
+        up(&hk),
+        vec![
+            bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input),
+            bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
+        ],
+    );
+    b.connect("ud-bundle_out:other", "hk-up-bundle_in:ud");
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+}
+
+#[test]
+fn a_bundle_cycle_is_an_error() {
+    let mut b = Builder::new("prod");
+    let a = b.server("a");
+    let c = b.server("c");
+    b.node(
+        "a-up",
+        up(&a),
+        vec![
+            bundle_port(&universal::bundle_in_key("c-up"), PortDirection::Input),
+            bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
+        ],
+    );
+    b.node(
+        "c-up",
+        up(&c),
+        vec![
+            bundle_port(&universal::bundle_in_key("a-up"), PortDirection::Input),
+            bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
+        ],
+    );
+    b.connect("a-up-bundle_out", "c-up-bundle_in:a-up");
+    b.connect("c-up-bundle_out", "a-up-bundle_in:c-up");
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::BundleCycle), "{problems:?}");
+}
+
+#[test]
+fn a_channel_must_feed_the_pod_it_is_named_after() {
+    let mut b = Builder::new("prod");
+    let us = b.server("us");
+    b.ip("_", &us, "198.51.100.1");
+    b.node("p0", pod(&us, 10000), pod_ports());
+    b.node("p1", pod(&us, 10001), pod_ports());
+    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), channel_ports("p0", true, 0));
+    b.connect("ud-chan:p0", "p1-destination");
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::ChannelTargetNotPod), "{problems:?}");
+}
+
+#[test]
+fn universal_ports_must_have_their_kind_shape() {
+    // A universal pod without its fixed bundle_out.
+    let mut b = Builder::new("prod");
+    let hk = b.server("hk");
+    b.node("hk-up", up(&hk), vec![]);
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+
+    // A distributor with a channel port but no lane twin.
+    let mut b = Builder::new("prod");
+    b.node(
+        "ud",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        vec![(universal::chan_key("p0"), PortKind::DeriveDestination, PortDirection::Output, 0)],
+    );
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+
+    // An aggregator with its pair the right way round is fine.
+    let mut b = Builder::new("prod");
+    b.node(
+        "ua",
+        NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
+        channel_ports("p0", false, 0),
+    );
+    let problems = analyze(&b.build());
+    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+}

@@ -515,9 +515,9 @@ async fn list_and_tree() -> TestResult {
     let ancestors: Vec<String> = contents.ancestors.iter().map(|c| c.name.clone()).collect();
     assert_eq!(ancestors, ["root", "sub"]);
     assert!(contents.import_targets.is_empty());
-    // subsub's own three nodes plus the four transport pods its server was
-    // created with.
-    assert_eq!(contents.nodes.len(), 7, "only subsub's own nodes");
+    // subsub's own three nodes plus the universal pod its server was created
+    // with.
+    assert_eq!(contents.nodes.len(), 4, "only subsub's own nodes");
     assert_eq!(contents.servers.len(), 1);
 
     let contents = w
