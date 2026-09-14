@@ -1,6 +1,6 @@
 [package]
 name = "guru-master"
-version = "0.0.1-alpha"  # master side
+version = "0.1.0-alpha"  # master side
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
