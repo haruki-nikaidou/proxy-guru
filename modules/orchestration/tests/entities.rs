@@ -351,6 +351,8 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
             canvas: c.id.clone(),
             revision: 1,
             error: None,
+            applied: None,
+            failed_pods: Vec::new(),
         })
         .await?
     );
@@ -380,6 +382,8 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
             canvas: c.id.clone(),
             revision: 2,
             error: Some("cannot bind".to_string()),
+            applied: None,
+            failed_pods: Vec::new(),
         })
         .await?
     );
@@ -409,6 +413,8 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
             canvas: c.id.clone(),
             revision: 7,
             error: None,
+            applied: None,
+            failed_pods: Vec::new(),
         })
         .await?,
         "an ack for a revision that is not in flight changes nothing"

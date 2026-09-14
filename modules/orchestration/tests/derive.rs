@@ -7,7 +7,11 @@
 #[path = "common/mem.rs"]
 mod mem;
 
+use guru_worker_config::{ForwardingTo, ListenAs, RelayHost, TlsHostConfig};
 use mem::*;
+use orchestration::config::OrchestrationConfig;
+use orchestration::entities::surreal::ca::{RelayCertificateEntity, relay_sni};
+use orchestration::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
 use orchestration::entities::surreal::node::{
     CanvasExportAs, EntryConfig, ExitConfig, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeSpec, PodConfig, ProxyProtocolVersion,
@@ -15,8 +19,47 @@ use orchestration::entities::surreal::node::{
 };
 use orchestration::entities::surreal::port::PortKind;
 use orchestration::entities::surreal::server::{ServerId, ServerIpRecordId};
-use orchestration::services::derive::derive_server_config;
+use orchestration::entities::surreal::topology::CanvasTopology;
+use orchestration::entities::surreal::view::{
+    CertificateKind, CertificateRef, InvalidPod, ListenProtocol,
+};
+use orchestration::services::derive::{
+    DerivationCertificates, DeriveError, DerivedConfig, derive_server_config, relay_tls_pods,
+};
 use orchestration::utils::ids;
+use std::path::Path;
+
+fn config() -> OrchestrationConfig {
+    OrchestrationConfig::default()
+}
+
+/// Derives with no certificate material at all: what every non-TLS shape sees.
+fn derive(topology: &CanvasTopology, server: &ServerId) -> Result<DerivedConfig, DeriveError> {
+    derive_server_config(
+        topology,
+        server,
+        &DerivationCertificates::default(),
+        &config(),
+    )
+}
+
+/// Renders twice against the same material and asserts byte-stability.
+fn derived_with(
+    topology: &CanvasTopology,
+    server: &ServerId,
+    certificates: &DerivationCertificates,
+) -> String {
+    let render = || {
+        derive_server_config(topology, server, certificates, &config())
+            .unwrap_or_else(|e| panic!("derive failed: {e}"))
+            .config
+            .to_toml_string()
+            .unwrap_or_else(|e| panic!("rendering failed: {e}"))
+    };
+    let once = render();
+    assert_eq!(once, render(), "derivation is not byte-stable");
+    once
+}
 
 fn exit(dest: &str) -> NodeSpec {
     NodeSpec::Exit(ExitConfig {
@@ -83,7 +126,7 @@ fn derived(builder: &Builder, server: &ServerId) -> String {
 }
 
 fn render(builder: &Builder, server: &ServerId) -> String {
-    derive_server_config(&builder.build(), server)
+    derive(&builder.build(), server)
         .unwrap_or_else(|e| panic!("derive failed: {e}"))
         .config
         .to_toml_string()
@@ -101,7 +144,7 @@ fn single_pod_to_entry_and_exit() {
     b.connect("pod-listen", "entry-listen");
     b.connect("exit-destination", "pod-destination");
 
-    let result = derive_server_config(&b.build(), &s).unwrap();
+    let result = derive(&b.build(), &s).unwrap();
     assert_golden("single_pod", &result.config.to_toml_string().unwrap());
     assert_eq!(
         result.forwardings.len(),
@@ -236,30 +279,72 @@ fn a_two_hop_relay_chain_derives_each_server() {
     assert_golden("relay_chain_singapore", &derived(&b, &singapore));
 }
 
-#[test]
-fn tls_entries_are_not_supported_yet() {
+fn tls_entry(sni: &str, acme_directory: &str) -> NodeSpec {
+    NodeSpec::Entry(EntryConfig {
+        receive_proxy_protocol: None,
+        tls: Some(TlsConfig {
+            sni: sni.to_string(),
+            dns_provider: ids::dns_provider_id("cf"),
+            domain_id: "zone".to_string(),
+            acme_directory: acme_directory.to_string(),
+        }),
+    })
+}
+
+fn certificate(key: &str, sni: &str, directory: &str, version: i64) -> CertificateEntity {
+    let now = chrono::Utc::now();
+    CertificateEntity {
+        id: ids::certificate_id(key),
+        sni: sni.to_string(),
+        dns_provider: ids::dns_provider_id("cf"),
+        domain_id: "zone".to_string(),
+        acme_directory: directory.to_string(),
+        status: CertificateStatus::Issued,
+        acme_account_key: Some("enc1:acct".to_string()),
+        private_key_pem: Some("enc1:key".to_string()),
+        full_chain_pem: Some("-----BEGIN CERTIFICATE-----".to_string()),
+        not_before: Some(now),
+        not_after: Some(now + chrono::Duration::days(60)),
+        last_error: None,
+        last_attempt_at: Some(now),
+        version,
+        created_at: now,
+    }
+}
+
+fn relay_leaf(key: &str, pod: &str, version: i64) -> RelayCertificateEntity {
+    let now = chrono::Utc::now();
+    let pod = ids::node_id(pod);
+    RelayCertificateEntity {
+        id: ids::relay_certificate_id(key),
+        sni: relay_sni(&pod),
+        pod,
+        private_key_pem: "enc1:key".to_string(),
+        certificate_pem: "-----BEGIN CERTIFICATE-----".to_string(),
+        not_before: now,
+        not_after: now + chrono::Duration::days(30),
+        version,
+    }
+}
+
+/// One pod behind a TLS entry.
+fn tls_pod(acme_directory: &str) -> (Builder, ServerId) {
     let mut b = Builder::new("prod");
     let s = b.server("tokyo");
     let ip = b.ip("ip1", &s, "203.0.113.10");
     b.node("pod", pod(&ip, 443), pod_ports());
     b.node(
         "entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls: Some(TlsConfig {
-                sni: "example.com".to_string(),
-                dns_provider: ids::dns_provider_id("cf"),
-                domain_id: "zone".to_string(),
-                acme_directory: "https://acme.example/directory".to_string(),
-            }),
-        }),
+        tls_entry("example.com", acme_directory),
         entry_ports(),
     );
     b.node("exit", exit("10.0.0.5:8080"), exit_ports());
     b.connect("pod-listen", "entry-listen");
     b.connect("exit-destination", "pod-destination");
+    (b, s)
+}
 
-    let result = derive_server_config(&b.build(), &s).expect("the server still derives");
+fn only_invalid(result: &DerivedConfig) -> &InvalidPod {
     assert!(
         result.config.forwardings.is_empty(),
         "the only pod is invalid, so nothing is served: {:?}",
@@ -268,41 +353,240 @@ fn tls_entries_are_not_supported_yet() {
     let [invalid] = result.invalid.as_slice() else {
         panic!("expected exactly one invalid pod, got {:?}", result.invalid);
     };
-    assert_eq!(invalid.pod, "pod");
-    assert_eq!(invalid.listen, "203.0.113.10:443");
-    assert!(
-        invalid.error.contains("TLS"),
-        "the stored reason must name the cause: {}",
-        invalid.error
-    );
+    invalid
 }
 
 #[test]
-fn quic_relays_are_not_supported_yet() {
-    let mut b = Builder::new("prod");
-    let s = b.server("tokyo");
-    let ip = b.ip("ip1", &s, "203.0.113.10");
-    b.node("pod", pod(&ip, 443), pod_ports());
-    b.node("relay", relay(RelayProtocol::Quic), relay_ports());
-    b.node("pod2", pod(&ip, 9443), pod_ports());
-    b.node("entry", entry(None), entry_ports());
-    b.node("exit", exit("10.0.0.5:8080"), exit_ports());
-    b.connect("pod-listen", "relay-listen");
-    b.connect("relay-destination", "pod2-destination");
-    b.connect("pod2-listen", "entry-listen");
-    b.connect("exit-destination", "pod-destination");
+fn a_tls_entry_without_an_issued_certificate_invalidates_only_its_pod() {
+    let (b, s) = tls_pod("https://acme.example/directory");
+    let topology = b.build();
 
-    // Both pods sit behind the unsupported relay: the quic hop is on pod's
-    // destination side and pod2 is the relay's listening side.
-    let result = derive_server_config(&b.build(), &s).expect("the server still derives");
-    let mut invalid: Vec<&str> = result.invalid.iter().map(|p| p.pod.as_str()).collect();
-    invalid.sort_unstable();
-    assert_eq!(invalid, ["pod", "pod2"]);
+    let result = derive(&topology, &s).expect("the server still derives");
+    let invalid = only_invalid(&result);
+    assert_eq!(invalid.pod, "pod");
+    assert_eq!(invalid.listen, "203.0.113.10:443");
     assert!(
-        result.invalid.iter().all(|p| p.error.contains("quic")),
-        "{:?}",
-        result.invalid
+        invalid
+            .error
+            .contains("certificate for example.com is pending"),
+        "the stored reason must name the certificate: {}",
+        invalid.error
     );
+
+    // A failed attempt names its error; a certificate for another directory
+    // does not count.
+    let mut failed = certificate("c1", "example.com", "https://acme.example/directory", 0);
+    failed.status = CertificateStatus::Failed;
+    failed.private_key_pem = None;
+    failed.full_chain_pem = None;
+    failed.last_error = Some("dns propagation timed out".to_string());
+    let other = certificate("c2", "example.com", "https://other.example/directory", 4);
+    let certificates = DerivationCertificates {
+        acme: vec![failed, other],
+        ..Default::default()
+    };
+    let result = derive_server_config(&topology, &s, &certificates, &config()).unwrap();
+    let invalid = only_invalid(&result);
+    assert!(
+        invalid
+            .error
+            .contains("certificate for example.com is failed: dns propagation timed out"),
+        "{}",
+        invalid.error
+    );
+    assert!(result.certificates.is_empty());
+}
+
+#[test]
+fn a_tls_entry_with_an_issued_certificate_listens_as_tls_and_pins_its_version() {
+    // An empty directory resolves to the configured default.
+    let (b, s) = tls_pod("");
+    let certificates = DerivationCertificates {
+        acme: vec![certificate(
+            "c1",
+            "example.com",
+            &config().default_acme_directory,
+            7,
+        )],
+        ..Default::default()
+    };
+    let result = derive_server_config(&b.build(), &s, &certificates, &config()).unwrap();
+    assert!(result.invalid.is_empty(), "{:?}", result.invalid);
+    let [forwarding] = result.config.forwardings.as_slice() else {
+        panic!("expected one forwarding: {:?}", result.config.forwardings);
+    };
+    assert_eq!(
+        forwarding.listen_as,
+        ListenAs::Tls(TlsHostConfig {
+            key: "certs/acme/c1/key.pem".into(),
+            full_chain: "certs/acme/c1/full_chain.pem".into(),
+        })
+    );
+    let pinned = vec![CertificateRef {
+        kind: CertificateKind::Acme,
+        key: "c1".to_string(),
+        version: 7,
+    }];
+    assert_eq!(result.certificates, pinned);
+    assert_eq!(result.forwardings[0].certificates, pinned);
+    assert_eq!(result.forwardings[0].serves.protocol, ListenProtocol::Raw);
+    assert!(result.config.relay_ca.is_none(), "no CA, no relay_ca");
+    assert_golden("tls_entry", &result.config.to_toml_string().unwrap());
+}
+
+/// tokyo (entry -> pod_tokyo -> relay) -> osaka (pod_osaka -> exit), with the
+/// relay hop in the given protocol.
+fn secure_relay(protocol: RelayProtocol) -> (Builder, ServerId, ServerId) {
+    let mut b = Builder::new("prod");
+    let tokyo = b.server("tokyo");
+    let osaka = b.server("osaka");
+    let ip_tokyo = b.ip("ip_tokyo", &tokyo, "203.0.113.10");
+    let ip_osaka = b.ip("ip_osaka", &osaka, "198.51.100.10");
+    b.named_node("pod_tokyo", "ingress", pod(&ip_tokyo, 443), pod_ports());
+    b.node("entry", entry(None), entry_ports());
+    b.named_node("relay_osaka", "to-osaka", relay(protocol), relay_ports());
+    b.named_node("pod_osaka", "osaka-hop", pod(&ip_osaka, 9443), pod_ports());
+    b.node("exit", exit("10.0.0.5:8080"), exit_ports());
+    b.connect("pod_tokyo-listen", "entry-listen");
+    b.connect("relay_osaka-destination", "pod_tokyo-destination");
+    b.connect("pod_osaka-listen", "relay_osaka-listen");
+    b.connect("exit-destination", "pod_osaka-destination");
+    (b, tokyo, osaka)
+}
+
+#[test]
+fn a_secure_relay_needs_the_internal_ca_on_both_ends() {
+    for protocol in [RelayProtocol::TcpTls, RelayProtocol::Quic] {
+        let (b, tokyo, osaka) = secure_relay(protocol);
+        let topology = b.build();
+        let relay_pods: Vec<String> = relay_tls_pods(&topology)
+            .iter()
+            .map(|p| ids::record_key(&p.0))
+            .collect();
+        assert_eq!(
+            relay_pods,
+            ["pod_osaka"],
+            "only the relay's listening pod needs a leaf"
+        );
+
+        // No CA: neither end can be built.
+        for server in [&tokyo, &osaka] {
+            let result = derive(&topology, server).unwrap();
+            let invalid = only_invalid(&result);
+            assert!(
+                invalid.error.contains("internal CA not initialised"),
+                "{protocol:?} {}: {}",
+                invalid.pod,
+                invalid.error
+            );
+        }
+
+        // CA but no leaf yet: the dialer derives (it only needs the CA), the
+        // listener waits for its leaf.
+        let certificates = DerivationCertificates {
+            ca_present: true,
+            ..Default::default()
+        };
+        let result = derive_server_config(&topology, &tokyo, &certificates, &config()).unwrap();
+        assert!(result.invalid.is_empty(), "{:?}", result.invalid);
+        assert_eq!(
+            result.config.relay_ca.as_deref(),
+            Some(Path::new("certs/ca.pem"))
+        );
+        let result = derive_server_config(&topology, &osaka, &certificates, &config()).unwrap();
+        let invalid = only_invalid(&result);
+        assert!(
+            invalid.error.contains("relay certificate not issued yet"),
+            "{}",
+            invalid.error
+        );
+    }
+}
+
+#[test]
+fn a_secure_relay_with_a_leaf_derives_listener_dialer_and_pins() {
+    for (protocol, wire, listen_protocol) in [
+        (
+            RelayProtocol::TcpTls,
+            guru_worker_config::RelayProtocol::TlsOverTcp,
+            ListenProtocol::RelayTls,
+        ),
+        (
+            RelayProtocol::Quic,
+            guru_worker_config::RelayProtocol::Quic,
+            ListenProtocol::RelayQuic,
+        ),
+    ] {
+        let (b, tokyo, osaka) = secure_relay(protocol);
+        let topology = b.build();
+        let certificates = DerivationCertificates {
+            relay: vec![relay_leaf("leaf1", "pod_osaka", 2)],
+            ca_present: true,
+            ..Default::default()
+        };
+        let sni = relay_sni(&ids::node_id("pod_osaka"));
+        assert_eq!(sni, "pod_osaka.relay.guru.internal");
+        let host = TlsHostConfig {
+            key: "certs/relay/pod_osaka/key.pem".into(),
+            full_chain: "certs/relay/pod_osaka/full_chain.pem".into(),
+        };
+
+        // The listening end.
+        let result = derive_server_config(&topology, &osaka, &certificates, &config()).unwrap();
+        assert!(result.invalid.is_empty(), "{:?}", result.invalid);
+        let expected = match protocol {
+            RelayProtocol::Quic => RelayHost::Quic(host.clone()),
+            _ => RelayHost::TlsOverTcp(host.clone()),
+        };
+        assert_eq!(
+            result.config.forwardings[0].listen_as,
+            ListenAs::Relay(expected)
+        );
+        assert_eq!(result.forwardings[0].serves.protocol, listen_protocol);
+        let pinned = vec![CertificateRef {
+            kind: CertificateKind::Relay,
+            key: "leaf1".to_string(),
+            version: 2,
+        }];
+        assert_eq!(result.certificates, pinned);
+        assert_eq!(result.forwardings[0].certificates, pinned);
+        assert_eq!(
+            result.config.relay_ca.as_deref(),
+            Some(Path::new("certs/ca.pem"))
+        );
+
+        // The dialing end verifies the leaf by SNI and points at the secure listener.
+        let result = derive_server_config(&topology, &tokyo, &certificates, &config()).unwrap();
+        assert!(result.invalid.is_empty(), "{:?}", result.invalid);
+        match &result.config.forwardings[0].to {
+            ForwardingTo::Relay {
+                protocol, sni: got, ..
+            } => {
+                assert_eq!(*protocol, wire);
+                assert_eq!(got.as_deref(), Some(sni.as_str()));
+            }
+            other => panic!("expected a relay destination, got {other:?}"),
+        }
+        assert_eq!(result.forwardings[0].points_at[0].protocol, listen_protocol);
+        assert!(result.certificates.is_empty(), "the dialer pins nothing");
+        assert_eq!(
+            result.config.relay_ca.as_deref(),
+            Some(Path::new("certs/ca.pem"))
+        );
+
+        let name = match protocol {
+            RelayProtocol::Quic => "secure_relay_quic",
+            _ => "secure_relay_tls",
+        };
+        assert_golden(
+            &format!("{name}_tokyo"),
+            &derived_with(&topology, &tokyo, &certificates),
+        );
+        assert_golden(
+            &format!("{name}_osaka"),
+            &derived_with(&topology, &osaka, &certificates),
+        );
+    }
 }
 
 #[test]
@@ -311,7 +595,7 @@ fn a_pod_with_an_unconnected_port_is_skipped() {
     let s = b.server("tokyo");
     let ip = b.ip("ip1", &s, "203.0.113.10");
     b.node("pod", pod(&ip, 443), pod_ports());
-    let result = derive_server_config(&b.build(), &s).unwrap();
+    let result = derive(&b.build(), &s).unwrap();
     assert!(result.config.forwardings.is_empty());
     assert!(result.forwardings.is_empty());
 }
@@ -338,7 +622,7 @@ fn a_broken_pod_leaves_its_neighbour_deriving() {
     b.connect("half-listen", "in2-listen");
     b.connect("hop-destination", "half-destination");
 
-    let result = derive_server_config(&b.build(), &s).expect("the healthy pod still derives");
+    let result = derive(&b.build(), &s).expect("the healthy pod still derives");
     let tags: Vec<&str> = result
         .config
         .forwardings
@@ -380,7 +664,7 @@ fn an_empty_load_balance_group_invalidates_only_its_pod() {
     b.connect("lb-pod-listen", "in2-listen");
     b.connect("lb-destination", "lb-pod-destination");
 
-    let result = derive_server_config(&b.build(), &s).expect("the healthy pod still derives");
+    let result = derive(&b.build(), &s).expect("the healthy pod still derives");
     let tags: Vec<&str> = result
         .config
         .forwardings
@@ -464,7 +748,7 @@ fn a_destination_through_an_import_node_derives_like_the_flat_graph() {
         toml, flat,
         "the nested graph must derive the flat graph's TOML"
     );
-    let result = derive_server_config(&b.build(), &s).unwrap();
+    let result = derive(&b.build(), &s).unwrap();
     assert!(result.invalid.is_empty(), "{:?}", result.invalid);
     assert!(result.forwardings[0].points_at.is_empty());
 }
@@ -535,7 +819,7 @@ fn a_boundary_that_is_not_wired_through_invalidates_only_its_pod() {
     topology
         .edges
         .retain(|e| ids::record_key(&e.id.0) != "exit_deep-destination->subsub_out-export");
-    let result = derive_server_config(&topology, &a).unwrap();
+    let result = derive(&topology, &a).unwrap();
     assert!(result.config.forwardings.is_empty());
     let [invalid] = result.invalid.as_slice() else {
         panic!("expected exactly one invalid pod, got {:?}", result.invalid);
@@ -546,7 +830,7 @@ fn a_boundary_that_is_not_wired_through_invalidates_only_its_pod() {
         "{}",
         invalid.error
     );
-    let other = derive_server_config(&topology, &bb).unwrap();
+    let other = derive(&topology, &bb).unwrap();
     assert_eq!(other.config.forwardings.len(), 1);
     assert!(other.invalid.is_empty());
 }

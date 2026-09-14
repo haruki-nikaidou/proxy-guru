@@ -12,11 +12,15 @@
 //! 7. publish [`CanvasDirty`](crate::events::CanvasDirty) so the derivation hook
 //!    picks the canvas up ([`rollout::DirtyNotifier`]).
 
+pub mod acme;
 pub mod agent;
+pub mod ca;
 pub mod canvas;
 pub mod converge;
 pub mod derive;
+pub mod dns;
 pub mod edge;
+pub mod health;
 pub mod node;
 pub mod rollout;
 pub mod server;
@@ -26,6 +30,7 @@ pub mod watch;
 use crate::services::converge::ConvergeError;
 use crate::services::derive::DeriveError;
 use crate::services::topology::TopologyError;
+use crate::utils::secret::SecretError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestrationError {
@@ -39,6 +44,11 @@ pub enum OrchestrationError {
     Derive(#[from] DeriveError),
     #[error("converge: {0}")]
     Converge(#[from] ConvergeError),
+    #[error("secret: {0}")]
+    Secret(#[from] SecretError),
+    /// Certificate generation or parsing failed (rcgen / x509).
+    #[error("certificate: {0}")]
+    Certificate(String),
     #[error("{0}")]
     Invalid(String),
     #[error("{0}")]
@@ -60,6 +70,14 @@ impl From<OrchestrationError> for tonic::Status {
             OrchestrationError::Topology(e) => tonic::Status::failed_precondition(e.to_string()),
             OrchestrationError::Derive(e) => tonic::Status::failed_precondition(e.to_string()),
             OrchestrationError::Converge(e) => tonic::Status::failed_precondition(e.to_string()),
+            OrchestrationError::Secret(e) => {
+                tracing::error!(error = %e, "secret error");
+                tonic::Status::internal("Secret error")
+            }
+            OrchestrationError::Certificate(e) => {
+                tracing::error!(error = %e, "certificate error");
+                tonic::Status::internal("Certificate error")
+            }
             OrchestrationError::Invalid(message) => tonic::Status::invalid_argument(message),
             OrchestrationError::Conflict(message) => tonic::Status::failed_precondition(message),
             OrchestrationError::NotFound => tonic::Status::not_found("Not found"),

@@ -2,6 +2,7 @@ use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
 use crate::entities::surreal::dns::DnsProviderId;
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::ServerIpRecordId;
+use crate::utils::ids::record_key;
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
 use surrealdb_types::SurrealValue;
@@ -392,5 +393,57 @@ impl Processor<DeleteNodeRow> for SurrealProcessor {
             .await?
             .check()?;
         Ok(())
+    }
+}
+
+/// The distinct canvases the given nodes belong to; the relay leaf rotation
+/// cron re-derives these after re-issuing.
+#[derive(Debug)]
+pub struct ListCanvasesOfNodes {
+    pub nodes: Vec<NodeId>,
+}
+
+impl Processor<ListCanvasesOfNodes> for SurrealProcessor {
+    type Output = Vec<CanvasId>;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:ListCanvasesOfNodes", skip_all, err)]
+    async fn process(&self, input: ListCanvasesOfNodes) -> Result<Self::Output, Self::Error> {
+        if input.nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut resp = self
+            .db()
+            .query("SELECT VALUE canvas FROM orchestration_node WHERE id IN $nodes")
+            .bind(("nodes", input.nodes))
+            .await?;
+        let mut canvases = resp.take::<Vec<CanvasId>>(0)?;
+        canvases.sort_by_key(|c| record_key(&c.0));
+        canvases.dedup_by_key(|c| record_key(&c.0));
+        Ok(canvases)
+    }
+}
+
+/// The root canvases of every tree holding a TLS or QUIC relay: the trees whose
+/// derivation depends on the internal CA. `InitInternalCa` touches them so pods
+/// reported invalid for lack of a CA get their first leaves.
+#[derive(Debug)]
+pub struct ListCanvasesWithRelayTls;
+
+impl Processor<ListCanvasesWithRelayTls> for SurrealProcessor {
+    type Output = Vec<CanvasId>;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:ListCanvasesWithRelayTls", skip_all, err)]
+    async fn process(&self, _: ListCanvasesWithRelayTls) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "SELECT VALUE fn::orchestration_root(canvas) FROM orchestration_node
+                 WHERE spec.type = 'relay' AND spec.config.protocol IN ['tcp_tls', 'quic']",
+            )
+            .await?;
+        let mut canvases = resp.take::<Vec<CanvasId>>(0)?;
+        canvases.sort_by_key(|c| record_key(&c.0));
+        canvases.dedup_by_key(|c| record_key(&c.0));
+        Ok(canvases)
     }
 }

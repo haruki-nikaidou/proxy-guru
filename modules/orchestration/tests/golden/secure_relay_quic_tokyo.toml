@@ -1,0 +1,16 @@
+ipv6_resolve = "tolerated"
+relay_ca = "certs/ca.pem"
+
+[log]
+level = "info"
+
+[[forwarding]]
+tag = "ingress"
+listen = "203.0.113.10:443"
+listen_as = "raw"
+
+[forwarding.to]
+type = "relay"
+protocol = "quic"
+destination = "198.51.100.10:9443"
+sni = "pod_osaka.relay.guru.internal"

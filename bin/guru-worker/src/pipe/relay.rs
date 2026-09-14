@@ -2,6 +2,7 @@ use crate::BoxError;
 use crate::pipe::write_proxy_header;
 use guru_worker_config::{Ipv6Resolve, RelayProtocol, Remote, TcpProxyProtocol};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::ReadBuf;
@@ -61,12 +62,14 @@ impl tokio::io::AsyncWrite for RelayStream {
 }
 
 /// Dials the next relay hop over the configured transport and writes the PROXY v2
-/// framing header carrying the true client address.
+/// framing header carrying the true client address. TLS and QUIC peers are verified
+/// against `relay_ca` when given, else the system roots.
 pub async fn dial_relay(
     protocol: RelayProtocol,
     destination: &Remote,
     ipv6_resolve: Ipv6Resolve,
     sni: Option<&str>,
+    relay_ca: Option<&Path>,
     client_addr: SocketAddr,
 ) -> Result<RelayStream, BoxError> {
     let addr = crate::resolver::resolve(destination, ipv6_resolve).await?;
@@ -75,11 +78,11 @@ pub async fn dial_relay(
         RelayProtocol::TlsOverTcp => {
             let sni = sni.ok_or("relay tls dial requires sni")?;
             let tcp = tokio::net::TcpStream::connect(addr).await?;
-            RelayStream::Tls(crate::tls::connect_tls(sni, tcp).await?)
+            RelayStream::Tls(crate::tls::connect_tls(sni, tcp, relay_ca).await?)
         }
         RelayProtocol::Quic => {
             let sni = sni.ok_or("relay quic dial requires sni")?;
-            let endpoint = crate::tls::quic_client_endpoint()?;
+            let endpoint = crate::tls::quic_client_endpoint(relay_ca)?;
             let conn = endpoint.connect(addr, sni)?.await?;
             let (send, recv) = conn.open_bi().await?;
             RelayStream::Quic(tokio::io::join(recv, send))

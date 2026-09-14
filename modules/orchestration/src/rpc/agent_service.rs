@@ -1,4 +1,5 @@
-//! The `WorkerAgent` gRPC service: registration, config streaming, acknowledgement.
+//! The `WorkerAgent` gRPC service: registration, config streaming,
+//! acknowledgement and health reporting.
 
 use crate::entities::surreal::server::{
     ClaimServerWatchSession, FindServerById, ReleaseServerWatchSession, RenewServerWatchSession,
@@ -6,9 +7,14 @@ use crate::entities::surreal::server::{
 };
 use crate::entities::surreal::view::TakeInFlight;
 use crate::rpc::agent_middleware::agent_from_request;
-use crate::services::agent::{AckConfig, AgentService, RegisterWorker};
+use crate::services::agent::{AckConfig, AgentService, PodResult, RegisterWorker};
+use crate::services::ca::{BundleCertificates, CaService};
+use crate::services::health::{
+    HealthReportInput, HealthService, MarkServerOffline, RecordHealthReport,
+};
 use crate::services::watch::{AgentSignal, SessionLease, WatchFence, WatchHub};
 use crate::utils::ids;
+use guru_worker_config::Config;
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration_agent as pb;
 use tokio::sync::mpsc;
@@ -21,9 +27,18 @@ const STREAM_CAPACITY: usize = 4;
 #[derive(Clone)]
 pub struct WorkerAgentGrpc {
     pub agents: AgentService,
+    pub health: HealthService,
+    pub ca: CaService,
     pub db: SurrealProcessor,
     pub hub: WatchHub,
     pub lease: SessionLease,
+}
+
+fn pod_result(pod: pb::PodStatus) -> PodResult {
+    PodResult {
+        tag: pod.tag,
+        error: pod.error,
+    }
 }
 
 impl WorkerAgentGrpc {
@@ -42,7 +57,9 @@ impl WorkerAgentGrpc {
     /// `in_flight` in one conditional update that also re-checks the fence, so two
     /// streams can never be handed the same revision and a fenced-out stream is
     /// handed nothing. A database failure ends the stream rather than silently
-    /// skipping a revision — the worker reconnects and starts over.
+    /// skipping a revision — the worker reconnects and starts over, and the
+    /// reclaim clears `in_flight`. The same goes for a revision whose certificate
+    /// material cannot be assembled.
     async fn try_send(
         &self,
         server: &ServerId,
@@ -61,10 +78,28 @@ impl WorkerAgentGrpc {
         let Some(snapshot) = taken else {
             return Ok(true);
         };
+        let needs_ca = Config::from_toml_str(&snapshot.toml)
+            .map_err(|e| Status::internal(format!("stored revision does not parse: {e}")))?
+            .relay_ca
+            .is_some();
+        let files = self
+            .ca
+            .process(BundleCertificates {
+                refs: &snapshot.certificates,
+                ca: needs_ca,
+            })
+            .await?
+            .into_iter()
+            .map(|file| pb::CertificateFile {
+                path: file.path,
+                pem: file.pem,
+            })
+            .collect();
         Ok(tx
             .send(Ok(pb::ConfigRevision {
                 revision: snapshot.revision,
                 toml: snapshot.toml,
+                files,
             }))
             .await
             .is_ok())
@@ -118,7 +153,13 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 running_revision: input.running_revision,
             })
             .await?;
-        Ok(Response::new(pb::RegisterReply { refresh_key }))
+        Ok(Response::new(pb::RegisterReply {
+            refresh_key,
+            health_report_interval_secs: u32::try_from(
+                self.health.config.health_report_interval_secs,
+            )
+            .unwrap_or(u32::MAX),
+        }))
     }
 
     type WatchConfigStream = ReceiverStream<Result<pb::ConfigRevision, Status>>;
@@ -242,9 +283,58 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 agent,
                 revision: input.revision,
                 error: input.error,
+                pods: input.pods.into_iter().map(pod_result).collect(),
             })
             .await?;
         Ok(Response::new(pb::AckConfigReply {}))
+    }
+
+    /// Records every report as it arrives; the stream ending, however it ends,
+    /// is the worker going away. The Offline mark is fenced on this session's
+    /// generation, so a stream outlived by a re-registration cannot clobber the
+    /// successor's status.
+    async fn report_health(
+        &self,
+        request: Request<tonic::Streaming<pb::HealthReport>>,
+    ) -> Result<Response<pb::ReportHealthReply>, Status> {
+        let agent = agent_from_request(&request)?;
+        let mut reports = request.into_inner();
+        let ended = loop {
+            match reports.message().await {
+                Ok(Some(report)) => {
+                    let recorded = self
+                        .health
+                        .process(RecordHealthReport {
+                            agent: agent.clone(),
+                            report: HealthReportInput {
+                                running_revision: report.running_revision,
+                                upload_bytes: report.upload_bytes,
+                                download_bytes: report.download_bytes,
+                                current_connections: report.current_connections,
+                                max_connections: report.max_connections,
+                                pods: report.pods.into_iter().map(pod_result).collect(),
+                            },
+                        })
+                        .await;
+                    if let Err(e) = recorded {
+                        break Err(Status::from(e));
+                    }
+                }
+                Ok(None) => break Ok(()),
+                Err(status) => break Err(status),
+            }
+        };
+        if let Err(e) = self
+            .health
+            .process(MarkServerOffline {
+                server: agent.server,
+                generation: Some(agent.generation),
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "marking the server offline after its health stream ended failed");
+        }
+        ended.map(|()| Response::new(pb::ReportHealthReply {}))
     }
 }
 

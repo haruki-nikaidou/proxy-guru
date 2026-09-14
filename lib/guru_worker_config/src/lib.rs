@@ -232,6 +232,10 @@ pub struct Config {
     pub ipv6_resolve: Ipv6Resolve,
     #[serde(default)]
     pub log: LogConfig,
+    /// The CA certificate (PEM) relay TLS/QUIC dialers verify peers against.
+    /// Unset means the system roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_ca: Option<PathBuf>,
     #[serde(rename = "forwarding", default)]
     pub forwardings: Vec<Forwarding>,
 }
@@ -274,6 +278,34 @@ impl Config {
 
     pub fn to_toml_string(&self) -> Result<String, ConfigError> {
         Ok(toml::to_string(self)?)
+    }
+
+    /// Anchors every relative certificate path (`relay_ca`, and each listener's
+    /// `key` / `full_chain`) at `base`. A master-delivered config names its files
+    /// relative to the worker's state directory; a hand-written one may use
+    /// absolute paths, which are left alone.
+    pub fn resolve_paths(&mut self, base: &Path) {
+        fn anchor(path: &mut PathBuf, base: &Path) {
+            if path.is_relative() {
+                *path = base.join(&*path);
+            }
+        }
+        fn anchor_host(host: &mut TlsHostConfig, base: &Path) {
+            anchor(&mut host.key, base);
+            anchor(&mut host.full_chain, base);
+        }
+        if let Some(ca) = &mut self.relay_ca {
+            anchor(ca, base);
+        }
+        for f in &mut self.forwardings {
+            match &mut f.listen_as {
+                ListenAs::Raw | ListenAs::Relay(RelayHost::Tcp) => {}
+                ListenAs::Tls(host)
+                | ListenAs::Relay(RelayHost::TlsOverTcp(host) | RelayHost::Quic(host)) => {
+                    anchor_host(host, base);
+                }
+            }
+        }
     }
 
     /// Both the per-entry rules and the one cross-entry rule: no two forwardings

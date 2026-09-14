@@ -8,6 +8,8 @@
 //! transaction.
 
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
+use crate::entities::surreal::certificate::ListCertificatesBySnis;
+use crate::entities::surreal::dns::FindDnsProviderById;
 use crate::entities::surreal::node::{
     CanvasExportAs, CreateNodeRow, DeleteNodeRow, FindNodeById, FindNodeWithPorts, ImportSync,
     NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PENDING_EXPORT_KEY, UpdateNodeMetaRow,
@@ -302,6 +304,53 @@ impl NodeService {
     }
 }
 
+/// An Entry's `TlsConfig` must name a hostname the CA can issue for and a DNS
+/// provider that exists: the certificate row the cron creates for it references
+/// both, and a dangling provider could never answer the challenge. The SNI is
+/// stored in its canonical (lower-case) form, which is the certificate row key.
+async fn ensure_tls_valid(
+    db: &SurrealProcessor,
+    spec: &mut NodeSpec,
+) -> Result<(), OrchestrationError> {
+    let NodeSpec::Entry(entry) = spec else {
+        return Ok(());
+    };
+    let Some(tls) = &mut entry.tls else {
+        return Ok(());
+    };
+    tls.sni = crate::services::acme::validate_sni(&tls.sni)
+        .map_err(|e| OrchestrationError::Invalid(format!("tls: {e}")))?;
+    db.process(FindDnsProviderById {
+        id: tls.dns_provider.clone(),
+    })
+    .await?
+    .ok_or_else(|| OrchestrationError::Invalid("dns provider not found".into()))?;
+    // Entries sharing a certificate must agree on how it is issued: the row is
+    // keyed by (sni, directory) alone, so a later Entry naming another provider
+    // or zone would otherwise be silently ignored. An empty directory is the
+    // default one, which is why it matches any row for the sni.
+    let rows = db
+        .process(ListCertificatesBySnis {
+            snis: vec![tls.sni.clone()],
+        })
+        .await?;
+    let conflicting = rows.iter().find(|row| {
+        (tls.acme_directory.is_empty() || row.acme_directory == tls.acme_directory)
+            && (record_key(&row.dns_provider.0) != record_key(&tls.dns_provider.0)
+                || row.domain_id != tls.domain_id)
+    });
+    if let Some(row) = conflicting {
+        return Err(OrchestrationError::Invalid(format!(
+            "tls: certificate for {} is already issued through dns provider {} / domain {}; \
+             every Entry sharing an sni must use the same provider and domain",
+            tls.sni,
+            record_key(&row.dns_provider.0),
+            row.domain_id
+        )));
+    }
+    Ok(())
+}
+
 pub struct CreateNode {
     pub actor: Identity,
     pub canvas: CanvasId,
@@ -332,6 +381,8 @@ impl Processor<CreateNode> for NodeService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
+        let mut input = input;
+        ensure_tls_valid(&self.db, &mut input.spec).await?;
         let mut topology = self
             .db
             .process(LoadCanvasTopology {
@@ -452,6 +503,8 @@ impl Processor<ReplaceNodeSpec> for NodeService {
                 "spec kind cannot change; create a new node".into(),
             ));
         }
+        let mut input = input;
+        ensure_tls_valid(&self.db, &mut input.spec).await?;
         let ports = port_layout(&input.spec, input.item_count)?;
 
         let canvas = old.node.canvas.clone();

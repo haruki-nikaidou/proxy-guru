@@ -17,22 +17,71 @@ export interface RegisterRequest {
 
 export interface RegisterReply {
   refreshKey: string;
+  /**
+   * How often the master expects a `HealthReport`; the worker schedules from
+   * this so the two sides never disagree on the offline threshold.
+   */
+  healthReportIntervalSecs: number;
 }
 
 export interface WatchConfigRequest {
 }
 
+/**
+ * A file the worker writes under its state directory before applying `toml`.
+ * `path` is relative to the state directory and is exactly what the TOML's
+ * `key` / `full_chain` / `relay_ca` fields reference.
+ */
+export interface CertificateFile {
+  path: string;
+  pem: string;
+}
+
 export interface ConfigRevision {
   revision: bigint;
   toml: string;
+  files: CertificateFile[];
 }
 
-export interface AckConfigRequest {
-  revision: bigint;
+/**
+ * The outcome of one `[[forwarding]]` (keyed by its `tag`, the pod name).
+ * Unset `error` means the pod runs the shape the revision asked for.
+ */
+export interface PodStatus {
+  tag: string;
   error?: string | undefined;
 }
 
+/**
+ * A revision is applied per pod: every `[[forwarding]]` that prepares and binds
+ * is committed, and a pod that fails keeps whatever listener it had before (or
+ * none). `pods` lists every pod of the revision with its outcome. `error` is
+ * only set when the revision could not be applied at all (unparsable TOML,
+ * unwritable certificate files), in which case `pods` is empty and nothing
+ * changed on the worker.
+ */
+export interface AckConfigRequest {
+  revision: bigint;
+  error?: string | undefined;
+  pods: PodStatus[];
+}
+
 export interface AckConfigReply {
+}
+
+export interface HealthReport {
+  runningRevision: bigint;
+  /** Deltas since the previous report. */
+  uploadBytes: bigint;
+  downloadBytes: bigint;
+  currentConnections: bigint;
+  /** High-water mark since the previous report. */
+  maxConnections: bigint;
+  /** One entry per running `[[forwarding]]`. */
+  pods: PodStatus[];
+}
+
+export interface ReportHealthReply {
 }
 
 function createBaseRegisterRequest(): RegisterRequest {
@@ -125,13 +174,16 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
 };
 
 function createBaseRegisterReply(): RegisterReply {
-  return { refreshKey: "" };
+  return { refreshKey: "", healthReportIntervalSecs: 0 };
 }
 
 export const RegisterReply: MessageFns<RegisterReply> = {
   encode(message: RegisterReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.refreshKey !== "") {
       writer.uint32(10).string(message.refreshKey);
+    }
+    if (message.healthReportIntervalSecs !== 0) {
+      writer.uint32(16).uint32(message.healthReportIntervalSecs);
     }
     return writer;
   },
@@ -151,6 +203,14 @@ export const RegisterReply: MessageFns<RegisterReply> = {
           message.refreshKey = reader.string();
           continue;
         }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.healthReportIntervalSecs = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -167,6 +227,11 @@ export const RegisterReply: MessageFns<RegisterReply> = {
         : isSet(object.refresh_key)
         ? globalThis.String(object.refresh_key)
         : "",
+      healthReportIntervalSecs: isSet(object.healthReportIntervalSecs)
+        ? globalThis.Number(object.healthReportIntervalSecs)
+        : isSet(object.health_report_interval_secs)
+        ? globalThis.Number(object.health_report_interval_secs)
+        : 0,
     };
   },
 
@@ -174,6 +239,9 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     const obj: any = {};
     if (message.refreshKey !== "") {
       obj.refreshKey = message.refreshKey;
+    }
+    if (message.healthReportIntervalSecs !== 0) {
+      obj.healthReportIntervalSecs = Math.round(message.healthReportIntervalSecs);
     }
     return obj;
   },
@@ -184,6 +252,7 @@ export const RegisterReply: MessageFns<RegisterReply> = {
   fromPartial(object: DeepPartial<RegisterReply>): RegisterReply {
     const message = createBaseRegisterReply();
     message.refreshKey = object.refreshKey ?? "";
+    message.healthReportIntervalSecs = object.healthReportIntervalSecs ?? 0;
     return message;
   },
 };
@@ -231,8 +300,84 @@ export const WatchConfigRequest: MessageFns<WatchConfigRequest> = {
   },
 };
 
+function createBaseCertificateFile(): CertificateFile {
+  return { path: "", pem: "" };
+}
+
+export const CertificateFile: MessageFns<CertificateFile> = {
+  encode(message: CertificateFile, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.path !== "") {
+      writer.uint32(10).string(message.path);
+    }
+    if (message.pem !== "") {
+      writer.uint32(18).string(message.pem);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CertificateFile {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCertificateFile();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.pem = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CertificateFile {
+    return {
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      pem: isSet(object.pem) ? globalThis.String(object.pem) : "",
+    };
+  },
+
+  toJSON(message: CertificateFile): unknown {
+    const obj: any = {};
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (message.pem !== "") {
+      obj.pem = message.pem;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CertificateFile>): CertificateFile {
+    return CertificateFile.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CertificateFile>): CertificateFile {
+    const message = createBaseCertificateFile();
+    message.path = object.path ?? "";
+    message.pem = object.pem ?? "";
+    return message;
+  },
+};
+
 function createBaseConfigRevision(): ConfigRevision {
-  return { revision: 0n, toml: "" };
+  return { revision: 0n, toml: "", files: [] };
 }
 
 export const ConfigRevision: MessageFns<ConfigRevision> = {
@@ -245,6 +390,9 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     }
     if (message.toml !== "") {
       writer.uint32(18).string(message.toml);
+    }
+    for (const v of message.files) {
+      CertificateFile.encode(v!, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -272,6 +420,14 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
           message.toml = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.files.push(CertificateFile.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -285,6 +441,7 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     return {
       revision: isSet(object.revision) ? BigInt(object.revision) : 0n,
       toml: isSet(object.toml) ? globalThis.String(object.toml) : "",
+      files: globalThis.Array.isArray(object?.files) ? object.files.map((e: any) => CertificateFile.fromJSON(e)) : [],
     };
   },
 
@@ -296,6 +453,9 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     if (message.toml !== "") {
       obj.toml = message.toml;
     }
+    if (message.files?.length) {
+      obj.files = message.files.map((e) => CertificateFile.toJSON(e));
+    }
     return obj;
   },
 
@@ -306,12 +466,89 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     const message = createBaseConfigRevision();
     message.revision = (object.revision !== undefined && object.revision !== null) ? BigInt(object.revision) : 0n;
     message.toml = object.toml ?? "";
+    message.files = object.files?.map((e) => CertificateFile.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBasePodStatus(): PodStatus {
+  return { tag: "", error: undefined };
+}
+
+export const PodStatus: MessageFns<PodStatus> = {
+  encode(message: PodStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.tag !== "") {
+      writer.uint32(10).string(message.tag);
+    }
+    if (message.error !== undefined) {
+      writer.uint32(18).string(message.error);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PodStatus {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePodStatus();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.tag = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.error = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PodStatus {
+    return {
+      tag: isSet(object.tag) ? globalThis.String(object.tag) : "",
+      error: isSet(object.error) ? globalThis.String(object.error) : undefined,
+    };
+  },
+
+  toJSON(message: PodStatus): unknown {
+    const obj: any = {};
+    if (message.tag !== "") {
+      obj.tag = message.tag;
+    }
+    if (message.error !== undefined) {
+      obj.error = message.error;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<PodStatus>): PodStatus {
+    return PodStatus.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<PodStatus>): PodStatus {
+    const message = createBasePodStatus();
+    message.tag = object.tag ?? "";
+    message.error = object.error ?? undefined;
     return message;
   },
 };
 
 function createBaseAckConfigRequest(): AckConfigRequest {
-  return { revision: 0n, error: undefined };
+  return { revision: 0n, error: undefined, pods: [] };
 }
 
 export const AckConfigRequest: MessageFns<AckConfigRequest> = {
@@ -324,6 +561,9 @@ export const AckConfigRequest: MessageFns<AckConfigRequest> = {
     }
     if (message.error !== undefined) {
       writer.uint32(18).string(message.error);
+    }
+    for (const v of message.pods) {
+      PodStatus.encode(v!, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -351,6 +591,14 @@ export const AckConfigRequest: MessageFns<AckConfigRequest> = {
           message.error = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.pods.push(PodStatus.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -364,6 +612,7 @@ export const AckConfigRequest: MessageFns<AckConfigRequest> = {
     return {
       revision: isSet(object.revision) ? BigInt(object.revision) : 0n,
       error: isSet(object.error) ? globalThis.String(object.error) : undefined,
+      pods: globalThis.Array.isArray(object?.pods) ? object.pods.map((e: any) => PodStatus.fromJSON(e)) : [],
     };
   },
 
@@ -375,6 +624,9 @@ export const AckConfigRequest: MessageFns<AckConfigRequest> = {
     if (message.error !== undefined) {
       obj.error = message.error;
     }
+    if (message.pods?.length) {
+      obj.pods = message.pods.map((e) => PodStatus.toJSON(e));
+    }
     return obj;
   },
 
@@ -385,6 +637,7 @@ export const AckConfigRequest: MessageFns<AckConfigRequest> = {
     const message = createBaseAckConfigRequest();
     message.revision = (object.revision !== undefined && object.revision !== null) ? BigInt(object.revision) : 0n;
     message.error = object.error ?? undefined;
+    message.pods = object.pods?.map((e) => PodStatus.fromPartial(e)) || [];
     return message;
   },
 };
@@ -432,11 +685,248 @@ export const AckConfigReply: MessageFns<AckConfigReply> = {
   },
 };
 
+function createBaseHealthReport(): HealthReport {
+  return {
+    runningRevision: 0n,
+    uploadBytes: 0n,
+    downloadBytes: 0n,
+    currentConnections: 0n,
+    maxConnections: 0n,
+    pods: [],
+  };
+}
+
+export const HealthReport: MessageFns<HealthReport> = {
+  encode(message: HealthReport, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.runningRevision !== 0n) {
+      if (BigInt.asIntN(64, message.runningRevision) !== message.runningRevision) {
+        throw new globalThis.Error("value provided for field message.runningRevision of type int64 too large");
+      }
+      writer.uint32(8).int64(message.runningRevision);
+    }
+    if (message.uploadBytes !== 0n) {
+      if (BigInt.asIntN(64, message.uploadBytes) !== message.uploadBytes) {
+        throw new globalThis.Error("value provided for field message.uploadBytes of type int64 too large");
+      }
+      writer.uint32(16).int64(message.uploadBytes);
+    }
+    if (message.downloadBytes !== 0n) {
+      if (BigInt.asIntN(64, message.downloadBytes) !== message.downloadBytes) {
+        throw new globalThis.Error("value provided for field message.downloadBytes of type int64 too large");
+      }
+      writer.uint32(24).int64(message.downloadBytes);
+    }
+    if (message.currentConnections !== 0n) {
+      if (BigInt.asIntN(64, message.currentConnections) !== message.currentConnections) {
+        throw new globalThis.Error("value provided for field message.currentConnections of type int64 too large");
+      }
+      writer.uint32(32).int64(message.currentConnections);
+    }
+    if (message.maxConnections !== 0n) {
+      if (BigInt.asIntN(64, message.maxConnections) !== message.maxConnections) {
+        throw new globalThis.Error("value provided for field message.maxConnections of type int64 too large");
+      }
+      writer.uint32(40).int64(message.maxConnections);
+    }
+    for (const v of message.pods) {
+      PodStatus.encode(v!, writer.uint32(50).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): HealthReport {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseHealthReport();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.runningRevision = reader.int64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.uploadBytes = reader.int64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.downloadBytes = reader.int64() as bigint;
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.currentConnections = reader.int64() as bigint;
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.maxConnections = reader.int64() as bigint;
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.pods.push(PodStatus.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): HealthReport {
+    return {
+      runningRevision: isSet(object.runningRevision)
+        ? BigInt(object.runningRevision)
+        : isSet(object.running_revision)
+        ? BigInt(object.running_revision)
+        : 0n,
+      uploadBytes: isSet(object.uploadBytes)
+        ? BigInt(object.uploadBytes)
+        : isSet(object.upload_bytes)
+        ? BigInt(object.upload_bytes)
+        : 0n,
+      downloadBytes: isSet(object.downloadBytes)
+        ? BigInt(object.downloadBytes)
+        : isSet(object.download_bytes)
+        ? BigInt(object.download_bytes)
+        : 0n,
+      currentConnections: isSet(object.currentConnections)
+        ? BigInt(object.currentConnections)
+        : isSet(object.current_connections)
+        ? BigInt(object.current_connections)
+        : 0n,
+      maxConnections: isSet(object.maxConnections)
+        ? BigInt(object.maxConnections)
+        : isSet(object.max_connections)
+        ? BigInt(object.max_connections)
+        : 0n,
+      pods: globalThis.Array.isArray(object?.pods)
+        ? object.pods.map((e: any) => PodStatus.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: HealthReport): unknown {
+    const obj: any = {};
+    if (message.runningRevision !== 0n) {
+      obj.runningRevision = message.runningRevision.toString();
+    }
+    if (message.uploadBytes !== 0n) {
+      obj.uploadBytes = message.uploadBytes.toString();
+    }
+    if (message.downloadBytes !== 0n) {
+      obj.downloadBytes = message.downloadBytes.toString();
+    }
+    if (message.currentConnections !== 0n) {
+      obj.currentConnections = message.currentConnections.toString();
+    }
+    if (message.maxConnections !== 0n) {
+      obj.maxConnections = message.maxConnections.toString();
+    }
+    if (message.pods?.length) {
+      obj.pods = message.pods.map((e) => PodStatus.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<HealthReport>): HealthReport {
+    return HealthReport.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<HealthReport>): HealthReport {
+    const message = createBaseHealthReport();
+    message.runningRevision = (object.runningRevision !== undefined && object.runningRevision !== null)
+      ? BigInt(object.runningRevision)
+      : 0n;
+    message.uploadBytes = (object.uploadBytes !== undefined && object.uploadBytes !== null)
+      ? BigInt(object.uploadBytes)
+      : 0n;
+    message.downloadBytes = (object.downloadBytes !== undefined && object.downloadBytes !== null)
+      ? BigInt(object.downloadBytes)
+      : 0n;
+    message.currentConnections = (object.currentConnections !== undefined && object.currentConnections !== null)
+      ? BigInt(object.currentConnections)
+      : 0n;
+    message.maxConnections = (object.maxConnections !== undefined && object.maxConnections !== null)
+      ? BigInt(object.maxConnections)
+      : 0n;
+    message.pods = object.pods?.map((e) => PodStatus.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseReportHealthReply(): ReportHealthReply {
+  return {};
+}
+
+export const ReportHealthReply: MessageFns<ReportHealthReply> = {
+  encode(_: ReportHealthReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReportHealthReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReportHealthReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ReportHealthReply {
+    return {};
+  },
+
+  toJSON(_: ReportHealthReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<ReportHealthReply>): ReportHealthReply {
+    return ReportHealthReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<ReportHealthReply>): ReportHealthReply {
+    const message = createBaseReportHealthReply();
+    return message;
+  },
+};
+
 /**
  * The worker control plane. `Register` is authenticated with an operator API
- * key (`x-api-key`, Maintainer+); `WatchConfig` and `AckConfig` are
- * authenticated with the dynamic refresh key (`x-refresh-key`) that
- * `Register` returned.
+ * key (`x-api-key`, Maintainer+); `WatchConfig`, `AckConfig` and
+ * `ReportHealth` are authenticated with the dynamic refresh key
+ * (`x-refresh-key`) that `Register` returned.
  */
 export type WorkerAgentDefinition = typeof WorkerAgentDefinition;
 export const WorkerAgentDefinition = {
@@ -467,6 +957,19 @@ export const WorkerAgentDefinition = {
       responseStream: false,
       options: {},
     },
+    /**
+     * One report per interval for as long as the worker lives; the master treats
+     * the stream closing as the liveness signal. The reply arrives only when the
+     * worker half-closes.
+     */
+    reportHealth: {
+      name: "ReportHealth",
+      requestType: HealthReport as typeof HealthReport,
+      requestStream: true,
+      responseType: ReportHealthReply as typeof ReportHealthReply,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
@@ -477,6 +980,15 @@ export interface WorkerAgentServiceImplementation<CallContextExt = {}> {
     context: CallContext & CallContextExt,
   ): ServerStreamingMethodResult<DeepPartial<ConfigRevision>>;
   ackConfig(request: AckConfigRequest, context: CallContext & CallContextExt): Promise<DeepPartial<AckConfigReply>>;
+  /**
+   * One report per interval for as long as the worker lives; the master treats
+   * the stream closing as the liveness signal. The reply arrives only when the
+   * worker half-closes.
+   */
+  reportHealth(
+    request: AsyncIterable<HealthReport>,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ReportHealthReply>>;
 }
 
 export interface WorkerAgentClient<CallOptionsExt = {}> {
@@ -486,6 +998,15 @@ export interface WorkerAgentClient<CallOptionsExt = {}> {
     options?: CallOptions & CallOptionsExt,
   ): AsyncIterable<ConfigRevision>;
   ackConfig(request: DeepPartial<AckConfigRequest>, options?: CallOptions & CallOptionsExt): Promise<AckConfigReply>;
+  /**
+   * One report per interval for as long as the worker lives; the master treats
+   * the stream closing as the liveness signal. The reply arrives only when the
+   * worker half-closes.
+   */
+  reportHealth(
+    request: AsyncIterable<DeepPartial<HealthReport>>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ReportHealthReply>;
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

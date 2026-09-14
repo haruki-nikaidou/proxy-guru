@@ -21,9 +21,31 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--sweep-interval-secs` | `GURU_SWEEP_INTERVAL_SECS` | `30` (must be ≥ 1) |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
+| — | `GURU_MASTER_KEY` | *required* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
+| `--health-report-interval-secs` | `GURU_HEALTH_REPORT_INTERVAL_SECS` | `15` (must be ≥ 1) |
+| `--health-offline-after-intervals` | `GURU_HEALTH_OFFLINE_AFTER_INTERVALS` | `3` (must be ≥ 1) |
+| `--degraded-grace-secs` | `GURU_DEGRADED_GRACE_SECS` | `60` |
+| `--server-health-ttl-secs` | `GURU_SERVER_HEALTH_TTL_SECS` | `604800` (7 days) |
+| `--node-health-ttl-secs` | `GURU_NODE_HEALTH_TTL_SECS` | `604800` (7 days) |
+| `--default-acme-directory` | `GURU_DEFAULT_ACME_DIRECTORY` | Let's Encrypt production (`https://acme-v02.api.letsencrypt.org/directory`) |
+| `--acme-renew-before-secs` | `GURU_ACME_RENEW_BEFORE_SECS` | `2592000` (30 days) |
+| `--acme-interval-secs` | `GURU_ACME_INTERVAL_SECS` | `60` (must be ≥ 1) |
 
 `--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer` and `cron`. A broker URI looks like
 `amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost.
+
+`GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
+certificate and CA private keys — and is required in every mode. It is deliberately not a flag:
+argv is visible in process listings. Losing the key means re-entering every DNS provider token and
+re-issuing every certificate; changing it is not supported in place.
+
+The `cron` mode runs, besides the derivation sweep: the server liveness sweep (every 30 s — a server
+that has not reported for `health_report_interval × health_offline_after_intervals` is `Offline`),
+health retention (every 5 min, deletes `server_health_record` / `node_health_record` rows older than
+the TTLs), ACME issuance and renewal (every `--acme-interval-secs`; renews `--acme-renew-before-secs`
+before expiry, retries a failed attempt after an hour), and relay-leaf rotation (hourly). A server
+is `Degraded` while it lags its desired revision for longer than `--degraded-grace-secs` or while the
+last acknowledged revision failed for any pod.
 
 ## `guru-worker`
 
@@ -34,6 +56,7 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--server` | `GURU_SERVER_ID` | — (`orchestration_server` record key) |
 | `--api-key-file` | `GURU_API_KEY_FILE` | — (alternative to `GURU_API_KEY`) |
 | `--state-dir` | `GURU_STATE_DIR` | `/var/lib/guru-worker` |
+| `--health-interval` | `GURU_HEALTH_INTERVAL_SECS` | `15` (seconds between health reports; agent mode; must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
@@ -105,9 +128,18 @@ relay_type = "tcp"                    # "tcp" | "tls" | "quic"
 # full_chain = "/etc/guru-worker/tls/fullchain.pem"
 ```
 
-`key` and `full_chain` are PEM paths that must already exist and be readable by the worker process;
-nothing in the system provisions them, in either mode. They are parsed when the config is applied,
-which is what makes certificate renewal a reload rather than a restart.
+`key` and `full_chain` are PEM paths parsed when the config is applied, which is what makes
+certificate renewal a reload rather than a restart. In standalone mode nothing provisions them. In
+agent mode the master ships them with every revision (`ConfigRevision.files`) as paths relative to
+`--state-dir` — `certs/acme/<certificate>/{full_chain,key}.pem` for an Entry with TLS,
+`certs/relay/<pod>/{full_chain,key}.pem` for a `tls`/`quic` relay listener and `certs/ca.pem` for
+the internal CA — and the worker writes them (key files `0600`, each directory swapped atomically)
+before applying. A relative path in the file is resolved against `--state-dir`.
+
+The top-level `relay_ca = "certs/ca.pem"` names the CA certificate that `tls`/`quic` relay *dialers*
+verify their peer against; unset means the system roots. The master sets it whenever the internal
+CA exists (`manage-tool orchestration init-ca`), and relay leaves carry the SNI
+`<pod-key>.relay.guru.internal` on both ends.
 
 A `relay` listener is the receiving end of a `to.type = "relay"` hop, not a public entrypoint: it
 **always** reads a PROXY header off the decoded stream (that is how the upstream hop passes the true
@@ -176,8 +208,11 @@ These are logged as warnings and keep running:
   warning is a false positive there; the lint does not distinguish the two cases.
 
 Applying a parsed config can still fail per entry — a missing cert file, an address already bound by
-another process — reported as `<tag>: <reason>`. That is an apply error, not a config error, and in
-standalone mode a failed reload keeps the previously running config.
+another process — reported as `<tag>: <reason>`. That is an apply error, not a config error, and it
+is *per pod*: every other `[[forwarding]]` is committed, the failed one keeps whatever listener it
+had before (or none). In standalone mode a failed startup aborts, and a failed `SIGHUP` reload logs
+the failed entries and keeps their previous listeners; in agent mode the outcome of every pod is
+acknowledged to the master, which records the failed pods on the server and the affected nodes.
 
 ## `manage-tool`
 
@@ -188,7 +223,9 @@ Global flags mirror `guru-master`'s database options: `--address` (`SURREALDB_HO
 | Subcommand | Purpose |
 |---|---|
 | `create-admin --email <email> --password <password>` | Bootstrap the first administrator account |
+| `generate-master-key` | Print a fresh `GURU_MASTER_KEY` (needs no database) |
 | `orchestration export-config --server <key>` | Print the derived `guru-worker` TOML for one server |
+| `orchestration init-ca` | Create the internal CA for relay TLS/QUIC links and print its certificate; refuses to replace an existing one (needs `GURU_MASTER_KEY`) |
 
 ## Dashboard
 
@@ -209,6 +246,6 @@ the dashboard must be served over HTTPS (except on `localhost`).
 
 ## Module configuration
 
-Typed operator settings are *not* environment variables. Each module declares a
-`serde`-(de)serializable struct implementing `Default`, bound to a stable string key; the value is
-stored as JSON in the database, cached in Redis, and seeded by `manage-tool`.
+Each module declares a `serde`-(de)serializable struct implementing `Default` (for example
+`orchestration::config::OrchestrationConfig`). There is no configuration store yet: `guru-master`
+fills the struct from the `GURU_*` flags listed above and services hold it by value.

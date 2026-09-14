@@ -72,6 +72,29 @@ enum ProblemKind {
   CANVAS_IMPORT_DUPLICATE = 18;
   CANVAS_IMPORT_UNRESOLVED = 19;
 }
+enum ServerHealthStatus {
+  SERVER_HEALTH_STATUS_UNSPECIFIED = 0;
+  SERVER_ONLINE = 1;
+  SERVER_DEGRADED = 2;
+  SERVER_OFFLINE = 3;
+}
+enum NodeHealthStatus {
+  NODE_HEALTH_STATUS_UNSPECIFIED = 0;
+  NODE_READY = 1;
+  NODE_DEPLOYING = 2;
+  NODE_FAILED = 3;
+}
+enum DnsProviderKind {
+  DNS_PROVIDER_KIND_UNSPECIFIED = 0;
+  DNS_CLOUDFLARE = 1;
+  DNS_VERCEL = 2;
+}
+enum CertificateStatus {
+  CERTIFICATE_STATUS_UNSPECIFIED = 0;
+  CERTIFICATE_PENDING = 1;
+  CERTIFICATE_ISSUED = 2;
+  CERTIFICATE_FAILED = 3;
+}
 
 message CanvasUiPosition {
   int64 x = 1;
@@ -165,6 +188,7 @@ message Server {
   Ipv6Resolve ipv6_resolve = 7;
   string log_level = 8;
   string last_seen_at = 9;
+  ServerHealthStatus health_status = 11;
   repeated ServerIp ips = 10;
 }
 message Canvas {
@@ -394,6 +418,117 @@ message ForgetServerAppliedRequest {
 }
 message ForgetServerAppliedReply {}
 
+message ServerHealthRecord {
+  string id = 1;
+  string server_id = 2;
+  ServerHealthStatus status = 3;
+  string report_time = 4;
+  int64 upload_bytes = 5;
+  int64 download_bytes = 6;
+  int64 current_connections = 7;
+  int64 max_connections = 8;
+}
+message NodeHealthRecord {
+  string id = 1;
+  string node_id = 2;
+  NodeHealthStatus status = 3;
+  string message = 4;
+  string report_time = 5;
+}
+// `start` / `end` are RFC 3339; an empty `end` means now, an empty `start`
+// means one hour before `end`.
+message ListServerHealthHistoryRequest {
+  string server_id = 1;
+  string start = 2;
+  string end = 3;
+}
+message ListServerHealthHistoryReply {
+  repeated ServerHealthRecord records = 1;
+}
+// `limit` of 0 means the server default; records come newest first.
+message ListNodeHealthHistoryRequest {
+  string node_id = 1;
+  string start = 2;
+  string end = 3;
+  uint32 limit = 4;
+}
+message ListNodeHealthHistoryReply {
+  repeated NodeHealthRecord records = 1;
+}
+
+// DNS providers are Admin only. `api_secret` is write-only: it is never
+// returned.
+message DnsProvider {
+  string id = 1;
+  string name = 2;
+  DnsProviderKind provider = 3;
+  // Cloudflare: unused (the zone id lives on the Entry's `TlsConfig.domain_id`).
+  // Vercel: the team id, or empty for a personal account.
+  string account_id = 4;
+  string created_at = 5;
+}
+message CreateDnsProviderRequest {
+  string name = 1;
+  DnsProviderKind provider = 2;
+  string account_id = 3;
+  string api_secret = 4;
+}
+message CreateDnsProviderReply {
+  DnsProvider provider = 1;
+}
+message ListDnsProvidersRequest {}
+message ListDnsProvidersReply {
+  repeated DnsProvider providers = 1;
+}
+// An empty `api_secret` keeps the stored secret.
+message UpdateDnsProviderRequest {
+  string dns_provider_id = 1;
+  string name = 2;
+  string account_id = 3;
+  string api_secret = 4;
+}
+message UpdateDnsProviderReply {
+  DnsProvider provider = 1;
+}
+// Refused while an Entry still references the provider.
+message DeleteDnsProviderRequest {
+  string dns_provider_id = 1;
+}
+message DeleteDnsProviderReply {}
+
+// One ACME certificate, identified by `(sni, acme_directory)`. Key material is
+// never returned.
+message Certificate {
+  string id = 1;
+  string sni = 2;
+  string dns_provider_id = 3;
+  string domain_id = 4;
+  string acme_directory = 5;
+  CertificateStatus status = 6;
+  string not_before = 7;
+  string not_after = 8;
+  string last_error = 9;
+  string last_attempt_at = 10;
+}
+message ListCertificatesRequest {}
+message ListCertificatesReply {
+  repeated Certificate certificates = 1;
+}
+// Admin only: clears a failure (or forces a renewal of an issued one) so the
+// next renewal pass retries it.
+message RetryCertificateRequest {
+  string certificate_id = 1;
+}
+message RetryCertificateReply {
+  Certificate certificate = 1;
+}
+// Admin only. Refused while an Entry still references the certificate's
+// `(sni, acme_directory)`.
+message DeleteCertificateRequest {
+  string certificate_id = 1;
+}
+message DeleteCertificateReply {}
+
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
   rpc ListCanvases(ListCanvasesRequest) returns (ListCanvasesReply);
@@ -421,4 +556,13 @@ service Orchestration {
   rpc GetServerConfig(GetServerConfigRequest) returns (GetServerConfigReply);
   rpc GetServerRolloutStatus(GetServerRolloutStatusRequest) returns (GetServerRolloutStatusReply);
   rpc ForgetServerApplied(ForgetServerAppliedRequest) returns (ForgetServerAppliedReply);
+  rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
+  rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
+  rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);
+  rpc ListDnsProviders(ListDnsProvidersRequest) returns (ListDnsProvidersReply);
+  rpc UpdateDnsProvider(UpdateDnsProviderRequest) returns (UpdateDnsProviderReply);
+  rpc DeleteDnsProvider(DeleteDnsProviderRequest) returns (DeleteDnsProviderReply);
+  rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesReply);
+  rpc RetryCertificate(RetryCertificateRequest) returns (RetryCertificateReply);
+  rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateReply);
 }

@@ -1,28 +1,106 @@
 //! Module configuration.
 //!
-//! Put the strongly typed configuration for this module here. The convention in
-//! this stack is to store configuration as JSON in the database (one row per
-//! key in a shared application-config table) and cache it in Redis so services
-//! can load it cheaply and read-only at runtime. The management CLI seeds the
-//! defaults; a refresh step copies the database value into the Redis cache.
-//!
-//! Define a `serde`-(de)serializable struct that implements `Default` and bind
-//! it to a stable config key:
-//!
-//! ```ignore
-//! use serde::{Deserialize, Serialize};
-//!
-//! #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-//! pub struct ExampleConfig {
-//!     pub feature_enabled: bool,
-//!     pub max_items: u32,
-//! }
-//!
-//! // Bind the struct to the key used to store/lookup it in the database/Redis.
-//! // The concrete `ConfigJson`-style trait is provided by whichever module in
-//! // your workspace owns configuration storage.
-//! //
-//! // impl ConfigJson for ExampleConfig {
-//! //     const KEY: &'static str = "example";
-//! // }
-//! ```
+//! There is no configuration store yet, so the values come from `guru-master`'s
+//! `GURU_*` flags (see `bin/guru-master`), with these defaults. Services and hooks
+//! hold the struct by value.
+
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
+    "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationConfig {
+    /// How often a worker sends a `HealthReport`. Workers are told nothing; this
+    /// is the master's expectation and sizes the offline threshold.
+    pub health_report_interval_secs: u64,
+    /// A server that has not reported for this many intervals is `Offline`.
+    pub health_offline_after_intervals: u64,
+    /// How long a server may lag `desired` before it counts as `Degraded`.
+    pub degraded_grace_secs: u64,
+    /// Retention of raw `server_health_record` rows.
+    pub server_health_ttl_secs: u64,
+    /// Retention of raw `node_health_record` rows.
+    pub node_health_ttl_secs: u64,
+    /// The ACME directory an Entry uses when its `TlsConfig.acme_directory` is
+    /// empty.
+    pub default_acme_directory: String,
+    /// Renew an ACME certificate this long before `not_after`.
+    pub acme_renew_before_secs: u64,
+    /// After a failed ACME attempt, wait this long before retrying.
+    pub acme_retry_after_secs: u64,
+    /// Validity of the leaf certificates the internal CA issues to relay pods.
+    pub relay_cert_valid_secs: u64,
+    /// Rotate a relay leaf this long before `not_after`.
+    pub relay_cert_renew_before_secs: u64,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            health_report_interval_secs: 15,
+            health_offline_after_intervals: 3,
+            degraded_grace_secs: 60,
+            server_health_ttl_secs: 7 * 24 * 60 * 60,
+            node_health_ttl_secs: 7 * 24 * 60 * 60,
+            default_acme_directory: LETS_ENCRYPT_DIRECTORY.to_string(),
+            acme_renew_before_secs: 30 * 24 * 60 * 60,
+            acme_retry_after_secs: 60 * 60,
+            relay_cert_valid_secs: 30 * 24 * 60 * 60,
+            relay_cert_renew_before_secs: 10 * 24 * 60 * 60,
+        }
+    }
+}
+
+impl OrchestrationConfig {
+    pub fn health_report_interval(&self) -> Duration {
+        Duration::from_secs(self.health_report_interval_secs)
+    }
+
+    /// No report for this long means the worker is gone.
+    pub fn health_offline_after(&self) -> Duration {
+        Duration::from_secs(
+            self.health_report_interval_secs
+                .saturating_mul(self.health_offline_after_intervals),
+        )
+    }
+
+    pub fn degraded_grace(&self) -> Duration {
+        Duration::from_secs(self.degraded_grace_secs)
+    }
+
+    pub fn server_health_ttl(&self) -> Duration {
+        Duration::from_secs(self.server_health_ttl_secs)
+    }
+
+    pub fn node_health_ttl(&self) -> Duration {
+        Duration::from_secs(self.node_health_ttl_secs)
+    }
+
+    pub fn acme_renew_before(&self) -> Duration {
+        Duration::from_secs(self.acme_renew_before_secs)
+    }
+
+    pub fn acme_retry_after(&self) -> Duration {
+        Duration::from_secs(self.acme_retry_after_secs)
+    }
+
+    pub fn relay_cert_valid(&self) -> Duration {
+        Duration::from_secs(self.relay_cert_valid_secs)
+    }
+
+    pub fn relay_cert_renew_before(&self) -> Duration {
+        Duration::from_secs(self.relay_cert_renew_before_secs)
+    }
+
+    /// The directory an Entry resolves to: its own, or the default when empty.
+    pub fn acme_directory<'a>(&'a self, requested: &'a str) -> &'a str {
+        if requested.is_empty() {
+            &self.default_acme_directory
+        } else {
+            requested
+        }
+    }
+}

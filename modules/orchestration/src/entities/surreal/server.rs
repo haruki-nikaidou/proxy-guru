@@ -1,4 +1,5 @@
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
+use crate::entities::surreal::health::ServerHealthStatus;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
@@ -27,6 +28,15 @@ pub struct ServerEntity {
     /// registration is refused until it lapses or the owning stream releases it.
     pub session_lease_until: Option<DateTime<Utc>>,
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// When the last health report was accepted. Distinct from `last_seen_at`
+    /// (the watch stream's heartbeat) so a live config stream cannot mask a dead
+    /// health stream.
+    #[surreal(default)]
+    pub last_health_report_at: Option<DateTime<Utc>>,
+    /// Current liveness, kept by the health pipeline; `Offline` until a worker
+    /// reports.
+    #[surreal(default)]
+    pub health_status: ServerHealthStatus,
 }
 
 /// Local mirror of [`guru_worker_config::Ipv6Resolve`]; `SurrealValue` cannot be

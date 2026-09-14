@@ -4,7 +4,12 @@
 //! rules live in `services`.
 
 use crate::entities::surreal::canvas::{CanvasEntity, CanvasTree, CanvasUiPosition};
+use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
 use crate::entities::surreal::connection::EdgeConnectionEntity;
+use crate::entities::surreal::dns::DnsProvider;
+use crate::entities::surreal::health::{
+    NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+};
 use crate::entities::surreal::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig,
     LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode, NodeEntity, NodeSpec,
@@ -13,13 +18,17 @@ use crate::entities::surreal::node::{
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{ServerIpRecordEntity, ServerIpv6Resolve, ServerWithIp};
 use crate::entities::surreal::view::{ConfigSnapshot, ListenProtocol, ListenerCap};
+use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
+use crate::services::dns::{self, DnsProviderService, DnsProviderSummary};
 use crate::services::edge::{self, EdgeService};
+use crate::services::health::{self, HealthService};
 use crate::services::node::{self, NodeService};
 use crate::services::rollout::{self, RolloutService};
 use crate::services::server::{self, ServerService};
 use crate::services::topology::{ProblemKind, ProblemSeverity, TopologyProblem};
 use crate::utils::ids;
+use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration as pb;
 use tonic::{Request, Response, Status};
@@ -31,6 +40,9 @@ pub struct OrchestrationGrpc {
     pub nodes: NodeService,
     pub edges: EdgeService,
     pub rollout: RolloutService,
+    pub health: HealthService,
+    pub dns: DnsProviderService,
+    pub certificates: AcmeService,
 }
 
 impl OrchestrationGrpc {
@@ -106,6 +118,121 @@ fn ipv6_to_proto(value: ServerIpv6Resolve) -> i32 {
     .into()
 }
 
+pub(crate) fn server_health_to_proto(value: ServerHealthStatus) -> i32 {
+    match value {
+        ServerHealthStatus::Online => pb::ServerHealthStatus::ServerOnline,
+        ServerHealthStatus::Degraded => pb::ServerHealthStatus::ServerDegraded,
+        ServerHealthStatus::Offline => pb::ServerHealthStatus::ServerOffline,
+    }
+    .into()
+}
+
+fn node_health_to_proto(value: NodeHealthStatus) -> i32 {
+    match value {
+        NodeHealthStatus::Ready => pb::NodeHealthStatus::NodeReady,
+        NodeHealthStatus::Deploying => pb::NodeHealthStatus::NodeDeploying,
+        NodeHealthStatus::Failed => pb::NodeHealthStatus::NodeFailed,
+    }
+    .into()
+}
+
+fn server_health_record_to_proto(record: &ServerHealthRecordEntity) -> pb::ServerHealthRecord {
+    pb::ServerHealthRecord {
+        id: ids::record_key(&record.id.0),
+        server_id: ids::record_key(&record.server.0),
+        status: server_health_to_proto(record.status),
+        report_time: record.report_time.to_rfc3339(),
+        upload_bytes: record.upload_bytes,
+        download_bytes: record.download_bytes,
+        current_connections: record.current_connections,
+        max_connections: record.max_connections,
+    }
+}
+
+fn node_health_record_to_proto(record: &NodeHealthRecordEntity) -> pb::NodeHealthRecord {
+    pb::NodeHealthRecord {
+        id: ids::record_key(&record.id.0),
+        node_id: ids::record_key(&record.node.0),
+        status: node_health_to_proto(record.status),
+        message: record.message.clone(),
+        report_time: record.report_time.to_rfc3339(),
+    }
+}
+
+fn dns_provider_to_proto(value: DnsProvider) -> i32 {
+    match value {
+        DnsProvider::Cloudflare => pb::DnsProviderKind::DnsCloudflare,
+        DnsProvider::Vercel => pb::DnsProviderKind::DnsVercel,
+    }
+    .into()
+}
+
+fn dns_provider_from_proto(value: i32) -> Result<DnsProvider, Status> {
+    match pb::DnsProviderKind::try_from(value) {
+        Ok(pb::DnsProviderKind::DnsCloudflare) => Ok(DnsProvider::Cloudflare),
+        Ok(pb::DnsProviderKind::DnsVercel) => Ok(DnsProvider::Vercel),
+        _ => Err(Status::invalid_argument("provider must be specified")),
+    }
+}
+
+fn dns_provider_summary_to_proto(provider: &DnsProviderSummary) -> pb::DnsProvider {
+    pb::DnsProvider {
+        id: ids::record_key(&provider.id.0),
+        name: provider.name.clone(),
+        provider: dns_provider_to_proto(provider.provider),
+        account_id: provider.account_id.clone(),
+        created_at: provider.created_at.to_rfc3339(),
+    }
+}
+
+fn certificate_status_to_proto(value: CertificateStatus) -> i32 {
+    match value {
+        CertificateStatus::Pending => pb::CertificateStatus::CertificatePending,
+        CertificateStatus::Issued => pb::CertificateStatus::CertificateIssued,
+        CertificateStatus::Failed => pb::CertificateStatus::CertificateFailed,
+    }
+    .into()
+}
+
+/// Key material never crosses the wire: only the row's metadata does.
+fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
+    let time = |t: Option<DateTime<Utc>>| t.map(|t| t.to_rfc3339()).unwrap_or_default();
+    pb::Certificate {
+        id: ids::record_key(&certificate.id.0),
+        sni: certificate.sni.clone(),
+        dns_provider_id: ids::record_key(&certificate.dns_provider.0),
+        domain_id: certificate.domain_id.clone(),
+        acme_directory: certificate.acme_directory.clone(),
+        status: certificate_status_to_proto(certificate.status),
+        not_before: time(certificate.not_before),
+        not_after: time(certificate.not_after),
+        last_error: certificate.last_error.clone().unwrap_or_default(),
+        last_attempt_at: time(certificate.last_attempt_at),
+    }
+}
+
+/// The history window as the proto defines it: an empty `end` means now, an
+/// empty `start` means one hour before `end`.
+fn history_window(start: &str, end: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), Status> {
+    fn parse(field: &str, value: &str) -> Result<DateTime<Utc>, Status> {
+        DateTime::parse_from_rfc3339(value)
+            .map(|t| t.with_timezone(&Utc))
+            .map_err(|e| Status::invalid_argument(format!("{field}: {e}")))
+    }
+    let end = if end.is_empty() {
+        Utc::now()
+    } else {
+        parse("end", end)?
+    };
+    let start = if start.is_empty() {
+        end.checked_sub_signed(chrono::TimeDelta::hours(1))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC)
+    } else {
+        parse("start", start)?
+    };
+    Ok((start, end))
+}
+
 fn ipv6_from_proto(value: i32) -> Result<ServerIpv6Resolve, Status> {
     match pb::Ipv6Resolve::try_from(value) {
         Ok(pb::Ipv6Resolve::Ipv6Required) => Ok(ServerIpv6Resolve::Required),
@@ -136,6 +263,7 @@ fn server_to_proto(server: &ServerWithIp) -> pb::Server {
             .last_seen_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_default(),
+        health_status: server_health_to_proto(server.server.health_status),
         ips: server.ips.iter().map(ip_to_proto).collect(),
     }
 }
@@ -947,5 +1075,171 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             })
             .await?;
         Ok(Response::new(pb::ForgetServerAppliedReply {}))
+    }
+
+    async fn list_server_health_history(
+        &self,
+        request: Request<pb::ListServerHealthHistoryRequest>,
+    ) -> Result<Response<pb::ListServerHealthHistoryReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let (start, end) = history_window(&input.start, &input.end)?;
+        let records = self
+            .health
+            .process(health::ListServerHealthHistory {
+                actor,
+                server: ids::server_id(&input.server_id),
+                start,
+                end,
+            })
+            .await?;
+        Ok(Response::new(pb::ListServerHealthHistoryReply {
+            records: records.iter().map(server_health_record_to_proto).collect(),
+        }))
+    }
+
+    async fn list_node_health_history(
+        &self,
+        request: Request<pb::ListNodeHealthHistoryRequest>,
+    ) -> Result<Response<pb::ListNodeHealthHistoryReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let (start, end) = history_window(&input.start, &input.end)?;
+        let limit = if input.limit == 0 {
+            health::DEFAULT_NODE_HISTORY_LIMIT
+        } else {
+            i64::from(input.limit)
+        };
+        let records = self
+            .health
+            .process(health::ListNodeHealthHistory {
+                actor,
+                node: ids::node_id(&input.node_id),
+                start,
+                end,
+                limit,
+            })
+            .await?;
+        Ok(Response::new(pb::ListNodeHealthHistoryReply {
+            records: records.iter().map(node_health_record_to_proto).collect(),
+        }))
+    }
+
+    async fn create_dns_provider(
+        &self,
+        request: Request<pb::CreateDnsProviderRequest>,
+    ) -> Result<Response<pb::CreateDnsProviderReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let provider = self
+            .dns
+            .process(dns::CreateDnsProvider {
+                actor,
+                name: input.name,
+                provider: dns_provider_from_proto(input.provider)?,
+                account_id: input.account_id,
+                api_secret: input.api_secret,
+            })
+            .await?;
+        Ok(Response::new(pb::CreateDnsProviderReply {
+            provider: Some(dns_provider_summary_to_proto(&provider)),
+        }))
+    }
+
+    async fn list_dns_providers(
+        &self,
+        request: Request<pb::ListDnsProvidersRequest>,
+    ) -> Result<Response<pb::ListDnsProvidersReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let providers = self.dns.process(dns::ListDnsProviders { actor }).await?;
+        Ok(Response::new(pb::ListDnsProvidersReply {
+            providers: providers
+                .iter()
+                .map(dns_provider_summary_to_proto)
+                .collect(),
+        }))
+    }
+
+    async fn update_dns_provider(
+        &self,
+        request: Request<pb::UpdateDnsProviderRequest>,
+    ) -> Result<Response<pb::UpdateDnsProviderReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let provider = self
+            .dns
+            .process(dns::UpdateDnsProvider {
+                actor,
+                id: ids::dns_provider_id(&input.dns_provider_id),
+                name: input.name,
+                account_id: input.account_id,
+                api_secret: Some(input.api_secret).filter(|s| !s.is_empty()),
+            })
+            .await?;
+        Ok(Response::new(pb::UpdateDnsProviderReply {
+            provider: Some(dns_provider_summary_to_proto(&provider)),
+        }))
+    }
+
+    async fn delete_dns_provider(
+        &self,
+        request: Request<pb::DeleteDnsProviderRequest>,
+    ) -> Result<Response<pb::DeleteDnsProviderReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        self.dns
+            .process(dns::DeleteDnsProvider {
+                actor,
+                id: ids::dns_provider_id(&input.dns_provider_id),
+            })
+            .await?;
+        Ok(Response::new(pb::DeleteDnsProviderReply {}))
+    }
+
+    async fn list_certificates(
+        &self,
+        request: Request<pb::ListCertificatesRequest>,
+    ) -> Result<Response<pb::ListCertificatesReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let certificates = self
+            .certificates
+            .process(acme::ListCertificates { actor })
+            .await?;
+        Ok(Response::new(pb::ListCertificatesReply {
+            certificates: certificates.iter().map(certificate_to_proto).collect(),
+        }))
+    }
+
+    async fn retry_certificate(
+        &self,
+        request: Request<pb::RetryCertificateRequest>,
+    ) -> Result<Response<pb::RetryCertificateReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let certificate = self
+            .certificates
+            .process(acme::RetryCertificate {
+                actor,
+                id: ids::certificate_id(&input.certificate_id),
+            })
+            .await?;
+        Ok(Response::new(pb::RetryCertificateReply {
+            certificate: Some(certificate_to_proto(&certificate)),
+        }))
+    }
+
+    async fn delete_certificate(
+        &self,
+        request: Request<pb::DeleteCertificateRequest>,
+    ) -> Result<Response<pb::DeleteCertificateReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        self.certificates
+            .process(acme::DeleteCertificate {
+                actor,
+                id: ids::certificate_id(&input.certificate_id),
+            })
+            .await?;
+        Ok(Response::new(pb::DeleteCertificateReply {}))
     }
 }

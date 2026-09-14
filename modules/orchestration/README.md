@@ -9,14 +9,15 @@ per server, and streams every new revision to the workers that registered for it
 ```
 src/
 ├── lib.rs          # crate root: declares the modules below
-├── config.rs       # typed config scaffold, not wired to any setting yet
-├── utils/ids.rs    # record id ↔ wire string conversion
+├── config.rs       # `OrchestrationConfig`: health, ACME and relay-certificate knobs
+├── utils/          # ids (record id ↔ wire string), secret (master-key encryption)
 ├── entities/
 │   └── surreal/    # canvas, server, node, port, connection, view, topology,
-│                   # plus health/dns rows for later stages
-├── services/       # CRUD, topology rules, derivation, convergence, rollout, agent, watch
+│                   # health, dns, certificate (ACME), ca (internal CA, relay leaves)
+├── services/       # CRUD, topology rules, derivation, convergence, rollout, agent, watch, ca
 ├── events/         # `CanvasDirty`, the derivation trigger
-├── hooks/derive.rs # the derivation consumer and its cron sweep
+├── hooks/          # derive.rs (consumer, sweep, relay leaf rotation), health.rs (liveness
+│                   # sweep, retention), acme.rs (issuance/renewal)
 └── rpc/            # the operator API and the worker API, plus refresh-key middleware
 ```
 
@@ -111,6 +112,61 @@ that it keeps in memory only; the master stores its SHA-256 digest. Re-registeri
 rotates the key, which kills the previous session's stream — that is how a master
 learns a worker restarted. Only servers whose derived TOML actually changed get a
 new revision, so unrelated servers never restart their listeners.
+
+A revision is acknowledged **per pod**: the worker commits every forwarding it
+could prepare and bind, keeps the previous listener of the ones it could not,
+and lists each pod's outcome in `AckConfig`. `services::agent` then stores
+`applied` as a snapshot of that mix — the acknowledged revision's shape for the
+pods that applied, the previous `applied` shape for the failed ones — so
+convergence keeps reasoning about what the worker really serves, and records the
+failed pods on the view (`failed_pods`, `failed_revision`).
+
+## Health
+
+Workers stream `HealthReport`s over `ReportHealth` (refresh-key authenticated,
+one per interval); `services::health` turns each into a `server_health_record`
+row (byte and connection deltas, status `Online`/`Degraded`) and one
+`node_health_record` per node the report touches — the pod and every node in its
+`ForwardingDeps.nodes`, worst status wins for a node shared by several pods.
+`Deploying` rows are also written the moment a derivation publishes a new
+revision, and `Failed`/`Ready` rows the moment an ack lands, so status never
+waits for the next report. Every write is one transaction fenced on the
+server's `refresh_key_generation`, like the rest of the agent path. The stream
+closing marks the server `Offline`; `hooks::health::run_liveness_sweep` catches a
+worker that vanished without closing (no report for
+`health_report_interval × health_offline_after_intervals`), and
+`run_health_retention` trims both tables to their TTLs. The current status is
+denormalised on `orchestration_server.health_status` for listings.
+
+## Certificates
+
+Derivation takes a `DerivationCertificates` input next to the topology: the
+ACME rows of every SNI a TLS Entry asks for, the relay leaf of every pod behind
+a TLS/QUIC relay, and whether the internal CA exists. A pod whose material is
+missing is an `invalid_pods` entry naming the state (`certificate for <sni> is
+pending`, `internal CA not initialised`, `relay certificate not issued yet`),
+never a server-level failure. Edit-time switch safety derives with
+`DerivationCertificates::assumed()` so a missing certificate cannot hide an
+unsafe protocol switch.
+
+Material never lives in a snapshot: the TOML references fixed worker paths
+(`certs/acme/<certificate>/…`, `certs/relay/<pod>/…`, `certs/ca.pem`) and each
+`ForwardingDeps` records the `CertificateRef`s (row key + version) its entry was
+derived against; `ConfigSnapshot.certificates` is their union. A renewal or leaf
+rotation bumps the row's version, so the same TOML becomes a new revision, and
+`try_send` assembles the files (`services::ca::BundleCertificates`, keys
+decrypted with the master key) when the revision is handed to a worker. The
+version is a *minimum*, not an exact pin: only the current material is stored,
+so a revision handed out after a renewal carries the newer material under the
+same paths — never older than what it was derived against — and the revision
+the renewal produced follows right behind it.
+
+The internal CA is created once by `manage-tool orchestration init-ca`
+(`CaService` / `InitInternalCa`, which also touches every tree with a TLS/QUIC
+relay). The derivation hook issues relay leaves before deriving
+(`EnsureRelayCertificates`, SAN `<pod-key>.relay.guru.internal`), and
+`run_relay_cert_rotation` re-issues leaves within `relay_cert_renew_before` of
+expiry and re-derives their canvases.
 
 ## Dependency direction
 

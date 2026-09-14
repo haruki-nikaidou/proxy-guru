@@ -23,14 +23,18 @@
 //! a pure function of the fabric's current state, so a lost message or a crashed
 //! master costs a retry, never correctness.
 
+use crate::config::OrchestrationConfig;
 use crate::entities::surreal::node::NodeId;
 use crate::entities::surreal::server::ServerId;
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::entities::surreal::view::{
-    ConfigSnapshot, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap, ServerConfigViewEntity,
+    CertificateRef, ConfigSnapshot, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
+    ServerConfigViewEntity,
 };
 use crate::services::OrchestrationError;
-use crate::services::derive::{DerivedConfig, derive_server_config};
+use crate::services::derive::{
+    DerivationCertificates, DerivedConfig, certificate_union, derive_server_config,
+};
 use crate::utils::ids::record_key;
 use guru_worker_config::{Config, Forwarding};
 use std::collections::{HashMap, HashSet};
@@ -45,6 +49,10 @@ pub struct Converged {
     pub waiting_for: Vec<ServerId>,
     /// Pods derivation could not build, carried through to the config view.
     pub invalid: Vec<InvalidPod>,
+    /// Every certificate `config` references: the union over `forwardings`, so
+    /// a held-back previous forwarding keeps pinning the versions it was
+    /// derived against.
+    pub certificates: Vec<CertificateRef>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,15 +188,18 @@ pub fn converge(
     waiting.sort_by_key(|s| record_key(&s.0));
 
     let (forwardings, deps): (Vec<_>, Vec<_>) = merged.into_iter().unzip();
+    let certificates = certificate_union(&deps);
     Ok(Converged {
         config: Config {
             ipv6_resolve: ideal.config.ipv6_resolve,
             log: ideal.config.log,
+            relay_ca: ideal.config.relay_ca,
             forwardings,
         },
         forwardings: deps,
         waiting_for: waiting,
         invalid: ideal.invalid,
+        certificates,
     })
 }
 
@@ -279,10 +290,15 @@ pub fn ensure_switch_safe(
     if referenced.is_empty() {
         return Ok(());
     }
+    // Only listener shapes matter here, so certificate availability must not
+    // hide a pod: a switch is just as unsafe once its certificate arrives.
+    let certificates = DerivationCertificates::assumed();
+    let config = OrchestrationConfig::default();
     for server in &projected.servers {
         // A server whose config does not derive at all is reported by the
         // derivation pass, not here.
-        let Ok(derived) = derive_server_config(projected, &server.id) else {
+        let Ok(derived) = derive_server_config(projected, &server.id, &certificates, &config)
+        else {
             continue;
         };
         for deps in &derived.forwardings {
