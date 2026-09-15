@@ -723,14 +723,20 @@ streams alive.
 
 ## 8. Verify
 
-Work through these in order — each fails loudly and independently:
+Work through these in order — each fails loudly and independently. Everything here is written to be
+copy-pasteable into a **fresh operator shell**: the checks that belong to the service account are
+wrapped in `sudo -iu guru`, and the schema check spells the connection out instead of relying on the
+`sk` function, which only existed in the shell that defined it.
 
 ```sh
-# 1. Datastores
-sudo docker compose ps                              # surrealdb up, rabbitmq healthy
+# 1. Datastores (operator: Docker)
+cd /path/to/proxy-guru && sudo docker compose ps     # surrealdb up, rabbitmq healthy
 
-# 2. Schema
-sk status                                           # the rollout you applied, [completed]
+# 2. Schema (guru: it owns the manifests under database/)
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREALDB_PASSWORD" status'
+#   → the rollout you applied, [completed]
 
 # 3. Control plane: one banner per mode, no restart loop
 journalctl -u 'guru-master@*' -n 20
@@ -743,8 +749,9 @@ curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
   --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
 # 6. A worker with a bogus key must be rejected by the master, not by TLS or nginx
-GURU_API_KEY=bogus ./target/release/guru-worker --master https://guru.example.com \
-  --server probe --state-dir /tmp/gw
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
+  ./target/release/guru-worker --master https://guru.example.com \
+    --server probe --state-dir /tmp/gw'
 #   ERROR guru_worker::agent: agent session ended error=... "Missing identity"
 ```
 
