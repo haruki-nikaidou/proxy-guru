@@ -43,8 +43,9 @@ use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::orchestration_agent::worker_agent_client::WorkerAgentClient;
 use rpguru_sdk::orchestration_agent::worker_agent_server::{WorkerAgent, WorkerAgentServer};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport, PodStatus,
-    RegisterReply, RegisterRequest, ReportHealthReply, WatchConfigRequest,
+    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport,
+    PodStatus, PollAgentUpdateReply, PollAgentUpdateRequest, RegisterReply, RegisterRequest,
+    ReportHealthReply, WatchConfigRequest,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -174,6 +175,7 @@ async fn serve(
         hub: hub.clone(),
         lease,
         notifier: Notifier::default(),
+        config: OrchestrationConfig::default(),
     };
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let config = OrchestrationConfig::default();
@@ -420,6 +422,10 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
             applied_revision: Arc::new(AtomicI64::new(0)),
             health_interval: Duration::from_millis(200),
             sources: guru_worker::addresses::Sources::none(),
+            update_poll: Duration::from_secs(60),
+            self_update: false,
+            update_done: Default::default(),
+            last_update_error: Default::default(),
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -574,6 +580,7 @@ async fn register(
         server_id: server_key.to_string(),
         running_revision: 0,
         reported_addresses: None,
+        ..Default::default()
     });
     let key = api_key.parse().map_err(|_| Status::internal("api key"))?;
     request.metadata_mut().insert("x-api-key", key);
@@ -868,7 +875,17 @@ impl WorkerAgent for FakeMaster {
         Ok(Response::new(RegisterReply {
             refresh_key: "fake".to_string(),
             health_report_interval_secs: 0,
+            agent_update_poll_secs: 0,
         }))
+    }
+
+    /// Never offers an update: the worker's update path needs an installed
+    /// tree, which these tests do not lay out.
+    async fn poll_agent_update(
+        &self,
+        _: Request<PollAgentUpdateRequest>,
+    ) -> Result<Response<PollAgentUpdateReply>, Status> {
+        Ok(Response::new(PollAgentUpdateReply { update: None }))
     }
 
     type WatchConfigStream = ReceiverStream<Result<ConfigRevision, Status>>;
@@ -984,6 +1001,10 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
             applied_revision: Arc::new(AtomicI64::new(0)),
             health_interval: Duration::from_millis(200),
             sources: guru_worker::addresses::Sources::none(),
+            update_poll: Duration::from_secs(60),
+            self_update: false,
+            update_done: Default::default(),
+            last_update_error: Default::default(),
         },
         sup.clone(),
         agent_shutdown.clone(),

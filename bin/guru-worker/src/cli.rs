@@ -9,6 +9,7 @@ pub const API_KEY_ENV: &str = "GURU_API_KEY";
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "guru-worker",
+    version,
     about = "guru data-plane worker",
     after_help = "Agent mode needs the operator API key in the GURU_API_KEY environment \
                   variable or in the file named by --api-key-file (exactly one of the two). \
@@ -70,4 +71,8 @@ pub struct Cli {
     pub geo_url: String,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+    /// Agent mode: never self-update, even when the dashboard asks. A requested
+    /// update is reported back as refused, so the operator sees why.
+    #[arg(long, env = "GURU_NO_SELF_UPDATE")]
+    pub no_self_update: bool,
 }

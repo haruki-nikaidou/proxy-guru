@@ -237,9 +237,31 @@ export type ServerDto = {
 	lastSeenAt: string;
 	healthStatus: ServerHealthStatusName;
 	addresses: ServerAddressesDto;
+	/** The worker build the last registration reported; empty until one does. */
+	agentVersion: string;
+	agentArch: string;
+	/** The systemd instance the install command creates: `guru-worker@<unit>`. */
+	agentUnit: string;
+	/** A pending self-update (the requested version), and why the last one failed. */
+	agentUpdateRequested: string;
+	agentUpdateError: string;
+	/** When the server's own agent key was issued; empty when it has none. */
+	agentKeyIssuedAt: string;
 	pods: PodDto[];
 	/** `null` only for a server created before universal pods existed. */
 	universal: UniversalPodDto | null;
+};
+
+/** The install command issued for a server, carrying its freshly issued key. */
+export type AgentInstallDto = { command: string; unit: string; version: string };
+/** The published worker release; `version` empty means none is published yet. */
+export type AgentReleaseDto = {
+	version: string;
+	sha256: string;
+	arch: string;
+	publishedAt: string;
+	/** The control plane knows its public origin, so a command can be rendered. */
+	baseUrlConfigured: boolean;
 };
 
 /** One listener a forwarding either serves or points at, by its server. */

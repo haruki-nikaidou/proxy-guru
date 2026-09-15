@@ -14,6 +14,9 @@ service WorkerAgent {
   // the stream closing as the liveness signal. The reply arrives only when the
   // worker half-closes.
   rpc ReportHealth(stream HealthReport) returns (ReportHealthReply);
+  // Asked every `agent_update_poll_secs`: whether the operator requested an
+  // update for this server, and how the previous attempt went.
+  rpc PollAgentUpdate(PollAgentUpdateRequest) returns (PollAgentUpdateReply);
 }
 
 // What the worker knows about its own addresses. An empty string means the
@@ -32,12 +35,23 @@ message RegisterRequest {
   int64 running_revision = 2;
   // Best effort; may be unset.
   ReportedAddresses reported_addresses = 3;
+  // The worker's own build: its crate version and the CPU architecture it was
+  // built for (`x86_64`, `aarch64`). Empty — an older worker — leaves whatever
+  // the master had.
+  string agent_version = 4;
+  string agent_arch = 5;
+  // Why the last self-update on this host failed, as the start guard recorded
+  // it and the worker found it at startup. Empty when there is nothing to tell.
+  string last_update_error = 6;
 }
 message RegisterReply {
   string refresh_key = 1;
   // How often the master expects a `HealthReport`; the worker schedules from
   // this so the two sides never disagree on the offline threshold.
   uint32 health_report_interval_secs = 2;
+  // How often the worker should ask `PollAgentUpdate`; `0` leaves the worker's
+  // own default.
+  uint32 agent_update_poll_secs = 3;
 }
 message WatchConfigRequest {}
 // A file the worker writes under its state directory before applying `toml`.
@@ -84,3 +98,20 @@ message HealthReport {
   ReportedAddresses reported_addresses = 7;
 }
 message ReportHealthReply {}
+// A non-empty `last_error` is why the previous update attempt failed (download,
+// checksum, install, or self-update disabled on the host); the master records
+// it, drops the request, and answers with no update.
+message PollAgentUpdateRequest {
+  string last_error = 1;
+}
+// The published binary the operator asked this worker to move to. `url` is
+// under the master's own origin; `sha256` is what the worker verifies before
+// installing.
+message AgentUpdate {
+  string version = 1;
+  string url = 2;
+  string sha256 = 3;
+}
+message PollAgentUpdateReply {
+  optional AgentUpdate update = 1;
+}

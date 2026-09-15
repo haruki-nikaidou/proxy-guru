@@ -1176,7 +1176,27 @@ export interface Server {
   logLevel: string;
   lastSeenAt: string;
   healthStatus: ServerHealthStatus;
-  addresses: ServerAddresses | undefined;
+  addresses:
+    | ServerAddresses
+    | undefined;
+  /**
+   * What the worker last registered as: its crate version and the CPU
+   * architecture it was built for. Empty until a worker that reports them
+   * registers.
+   */
+  agentVersion: string;
+  agentArch: string;
+  /** The systemd instance the install command creates: `guru-worker@<unit>`. */
+  agentUnit: string;
+  /**
+   * A pending self-update: the version the operator asked the worker to move
+   * to. Empty once the worker registers as that version, or after a failure.
+   */
+  agentUpdateRequested: string;
+  /** Why the last self-update failed, as the worker reported it. */
+  agentUpdateError: string;
+  /** When the server's own agent key was issued; empty when it has none. */
+  agentKeyIssuedAt: string;
 }
 
 export interface Canvas {
@@ -1315,9 +1335,63 @@ export interface UpdateServerRequest {
   overrideV4: string;
   overrideV6: string;
   extraAddresses: string[];
+  /**
+   * The systemd instance the install command targets (`guru-worker@<unit>`):
+   * 1-32 lowercase letters, digits or dashes. Empty clears it.
+   */
+  agentUnit: string;
 }
 
 export interface UpdateServerReply {
+  server: Server | undefined;
+}
+
+/**
+ * Issues the server's own agent key and renders the install command carrying
+ * it. The key appears exactly once, inside `command`; issuing again replaces
+ * it, so a worker still holding the previous key is refused at its next
+ * registration. `unit` empty keeps the stored instance name, or derives one
+ * from the server name. Maintainer+.
+ */
+export interface IssueServerAgentInstallRequest {
+  serverId: string;
+  unit: string;
+}
+
+export interface IssueServerAgentInstallReply {
+  command: string;
+  unit: string;
+  version: string;
+  server: Server | undefined;
+}
+
+/**
+ * The published worker release (`manage-tool agent publish`): empty `version`
+ * means none yet. `base_url_configured` is whether the install command has an
+ * origin to download from at all.
+ */
+export interface GetAgentReleaseRequest {
+}
+
+export interface GetAgentReleaseReply {
+  version: string;
+  sha256: string;
+  arch: string;
+  publishedAt: string;
+  baseUrlConfigured: boolean;
+}
+
+/**
+ * Asks the server's worker to move to the published release: it picks the
+ * request up at its next poll, downloads and verifies the binary, swaps it in
+ * and restarts. `agent_update_requested` clears once the worker registers as
+ * that version, or with `agent_update_error` set when the attempt failed.
+ */
+export interface RequestAgentUpdateRequest {
+  serverId: string;
+}
+
+export interface RequestAgentUpdateReply {
   server: Server | undefined;
 }
 
@@ -3924,6 +3998,12 @@ function createBaseServer(): Server {
     lastSeenAt: "",
     healthStatus: 0,
     addresses: undefined,
+    agentVersion: "",
+    agentArch: "",
+    agentUnit: "",
+    agentUpdateRequested: "",
+    agentUpdateError: "",
+    agentKeyIssuedAt: "",
   };
 }
 
@@ -3961,6 +4041,24 @@ export const Server: MessageFns<Server> = {
     }
     if (message.addresses !== undefined) {
       ServerAddresses.encode(message.addresses, writer.uint32(98).fork()).join();
+    }
+    if (message.agentVersion !== "") {
+      writer.uint32(106).string(message.agentVersion);
+    }
+    if (message.agentArch !== "") {
+      writer.uint32(114).string(message.agentArch);
+    }
+    if (message.agentUnit !== "") {
+      writer.uint32(122).string(message.agentUnit);
+    }
+    if (message.agentUpdateRequested !== "") {
+      writer.uint32(130).string(message.agentUpdateRequested);
+    }
+    if (message.agentUpdateError !== "") {
+      writer.uint32(138).string(message.agentUpdateError);
+    }
+    if (message.agentKeyIssuedAt !== "") {
+      writer.uint32(146).string(message.agentKeyIssuedAt);
     }
     return writer;
   },
@@ -4060,6 +4158,54 @@ export const Server: MessageFns<Server> = {
           message.addresses = ServerAddresses.decode(reader, reader.uint32());
           continue;
         }
+        case 13: {
+          if (tag !== 106) {
+            break;
+          }
+
+          message.agentVersion = reader.string();
+          continue;
+        }
+        case 14: {
+          if (tag !== 114) {
+            break;
+          }
+
+          message.agentArch = reader.string();
+          continue;
+        }
+        case 15: {
+          if (tag !== 122) {
+            break;
+          }
+
+          message.agentUnit = reader.string();
+          continue;
+        }
+        case 16: {
+          if (tag !== 130) {
+            break;
+          }
+
+          message.agentUpdateRequested = reader.string();
+          continue;
+        }
+        case 17: {
+          if (tag !== 138) {
+            break;
+          }
+
+          message.agentUpdateError = reader.string();
+          continue;
+        }
+        case 18: {
+          if (tag !== 146) {
+            break;
+          }
+
+          message.agentKeyIssuedAt = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4102,6 +4248,36 @@ export const Server: MessageFns<Server> = {
         ? serverHealthStatusFromJSON(object.health_status)
         : 0,
       addresses: isSet(object.addresses) ? ServerAddresses.fromJSON(object.addresses) : undefined,
+      agentVersion: isSet(object.agentVersion)
+        ? globalThis.String(object.agentVersion)
+        : isSet(object.agent_version)
+        ? globalThis.String(object.agent_version)
+        : "",
+      agentArch: isSet(object.agentArch)
+        ? globalThis.String(object.agentArch)
+        : isSet(object.agent_arch)
+        ? globalThis.String(object.agent_arch)
+        : "",
+      agentUnit: isSet(object.agentUnit)
+        ? globalThis.String(object.agentUnit)
+        : isSet(object.agent_unit)
+        ? globalThis.String(object.agent_unit)
+        : "",
+      agentUpdateRequested: isSet(object.agentUpdateRequested)
+        ? globalThis.String(object.agentUpdateRequested)
+        : isSet(object.agent_update_requested)
+        ? globalThis.String(object.agent_update_requested)
+        : "",
+      agentUpdateError: isSet(object.agentUpdateError)
+        ? globalThis.String(object.agentUpdateError)
+        : isSet(object.agent_update_error)
+        ? globalThis.String(object.agent_update_error)
+        : "",
+      agentKeyIssuedAt: isSet(object.agentKeyIssuedAt)
+        ? globalThis.String(object.agentKeyIssuedAt)
+        : isSet(object.agent_key_issued_at)
+        ? globalThis.String(object.agent_key_issued_at)
+        : "",
     };
   },
 
@@ -4140,6 +4316,24 @@ export const Server: MessageFns<Server> = {
     if (message.addresses !== undefined) {
       obj.addresses = ServerAddresses.toJSON(message.addresses);
     }
+    if (message.agentVersion !== "") {
+      obj.agentVersion = message.agentVersion;
+    }
+    if (message.agentArch !== "") {
+      obj.agentArch = message.agentArch;
+    }
+    if (message.agentUnit !== "") {
+      obj.agentUnit = message.agentUnit;
+    }
+    if (message.agentUpdateRequested !== "") {
+      obj.agentUpdateRequested = message.agentUpdateRequested;
+    }
+    if (message.agentUpdateError !== "") {
+      obj.agentUpdateError = message.agentUpdateError;
+    }
+    if (message.agentKeyIssuedAt !== "") {
+      obj.agentKeyIssuedAt = message.agentKeyIssuedAt;
+    }
     return obj;
   },
 
@@ -4163,6 +4357,12 @@ export const Server: MessageFns<Server> = {
     message.addresses = (object.addresses !== undefined && object.addresses !== null)
       ? ServerAddresses.fromPartial(object.addresses)
       : undefined;
+    message.agentVersion = object.agentVersion ?? "";
+    message.agentArch = object.agentArch ?? "";
+    message.agentUnit = object.agentUnit ?? "";
+    message.agentUpdateRequested = object.agentUpdateRequested ?? "";
+    message.agentUpdateError = object.agentUpdateError ?? "";
+    message.agentKeyIssuedAt = object.agentKeyIssuedAt ?? "";
     return message;
   },
 };
@@ -6045,6 +6245,7 @@ function createBaseUpdateServerRequest(): UpdateServerRequest {
     overrideV4: "",
     overrideV6: "",
     extraAddresses: [],
+    agentUnit: "",
   };
 }
 
@@ -6076,6 +6277,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     }
     for (const v of message.extraAddresses) {
       writer.uint32(74).string(v!);
+    }
+    if (message.agentUnit !== "") {
+      writer.uint32(82).string(message.agentUnit);
     }
     return writer;
   },
@@ -6159,6 +6363,14 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
           message.extraAddresses.push(reader.string());
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.agentUnit = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -6203,6 +6415,11 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
         : globalThis.Array.isArray(object?.extra_addresses)
         ? object.extra_addresses.map((e: any) => globalThis.String(e))
         : [],
+      agentUnit: isSet(object.agentUnit)
+        ? globalThis.String(object.agentUnit)
+        : isSet(object.agent_unit)
+        ? globalThis.String(object.agent_unit)
+        : "",
     };
   },
 
@@ -6235,6 +6452,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     if (message.extraAddresses?.length) {
       obj.extraAddresses = message.extraAddresses;
     }
+    if (message.agentUnit !== "") {
+      obj.agentUnit = message.agentUnit;
+    }
     return obj;
   },
 
@@ -6252,6 +6472,7 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     message.overrideV4 = object.overrideV4 ?? "";
     message.overrideV6 = object.overrideV6 ?? "";
     message.extraAddresses = object.extraAddresses?.map((e) => e) || [];
+    message.agentUnit = object.agentUnit ?? "";
     return message;
   },
 };
@@ -6309,6 +6530,495 @@ export const UpdateServerReply: MessageFns<UpdateServerReply> = {
   },
   fromPartial(object: DeepPartial<UpdateServerReply>): UpdateServerReply {
     const message = createBaseUpdateServerReply();
+    message.server = (object.server !== undefined && object.server !== null)
+      ? Server.fromPartial(object.server)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseIssueServerAgentInstallRequest(): IssueServerAgentInstallRequest {
+  return { serverId: "", unit: "" };
+}
+
+export const IssueServerAgentInstallRequest: MessageFns<IssueServerAgentInstallRequest> = {
+  encode(message: IssueServerAgentInstallRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.unit !== "") {
+      writer.uint32(18).string(message.unit);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): IssueServerAgentInstallRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseIssueServerAgentInstallRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.unit = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): IssueServerAgentInstallRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      unit: isSet(object.unit) ? globalThis.String(object.unit) : "",
+    };
+  },
+
+  toJSON(message: IssueServerAgentInstallRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.unit !== "") {
+      obj.unit = message.unit;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<IssueServerAgentInstallRequest>): IssueServerAgentInstallRequest {
+    return IssueServerAgentInstallRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<IssueServerAgentInstallRequest>): IssueServerAgentInstallRequest {
+    const message = createBaseIssueServerAgentInstallRequest();
+    message.serverId = object.serverId ?? "";
+    message.unit = object.unit ?? "";
+    return message;
+  },
+};
+
+function createBaseIssueServerAgentInstallReply(): IssueServerAgentInstallReply {
+  return { command: "", unit: "", version: "", server: undefined };
+}
+
+export const IssueServerAgentInstallReply: MessageFns<IssueServerAgentInstallReply> = {
+  encode(message: IssueServerAgentInstallReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.command !== "") {
+      writer.uint32(10).string(message.command);
+    }
+    if (message.unit !== "") {
+      writer.uint32(18).string(message.unit);
+    }
+    if (message.version !== "") {
+      writer.uint32(26).string(message.version);
+    }
+    if (message.server !== undefined) {
+      Server.encode(message.server, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): IssueServerAgentInstallReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseIssueServerAgentInstallReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.command = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.unit = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.version = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.server = Server.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): IssueServerAgentInstallReply {
+    return {
+      command: isSet(object.command) ? globalThis.String(object.command) : "",
+      unit: isSet(object.unit) ? globalThis.String(object.unit) : "",
+      version: isSet(object.version) ? globalThis.String(object.version) : "",
+      server: isSet(object.server) ? Server.fromJSON(object.server) : undefined,
+    };
+  },
+
+  toJSON(message: IssueServerAgentInstallReply): unknown {
+    const obj: any = {};
+    if (message.command !== "") {
+      obj.command = message.command;
+    }
+    if (message.unit !== "") {
+      obj.unit = message.unit;
+    }
+    if (message.version !== "") {
+      obj.version = message.version;
+    }
+    if (message.server !== undefined) {
+      obj.server = Server.toJSON(message.server);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<IssueServerAgentInstallReply>): IssueServerAgentInstallReply {
+    return IssueServerAgentInstallReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<IssueServerAgentInstallReply>): IssueServerAgentInstallReply {
+    const message = createBaseIssueServerAgentInstallReply();
+    message.command = object.command ?? "";
+    message.unit = object.unit ?? "";
+    message.version = object.version ?? "";
+    message.server = (object.server !== undefined && object.server !== null)
+      ? Server.fromPartial(object.server)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseGetAgentReleaseRequest(): GetAgentReleaseRequest {
+  return {};
+}
+
+export const GetAgentReleaseRequest: MessageFns<GetAgentReleaseRequest> = {
+  encode(_: GetAgentReleaseRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetAgentReleaseRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetAgentReleaseRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetAgentReleaseRequest {
+    return {};
+  },
+
+  toJSON(_: GetAgentReleaseRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetAgentReleaseRequest>): GetAgentReleaseRequest {
+    return GetAgentReleaseRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<GetAgentReleaseRequest>): GetAgentReleaseRequest {
+    const message = createBaseGetAgentReleaseRequest();
+    return message;
+  },
+};
+
+function createBaseGetAgentReleaseReply(): GetAgentReleaseReply {
+  return { version: "", sha256: "", arch: "", publishedAt: "", baseUrlConfigured: false };
+}
+
+export const GetAgentReleaseReply: MessageFns<GetAgentReleaseReply> = {
+  encode(message: GetAgentReleaseReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.version !== "") {
+      writer.uint32(10).string(message.version);
+    }
+    if (message.sha256 !== "") {
+      writer.uint32(18).string(message.sha256);
+    }
+    if (message.arch !== "") {
+      writer.uint32(26).string(message.arch);
+    }
+    if (message.publishedAt !== "") {
+      writer.uint32(34).string(message.publishedAt);
+    }
+    if (message.baseUrlConfigured !== false) {
+      writer.uint32(40).bool(message.baseUrlConfigured);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetAgentReleaseReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetAgentReleaseReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.version = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.sha256 = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.arch = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.publishedAt = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.baseUrlConfigured = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetAgentReleaseReply {
+    return {
+      version: isSet(object.version) ? globalThis.String(object.version) : "",
+      sha256: isSet(object.sha256) ? globalThis.String(object.sha256) : "",
+      arch: isSet(object.arch) ? globalThis.String(object.arch) : "",
+      publishedAt: isSet(object.publishedAt)
+        ? globalThis.String(object.publishedAt)
+        : isSet(object.published_at)
+        ? globalThis.String(object.published_at)
+        : "",
+      baseUrlConfigured: isSet(object.baseUrlConfigured)
+        ? globalThis.Boolean(object.baseUrlConfigured)
+        : isSet(object.base_url_configured)
+        ? globalThis.Boolean(object.base_url_configured)
+        : false,
+    };
+  },
+
+  toJSON(message: GetAgentReleaseReply): unknown {
+    const obj: any = {};
+    if (message.version !== "") {
+      obj.version = message.version;
+    }
+    if (message.sha256 !== "") {
+      obj.sha256 = message.sha256;
+    }
+    if (message.arch !== "") {
+      obj.arch = message.arch;
+    }
+    if (message.publishedAt !== "") {
+      obj.publishedAt = message.publishedAt;
+    }
+    if (message.baseUrlConfigured !== false) {
+      obj.baseUrlConfigured = message.baseUrlConfigured;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetAgentReleaseReply>): GetAgentReleaseReply {
+    return GetAgentReleaseReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetAgentReleaseReply>): GetAgentReleaseReply {
+    const message = createBaseGetAgentReleaseReply();
+    message.version = object.version ?? "";
+    message.sha256 = object.sha256 ?? "";
+    message.arch = object.arch ?? "";
+    message.publishedAt = object.publishedAt ?? "";
+    message.baseUrlConfigured = object.baseUrlConfigured ?? false;
+    return message;
+  },
+};
+
+function createBaseRequestAgentUpdateRequest(): RequestAgentUpdateRequest {
+  return { serverId: "" };
+}
+
+export const RequestAgentUpdateRequest: MessageFns<RequestAgentUpdateRequest> = {
+  encode(message: RequestAgentUpdateRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestAgentUpdateRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestAgentUpdateRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RequestAgentUpdateRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+    };
+  },
+
+  toJSON(message: RequestAgentUpdateRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RequestAgentUpdateRequest>): RequestAgentUpdateRequest {
+    return RequestAgentUpdateRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RequestAgentUpdateRequest>): RequestAgentUpdateRequest {
+    const message = createBaseRequestAgentUpdateRequest();
+    message.serverId = object.serverId ?? "";
+    return message;
+  },
+};
+
+function createBaseRequestAgentUpdateReply(): RequestAgentUpdateReply {
+  return { server: undefined };
+}
+
+export const RequestAgentUpdateReply: MessageFns<RequestAgentUpdateReply> = {
+  encode(message: RequestAgentUpdateReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.server !== undefined) {
+      Server.encode(message.server, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestAgentUpdateReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestAgentUpdateReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.server = Server.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RequestAgentUpdateReply {
+    return { server: isSet(object.server) ? Server.fromJSON(object.server) : undefined };
+  },
+
+  toJSON(message: RequestAgentUpdateReply): unknown {
+    const obj: any = {};
+    if (message.server !== undefined) {
+      obj.server = Server.toJSON(message.server);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RequestAgentUpdateReply>): RequestAgentUpdateReply {
+    return RequestAgentUpdateReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RequestAgentUpdateReply>): RequestAgentUpdateReply {
+    const message = createBaseRequestAgentUpdateReply();
     message.server = (object.server !== undefined && object.server !== null)
       ? Server.fromPartial(object.server)
       : undefined;
@@ -11978,6 +12688,30 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    issueServerAgentInstall: {
+      name: "IssueServerAgentInstall",
+      requestType: IssueServerAgentInstallRequest as typeof IssueServerAgentInstallRequest,
+      requestStream: false,
+      responseType: IssueServerAgentInstallReply as typeof IssueServerAgentInstallReply,
+      responseStream: false,
+      options: {},
+    },
+    getAgentRelease: {
+      name: "GetAgentRelease",
+      requestType: GetAgentReleaseRequest as typeof GetAgentReleaseRequest,
+      requestStream: false,
+      responseType: GetAgentReleaseReply as typeof GetAgentReleaseReply,
+      responseStream: false,
+      options: {},
+    },
+    requestAgentUpdate: {
+      name: "RequestAgentUpdate",
+      requestType: RequestAgentUpdateRequest as typeof RequestAgentUpdateRequest,
+      requestStream: false,
+      responseType: RequestAgentUpdateReply as typeof RequestAgentUpdateReply,
+      responseStream: false,
+      options: {},
+    },
     listServerHealthHistory: {
       name: "ListServerHealthHistory",
       requestType: ListServerHealthHistoryRequest as typeof ListServerHealthHistoryRequest,
@@ -12176,6 +12910,18 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: ForgetServerAppliedRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ForgetServerAppliedReply>>;
+  issueServerAgentInstall(
+    request: IssueServerAgentInstallRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<IssueServerAgentInstallReply>>;
+  getAgentRelease(
+    request: GetAgentReleaseRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<GetAgentReleaseReply>>;
+  requestAgentUpdate(
+    request: RequestAgentUpdateRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<RequestAgentUpdateReply>>;
   listServerHealthHistory(
     request: ListServerHealthHistoryRequest,
     context: CallContext & CallContextExt,
@@ -12313,6 +13059,18 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<ForgetServerAppliedRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ForgetServerAppliedReply>;
+  issueServerAgentInstall(
+    request: DeepPartial<IssueServerAgentInstallRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<IssueServerAgentInstallReply>;
+  getAgentRelease(
+    request: DeepPartial<GetAgentReleaseRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<GetAgentReleaseReply>;
+  requestAgentUpdate(
+    request: DeepPartial<RequestAgentUpdateRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<RequestAgentUpdateReply>;
   listServerHealthHistory(
     request: DeepPartial<ListServerHealthHistoryRequest>,
     options?: CallOptions & CallOptionsExt,

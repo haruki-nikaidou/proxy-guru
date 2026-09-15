@@ -363,6 +363,26 @@ Only the `Origin`/forwarded headers on the dashboard location are mandatory for 
 [dashboard warning](/guides/deploy-with-docker/#9-run-the-dashboard)); the rest is what keeps long-lived
 streams alive.
 
+### The agent download location
+
+The dashboard installs and updates workers from files nginx serves as `/agent/`:
+`manage-tool agent publish` writes the binary, its installer, unit and start guard there (see
+[Install and Update Agents](/guides/agent-install/)). Add a third location to the same server block.
+`^~` with a prefix longer than `/` wins over the dashboard catch-all and is not re-captured by regex
+locations for `.js`/`.css`/images that a panel-managed nginx tends to have:
+
+```nginx
+    location ^~ /agent/ {
+        alias /srv/guru/agent/;
+        autoindex off;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=300";
+    }
+```
+
+`/srv/guru/agent` must be readable by nginx's worker user. Everything in it is public by design — the
+per-server key is in the command the dashboard renders, never in a served file.
+
 ## 8. Verify
 
 Work through these in order — each fails loudly and independently. Run the datastore health checks

@@ -11,6 +11,7 @@ mod common;
 use chrono::{TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
+use orchestration::entities::surreal::agent_release::PublishAgentRelease;
 use orchestration::entities::surreal::canvas::CanvasId;
 use orchestration::entities::surreal::health::{
     InsertNodeHealthRecords, ListNodeHealthAfter, NewNodeHealthRecord, NodeHealthStatus,
@@ -26,7 +27,9 @@ use orchestration::entities::surreal::view::TakeInFlight;
 use orchestration::events::live::{CanvasChangeKind, LiveMessage};
 use orchestration::hooks::live::LiveEvent;
 use orchestration::services::OrchestrationError;
-use orchestration::services::agent::{AckConfig, AgentIdentity, PodResult, RegisterWorker};
+use orchestration::services::agent::{
+    AckConfig, AgentIdentity, PodResult, PollAgentUpdate, RegisterCredential, RegisterWorker,
+};
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::edge::Connect;
 use orchestration::services::health::{HealthReportInput, RecordHealthReport, SweepLiveness};
@@ -35,7 +38,9 @@ use orchestration::services::live::{
     WatchServerHealth,
 };
 use orchestration::services::node::CreateNode;
-use orchestration::services::server::{AddressOverrides, CreateServer, MoveServer};
+use orchestration::services::server::{
+    AddressOverrides, CreateServer, IssueServerAgentInstall, MoveServer, RequestAgentUpdate,
+};
 use orchestration::utils::ids::record_key;
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,11 +166,14 @@ async fn register(
 ) -> Result<AgentIdentity, Box<dyn std::error::Error>> {
     w.agents
         .process(RegisterWorker {
-            actor: machine(),
+            credential: RegisterCredential::Operator(machine()),
             server_id: server.clone(),
             running_revision: 0,
             observed: None,
             reported: None,
+            agent_version: None,
+            agent_arch: None,
+            last_update_error: None,
         })
         .await?;
     let row =
@@ -343,6 +351,119 @@ async fn canvas_view_snapshot_then_full_refresh() -> TestResult {
         .find(|s| s.id == first)
         .expect("the server is still there");
     assert_eq!((dragged.position.x, dragged.position.y), (120, 340));
+    Ok(())
+}
+
+/// The agent's install and update state lives on the server row but feeds
+/// nothing derived, so only the live event can tell the panel that a key was
+/// issued, an update was requested, or the worker reported why it failed.
+#[tokio::test]
+async fn agent_state_changes_refresh_the_canvas_view() -> TestResult {
+    let mut w = world().await?;
+    w.servers.config.agent_public_base_url = "https://guru.test".to_string();
+    w.agents.config.agent_public_base_url = "https://guru.test".to_string();
+    w.db.process(PublishAgentRelease {
+        version: "0.2.0-beta".to_string(),
+        sha256: "c".repeat(64),
+        arch: "x86_64".to_string(),
+        now: Utc::now(),
+    })
+    .await?;
+    let canvas = canvas_named(&w, "prod").await?;
+    let server = make_server(&w, &canvas, "tokyo", "203.0.113.10").await?;
+    w.agents
+        .process(RegisterWorker {
+            credential: RegisterCredential::Operator(machine()),
+            server_id: server.clone(),
+            running_revision: 0,
+            observed: None,
+            reported: None,
+            agent_version: Some("0.1.0".to_string()),
+            agent_arch: Some("x86_64".to_string()),
+            last_update_error: None,
+        })
+        .await?;
+
+    let mut handle = w
+        .live
+        .process(WatchCanvas {
+            actor: operator(),
+            canvas: canvas.clone(),
+        })
+        .await?;
+    let opening = next_value(&mut handle).await;
+    let (state, _) = ready(&opening);
+    let before = state.contents.canvas.generation;
+
+    let server_updated = |value: &ViewValue<CanvasLive>| {
+        let (state, cause) = ready(value);
+        match cause.expect("a cause") {
+            LiveMessage::CanvasChanged { kind, ids, .. } => {
+                assert_eq!(*kind, CanvasChangeKind::ServerUpdated);
+                assert_eq!(ids, &vec![record_key(&server.0)]);
+            }
+            other => panic!("unexpected cause: {other:?}"),
+        }
+        assert_eq!(state.contents.canvas.generation, before, "metadata only");
+        state
+            .contents
+            .servers
+            .iter()
+            .find(|s| s.id == server)
+            .expect("the server is still there")
+            .clone()
+    };
+
+    w.servers
+        .process(IssueServerAgentInstall {
+            actor: operator(),
+            server: server.clone(),
+            unit: Some("tokyo-1".to_string()),
+        })
+        .await?;
+    let issued = server_updated(&next_value(&mut handle).await);
+    assert_eq!(issued.agent_unit.as_deref(), Some("tokyo-1"));
+    assert!(issued.agent_key_issued_at.is_some());
+
+    w.servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: server.clone(),
+        })
+        .await?;
+    let requested = server_updated(&next_value(&mut handle).await);
+    assert_eq!(
+        requested.agent_update_requested.as_deref(),
+        Some("0.2.0-beta")
+    );
+
+    let identity = AgentIdentity {
+        server: server.clone(),
+        generation: issued.refresh_key_generation,
+    };
+    let offered = w
+        .agents
+        .process(PollAgentUpdate {
+            agent: identity.clone(),
+            last_error: None,
+        })
+        .await?;
+    assert!(
+        offered.is_some(),
+        "the poll offers the update without settling it"
+    );
+    w.agents
+        .process(PollAgentUpdate {
+            agent: identity,
+            last_error: Some("checksum mismatch".to_string()),
+        })
+        .await?;
+    let failed = server_updated(&next_value(&mut handle).await);
+    assert_eq!(failed.agent_update_requested, None);
+    assert_eq!(
+        failed.agent_update_error.as_deref(),
+        Some("checksum mismatch")
+    );
     Ok(())
 }
 

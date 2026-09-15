@@ -24,7 +24,13 @@ use orchestration::entities::surreal::view::TakeInFlight;
 use orchestration::events::SweepLivenessSignal;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::services::OrchestrationError;
-use orchestration::services::agent::{AckConfig, AgentIdentity, PodResult, RegisterWorker};
+use orchestration::services::agent::{
+    AckConfig,
+    AgentIdentity,
+    PodResult,
+    RegisterCredential,
+    RegisterWorker,
+};
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::edge::Connect;
 use orchestration::services::health::HealthService;
@@ -203,11 +209,14 @@ async fn register(
 ) -> Result<AgentIdentity, Box<dyn std::error::Error>> {
     w.agents
         .process(RegisterWorker {
-            actor: machine(),
+            credential: RegisterCredential::Operator(machine()),
             server_id: server.clone(),
             running_revision: 0,
             observed: None,
             reported: None,
+            agent_version: None,
+            agent_arch: None,
+            last_update_error: None,
         })
         .await?;
     let row = server_row(w, server).await;

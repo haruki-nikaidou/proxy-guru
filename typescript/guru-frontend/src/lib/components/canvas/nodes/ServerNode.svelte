@@ -81,7 +81,7 @@ const channelOf = (podId: string) => data.channels[podId];
 	<p class="px-3 text-xs text-muted-foreground">
 		{m.editor_server_last_seen()}: {formatTimestamp(data.server.lastSeenAt)}{silent
 			? ` · ${silent}`
-			: ''}
+			: ''}{data.server.agentVersion ? ` · v${data.server.agentVersion}` : ''}
 	</p>
 
 	{#if universal}

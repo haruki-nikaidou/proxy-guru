@@ -70,6 +70,16 @@ pub struct OrchestrationConfig {
     /// re-checks the session that opened it. Keep it under any proxy idle
     /// timeout in front of the dashboard API.
     pub stream_keepalive_secs: u64,
+    /// The public origin workers dial and the install command downloads from,
+    /// e.g. `https://guru.example.com`. Empty means the dashboard cannot render
+    /// an install command.
+    pub agent_public_base_url: String,
+    /// The URL path under that origin where the published agent artifacts are
+    /// served from (`manage-tool agent publish` writes them; nginx serves the
+    /// directory). Leading slash, no trailing one.
+    pub agent_download_path: String,
+    /// How often a live worker asks whether an update was requested for it.
+    pub agent_update_poll_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -92,6 +102,9 @@ impl Default for OrchestrationConfig {
             relay_rotation_interval_secs: 3600,
             trust_proxy_address_headers: true,
             stream_keepalive_secs: 15,
+            agent_public_base_url: String::new(),
+            agent_download_path: "/agent".to_string(),
+            agent_update_poll_secs: 60,
         }
     }
 }
@@ -101,6 +114,25 @@ impl ConfigJson for OrchestrationConfig {
 }
 
 impl OrchestrationConfig {
+    /// Where the published agent artifacts are: `{base_url}{download_path}`,
+    /// normalised to no trailing slash. `None` until a base URL is configured.
+    pub fn agent_download_base(&self) -> Option<String> {
+        let base = self.agent_public_base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return None;
+        }
+        let path = self.agent_download_path.trim().trim_matches('/');
+        Some(if path.is_empty() {
+            base.to_string()
+        } else {
+            format!("{base}/{path}")
+        })
+    }
+
+    pub fn agent_update_poll(&self) -> Duration {
+        Duration::from_secs(self.agent_update_poll_secs)
+    }
+
     pub fn health_report_interval(&self) -> Duration {
         Duration::from_secs(self.health_report_interval_secs)
     }

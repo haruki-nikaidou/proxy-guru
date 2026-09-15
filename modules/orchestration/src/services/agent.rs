@@ -4,13 +4,15 @@
 //! digest. Every registration rotates the key and bumps the generation, so a worker
 //! restart is visible to the master and the previous session's streams die.
 
+use crate::config::OrchestrationConfig;
+use crate::entities::surreal::agent_release::FindAgentRelease;
 use crate::entities::surreal::health::{
     InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus, ServerHealthStatus,
     SetServerHealthStatus,
 };
 use crate::entities::surreal::server::{
-    FindServerById, FindServerByRefreshKeyDigest, RegisterWorkerSession, ReportedAddresses,
-    ServerId,
+    FindServerByAgentKeyDigest, FindServerById, FindServerByRefreshKeyDigest,
+    RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId, SettleAgentUpdate,
 };
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
@@ -42,16 +44,31 @@ pub struct AgentService {
     pub hub: WatchHub,
     pub lease: SessionLease,
     pub notifier: Notifier,
+    pub config: OrchestrationConfig,
+}
+
+/// What a worker presented to `Register`: an operator API key the auth
+/// middleware resolved to an identity, or the raw `x-api-key` it could not — a
+/// server's own agent key, checked here against the digest on the server row.
+pub enum RegisterCredential {
+    Operator(Identity),
+    ServerKey(String),
 }
 
 pub struct RegisterWorker {
-    pub actor: Identity,
+    pub credential: RegisterCredential,
     pub server_id: ServerId,
     pub running_revision: i64,
     /// The peer address the registration arrived from, if the transport knows.
     pub observed: Option<std::net::IpAddr>,
     /// What the worker discovered about its own addresses.
     pub reported: Option<ReportedAddresses>,
+    /// The worker's build, when it reports one.
+    pub agent_version: Option<String>,
+    pub agent_arch: Option<String>,
+    /// Why the last self-update on the host failed, when the worker found the
+    /// start guard's record of it.
+    pub last_update_error: Option<String>,
 }
 
 impl Processor<RegisterWorker> for AgentService {
@@ -60,14 +77,9 @@ impl Processor<RegisterWorker> for AgentService {
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:RegisterWorker", skip_all, err)]
     async fn process(&self, input: RegisterWorker) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ServerCall)?;
         let server = self
-            .db
-            .process(FindServerById {
-                id: input.server_id.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
+            .authenticate_registration(&input.credential, &input.server_id)
+            .await?;
 
         let secret = generate_refresh_key();
         let now = Utc::now();
@@ -86,6 +98,8 @@ impl Processor<RegisterWorker> for AgentService {
                 running_revision: input.running_revision,
                 observed: input.observed.map(|a| a.to_string()),
                 reported: input.reported,
+                agent_version: input.agent_version.clone(),
+                agent_arch: input.agent_arch,
             })
             .await?
             .ok_or_else(|| {
@@ -93,6 +107,25 @@ impl Processor<RegisterWorker> for AgentService {
                     "another worker session is live for this server".into(),
                 )
             })?;
+
+        // What the worker registered as decides a pending update: the requested
+        // version means it landed, a guard rollback means it did not.
+        if let Some(error) = &input.last_update_error {
+            tracing::warn!(
+                server = %record_key(&server.id.0),
+                error,
+                "worker reported a rolled-back self-update"
+            );
+        }
+        if input.agent_version.is_some() || input.last_update_error.is_some() {
+            self.db
+                .process(SettleAgentUpdate {
+                    id: server.id.clone(),
+                    reported_version: input.agent_version,
+                    error: input.last_update_error,
+                })
+                .await?;
+        }
 
         self.hub
             .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
@@ -110,6 +143,157 @@ impl Processor<RegisterWorker> for AgentService {
             .rollout_changed(RolloutScope::Server(record_key(&server.id.0)))
             .await;
         Ok(secret)
+    }
+}
+
+impl AgentService {
+    /// The server a registration is for, once its credential checks out.
+    ///
+    /// An operator key needs `ServerCall` and may register any server it names.
+    /// A server key names the server itself — the row is found by the key's
+    /// digest — and the `server_id` the worker sent must agree, so a key issued
+    /// for one server can never register as another. An unknown key is refused
+    /// the same way as a mismatch, without saying which.
+    async fn authenticate_registration(
+        &self,
+        credential: &RegisterCredential,
+        server_id: &ServerId,
+    ) -> Result<ServerEntity, OrchestrationError> {
+        match credential {
+            RegisterCredential::Operator(actor) => {
+                actor.ensure(Permission::ServerCall)?;
+                self.db
+                    .process(FindServerById {
+                        id: server_id.clone(),
+                    })
+                    .await?
+                    .ok_or(OrchestrationError::NotFound)
+            }
+            RegisterCredential::ServerKey(secret) => {
+                let found = self
+                    .db
+                    .process(FindServerByAgentKeyDigest {
+                        digest: sha256_hex(secret),
+                    })
+                    .await?;
+                match found {
+                    Some(server) if server.id.0 == server_id.0 => Ok(server),
+                    // Unknown key and a key for another server are refused alike;
+                    // the log tells them apart, the caller is not told.
+                    found => {
+                        tracing::warn!(
+                            server = %record_key(&server_id.0),
+                            known = found.is_some(),
+                            "agent key refused at registration"
+                        );
+                        Err(OrchestrationError::PermissionDenied)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The published binary a worker should move to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentUpdate {
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+/// A worker asking whether an update was requested for it, and reporting how
+/// the previous attempt went.
+pub struct PollAgentUpdate {
+    pub agent: AgentIdentity,
+    pub last_error: Option<String>,
+}
+
+impl Processor<PollAgentUpdate> for AgentService {
+    /// The update to install, or nothing to do.
+    type Output = Option<AgentUpdate>;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:PollAgentUpdate", skip_all, err)]
+    async fn process(&self, input: PollAgentUpdate) -> Result<Self::Output, Self::Error> {
+        let server = self
+            .db
+            .process(FindServerById {
+                id: input.agent.server.clone(),
+            })
+            .await?
+            .ok_or(OrchestrationError::NotFound)?;
+        if server.refresh_key_generation != input.agent.generation {
+            return Err(OrchestrationError::PermissionDenied);
+        }
+        let key = record_key(&server.id.0);
+        // A failure ends the request; the operator reads why and asks again.
+        if let Some(error) = input.last_error {
+            tracing::warn!(server = %key, %error, "worker reported a failed self-update");
+            self.settle_update(&server, None, Some(error)).await?;
+            return Ok(None);
+        }
+        let Some(requested) = server.agent_update_requested.clone() else {
+            return Ok(None);
+        };
+        if server.agent_version.as_deref() == Some(requested.as_str()) {
+            self.settle_update(&server, Some(requested), None).await?;
+            return Ok(None);
+        }
+        // The request names the release that was published when it was made;
+        // a publish since then withdrew what the worker would have fetched.
+        let release = self.db.process(FindAgentRelease).await?;
+        let base = self.config.agent_download_base();
+        let error = match (&release, &base) {
+            (Some(release), Some(base)) if release.version == requested => {
+                tracing::info!(
+                    server = %key,
+                    from = ?server.agent_version,
+                    to = %release.version,
+                    "offering an update"
+                );
+                return Ok(Some(AgentUpdate {
+                    url: format!("{base}/{}/guru-worker", release.version),
+                    version: release.version.clone(),
+                    sha256: release.sha256.clone(),
+                }));
+            }
+            (None, _) => "the published release was withdrawn before the worker fetched it".to_string(),
+            (_, None) => "agent_public_base_url is no longer configured".to_string(),
+            (Some(release), _) => format!(
+                "the published release changed to {} before the worker fetched {requested}",
+                release.version
+            ),
+        };
+        tracing::warn!(server = %key, %error, "dropping an update request");
+        self.settle_update(&server, None, Some(error)).await?;
+        Ok(None)
+    }
+}
+
+impl AgentService {
+    /// Ends an update request on the row and tells open canvas views the
+    /// server's agent state changed. No dirty hint: nothing derived reads it.
+    async fn settle_update(
+        &self,
+        server: &ServerEntity,
+        reported_version: Option<String>,
+        error: Option<String>,
+    ) -> Result<(), OrchestrationError> {
+        self.db
+            .process(SettleAgentUpdate {
+                id: server.id.clone(),
+                reported_version,
+                error,
+            })
+            .await?;
+        self.notifier
+            .canvas_changed(
+                &server.canvas,
+                CanvasChangeKind::ServerUpdated,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
+        Ok(())
     }
 }
 

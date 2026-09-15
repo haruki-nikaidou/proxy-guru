@@ -273,6 +273,7 @@ pub async fn world_with(
             hub: Default::default(),
             lease: Default::default(),
             notifier: notifier.clone(),
+            config: config.clone(),
         },
         rollout: RolloutService {
             db: db.clone(),

@@ -1,11 +1,14 @@
 BEGIN TRANSACTION;
 -- `observed_address` is what the master saw this registration come from;
--- `reported_addresses` is replaced only when the worker sent a set (`??` keeps
--- the previous one otherwise).
+-- `reported_addresses` and the worker's build (`agent_version`, `agent_arch`)
+-- are replaced only when the worker sent them (`??` keeps the previous value
+-- otherwise, so an older worker cannot blank a known version).
 LET $rotated = (UPDATE $server SET current_dynamic_refresh_key = $digest,
     refresh_key_generation += 1, session_lease_until = $lease_until, last_seen_at = $now,
     observed_address = $observed, observed_at = $now,
-    reported_addresses = $reported ?? reported_addresses
+    reported_addresses = $reported ?? reported_addresses,
+    agent_version = $agent_version ?? agent_version,
+    agent_arch = $agent_arch ?? agent_arch
     WHERE session_lease_until = NONE OR session_lease_until <= $now
     RETURN AFTER);
 IF array::len($rotated) > 0 {
@@ -18,6 +21,13 @@ IF array::len($rotated) > 0 {
         } ELSE IF $v.applied.revision != $running_revision {
             UPDATE $v.id SET apply_error = "running revision " + <string>$running_revision + " unknown";
         };
+    } ELSE {
+        -- A worker running nothing (a fresh install, a wiped state directory,
+        -- a replay that failed) is not running what an earlier session applied:
+        -- forget that, so the stream hands the desired revision out again
+        -- instead of treating the server as converged, and dependants stop
+        -- counting on listeners nobody serves.
+        UPDATE $v.id SET applied = NONE, apply_error = NONE, failed_revision = NONE, failed_pods = [];
     };
     UPDATE $v.id SET in_flight = NONE;
     fn::orchestration_touch($canvas);

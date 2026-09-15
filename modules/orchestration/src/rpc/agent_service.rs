@@ -8,7 +8,9 @@ use crate::entities::surreal::server::{
 use crate::entities::surreal::view::TakeInFlight;
 use crate::events::live::RolloutScope;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
-use crate::services::agent::{AckConfig, AgentService, PodResult, RegisterWorker};
+use crate::services::agent::{
+    AckConfig, AgentService, PodResult, PollAgentUpdate, RegisterCredential, RegisterWorker,
+};
 use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
     HealthReportInput, HealthService, MarkServerOffline, RecordHealthReport,
@@ -36,8 +38,11 @@ pub struct WorkerAgentGrpc {
 }
 
 /// Empty strings on the wire mean "unknown".
+fn non_empty(s: String) -> Option<String> {
+    (!s.is_empty()).then_some(s)
+}
+
 fn reported_from_proto(reported: pb::ReportedAddresses) -> ReportedAddresses {
-    let non_empty = |s: String| (!s.is_empty()).then_some(s);
     ReportedAddresses {
         public_v4: non_empty(reported.public_v4),
         public_v6: non_empty(reported.public_v6),
@@ -51,6 +56,25 @@ fn pod_result(pod: pb::PodStatus) -> PodResult {
     PodResult {
         tag: pod.tag,
         error: pod.error,
+    }
+}
+
+/// What `Register` was presented with: a server's own `gs_` key, which the auth
+/// middleware never resolves and which is handed down raw, or an operator
+/// credential the middleware did resolve — or refused, exactly as before
+/// ("Missing identity"). The prefix only picks the path; the service decides.
+fn register_credential<T>(request: &Request<T>) -> Result<RegisterCredential, Status> {
+    let raw = request
+        .metadata()
+        .get(auth::rpc::middleware::API_KEY_METADATA)
+        .and_then(|value| value.to_str().ok());
+    match raw {
+        Some(key) if auth::utils::token::is_server_agent_key(key) => {
+            Ok(RegisterCredential::ServerKey(key.to_owned()))
+        }
+        _ => Ok(RegisterCredential::Operator(
+            auth::rpc::middleware::from_request(request)?,
+        )),
     }
 }
 
@@ -162,17 +186,20 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         &self,
         request: Request<pb::RegisterRequest>,
     ) -> Result<Response<pb::RegisterReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
+        let credential = register_credential(&request)?;
         let observed = peer_address(&request, self.health.config.trust_proxy_address_headers);
         let input = request.into_inner();
         let refresh_key = self
             .agents
             .process(RegisterWorker {
-                actor,
+                credential,
                 server_id: ids::server_id(&input.server_id),
                 running_revision: input.running_revision,
                 observed,
                 reported: input.reported_addresses.map(reported_from_proto),
+                agent_version: non_empty(input.agent_version),
+                agent_arch: non_empty(input.agent_arch),
+                last_update_error: non_empty(input.last_update_error),
             })
             .await?;
         Ok(Response::new(pb::RegisterReply {
@@ -181,6 +208,8 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 self.health.config.health_report_interval_secs,
             )
             .unwrap_or(u32::MAX),
+            agent_update_poll_secs: u32::try_from(self.health.config.agent_update_poll_secs)
+                .unwrap_or(u32::MAX),
         }))
     }
 
@@ -309,6 +338,28 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
             })
             .await?;
         Ok(Response::new(pb::AckConfigReply {}))
+    }
+
+    async fn poll_agent_update(
+        &self,
+        request: Request<pb::PollAgentUpdateRequest>,
+    ) -> Result<Response<pb::PollAgentUpdateReply>, Status> {
+        let agent = agent_from_request(&request)?;
+        let input = request.into_inner();
+        let update = self
+            .agents
+            .process(PollAgentUpdate {
+                agent,
+                last_error: non_empty(input.last_error),
+            })
+            .await?;
+        Ok(Response::new(pb::PollAgentUpdateReply {
+            update: update.map(|update| pb::AgentUpdate {
+                version: update.version,
+                url: update.url,
+                sha256: update.sha256,
+            }),
+        }))
     }
 
     /// Records every report as it arrives; the stream ending, however it ends,

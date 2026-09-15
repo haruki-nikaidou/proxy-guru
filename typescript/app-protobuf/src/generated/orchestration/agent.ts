@@ -28,7 +28,21 @@ export interface RegisterRequest {
   serverId: string;
   runningRevision: bigint;
   /** Best effort; may be unset. */
-  reportedAddresses: ReportedAddresses | undefined;
+  reportedAddresses:
+    | ReportedAddresses
+    | undefined;
+  /**
+   * The worker's own build: its crate version and the CPU architecture it was
+   * built for (`x86_64`, `aarch64`). Empty — an older worker — leaves whatever
+   * the master had.
+   */
+  agentVersion: string;
+  agentArch: string;
+  /**
+   * Why the last self-update on this host failed, as the start guard recorded
+   * it and the worker found it at startup. Empty when there is nothing to tell.
+   */
+  lastUpdateError: string;
 }
 
 export interface RegisterReply {
@@ -38,6 +52,11 @@ export interface RegisterReply {
    * this so the two sides never disagree on the offline threshold.
    */
   healthReportIntervalSecs: number;
+  /**
+   * How often the worker should ask `PollAgentUpdate`; `0` leaves the worker's
+   * own default.
+   */
+  agentUpdatePollSecs: number;
 }
 
 export interface WatchConfigRequest {
@@ -100,6 +119,30 @@ export interface HealthReport {
 }
 
 export interface ReportHealthReply {
+}
+
+/**
+ * A non-empty `last_error` is why the previous update attempt failed (download,
+ * checksum, install, or self-update disabled on the host); the master records
+ * it, drops the request, and answers with no update.
+ */
+export interface PollAgentUpdateRequest {
+  lastError: string;
+}
+
+/**
+ * The published binary the operator asked this worker to move to. `url` is
+ * under the master's own origin; `sha256` is what the worker verifies before
+ * installing.
+ */
+export interface AgentUpdate {
+  version: string;
+  url: string;
+  sha256: string;
+}
+
+export interface PollAgentUpdateReply {
+  update?: AgentUpdate | undefined;
 }
 
 function createBaseReportedAddresses(): ReportedAddresses {
@@ -221,7 +264,14 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
 };
 
 function createBaseRegisterRequest(): RegisterRequest {
-  return { serverId: "", runningRevision: 0n, reportedAddresses: undefined };
+  return {
+    serverId: "",
+    runningRevision: 0n,
+    reportedAddresses: undefined,
+    agentVersion: "",
+    agentArch: "",
+    lastUpdateError: "",
+  };
 }
 
 export const RegisterRequest: MessageFns<RegisterRequest> = {
@@ -237,6 +287,15 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.reportedAddresses !== undefined) {
       ReportedAddresses.encode(message.reportedAddresses, writer.uint32(26).fork()).join();
+    }
+    if (message.agentVersion !== "") {
+      writer.uint32(34).string(message.agentVersion);
+    }
+    if (message.agentArch !== "") {
+      writer.uint32(42).string(message.agentArch);
+    }
+    if (message.lastUpdateError !== "") {
+      writer.uint32(50).string(message.lastUpdateError);
     }
     return writer;
   },
@@ -272,6 +331,30 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
           message.reportedAddresses = ReportedAddresses.decode(reader, reader.uint32());
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.agentVersion = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.agentArch = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.lastUpdateError = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -298,6 +381,21 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
         : isSet(object.reported_addresses)
         ? ReportedAddresses.fromJSON(object.reported_addresses)
         : undefined,
+      agentVersion: isSet(object.agentVersion)
+        ? globalThis.String(object.agentVersion)
+        : isSet(object.agent_version)
+        ? globalThis.String(object.agent_version)
+        : "",
+      agentArch: isSet(object.agentArch)
+        ? globalThis.String(object.agentArch)
+        : isSet(object.agent_arch)
+        ? globalThis.String(object.agent_arch)
+        : "",
+      lastUpdateError: isSet(object.lastUpdateError)
+        ? globalThis.String(object.lastUpdateError)
+        : isSet(object.last_update_error)
+        ? globalThis.String(object.last_update_error)
+        : "",
     };
   },
 
@@ -311,6 +409,15 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.reportedAddresses !== undefined) {
       obj.reportedAddresses = ReportedAddresses.toJSON(message.reportedAddresses);
+    }
+    if (message.agentVersion !== "") {
+      obj.agentVersion = message.agentVersion;
+    }
+    if (message.agentArch !== "") {
+      obj.agentArch = message.agentArch;
+    }
+    if (message.lastUpdateError !== "") {
+      obj.lastUpdateError = message.lastUpdateError;
     }
     return obj;
   },
@@ -327,12 +434,15 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     message.reportedAddresses = (object.reportedAddresses !== undefined && object.reportedAddresses !== null)
       ? ReportedAddresses.fromPartial(object.reportedAddresses)
       : undefined;
+    message.agentVersion = object.agentVersion ?? "";
+    message.agentArch = object.agentArch ?? "";
+    message.lastUpdateError = object.lastUpdateError ?? "";
     return message;
   },
 };
 
 function createBaseRegisterReply(): RegisterReply {
-  return { refreshKey: "", healthReportIntervalSecs: 0 };
+  return { refreshKey: "", healthReportIntervalSecs: 0, agentUpdatePollSecs: 0 };
 }
 
 export const RegisterReply: MessageFns<RegisterReply> = {
@@ -342,6 +452,9 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     }
     if (message.healthReportIntervalSecs !== 0) {
       writer.uint32(16).uint32(message.healthReportIntervalSecs);
+    }
+    if (message.agentUpdatePollSecs !== 0) {
+      writer.uint32(24).uint32(message.agentUpdatePollSecs);
     }
     return writer;
   },
@@ -369,6 +482,14 @@ export const RegisterReply: MessageFns<RegisterReply> = {
           message.healthReportIntervalSecs = reader.uint32();
           continue;
         }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.agentUpdatePollSecs = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -390,6 +511,11 @@ export const RegisterReply: MessageFns<RegisterReply> = {
         : isSet(object.health_report_interval_secs)
         ? globalThis.Number(object.health_report_interval_secs)
         : 0,
+      agentUpdatePollSecs: isSet(object.agentUpdatePollSecs)
+        ? globalThis.Number(object.agentUpdatePollSecs)
+        : isSet(object.agent_update_poll_secs)
+        ? globalThis.Number(object.agent_update_poll_secs)
+        : 0,
     };
   },
 
@@ -401,6 +527,9 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     if (message.healthReportIntervalSecs !== 0) {
       obj.healthReportIntervalSecs = Math.round(message.healthReportIntervalSecs);
     }
+    if (message.agentUpdatePollSecs !== 0) {
+      obj.agentUpdatePollSecs = Math.round(message.agentUpdatePollSecs);
+    }
     return obj;
   },
 
@@ -411,6 +540,7 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     const message = createBaseRegisterReply();
     message.refreshKey = object.refreshKey ?? "";
     message.healthReportIntervalSecs = object.healthReportIntervalSecs ?? 0;
+    message.agentUpdatePollSecs = object.agentUpdatePollSecs ?? 0;
     return message;
   },
 };
@@ -1103,6 +1233,222 @@ export const ReportHealthReply: MessageFns<ReportHealthReply> = {
   },
 };
 
+function createBasePollAgentUpdateRequest(): PollAgentUpdateRequest {
+  return { lastError: "" };
+}
+
+export const PollAgentUpdateRequest: MessageFns<PollAgentUpdateRequest> = {
+  encode(message: PollAgentUpdateRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.lastError !== "") {
+      writer.uint32(10).string(message.lastError);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PollAgentUpdateRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePollAgentUpdateRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.lastError = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PollAgentUpdateRequest {
+    return {
+      lastError: isSet(object.lastError)
+        ? globalThis.String(object.lastError)
+        : isSet(object.last_error)
+        ? globalThis.String(object.last_error)
+        : "",
+    };
+  },
+
+  toJSON(message: PollAgentUpdateRequest): unknown {
+    const obj: any = {};
+    if (message.lastError !== "") {
+      obj.lastError = message.lastError;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<PollAgentUpdateRequest>): PollAgentUpdateRequest {
+    return PollAgentUpdateRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<PollAgentUpdateRequest>): PollAgentUpdateRequest {
+    const message = createBasePollAgentUpdateRequest();
+    message.lastError = object.lastError ?? "";
+    return message;
+  },
+};
+
+function createBaseAgentUpdate(): AgentUpdate {
+  return { version: "", url: "", sha256: "" };
+}
+
+export const AgentUpdate: MessageFns<AgentUpdate> = {
+  encode(message: AgentUpdate, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.version !== "") {
+      writer.uint32(10).string(message.version);
+    }
+    if (message.url !== "") {
+      writer.uint32(18).string(message.url);
+    }
+    if (message.sha256 !== "") {
+      writer.uint32(26).string(message.sha256);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AgentUpdate {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAgentUpdate();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.version = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.url = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.sha256 = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AgentUpdate {
+    return {
+      version: isSet(object.version) ? globalThis.String(object.version) : "",
+      url: isSet(object.url) ? globalThis.String(object.url) : "",
+      sha256: isSet(object.sha256) ? globalThis.String(object.sha256) : "",
+    };
+  },
+
+  toJSON(message: AgentUpdate): unknown {
+    const obj: any = {};
+    if (message.version !== "") {
+      obj.version = message.version;
+    }
+    if (message.url !== "") {
+      obj.url = message.url;
+    }
+    if (message.sha256 !== "") {
+      obj.sha256 = message.sha256;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<AgentUpdate>): AgentUpdate {
+    return AgentUpdate.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<AgentUpdate>): AgentUpdate {
+    const message = createBaseAgentUpdate();
+    message.version = object.version ?? "";
+    message.url = object.url ?? "";
+    message.sha256 = object.sha256 ?? "";
+    return message;
+  },
+};
+
+function createBasePollAgentUpdateReply(): PollAgentUpdateReply {
+  return { update: undefined };
+}
+
+export const PollAgentUpdateReply: MessageFns<PollAgentUpdateReply> = {
+  encode(message: PollAgentUpdateReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.update !== undefined) {
+      AgentUpdate.encode(message.update, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PollAgentUpdateReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePollAgentUpdateReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.update = AgentUpdate.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PollAgentUpdateReply {
+    return { update: isSet(object.update) ? AgentUpdate.fromJSON(object.update) : undefined };
+  },
+
+  toJSON(message: PollAgentUpdateReply): unknown {
+    const obj: any = {};
+    if (message.update !== undefined) {
+      obj.update = AgentUpdate.toJSON(message.update);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<PollAgentUpdateReply>): PollAgentUpdateReply {
+    return PollAgentUpdateReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<PollAgentUpdateReply>): PollAgentUpdateReply {
+    const message = createBasePollAgentUpdateReply();
+    message.update = (object.update !== undefined && object.update !== null)
+      ? AgentUpdate.fromPartial(object.update)
+      : undefined;
+    return message;
+  },
+};
+
 /**
  * The worker control plane. `Register` is authenticated with an operator API
  * key (`x-api-key`, Maintainer+); `WatchConfig`, `AckConfig` and
@@ -1151,6 +1497,18 @@ export const WorkerAgentDefinition = {
       responseStream: false,
       options: {},
     },
+    /**
+     * Asked every `agent_update_poll_secs`: whether the operator requested an
+     * update for this server, and how the previous attempt went.
+     */
+    pollAgentUpdate: {
+      name: "PollAgentUpdate",
+      requestType: PollAgentUpdateRequest as typeof PollAgentUpdateRequest,
+      requestStream: false,
+      responseType: PollAgentUpdateReply as typeof PollAgentUpdateReply,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
@@ -1170,6 +1528,14 @@ export interface WorkerAgentServiceImplementation<CallContextExt = {}> {
     request: AsyncIterable<HealthReport>,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ReportHealthReply>>;
+  /**
+   * Asked every `agent_update_poll_secs`: whether the operator requested an
+   * update for this server, and how the previous attempt went.
+   */
+  pollAgentUpdate(
+    request: PollAgentUpdateRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<PollAgentUpdateReply>>;
 }
 
 export interface WorkerAgentClient<CallOptionsExt = {}> {
@@ -1188,6 +1554,14 @@ export interface WorkerAgentClient<CallOptionsExt = {}> {
     request: AsyncIterable<DeepPartial<HealthReport>>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ReportHealthReply>;
+  /**
+   * Asked every `agent_update_poll_secs`: whether the operator requested an
+   * update for this server, and how the previous attempt went.
+   */
+  pollAgentUpdate(
+    request: DeepPartial<PollAgentUpdateRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<PollAgentUpdateReply>;
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

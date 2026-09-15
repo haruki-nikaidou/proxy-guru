@@ -74,6 +74,11 @@ export default defineConfig({
 							label: 'Deploy Natively',
 							translations: { ja: 'ネイティブ環境へのデプロイ', 'zh-CN': '原生部署' },
 							link: '/guides/deploy-natively/'
+						},
+						{
+							label: 'Install and Update Agents',
+							translations: { ja: 'エージェントのインストールと更新', 'zh-CN': '安装与更新 Agent' },
+							link: '/guides/agent-install/'
 						}
 					]
 				},

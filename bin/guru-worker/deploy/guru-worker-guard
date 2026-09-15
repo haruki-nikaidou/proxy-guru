@@ -1,0 +1,42 @@
+#!/bin/sh
+# Start guard for guru-worker@.service (ExecStartPre=).
+#
+# A self-update swaps /opt/guru-worker/current and leaves a `pending` marker;
+# the new binary removes it once it has registered with the master and sent a
+# health report. This runs before every start and counts the starts a pending
+# update has had: a version that keeps failing is rolled back to `previous` and
+# the reason is left in `failed`, which the worker reports on its next
+# registration. It lives outside /opt/guru-worker on purpose — the worker never
+# writes here, so a broken update cannot take the guard down with it, and a
+# binary that does not even exec is caught the same way as one that crashes.
+#
+# Both markers are `key=value` lines: `pending` carries `version` and
+# `attempts`, `failed` carries `version` and `error`.
+set -eu
+PREFIX=/opt/guru-worker
+PENDING="$PREFIX/pending"
+MAX_STARTS=3
+
+[ -f "$PENDING" ] || exit 0
+version=$(sed -n 's/^version=//p' "$PENDING")
+attempts=$(sed -n 's/^attempts=//p' "$PENDING")
+attempts=$(( ${attempts:-0} + 1 ))
+if [ "$attempts" -le "$MAX_STARTS" ]; then
+    printf 'version=%s\nattempts=%s\n' "$version" "$attempts" >"$PENDING.tmp"
+    mv "$PENDING.tmp" "$PENDING"
+    exit 0
+fi
+
+if [ -L "$PREFIX/previous" ]; then
+    rollback=$(readlink "$PREFIX/previous")
+    ln -sfn "$rollback" "$PREFIX/current.tmp"
+    mv -T "$PREFIX/current.tmp" "$PREFIX/current"
+    error="$version did not come up in $MAX_STARTS starts; rolled back to $rollback"
+else
+    error="$version did not come up in $MAX_STARTS starts and there is no previous version to roll back to"
+fi
+printf 'version=%s\nerror=%s\n' "$version" "$error" >"$PREFIX/failed.tmp"
+mv "$PREFIX/failed.tmp" "$PREFIX/failed"
+rm -f "$PENDING"
+echo "guru-worker-guard: $error" >&2
+exit 0

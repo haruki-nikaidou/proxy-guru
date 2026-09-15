@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
+use orchestration::entities::surreal::agent_release::{FindAgentRelease, PublishAgentRelease};
 use orchestration::entities::surreal::canvas::{
     DeleteCanvasRow, FindCanvasById, ListCanvases, UpdateCanvasMeta,
 };
@@ -112,6 +113,7 @@ async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
             override_v4: None,
             override_v6: None,
             extra_addresses: Vec::new(),
+            agent_unit: None,
         })
         .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);
@@ -166,6 +168,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
         running_revision: 0,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     };
 
     let row = sp
@@ -500,6 +504,8 @@ async fn register_promotes_a_reported_desired_revision() -> TestResult {
         running_revision: 3,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -554,6 +560,8 @@ async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
         running_revision: 1,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -603,6 +611,8 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
         running_revision: 7,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -1012,5 +1022,160 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
     assert_eq!(topology.canvases.len(), 1);
     assert_eq!(topology.nodes.len(), 1);
     assert_eq!(topology.servers.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> TestResult {
+    let sp = setup().await?;
+    let c = canvas(&sp, "prod").await?;
+    let s = server(&sp, &c, "tokyo").await?;
+    seed_desired(&sp, &s.id, 3).await?;
+    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| {
+        RegisterWorkerSession {
+            server: s.id.clone(),
+            canvas: c.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now,
+            running_revision: running,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+        }
+    };
+
+    // The first worker ran revision 3: registering as such records it as applied,
+    // and there is nothing left to hand a stream.
+    let now = chrono::Utc::now();
+    sp.process(register("digest-1", now, 3))
+        .await?
+        .expect("the free session is taken");
+    let view = sp
+        .process(FindServerConfigView {
+            server: s.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert_eq!(view.applied.as_ref().map(|s| s.revision), Some(3));
+    assert!(
+        sp.process(TakeInFlight {
+            server: s.id.clone(),
+            generation: 1,
+            epoch: 0,
+        })
+        .await?
+        .is_none(),
+        "desired equals applied: converged, nothing to send"
+    );
+
+    // The host was reinstalled: the new worker runs nothing. Treating the server
+    // as still converged would leave it running nothing forever.
+    let later = now + chrono::TimeDelta::seconds(1);
+    let row = sp
+        .process(register("digest-2", later, 0))
+        .await?
+        .expect("the lapsed lease is taken over");
+    let view = sp
+        .process(FindServerConfigView {
+            server: s.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert!(view.applied.is_none(), "a worker running nothing has applied nothing");
+    assert!(view.in_flight.is_none());
+    assert_eq!(view.apply_error, None);
+    let taken = sp
+        .process(TakeInFlight {
+            server: s.id.clone(),
+            generation: row.refresh_key_generation,
+            epoch: 0,
+        })
+        .await?
+        .expect("the desired revision is offered to the new worker again");
+    assert_eq!(taken.revision, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn registration_records_the_worker_build_and_keeps_it_when_unreported() -> TestResult {
+    let sp = setup().await?;
+    let c = canvas(&sp, "prod").await?;
+    let s = server(&sp, &c, "tokyo").await?;
+    assert_eq!(s.agent_version, None);
+
+    let now = chrono::Utc::now();
+    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, build: Option<&str>| {
+        RegisterWorkerSession {
+            server: s.id.clone(),
+            canvas: c.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now,
+            running_revision: 0,
+            observed: None,
+            reported: None,
+            agent_version: build.map(str::to_owned),
+            agent_arch: build.map(|_| "x86_64".to_string()),
+        }
+    };
+
+    // A worker that reports its build has it recorded.
+    let row = sp
+        .process(register("digest-1", now, Some("0.2.0-beta")))
+        .await?
+        .expect("the free session is taken");
+    assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(row.agent_arch.as_deref(), Some("x86_64"));
+
+    // An older worker that reports nothing (empty on the wire, `None` here)
+    // must not blank what is known.
+    let later = now + chrono::TimeDelta::seconds(1);
+    let row = sp
+        .process(register("digest-2", later, None))
+        .await?
+        .expect("the lapsed lease is taken over");
+    assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(row.agent_arch.as_deref(), Some("x86_64"));
+
+    // A newer build replaces it.
+    let row = sp
+        .process(register("digest-3", later + chrono::TimeDelta::seconds(1), Some("0.3.0")))
+        .await?
+        .expect("the lapsed lease is taken over");
+    assert_eq!(row.agent_version.as_deref(), Some("0.3.0"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_release_publish_replaces_the_single_row() -> TestResult {
+    let sp = setup().await?;
+    assert!(sp.process(FindAgentRelease).await?.is_none());
+
+    let first = chrono::Utc::now();
+    sp.process(PublishAgentRelease {
+        version: "0.2.0-beta".to_string(),
+        sha256: "a".repeat(64),
+        arch: "x86_64".to_string(),
+        now: first,
+    })
+    .await?;
+    let row = sp.process(FindAgentRelease).await?.expect("published");
+    assert_eq!(row.version, "0.2.0-beta");
+    assert_eq!(row.sha256, "a".repeat(64));
+    assert_eq!(row.arch, "x86_64");
+
+    // A second publish replaces the row rather than adding one.
+    sp.process(PublishAgentRelease {
+        version: "0.3.0".to_string(),
+        sha256: "b".repeat(64),
+        arch: "x86_64".to_string(),
+        now: first + chrono::TimeDelta::seconds(60),
+    })
+    .await?;
+    let row = sp.process(FindAgentRelease).await?.expect("published");
+    assert_eq!(row.version, "0.3.0");
+    assert_eq!(row.sha256, "b".repeat(64));
     Ok(())
 }

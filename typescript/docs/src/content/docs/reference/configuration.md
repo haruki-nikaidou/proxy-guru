@@ -100,13 +100,18 @@ while the last acknowledged revision failed for any pod. The named values are ke
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip` (the same for IPv6) |
 | `--geo-url` | `GURU_GEO_URL` | `https://ipinfo.io/country` (agent mode; answers with the two-letter country of the public address, shown next to the server; empty disables it) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
+| `--no-self-update` | `GURU_NO_SELF_UPDATE` | off (agent mode; when set, an update the dashboard requests is refused and reported back with that reason instead of installed) |
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
 against the default path `/etc/guru-worker/config.toml`. `--log-level`/`GURU_LOG_LEVEL` configures
 agent mode only: standalone reads `log.level` from the config file instead (it never looks at the
 flag). Agent mode reads the operator API key from `GURU_API_KEY`, or from the file given by
 `--api-key-file` (trailing whitespace is trimmed); the key is used once per session to register with
-the master.
+the master. It is either an operator API key (`gk_…`, Maintainer or Admin — a machine credential
+that can register any server and nothing else) or the server's own agent key (`gs_…`), which the
+dashboard issues together with the install command and which registers that one server only. In
+agent mode the worker also reports its version and architecture at registration and asks for
+updates every `agent_update_poll_secs` — see [Install and Update Agents](/guides/agent-install/).
 
 ## Worker config file
 
@@ -300,7 +305,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it) |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it) |
 
 Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do

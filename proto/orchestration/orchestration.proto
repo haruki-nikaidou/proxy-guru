@@ -295,6 +295,20 @@ message Server {
   ServerHealthStatus health_status = 11;
   reserved 10; // ips
   ServerAddresses addresses = 12;
+  // What the worker last registered as: its crate version and the CPU
+  // architecture it was built for. Empty until a worker that reports them
+  // registers.
+  string agent_version = 13;
+  string agent_arch = 14;
+  // The systemd instance the install command creates: `guru-worker@<unit>`.
+  string agent_unit = 15;
+  // A pending self-update: the version the operator asked the worker to move
+  // to. Empty once the worker registers as that version, or after a failure.
+  string agent_update_requested = 16;
+  // Why the last self-update failed, as the worker reported it.
+  string agent_update_error = 17;
+  // When the server's own agent key was issued; empty when it has none.
+  string agent_key_issued_at = 18;
 }
 message Canvas {
   string id = 1;
@@ -410,8 +424,47 @@ message UpdateServerRequest {
   string override_v4 = 7;
   string override_v6 = 8;
   repeated string extra_addresses = 9;
+  // The systemd instance the install command targets (`guru-worker@<unit>`):
+  // 1-32 lowercase letters, digits or dashes. Empty clears it.
+  string agent_unit = 10;
 }
 message UpdateServerReply {
+  Server server = 1;
+}
+// Issues the server's own agent key and renders the install command carrying
+// it. The key appears exactly once, inside `command`; issuing again replaces
+// it, so a worker still holding the previous key is refused at its next
+// registration. `unit` empty keeps the stored instance name, or derives one
+// from the server name. Maintainer+.
+message IssueServerAgentInstallRequest {
+  string server_id = 1;
+  string unit = 2;
+}
+message IssueServerAgentInstallReply {
+  string command = 1;
+  string unit = 2;
+  string version = 3;
+  Server server = 4;
+}
+// The published worker release (`manage-tool agent publish`): empty `version`
+// means none yet. `base_url_configured` is whether the install command has an
+// origin to download from at all.
+message GetAgentReleaseRequest {}
+message GetAgentReleaseReply {
+  string version = 1;
+  string sha256 = 2;
+  string arch = 3;
+  string published_at = 4;
+  bool base_url_configured = 5;
+}
+// Asks the server's worker to move to the published release: it picks the
+// request up at its next poll, downloads and verifies the binary, swaps it in
+// and restarts. `agent_update_requested` clears once the worker registers as
+// that version, or with `agent_update_error` set when the attempt failed.
+message RequestAgentUpdateRequest {
+  string server_id = 1;
+}
+message RequestAgentUpdateReply {
   Server server = 1;
 }
 message DeleteServerRequest {
@@ -786,6 +839,9 @@ service Orchestration {
   rpc GetServerConfig(GetServerConfigRequest) returns (GetServerConfigReply);
   rpc GetServerRolloutStatus(GetServerRolloutStatusRequest) returns (GetServerRolloutStatusReply);
   rpc ForgetServerApplied(ForgetServerAppliedRequest) returns (ForgetServerAppliedReply);
+  rpc IssueServerAgentInstall(IssueServerAgentInstallRequest) returns (IssueServerAgentInstallReply);
+  rpc GetAgentRelease(GetAgentReleaseRequest) returns (GetAgentReleaseReply);
+  rpc RequestAgentUpdate(RequestAgentUpdateRequest) returns (RequestAgentUpdateReply);
   rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
   rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
   rpc WatchCanvas(WatchCanvasRequest) returns (stream CanvasEvent);

@@ -13,7 +13,10 @@ master with no broker reachable derives nothing at all.
 
 Every server has **one config view** holding three snapshots — `desired`, `in_flight` and
 `applied`. A worker stream promotes `desired` → `in_flight`, and its `AckConfig` promotes
-`in_flight` → `applied`.
+`in_flight` → `applied`. Registration reconciles the view with what the worker actually runs: a
+worker reporting the desired or in-flight revision has it recorded as `applied`, and a worker
+reporting revision `0` — a fresh install, a wiped state directory — has `applied` forgotten, so the
+stream hands the desired revision out again rather than treating the server as converged.
 
 ```text
 canvas mutation ──▶ CanvasDirty ──┐

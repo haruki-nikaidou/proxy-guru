@@ -29,7 +29,7 @@ rustls-native-certs = "0.8"
 # Address discovery for agent mode: interface enumeration and the public-ip
 # lookup (rustls, the TLS stack tonic already links; no second one).
 if-addrs = "0.13"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
 # Dual-stack listeners: `::` must be bound with IPV6_V6ONLY off explicitly.
 socket2 = "0.6"
 moka = { version = "0.12", features = ["future"] }
@@ -40,6 +40,8 @@ clap = { workspace = true }
 serde_json = { workspace = true }
 tokio-stream = { workspace = true }
 parking_lot = "0.12"
+# Self-update verifies the downloaded binary against the published digest.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 orchestration = { path = "../../modules/orchestration" }

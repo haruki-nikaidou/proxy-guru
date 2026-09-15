@@ -20,6 +20,7 @@ use base::services::config::{
 use clap::{Parser, Subcommand};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
+use orchestration::entities::surreal::agent_release::PublishAgentRelease;
 use orchestration::entities::surreal::ca::{FindInternalCa, ListRelayCertificatesByPods};
 use orchestration::entities::surreal::certificate::ListCertificatesBySnis;
 use orchestration::services::OrchestrationError;
@@ -28,6 +29,8 @@ use orchestration::services::derive::{
     DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
 };
 use orchestration::utils::secret::SecretKey;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use surrealdb::opt::auth::Root;
 use surrealdb::types::ToSql;
 use wakuwaku::surreal::SurrealProcessor;
@@ -81,6 +84,12 @@ enum Command {
         #[command(subcommand)]
         command: OrchestrationCommand,
     },
+    /// The `guru-worker` agent distribution: what the dashboard's install
+    /// command downloads and what a running worker updates to.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,6 +131,23 @@ enum OrchestrationCommand {
     InitCa,
 }
 
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Publish a built `guru-worker`: copy it under its version into the
+    /// directory nginx serves as `/agent/`, refresh the installer, systemd unit
+    /// and start guard next to it, and record its version, SHA-256 and
+    /// architecture so the dashboard offers it. The binary is run once
+    /// (`--version`), so publish on a host that can execute it.
+    Publish {
+        /// The built binary, e.g. `target/release/guru-worker`.
+        #[arg(long)]
+        binary: PathBuf,
+        /// The directory nginx serves, e.g. `/srv/guru/agent`.
+        #[arg(long)]
+        dir: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -159,6 +185,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Orchestration {
             command: OrchestrationCommand::InitCa,
         } => init_ca(SurrealProcessor::new(db)).await,
+        Command::Agent {
+            command: AgentCommand::Publish { binary, dir },
+        } => agent_publish(SurrealProcessor::new(db), binary, dir).await,
     }
 }
 
@@ -406,5 +435,107 @@ async fn create_admin(
         .await?;
 
     println!("Created admin account {}", account.id.0.to_sql());
+    Ok(())
+}
+
+/// What `agent publish` ships next to the binary. Embedded, so the tool needs
+/// no checkout at runtime and the three always come from the same source
+/// revision as the binary they accompany.
+const INSTALL_SH: &str = include_str!("../../guru-worker/deploy/install.sh");
+const UNIT_FILE: &str = include_str!("../../guru-worker/deploy/guru-worker@.service");
+const GUARD_SH: &str = include_str!("../../guru-worker/deploy/guru-worker-guard");
+
+/// Publishes a built `guru-worker` for the install command and self-update.
+///
+/// The version is read by running the exact bytes being published, so the
+/// recorded version can never disagree with the file; the architecture comes
+/// from the ELF header. Files are written through a sibling temp file and
+/// renamed, so a download racing the publish gets the old file or the new one.
+async fn agent_publish(
+    db: SurrealProcessor,
+    binary: PathBuf,
+    dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes =
+        std::fs::read(&binary).map_err(|e| format!("reading {}: {e}", binary.display()))?;
+    let arch = elf_arch(&bytes)
+        .ok_or("the binary is not an ELF executable for a supported architecture")?;
+    let version = worker_version(&binary)?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+
+    let version_dir = dir.join(&version);
+    std::fs::create_dir_all(&version_dir)
+        .map_err(|e| format!("creating {}: {e}", version_dir.display()))?;
+    publish_file(&version_dir.join("guru-worker"), &bytes, 0o755)?;
+    publish_file(&dir.join("install.sh"), INSTALL_SH.as_bytes(), 0o644)?;
+    publish_file(&dir.join("guru-worker@.service"), UNIT_FILE.as_bytes(), 0o644)?;
+    publish_file(&dir.join("guru-worker-guard"), GUARD_SH.as_bytes(), 0o644)?;
+
+    db.process(PublishAgentRelease {
+        version: version.clone(),
+        sha256: sha256.clone(),
+        arch: arch.to_string(),
+        now: chrono::Utc::now(),
+    })
+    .await?;
+    println!("published guru-worker {version} ({arch}) to {}", version_dir.display());
+    println!("  sha256 {sha256}");
+    println!("  the dashboard now offers this version to servers running another one");
+    Ok(())
+}
+
+/// `guru-worker --version` prints `guru-worker <version>`.
+fn worker_version(binary: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("running {} --version: {e}", binary.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} --version failed: {}",
+            binary.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split_whitespace()
+        .last()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{} --version printed nothing", binary.display()).into())
+}
+
+/// The architecture an ELF binary was built for, from its `e_machine` field.
+fn elf_arch(bytes: &[u8]) -> Option<&'static str> {
+    if !bytes.starts_with(b"\x7fELF") {
+        return None;
+    }
+    let machine = bytes.get(18..20)?;
+    match u16::from_le_bytes([machine[0], machine[1]]) {
+        0x3E => Some("x86_64"),
+        0xB7 => Some("aarch64"),
+        _ => None,
+    }
+}
+
+/// Writes `bytes` with `mode` atomically: a sibling temp file, then a rename.
+fn publish_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", path.display()))?
+        .to_owned();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(())
 }

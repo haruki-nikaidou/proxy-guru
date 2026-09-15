@@ -55,8 +55,23 @@ DEFINE FIELD extra_addresses ON orchestration_server TYPE array<string> DEFAULT 
 DEFINE FIELD reported_addresses ON orchestration_server TYPE option<object> FLEXIBLE;
 DEFINE FIELD observed_address ON orchestration_server TYPE option<string>;
 DEFINE FIELD observed_at ON orchestration_server TYPE option<datetime>;
+-- What the worker last registered as (`agent_version` is the worker crate's
+-- version, `agent_arch` the CPU architecture it was built for), and the
+-- self-update bookkeeping the dashboard drives: `agent_update_requested` is the
+-- version an operator asked the worker to move to, `agent_update_error` why the
+-- last attempt failed. `agent_unit` names the systemd instance the install
+-- command creates. The server's own agent key authenticates `Register` in place
+-- of an operator API key and is stored as a digest, like the refresh key.
+DEFINE FIELD agent_version ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_arch ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_unit ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_update_requested ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_update_error ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_key_digest ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_key_issued_at ON orchestration_server TYPE option<datetime>;
 DEFINE INDEX orchestration_server_canvas ON orchestration_server FIELDS canvas;
 DEFINE INDEX orchestration_server_refresh_key ON orchestration_server FIELDS current_dynamic_refresh_key;
+DEFINE INDEX orchestration_server_agent_key ON orchestration_server FIELDS agent_key_digest;
 
 DEFINE TABLE orchestration_node SCHEMAFULL;
 DEFINE FIELD canvas ON orchestration_node TYPE record<orchestration_canvas>;
@@ -283,6 +298,17 @@ DEFINE FIELD certificate_pem ON internal_ca TYPE string;
 DEFINE FIELD private_key_pem ON internal_ca TYPE string;
 DEFINE FIELD not_after ON internal_ca TYPE datetime;
 DEFINE FIELD created_at ON internal_ca TYPE datetime;
+
+-- The published `guru-worker` release: what `manage-tool agent publish` last put
+-- in the download directory. Exactly one row, `orchestration_agent_release:current`.
+-- State rather than configuration, so a publish takes effect without a restart:
+-- the dashboard offers it to servers running another version and the worker
+-- verifies what it downloads against `sha256`.
+DEFINE TABLE orchestration_agent_release SCHEMAFULL;
+DEFINE FIELD version ON orchestration_agent_release TYPE string;
+DEFINE FIELD sha256 ON orchestration_agent_release TYPE string;
+DEFINE FIELD arch ON orchestration_agent_release TYPE string;
+DEFINE FIELD published_at ON orchestration_agent_release TYPE datetime;
 
 -- One leaf per pod whose listener is a TLS or QUIC relay, SAN
 -- `<pod-key>.relay.guru.internal`, rotated by the certificate cron. `version`

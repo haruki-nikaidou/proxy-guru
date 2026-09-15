@@ -15,7 +15,7 @@ use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerI
 use orchestration::entities::surreal::view::{
     AckServerConfig, ListenProtocol, ListenerCap, ServerConfigViewEntity, TakeInFlight,
 };
-use orchestration::services::agent::RegisterWorker;
+use orchestration::services::agent::{RegisterCredential, RegisterWorker};
 use orchestration::services::edge::{Connect, Disconnect};
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
 use orchestration::services::rollout::ForgetServerApplied;
@@ -35,11 +35,14 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     if !registered {
         w.agents
             .process(RegisterWorker {
-                actor: machine(),
+                credential: RegisterCredential::Operator(machine()),
                 server_id: server.clone(),
                 running_revision: 0,
                 observed: None,
                 reported: None,
+                agent_version: None,
+                agent_arch: None,
+                last_update_error: None,
             })
             .await?;
     }
@@ -531,11 +534,14 @@ async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
     let err = w
         .agents
         .process(RegisterWorker {
-            actor: operator(),
+            credential: RegisterCredential::Operator(operator()),
             server_id: server.id,
             running_revision: 0,
             observed: None,
             reported: None,
+            agent_version: None,
+            agent_arch: None,
+            last_update_error: None,
         })
         .await
         .expect_err("human sessions may not register workers");

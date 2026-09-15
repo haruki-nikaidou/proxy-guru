@@ -19,7 +19,7 @@ use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, 
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
 use orchestration::entities::surreal::view::{AckServerConfig, ListenProtocol, TakeInFlight};
-use orchestration::services::agent::RegisterWorker;
+use orchestration::services::agent::{RegisterCredential, RegisterWorker};
 use orchestration::services::canvas::ValidateCanvas;
 use orchestration::services::edge::{Connect, ConnectEnd, ConnectUniversal, Disconnect, UniversalGroup};
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec, RetireNode};
@@ -853,11 +853,14 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     if !registered {
         w.agents
             .process(RegisterWorker {
-                actor: machine(),
+                credential: RegisterCredential::Operator(machine()),
                 server_id: server.clone(),
                 running_revision: 0,
                 observed: None,
                 reported: None,
+                agent_version: None,
+                agent_arch: None,
+                last_update_error: None,
             })
             .await?;
     }

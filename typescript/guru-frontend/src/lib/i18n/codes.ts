@@ -75,6 +75,8 @@ export function issueMessage(code: string): string {
 			return m.issue_config_json_required();
 		case 'config_json_invalid':
 			return m.issue_config_json_invalid();
+		case 'agent_unit_invalid':
+			return m.issue_agent_unit_invalid();
 		default:
 			return code;
 	}
