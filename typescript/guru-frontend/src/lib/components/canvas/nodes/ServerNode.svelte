@@ -101,21 +101,27 @@ const channelOf = (podId: string) => data.channels[podId];
 					<span class="font-mono text-muted-foreground">{universal.lanes.length}</span>
 				{/if}
 			</p>
-			<div class="flex items-start justify-between">
-				<GroupHandle
-					flowId={id}
-					group="bundle_in"
-					label={m.editor_universal_bundle_in()}
-					side="left"
-					count={universal.bundleIn.length}
-				/>
-				<GroupHandle
-					flowId={id}
-					group="bundle_out"
-					label={m.editor_universal_bundle_out()}
-					side="right"
-					single
-				/>
+			<div class="grid grid-cols-2">
+				<div>
+					{#each universal.bundleIn as port (port.id)}
+						<PortHandle {port} label={port.peerName} side="left" />
+					{/each}
+					<GroupHandle
+						flowId={id}
+						group="bundle_in"
+						label={m.editor_universal_add_bundle()}
+						side="left"
+					/>
+				</div>
+				<div>
+					{#if universal.bundleOut}
+						<PortHandle
+							port={universal.bundleOut}
+							label={m.editor_universal_bundle_out()}
+							side="right"
+						/>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{/if}

@@ -171,6 +171,8 @@
 	"editor_universal_channels_hint": "Drag from the channel handle to the destination of an entry pod; every connected pod becomes one coloured channel.",
 	"editor_universal_bundle_in": "bundle in",
 	"editor_universal_bundle_out": "bundle out",
+	"editor_universal_add_channel": "+ channel",
+	"editor_universal_add_bundle": "+ bundle",
 	"editor_universal_no_channels": "No channels yet: bundle a server's universal pod into this node.",
 	"editor_universal_no_exit": "no exit",
 	"editor_universal_protocol_hint": "One strategy and one relay protocol for every channel bundled out of this node; hand-drawn members are unaffected. Changing the protocol gives every landing pod a new port.",

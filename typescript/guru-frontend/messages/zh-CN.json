@@ -171,6 +171,8 @@
 	"editor_universal_channels_hint": "从通道把手拖到入口 Pod 的 destination 端口；每个接入的 Pod 就是一条带颜色的通道。",
 	"editor_universal_bundle_in": "总线入",
 	"editor_universal_bundle_out": "总线出",
+	"editor_universal_add_channel": "+ 通道",
+	"editor_universal_add_bundle": "+ 总线",
 	"editor_universal_no_channels": "还没有通道：把某台服务器的万能 Pod 用总线接进来。",
 	"editor_universal_no_exit": "无出口",
 	"editor_universal_protocol_hint": "从本节点总线出去的所有通道共用一个策略和一个中继协议；手画成员不受影响。更改协议会给每个落地 Pod 分配新端口。",

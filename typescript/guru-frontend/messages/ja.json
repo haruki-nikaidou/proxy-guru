@@ -171,6 +171,8 @@
 	"editor_universal_channels_hint": "チャネルのハンドルから入口 Pod の destination ポートへドラッグします。接続した Pod が 1 本の色付きチャネルになります。",
 	"editor_universal_bundle_in": "バンドル入力",
 	"editor_universal_bundle_out": "バンドル出力",
+	"editor_universal_add_channel": "+ チャネル",
+	"editor_universal_add_bundle": "+ バンドル",
 	"editor_universal_no_channels": "チャネルはまだありません。サーバーのユニバーサル Pod をバンドルで接続してください。",
 	"editor_universal_no_exit": "出口なし",
 	"editor_universal_protocol_hint": "このノードからバンドルで出る全チャネルで 1 つの戦略と 1 つの中継プロトコルを共有します。手描きメンバーには影響しません。プロトコルを変えると各着地 Pod に新しいポートが割り当てられます。",

@@ -171,6 +171,8 @@
 	"editor_universal_channels_hint": "從通道把手拖到入口 Pod 的 destination 埠；每個接入的 Pod 就是一條帶顏色的通道。",
 	"editor_universal_bundle_in": "匯流排入",
 	"editor_universal_bundle_out": "匯流排出",
+	"editor_universal_add_channel": "+ 通道",
+	"editor_universal_add_bundle": "+ 匯流排",
 	"editor_universal_no_channels": "還沒有通道：把某台伺服器的萬能 Pod 用匯流排接進來。",
 	"editor_universal_no_exit": "無出口",
 	"editor_universal_protocol_hint": "從本節點匯流排出去的所有通道共用一個策略與一個中繼協定；手繪成員不受影響。變更協定會給每個落地 Pod 分配新埠。",

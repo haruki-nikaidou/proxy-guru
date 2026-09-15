@@ -91,13 +91,19 @@ export type LoadBalanceNodeDto = NodeBase & {
 	/** The hand-drawn ports only. */
 	manualPorts: CanvasPort[];
 	/**
-	 * The channels this node carries: drawn into a distribute node, or brought
-	 * by bundles into an aggregate node (`portId` is the `chan:` input that
-	 * takes the exit).
+	 * The channels this node carries: drawn into a distribute node (`portId`
+	 * is its `chan:` output), or brought by bundles into an aggregate node
+	 * (`portId` is the `chan:` input that takes the exit).
 	 */
-	channels: (ChannelDto & { portId?: string })[];
-	bundleCount: number;
+	channels: (ChannelDto & { portId: string })[];
+	/**
+	 * One port per bundle drawn on this node (`bundle_out:` on a distribute
+	 * node, `bundle_in:` on an aggregate node), with the far node's name.
+	 */
+	bundlePorts: BundlePortDto[];
 };
+/** A bundle port and what is on the other end of its bundle. */
+export type BundlePortDto = CanvasPort & { peerName: string };
 /**
  * Embeds another canvas as one node. Its ports mirror the target's export
  * nodes and are derived server-side; the target itself is immutable.
@@ -170,7 +176,7 @@ export type LaneDto = {
 export type UniversalPodDto = {
 	nodeId: string;
 	/** `bundle_in:<source>` ports, one per bundle drawn into it. */
-	bundleIn: CanvasPort[];
+	bundleIn: BundlePortDto[];
 	/** The fixed outgoing bundle port. */
 	bundleOut: CanvasPort | null;
 	lanes: LaneDto[];

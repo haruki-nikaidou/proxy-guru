@@ -41,7 +41,7 @@ Three rules cover every connection:
   right-to-left: a pod's `listen` output (left) feeds an Entry's `listen` input (right).
 - **Kinds must match.** Blue joins blue, olive joins olive, square joins square. A listen port never
   connects to a destination port.
-- **A port takes exactly one edge.** Once wired, the handle stops accepting drags. Only a universal
+- **A port takes exactly one edge.** Once wired, the handle stops accepting drags. Only an "add"
   node's *group* handles accept many edges.
 
 The dashboard refuses invalid drags as you make them, and the server re-checks the whole topology on
@@ -110,7 +110,7 @@ Both ends landing on the same server is a warning — you almost certainly meant
 
 ## Load balance (distribute)
 
-![A Distribute node card titled "fan-out", summary line "Round robin · QUIC · Members: 0", a Channels handle with two coloured chips on the left and a square bundle out handle labelled 4 on the right](/img/nodes/node-distribute.avif)
+![A Distribute node card titled "fan-out", summary line "Round robin · TCP (raw) · Members: 0", two coloured channel handles named after their entry pods plus a faint "+ channel" handle on the left, and four square bundle handles named hk-1 to hk-4 plus a faint "+ bundle" handle on the right](/img/nodes/node-distribute.avif)
 
 Fans one destination over several members — drawn by hand, or once for every **channel** bundled
 through it (see [Channels and bundles](#channels-and-bundles)). Both live on the same card.
@@ -119,8 +119,10 @@ through it (see [Channels and bundles](#channels-and-bundles)). Both live on the
 |---|---|---|
 | `member_0` … `member_{n-1}` | destination (olive) | inputs |
 | `destination` | destination (olive) | output |
-| `Channels` | destination (olive), group | source — drag to the `destination` of an entry pod; each connected pod becomes one coloured channel |
-| `bundle out` | bundle (grey square), group | source — one edge per universal pod you bundle to |
+| one per channel | destination, channel colour | source — one edge, to the `destination` of the entry pod that is the channel |
+| `+ channel` | destination (olive), add | source — drag to the `destination` of an entry pod; the connected pod becomes one more coloured channel |
+| one per bundle | bundle (grey square), named after the far server | source — one edge |
+| `+ bundle` | bundle (grey square), add | source — drag to a universal pod's `+ bundle`; one more bundle out |
 
 - **Balance mode** — `Round robin`, `Random`, `IP hash` or `Fallback`. `IP hash` requires a known
   client IP, so it is an error under an Entry that receives no PROXY protocol. It applies to the
@@ -142,7 +144,7 @@ edit.
 
 ## Load balance (aggregate)
 
-![An Aggregate node card titled "join", summary line "Members: 0", a square bundle in handle labelled 4 on the left and two coloured channel inputs on the right](/img/nodes/node-aggregate.avif)
+![An Aggregate node card titled "join", summary line "Members: 0", four square bundle handles named hk-1 to hk-4 plus a faint "+ bundle" handle on the left, and two coloured channel inputs named after their entry pods on the right](/img/nodes/node-aggregate.avif)
 
 The mirror of distribute: **one destination subtree reused by several consumers.** It contributes
 nothing of its own to the derived config — each copy resolves to whatever feeds `source`. Bundled
@@ -152,7 +154,8 @@ in, it grows **one input per channel** the bundles carry, each waiting for an ex
 |---|---|---|
 | `source` | destination (olive) | input |
 | `copy_0` … `copy_{n-1}` | destination (olive) | outputs |
-| `bundle in` | bundle (grey square), group | target — one edge per incoming bundle |
+| one per bundle | bundle (grey square), named after the far server | target — one edge |
+| `+ bundle` | bundle (grey square), add | target — where a universal pod's `bundle out` is dropped |
 | one per channel | destination, channel colour | input — connect an exit to each |
 
 **Members** (0, or 2–256) is the only setting; an aggregate has no balance mode, and the
@@ -162,7 +165,7 @@ channels yet*.
 
 ## Server
 
-![A Server node card titled "Server tomato-owl" with an Offline badge, the lines "info · Tolerated · no address yet" and "Last seen: Never · not reporting", a Universal pod section with bundle in and bundle out square handles, and "No pods yet"](/img/nodes/node-server.avif)
+![A Server node card titled "hk-1" with an Online badge, address and last-seen lines, a Universal pod section with two channel dots, one square bundle handle named fan-out plus a faint "+ bundle" handle on the left and a square bundle out handle on the right, and "No pods yet"](/img/nodes/node-server.avif)
 
 One machine running `guru-worker`. A server is not a node spec but a container: it holds every
 **pod** on that machine plus the machine's **universal pod**. Pods never appear as separate cards.
@@ -205,9 +208,10 @@ fails to derive on its own shows up in the server's rollout panel as an invalid 
 and never disturbs the rest of the config.
 
 **Universal pod.** Created with the server, one per server, and neither creatable nor deletable by
-hand. It is where other servers' traffic lands without drawing a pod per rule: `bundle in` (grey
-square, many edges) accepts bundles, and the single `bundle out` (grey square, exactly one edge)
-hands the bundle on to the next universal pod or to a load balance (aggregate) node. Every channel
+hand. It is where other servers' traffic lands without drawing a pod per rule: one grey square per
+incoming bundle (named after where it comes from) plus a faint `+ bundle` handle accepting the
+next, and the single `bundle out` (grey square, exactly one edge) hands the bundle on to the next
+universal pod or to a load balance (aggregate) node. Every channel
 a bundle carries gets a real **landing pod** here, listed in the server's inspector with an editable
 port.
 

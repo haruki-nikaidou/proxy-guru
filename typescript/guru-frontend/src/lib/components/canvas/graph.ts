@@ -38,25 +38,25 @@ export type FlowNodeData =
 
 export type FlowNode = Node<FlowNodeData>;
 /**
- * One connection endpoint: a port, or one of a universal node's handle groups.
- * A group takes any number of edges unless `single` (a universal pod bundles
- * out to one place).
+ * One connection endpoint: a port (one edge), or one of a bundle-capable
+ * node's "add" handles (`group`), which takes a new connection every time —
+ * the control plane creates the port behind it.
  */
 export type PortIndexEntry = {
 	flowNodeId: string;
 	kind: PortKindName;
 	direction: PortDirectionName;
 	group?: UniversalGroupName;
-	single?: boolean;
 };
 
 /** The edge data a bundle edge carries: how many channels ride on it. */
 export type BundleEdgeData = { count: number };
 
 /**
- * A universal node's handle groups are Svelte Flow handles of their own, with
- * ids no port can collide with; every port of the group maps onto the one
- * handle. A universal pod's fixed `bundle_out` is a group of one.
+ * A bundle-capable node's "add" handles are Svelte Flow handles of their own,
+ * with ids no port can collide with: one per group, taking a new connection
+ * each time. The ports the control plane creates behind them are ordinary
+ * one-edge handles of their own.
  */
 export const groupHandleId = (flowId: string, group: UniversalGroupName): string =>
 	`u:${flowId}:${group}`;
@@ -167,74 +167,44 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 }
 
 /**
- * Port id → endpoint, plus one entry per universal handle group under its
- * synthetic id. A port that belongs to a group (a bundle port, a distributor's
- * `chan:` port) maps onto the group's entry, so an edge on it is drawn on the
- * group's handle.
+ * Port id → endpoint, plus one "add" entry per handle group of a
+ * bundle-capable node under its synthetic id. Every existing port — a bundle
+ * port, a `chan:` port, a hand-drawn port — is a one-edge endpoint of its own;
+ * only the hidden `lane:` ports are left out.
  */
 export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> {
 	const index = new Map<string, PortIndexEntry>();
-	const group = (
-		owner: string,
-		name: UniversalGroupName,
-		kind: PortKindName,
-		single = false
-	): PortIndexEntry => ({
+	const add = (owner: string, name: UniversalGroupName, kind: PortKindName): PortIndexEntry => ({
 		flowNodeId: owner,
 		kind,
 		direction: name === 'bundle_in' ? 'input' : 'output',
-		group: name,
-		single
+		group: name
 	});
+	const port = (owner: string, port: CanvasPort) => {
+		if (port.key.startsWith('lane:')) return;
+		index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
+	};
 	for (const server of graph.servers) {
 		const owner = flowNodeId('server', server.id);
-		for (const pod of server.pods) {
-			for (const port of pod.ports) {
-				index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
-			}
-		}
+		for (const pod of server.pods) for (const p of pod.ports) port(owner, p);
 		if (server.universal) {
-			const bundleIn = group(owner, 'bundle_in', 'bundle');
-			const bundleOut = group(owner, 'bundle_out', 'bundle', true);
-			index.set(groupHandleId(owner, 'bundle_in'), bundleIn);
-			index.set(groupHandleId(owner, 'bundle_out'), bundleOut);
-			for (const port of server.universal.bundleIn) index.set(port.id, bundleIn);
-			if (server.universal.bundleOut) index.set(server.universal.bundleOut.id, bundleOut);
+			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
+			for (const p of server.universal.bundleIn) port(owner, p);
+			// The fixed outgoing bundle port takes one edge, like any port.
+			if (server.universal.bundleOut) port(owner, server.universal.bundleOut);
 		}
 	}
 	for (const node of graph.nodes) {
 		const owner = flowNodeId('node', node.id);
-		// A load-balance node's on-demand ports map onto its handle groups; its
-		// hand-drawn ports (and an aggregate node's per-channel inputs) stay
-		// one-edge handles of their own. Hidden `lane:` ports are not indexed.
-		if (node.kind === 'load_balance' && node.mode === 'distribute') {
-			const channelOut = group(owner, 'channel_out', 'derive_destination');
-			const bundleOut = group(owner, 'bundle_out', 'bundle');
-			index.set(groupHandleId(owner, 'channel_out'), channelOut);
-			index.set(groupHandleId(owner, 'bundle_out'), bundleOut);
-			for (const port of node.ports) {
-				if (port.kind === 'bundle') index.set(port.id, bundleOut);
-				else if (port.key.startsWith('chan:')) index.set(port.id, channelOut);
-				else if (!port.key.startsWith('lane:')) {
-					index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
-				}
-			}
-			continue;
-		}
 		if (node.kind === 'load_balance') {
-			const bundleIn = group(owner, 'bundle_in', 'bundle');
-			index.set(groupHandleId(owner, 'bundle_in'), bundleIn);
-			for (const port of node.ports) {
-				if (port.kind === 'bundle') index.set(port.id, bundleIn);
-				else if (!port.key.startsWith('lane:')) {
-					index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
-				}
+			if (node.mode === 'distribute') {
+				index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
+				index.set(groupHandleId(owner, 'bundle_out'), add(owner, 'bundle_out', 'bundle'));
+			} else {
+				index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
 			}
-			continue;
 		}
-		for (const port of node.ports) {
-			index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
-		}
+		for (const p of node.ports) port(owner, p);
 	}
 	return index;
 }
@@ -309,17 +279,14 @@ export function buildFlowEdges(graph: CanvasGraph): Edge[] {
 		const target = index.get(edge.targetPortId);
 		// A port outside this canvas cannot be drawn; the backend reports it too.
 		if (!source || !target) continue;
-		// An edge on a grouped port is drawn on the group's handle.
-		const handle = (entry: PortIndexEntry, portId: string) =>
-			entry.group ? groupHandleId(entry.flowNodeId, entry.group) : portId;
 		if (source.kind === 'bundle') {
 			edges.push({
 				id: edge.id,
 				type: 'bundle',
 				source: source.flowNodeId,
-				sourceHandle: handle(source, edge.sourcePortId),
+				sourceHandle: edge.sourcePortId,
 				target: target.flowNodeId,
-				targetHandle: handle(target, edge.targetPortId),
+				targetHandle: edge.targetPortId,
 				data: { count: counts.get(edge.id) ?? 0 } satisfies BundleEdgeData
 			});
 			continue;
@@ -328,9 +295,9 @@ export function buildFlowEdges(graph: CanvasGraph): Edge[] {
 		edges.push({
 			id: edge.id,
 			source: source.flowNodeId,
-			sourceHandle: handle(source, edge.sourcePortId),
+			sourceHandle: edge.sourcePortId,
 			target: target.flowNodeId,
-			targetHandle: handle(target, edge.targetPortId),
+			targetHandle: edge.targetPortId,
 			style: channel
 				? `stroke: ${channelColor(channel)}; stroke-width: 2.5`
 				: source.kind === 'derive_listen'
@@ -477,9 +444,9 @@ export function connectedPortIds(graph: CanvasGraph, flowEdges: Edge[]): Set<str
  * Mirrors `check_edges` in the control plane so a doomed drag never round-trips:
  * both ports must be known, sit on different nodes, share a kind, run
  * output → input, and still be free — a second edge on either endpoint is what
- * the backend reports as `PortOversubscribed`. A universal handle group takes
- * any number of edges (a group of one aside), a distributor's channel output
- * only lands on a pod's free `destination`, and bundles only join bundle groups.
+ * the backend reports as `PortOversubscribed`. An "add" handle takes any number
+ * of edges, a distribute node's channel handle only lands on a pod's free
+ * `destination`, and bundles only land on an "add" handle.
  */
 export function canConnect(
 	connection: Edge | Connection,
@@ -499,9 +466,12 @@ export function canConnect(
 		// Into a pod's destination, never into another bundle-capable node.
 		if (target.group || !target.flowNodeId.startsWith('server:')) return false;
 	}
-	if (source.kind === 'bundle' && (!source.group || !target.group)) return false;
+	// A bundle is drawn from an "add" handle to an "add" handle, or out of a
+	// universal pod's fixed port into an "add" handle; existing bundle ports
+	// are wired already.
+	if (source.kind === 'bundle' && !target.group) return false;
 	const used = connectedPortIds(graph, flowEdges);
-	const sourceFree = source.group && !source.single ? true : !used.has(sourceHandle);
+	const sourceFree = source.group ? true : !used.has(sourceHandle);
 	const targetFree = target.group ? true : !used.has(targetHandle);
 	return sourceFree && targetFree;
 }

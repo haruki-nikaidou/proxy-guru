@@ -171,6 +171,8 @@
 	"editor_universal_channels_hint": "채널 핸들에서 진입 파드의 destination 포트로 드래그하세요. 연결된 파드마다 색이 있는 채널 하나가 됩니다.",
 	"editor_universal_bundle_in": "번들 입력",
 	"editor_universal_bundle_out": "번들 출력",
+	"editor_universal_add_channel": "+ 채널",
+	"editor_universal_add_bundle": "+ 번들",
 	"editor_universal_no_channels": "아직 채널이 없습니다. 서버의 유니버설 파드를 번들로 연결하세요.",
 	"editor_universal_no_exit": "출구 없음",
 	"editor_universal_protocol_hint": "이 노드에서 번들로 나가는 모든 채널이 하나의 전략과 하나의 중계 프로토콜을 공유합니다. 직접 그린 멤버에는 영향이 없습니다. 프로토콜을 바꾸면 모든 착지 파드에 새 포트가 배정됩니다.",

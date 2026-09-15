@@ -24,6 +24,7 @@ import * as v from 'valibot';
 import type { CanvasOption } from '#lib/dto/canvas.js';
 import type {
 	AddressSourceName,
+	BundlePortDto,
 	CanvasExportAsName,
 	CanvasGraph,
 	CanvasPort,
@@ -328,6 +329,14 @@ const CHANNEL_COLORS = 12;
 const channelOf = (key: string): string | null =>
 	key.startsWith('chan:') ? key.slice('chan:'.length) : null;
 
+/** The far node id a `bundle_in:<id>` / `bundle_out:<id>` port names, or `null`. */
+const bundlePeerOf = (key: string): string | null =>
+	key.startsWith('bundle_in:')
+		? key.slice('bundle_in:'.length)
+		: key.startsWith('bundle_out:')
+			? key.slice('bundle_out:'.length)
+			: null;
+
 /**
  * A standalone node, or `null` for a pod / an unsupported spec. `exportNames`
  * maps the export node ids of an import target to their names, which is what
@@ -337,7 +346,8 @@ const channelOf = (key: string): string | null =>
 function toStandalone(
 	node: ProtoNode,
 	exportNames: ReadonlyMap<string, string>,
-	channels: ReadonlyMap<string, ChannelDto>
+	channels: ReadonlyMap<string, ChannelDto>,
+	peerName: (nodeId: string) => string
 ): StandaloneNode | null {
 	const spec = node.spec;
 	const base = {
@@ -385,14 +395,20 @@ function toStandalone(
 	// (channels, bundles); only the rest are the operator's hand-drawn layout.
 	const onDemand = (port: CanvasPort) =>
 		port.kind === 'bundle' || port.key.startsWith('chan:') || port.key.startsWith('lane:');
-	const channelsOf = (withPort: boolean) =>
+	const channelsOf = () =>
 		base.ports
 			.flatMap(port => {
 				const pod = channelOf(port.key);
 				const channel = pod === null ? undefined : channels.get(pod);
-				return channel ? [withPort ? { ...channel, portId: port.id } : channel] : [];
+				return channel ? [{ ...channel, portId: port.id }] : [];
 			})
 			.sort((a, b) => a.ordinal - b.ordinal);
+	// Bundle ports all sit at position 0: order them by the far node's name.
+	const bundlePorts = (): BundlePortDto[] =>
+		base.ports
+			.filter(port => port.kind === 'bundle')
+			.map(port => ({ ...port, peerName: peerName(bundlePeerOf(port.key) ?? '') }))
+			.sort((a, b) => a.peerName.localeCompare(b.peerName));
 	if (spec?.loadBalanceDistribute) {
 		return {
 			...base,
@@ -402,8 +418,8 @@ function toStandalone(
 			protocol: toRelayProtocol(spec.loadBalanceDistribute.protocol),
 			memberCount: base.ports.filter(port => port.key.startsWith('member_')).length,
 			manualPorts: base.ports.filter(port => !onDemand(port)),
-			channels: channelsOf(false),
-			bundleCount: base.ports.filter(port => port.kind === 'bundle').length
+			channels: channelsOf(),
+			bundlePorts: bundlePorts()
 		};
 	}
 	if (spec?.loadBalanceAggregate) {
@@ -415,8 +431,8 @@ function toStandalone(
 			protocol: 'tcp_raw',
 			memberCount: base.ports.filter(port => port.key.startsWith('copy_')).length,
 			manualPorts: base.ports.filter(port => !onDemand(port)),
-			channels: channelsOf(true),
-			bundleCount: base.ports.filter(port => port.kind === 'bundle').length
+			channels: channelsOf(),
+			bundlePorts: bundlePorts()
 		};
 	}
 	if (spec?.canvasImport) {
@@ -562,7 +578,10 @@ export const getCanvasGraph = query(
 				const ports = toPorts(node, NO_LABELS);
 				universalByServer.set(universal.serverId, {
 					nodeId: node.id,
-					bundleIn: ports.filter(port => port.key.startsWith('bundle_in:')),
+					bundleIn: ports
+						.filter(port => port.key.startsWith('bundle_in:'))
+						.map(port => ({ ...port, peerName: sourceName(bundlePeerOf(port.key) ?? '') }))
+						.sort((a, b) => a.peerName.localeCompare(b.peerName)),
 					bundleOut: ports.find(port => port.key === 'bundle_out') ?? null,
 					lanes: []
 				});
@@ -587,7 +606,8 @@ export const getCanvasGraph = query(
 			const standalone = toStandalone(
 				node,
 				(target === undefined ? undefined : exportNames.get(target)) ?? NO_LABELS,
-				channels
+				channels,
+				sourceName
 			);
 			if (standalone) nodes.push(standalone);
 		}
