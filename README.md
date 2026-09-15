@@ -13,8 +13,8 @@ up every new revision automatically.
 | Crate | Role |
 |---|---|
 | `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP hooks — derivation and every periodic job), `cron` (clock: publishes one execution signal per due job). |
-| `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on SIGHUP) or in agent mode, streaming configs from the master. |
-| `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`. |
+| `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on SIGHUP) or in agent mode, streaming configs from the master; in agent mode it is installed and updated from the dashboard (`bin/guru-worker/deploy/` holds the installer, unit and start guard). |
+| `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`, `agent publish` (serve a worker build for the dashboard's install command and updates). |
 | `lib/guru_worker_config` | The worker config model, shared by both planes: the master derives it, the worker consumes it. |
 | `lib/rpguru_sdk` | Generated gRPC/protobuf types (Rust) from `proto/`. |
 | `modules/auth` | Accounts, sessions, API keys, RBAC. |

@@ -57,7 +57,7 @@ to anything except your own upstreams.
 
 ```sh
 sudo install -m 0755 guru-worker /usr/local/bin/guru-worker
-/usr/local/bin/guru-worker --help        # there is no --version; --help is the smoke test
+/usr/local/bin/guru-worker --version     # the smoke test; the version is what agent mode registers as
 ```
 
 Create a system group and a matching system user with no home and no shell, then a config directory
@@ -280,6 +280,12 @@ change rather than a rewrite:
 2. Compare the two files — `manage-tool orchestration export-config --server <key>` prints what the
    canvas currently derives, which is the file the master would stream. (That command talks to
    SurrealDB, so it runs on an operator machine, not on the worker node.)
-3. Swap `--config <file>` for `--master <url> --server <key>`, provide the API key through
-   `GURU_API_KEY` or `--api-key-file`, and add a writable `--state-dir` so the node can restore its
+3. Swap `--config <file>` for `--master <url> --server <key>`, provide a key through
+   `GURU_API_KEY` or `--api-key-file` — an operator API key, or better the server's own agent key
+   the dashboard issues — and add a writable `--state-dir` so the node can restore its
    last-known-good config after a restart.
+
+Or let the dashboard do the unit-file change: its install command (see
+[Install and Update Agents](/guides/agent-install/)) lays out the agent-mode instance
+`guru-worker@<unit>` next to this unit, with its own key, state directory and self-update. Once it
+registers, `systemctl disable --now guru-worker` retires the standalone one.

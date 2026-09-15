@@ -86,13 +86,18 @@ while the last acknowledged revision failed for any pod. The named values are ke
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip` (the same for IPv6) |
 | `--geo-url` | `GURU_GEO_URL` | `https://ipinfo.io/country` (agent mode; answers with the two-letter country of the public address, shown next to the server; empty disables it) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
+| `--no-self-update` | `GURU_NO_SELF_UPDATE` | off (agent mode; when set, an update the dashboard requests is refused and reported back with that reason instead of installed) |
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
 against the default path `/etc/guru-worker/config.toml`. `--log-level`/`GURU_LOG_LEVEL` configures
 agent mode only: standalone reads `log.level` from the config file instead (it never looks at the
 flag). Agent mode reads the operator API key from `GURU_API_KEY`, or from the file given by
 `--api-key-file` (trailing whitespace is trimmed); the key is used once per session to register with
-the master.
+the master. It is either an operator API key (`gk_…`, Maintainer or Admin — a machine credential
+that can register any server and nothing else) or the server's own agent key (`gs_…`), which the
+dashboard issues together with the install command and which registers that one server only. In
+agent mode the worker also reports its version and architecture at registration and asks for
+updates every `agent_update_poll_secs` — see [Install and Update Agents](/guides/agent-install/).
 
 ## Worker config file
 

@@ -554,10 +554,11 @@ The gnu asset is dynamically linked against the glibc of the GitHub runner (`ubu
 long-lived distribution can be too old to load it — which is the one case where the musl asset is
 the better answer even on a glibc host.
 
-Installing and registering a worker node against this control plane is covered separately;
-everything above stops at "the binary is available and distributable". A node that should run
-without a control plane at all is a different guide:
-[Independent Worker Deployment](/guides/independent-worker/).
+Installing and registering a worker node against this control plane is the next guide,
+[Install and Update Agents](/guides/agent-install/): publish the binary you fetched here with
+`manage-tool agent publish`, and the dashboard renders a one-line install command per server and
+pushes updates from the same panel. A node that should run without a control plane at all is a
+different guide: [Independent Worker Deployment](/guides/independent-worker/).
 
 ## 12. Verify the deployment
 
