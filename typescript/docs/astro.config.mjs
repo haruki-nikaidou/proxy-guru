@@ -28,8 +28,8 @@ export default defineConfig({
 					items: [
 						{ label: 'Introduction', link: '/guides/introduction/' },
 						{ label: 'Local Development', link: '/guides/local-development/' },
-						{ label: 'Deployment', link: '/guides/deployment/' },
-						{ label: 'Single-Host Native Deployment', link: '/guides/single-host/' }
+						{ label: 'Deploy with Docker', link: '/guides/deploy-with-docker/' },
+						{ label: 'Deploy Natively', link: '/guides/deploy-natively/' }
 					]
 				},
 				{

@@ -1,9 +1,9 @@
 ---
-title: Single-Host Native Deployment
+title: Deploy Natively
 description: Run the control plane and the dashboard straight from a checkout under systemd, keep only SurrealDB and RabbitMQ in Docker, and terminate TLS for workers with nginx on the same host.
 ---
 
-The [Deployment](/guides/deployment/) guide runs everything from images. This guide is the other
+The [Deploy with Docker](/guides/deploy-with-docker/) guide runs everything from images. This guide is the other
 common shape: **one machine that is both the build box and the control plane**. The Rust binaries
 run from `target/release/` under systemd, the dashboard runs from its build output, and only the two
 datastores live in Docker. A code change is `cargo build` plus a unit restart, with no image in
@@ -74,7 +74,7 @@ recreation would start an empty broker.
 cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 ```
 
-Apply the schema with `surrealkit` exactly as in [Deployment §6](/guides/deployment/#6-apply-the-schema-with-surrealkit),
+Apply the schema with `surrealkit` exactly as in [Deploy with Docker §6](/guides/deploy-with-docker/#6-apply-the-schema-with-surrealkit),
 then seed the module configuration:
 
 ```sh
@@ -273,7 +273,7 @@ Three of those settings deserve a sentence each:
   twenty seconds. Acceptable; this constant is where to tune it.
 
 Only the `Origin`/forwarded headers on the dashboard location are mandatory for correctness (see the
-[dashboard warning](/guides/deployment/#9-run-the-dashboard)); the rest is what keeps long-lived
+[dashboard warning](/guides/deploy-with-docker/#9-run-the-dashboard)); the rest is what keeps long-lived
 streams alive.
 
 :::caution[Keep the hostname off Cloudflare's proxy]

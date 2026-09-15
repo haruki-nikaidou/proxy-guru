@@ -1,5 +1,5 @@
 ---
-title: Deployment
+title: Deploy with Docker
 description: Run the control plane from the GHCR images, apply the schema with surrealkit, set up SurrealDB and RabbitMQ, and ship the worker binary from a GitHub release.
 ---
 
