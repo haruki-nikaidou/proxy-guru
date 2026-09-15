@@ -67,5 +67,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=master
-          cache-to: type=gha,mode=max,scope=master
+          # No `cache-from`/`cache-to`: `type=gha,mode=max` exports every
+          # builder stage (cargo-chef cook layer, release target dir) to the
+          # Actions cache, which took 822s in run 34940382840 — the GHCR push
+          # of the distroless runtime stage took 14.6s in the same run.

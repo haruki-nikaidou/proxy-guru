@@ -68,5 +68,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,mode=max,scope=frontend
+          # No `cache-from`/`cache-to`: `type=gha,mode=max` exports every
+          # builder stage to the Actions cache, which dominated the wall time
+          # of the equivalent master build (822s of cache export against a
+          # 14.6s GHCR push in run 34940382840).
