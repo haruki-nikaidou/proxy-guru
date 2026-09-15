@@ -5,9 +5,11 @@ description: How a canvas edit becomes a config revision applied by a worker.
 
 ## From edit to applied config
 
-Mutations bump the canvas generation and publish `CanvasDirty`. The derivation hook re-derives the
-whole canvas; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches
-anything a lost message missed. Both triggers are broker messages, so the backstop is not
+Mutations bump the canvas generation and publish `CanvasDirty`; a worker's ack, registration or
+changed address report bumps a counter on its own server's config view instead, so a fleet
+acknowledging at once never contends on the canvas row. The derivation hook re-derives the whole
+canvas; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches anything a
+lost message missed by comparing both counters with what the last pass stamped. Both triggers are broker messages, so the backstop is not
 broker-independent: a canvas whose `CanvasDirty` was lost waits for delivery to resume, and a
 master with no broker reachable derives nothing at all.
 

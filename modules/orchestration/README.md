@@ -103,9 +103,10 @@ computed by `fn::orchestration_root` / `_ancestors` / `_tree` in the schema.
 - **The tree is the unit of everything.** Topology checks, switch safety and
   derivation load the whole tree and look *through* boundaries
   (`topology::Index::peer`), so a nested graph derives byte-identical TOML to
-  its flattened equivalent. Only the root's `generation` counts: every mutating
-  transaction calls `fn::orchestration_touch`, and the derivation hook resolves
-  the root of whatever canvas it is told about.
+  its flattened equivalent. Only the root's `generation` counts: every operator
+  edit calls `fn::orchestration_touch`, and the derivation hook resolves the
+  root of whatever canvas it is told about. Workers never touch it (see
+  *Rollout*).
 - **Rules.** A canvas cannot import itself or an ancestor, is imported at most
   once (unique index on `spec.config.canvas`), and an import node's target is
   immutable (retire and import again). An imported canvas cannot be deleted
@@ -136,14 +137,26 @@ mutation ─► validate projected topology ─► write rows + bump canvas gene
 worker: Register ─► WatchConfig (stream) ─► apply ─► AckConfig ─────────┘
 ```
 
-Derivation is fenced by `orchestration_canvas.generation`: a pass derives at the
-generation it read and commits only while the canvas is still there, so a
-concurrent edit is never overwritten — the pass just loses and is redone. The
-`CanvasDirty` message is only latency: `generation > derived_generation` is what
-actually decides, and the periodic `derive_stale_canvases` pass acts on it, so a
-dropped message costs delay and never correctness. That backstop is itself a
-message, so a broker outage stalls derivation until the broker returns; the
-generation counters make the catch-up automatic once it does.
+Derivation is fenced by two counters. Operator edits bump
+`orchestration_canvas.generation`; a pass derives at the generation it read and
+commits only while the canvas is still there, so a concurrent edit is never
+overwritten — the pass just loses and is redone. Workers never write the canvas
+row: an ack, a registration or a changed address report bumps `seq` on that
+server's own `orchestration_server_config_view` row, and a pass reads the tree's
+views anyway, so it stamps their `seq` sum as `derived_view_seq` when it commits.
+A canvas is stale while `generation > derived_generation` or the views' `seq`
+sum exceeds `derived_view_seq`. The sum only shrinks when a view row is deleted,
+and everything that deletes one is an edit that bumps `generation`, so a
+shrinking sum never hides what a worker wrote. Keeping workers off the canvas
+row is what lets a fleet acknowledge one revision in the same instant without
+contending on it (SurrealDB aborts the losers of a write-write conflict rather
+than queueing them).
+
+The `CanvasDirty` message is only latency: the two counters are what actually
+decide, and the periodic `derive_stale_canvases` pass acts on them, so a dropped
+message costs delay and never correctness. That backstop is itself a message,
+so a broker outage stalls derivation until the broker returns; the counters make
+the catch-up automatic once it does.
 
 ## Periodic jobs
 
