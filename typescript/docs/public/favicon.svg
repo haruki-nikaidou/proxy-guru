@@ -1,12 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Proxy Guru">
-	<rect width="32" height="32" rx="7" fill="#111111" />
-	<g fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round">
-		<path d="M6 10h7" />
-		<path d="M6 22h7" />
-		<path d="M13 10c6 0 0 12 6 12" />
-		<path d="M19 22h7" />
-	</g>
-	<circle cx="13" cy="10" r="2.4" fill="#ffffff" />
-	<circle cx="13" cy="22" r="2.4" fill="#ffffff" />
-	<circle cx="26" cy="22" r="2.4" fill="#ffffff" />
-</svg>
+<?xml version="1.0" encoding="UTF-8"?><svg id="b" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 158.32 158.32"><defs><style>.d{fill:none;}.d,.e{stroke-width:0px;}.e{fill:#396985;}</style></defs><g id="c"><rect class="e" x="58.27" y="101.23" width="41.78" height="48.44"/><polygon class="e" points="101.82 99.28 56.49 99.28 52.49 90.31 105.82 90.31 101.82 99.28"/><polygon class="e" points="36.94 77.24 121.38 77.24 115.16 88.36 43.16 88.36 36.94 77.24"/><path class="e" d="m35.38,41.96l10.22,33.33h67.11l10.22-33.33H35.38Zm13.33,32.44l-10.44-31.11h25.11l4,31.11h-18.67Zm20.67,0l-4-31.11h27.55l-4,31.11h-19.55Zm40.22,0h-18.67l4-31.11h25.11l-10.44,31.11Z"/><polygon class="e" points="120.71 30.01 37.6 30.01 32.72 40.01 125.6 40.01 120.71 30.01"/><polygon class="e" points="84.05 28.06 74.27 28.06 79.16 8.64 84.05 28.06"/><rect class="d" width="158.32" height="158.32"/></g></svg>
