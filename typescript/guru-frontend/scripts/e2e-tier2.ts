@@ -1,6 +1,6 @@
 // Extends the universal e2e picture: a third ingress pod drawn straight into
 // the first transit server, and the second transit server re-routed through a
-// second-tier distribute node onto the last two. Usage:
+// second-tier distribute node (members hk-3, hk-4) onto the last two. Usage:
 // bun scripts/e2e-tier2.ts <email> <password> <canvasId> <exit host:port>
 import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
 import { AuthDefinition, LoginResult } from 'app-protobuf/auth/auth';
@@ -14,9 +14,11 @@ if (login.result !== LoginResult.SUCCESS) throw new Error('login failed');
 const opts = { metadata: new Metadata({ 'x-session-id': login.sessionId }) };
 const canvas = () => orch.getCanvas({ canvasId: canvasId! }, opts);
 const handle = (nodeId: string, group: UniversalGroup) => ({ nodeId, group });
-const bundle = (from: string, to: string) =>
-	orch.connectPorts({ outputPortId: '', inputPortId: '', outputHandle: handle(from, UniversalGroup.BUNDLE_OUT), inputHandle: handle(to, UniversalGroup.BUNDLE_IN) }, opts);
 const port = (n: { ports: { key: string; id: string }[] }, key: string) => n.ports.find(p => p.key === key)!.id;
+// A bundle leaves through a port (a member, a universal pod's `bundle_out`) and
+// is collected on the far node's "+ bundle" handle.
+const bundle = (outputPortId: string, to: string) =>
+	orch.connectPorts({ outputPortId, inputPortId: '', inputHandle: handle(to, UniversalGroup.BUNDLE_IN) }, opts);
 
 let detail = await canvas();
 const server = (name: string) => detail.servers.find(s => s.name === name)!;
@@ -32,14 +34,15 @@ const entry = (await orch.createNode({ canvasId: canvasId!, name: 'entry-10002',
 await orch.connectPorts({ outputPortId: port(p2, 'listen'), inputPortId: port(entry, 'listen') }, opts);
 await orch.connectPorts({ outputPortId: '', inputPortId: port(p2, 'destination'), outputHandle: handle(upOf('hk-1').id, UniversalGroup.CHANNEL_OUT) }, opts);
 
-// 2. Second tier: hk-2 -> tier-2 (round robin, TCP) -> hk-3, hk-4.
+// 2. Second tier: hk-2 -> tier-2 (round robin, TCP; members hk-3, hk-4) -> hk-3, hk-4.
 detail = await canvas();
 const hk2out = detail.edges.find(e => upOf('hk-2').ports.some(p => p.id === e.sourcePortId))!;
 await orch.disconnect({ edgeId: hk2out.id }, opts);
-const ud2 = (await orch.createNode({ canvasId: canvasId!, name: 'tier-2', comment: '', spec: { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW } }, position: { x: 1350n, y: BigInt(y + 380) }, itemCount: 0 }, opts)).node!;
-await bundle(upOf('hk-2').id, ud2.id);
-await bundle(ud2.id, upOf('hk-3').id);
-await bundle(ud2.id, upOf('hk-4').id);
+const members = [{ slot: 1, name: 'hk-3' }, { slot: 2, name: 'hk-4' }];
+const ud2 = (await orch.createNode({ canvasId: canvasId!, name: 'tier-2', comment: '', spec: { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW, members } }, position: { x: 1350n, y: BigInt(y + 380) }, itemCount: 0 }, opts)).node!;
+await bundle(port(upOf('hk-2'), 'bundle_out'), ud2.id);
+await bundle(port(ud2, 'member_1'), upOf('hk-3').id);
+await bundle(port(ud2, 'member_2'), upOf('hk-4').id);
 
 // 3. The new channel needs an exit on the aggregate node.
 detail = await canvas();

@@ -57,7 +57,9 @@ which grows one coloured input per rule to connect to an exit. Each rule is a *c
 own colour along the whole path; a bundle is one thick line carrying every channel. Behind the
 scenes the control plane generates the real pods, relays and load balancers ("lanes") — the
 landing pod of each rule on each transit server shows up in that server's panel with an editable
-port. The same load-balance nodes still take hand-drawn members next to their channels, a
+port. The rule is yours: a distribute node's **members** are the bundles it splits into, one per
+transit server, named by you (four AWS boxes are four members; a fifth is one more), and the
+aggregate node's members are the bundles it joins. A
 distribute node bundled *into* fans everything out again (a second tier, or a nested strategy), and
 an entry pod can be drawn straight into a server's universal pod when one hop with no balancing is
 all a rule needs.

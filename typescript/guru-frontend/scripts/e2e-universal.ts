@@ -1,7 +1,8 @@
 // End-to-end fixture through the operator API: one ingress server with two
-// SOCKS ingress pods, a load-balance distribute node bundled to N transit
-// servers' universal pods, all bundled into a load-balance aggregate node, two
-// exits.
+// SOCKS ingress pods, a load-balance distribute node whose members (named after
+// the transit servers) are bundled to those servers' universal pods, each of
+// which is bundled into the same-named member of a load-balance aggregate node,
+// two exits.
 // Usage: bun scripts/e2e-universal.ts <email> <password> <ingress-name> <exit host:port> <transit-name>...
 import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
 import { AuthDefinition, LoginResult } from 'app-protobuf/auth/auth';
@@ -43,6 +44,8 @@ const port = (n: { ports: { key: string; id: string }[] }, key: string) => {
 };
 const connect = (outputPortId: string, inputPortId: string) => orch.connectPorts({ outputPortId, inputPortId }, opts);
 const handle = (nodeId: string, group: UniversalGroup) => ({ nodeId, group });
+// The operator's rule: one member per transit server, slot i+1, named after it.
+const members = transitNames.map((name, i) => ({ slot: i + 1, name }));
 
 const ingress = await server(ingressName, 0, 0);
 const transits = [];
@@ -54,8 +57,8 @@ const universalPodOf = async (serverId: string) => {
 	return up;
 };
 
-const ud = await node('fan-out', { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW } }, 500, 100);
-const ua = await node('join', { loadBalanceAggregate: {} }, 1350, 100);
+const ud = await node('fan-out', { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW, members } }, 500, 100);
+const ua = await node('join', { loadBalanceAggregate: { members } }, 1350, 100);
 const pods = [];
 for (const [i, p] of [10000, 10001].entries()) {
 	const pod = await node(`ingress-${p}`, { pod: { serverId: ingress.id, port: p, bindIp: '', advertiseIp: '' } }, 0, 0);
@@ -64,10 +67,11 @@ for (const [i, p] of [10000, 10001].entries()) {
 	await orch.connectPorts({ outputPortId: '', inputPortId: port(pod, 'destination'), outputHandle: handle(ud.id, UniversalGroup.CHANNEL_OUT) }, opts);
 	pods.push(pod);
 }
-for (const t of transits) {
+for (const [i, t] of transits.entries()) {
 	const up = await universalPodOf(t.id);
-	await orch.connectPorts({ outputHandle: handle(ud.id, UniversalGroup.BUNDLE_OUT), inputHandle: handle(up.id, UniversalGroup.BUNDLE_IN), outputPortId: '', inputPortId: '' }, opts);
-	await orch.connectPorts({ outputHandle: handle(up.id, UniversalGroup.BUNDLE_OUT), inputHandle: handle(ua.id, UniversalGroup.BUNDLE_IN), outputPortId: '', inputPortId: '' }, opts);
+	// Member i → the server's "+ bundle" handle; its bundle out → the same member of the aggregate node.
+	await orch.connectPorts({ outputPortId: port(ud, `member_${i + 1}`), inputPortId: '', inputHandle: handle(up.id, UniversalGroup.BUNDLE_IN) }, opts);
+	await orch.connectPorts({ outputPortId: port(up, 'bundle_out'), inputPortId: port(ua, `member_${i + 1}`) }, opts);
 }
 const detail = await orch.getCanvas({ canvasId: canvas.id }, opts);
 const uaNow = detail.nodes.find(n => n.id === ua.id)!;

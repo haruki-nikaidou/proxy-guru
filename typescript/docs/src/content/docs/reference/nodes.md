@@ -110,65 +110,58 @@ Both ends landing on the same server is a warning — you almost certainly meant
 
 ## Load balance (distribute)
 
-![A Distribute node card titled "fan-out", summary line "Round robin · TCP (raw) · Members: 0", two coloured channel handles named after their entry pods plus a faint "+ channel" handle on the left, and four square bundle handles named hk-1 to hk-4 plus a faint "+ bundle" handle on the right](/img/nodes/node-distribute.avif)
+![A Distribute node card titled "fan-out", summary line "Round robin · QUIC · Members: 4", three coloured channel handles named after their entry pods plus faint "+ bundle" and "+ channel" handles on the left, and four square member handles named hk-1 to hk-4 on the right](/img/nodes/node-distribute.avif)
 
-Fans one destination over several members — drawn by hand, or once for every **channel** bundled
-through it (see [Channels and bundles](#channels-and-bundles)). Both live on the same card.
+Fans every **channel** bundled through it over its **members** (see
+[Channels and bundles](#channels-and-bundles)). The members are the rule you write: one per transit
+server, named by you, one bundle out each. Four AWS boxes are four members; a fifth is one more
+member and one more bundle.
 
 | Handle | Kind | Direction |
 |---|---|---|
-| `member_0` … `member_{n-1}` | destination (olive) | inputs |
-| `destination` | destination (olive) | output |
-| one per incoming bundle | bundle (grey square), named after the far node | target — one edge, from a universal pod's `bundle out` or another distribute node |
+| one per member, your name | bundle (grey square) | source — one edge, to a universal pod's or a distribute node's `+ bundle` |
+| one per incoming bundle | bundle (grey square), named after the far node | target — one edge, from a universal pod's `bundle out` or another distribute node's member |
 | one per channel | destination, channel colour | source — one edge, to the `destination` of the entry pod that is the channel |
-| `+ bundle` (left) | bundle (grey square), add | target — where an upstream `bundle out` is dropped: every channel it carries is fanned out again from here |
+| `+ bundle` | bundle (grey square), add | target — where an upstream bundle is dropped: every channel it carries is fanned out again from here |
 | `+ channel` | destination (olive), add | source — drag to the `destination` of an entry pod; the connected pod becomes one more coloured channel |
-| one per outgoing bundle | bundle (grey square), named after the far node | source — one edge |
-| `+ bundle` (right) | bundle (grey square), add | source — drag to a universal pod's or a distribute node's `+ bundle`; one more bundle out |
 
 - **Balance mode** — `Round robin`, `Random`, `IP hash` or `Fallback`. `IP hash` requires a known
-  client IP, so it is an error under an Entry that receives no PROXY protocol. It applies to the
-  hand-drawn members and to every channel alike.
-- **Relay protocol** — how the channels this node fans out are relayed to the universal pods it
-  bundles to (`TCP (raw)`, `TCP (TLS)`, `QUIC`). It has no effect on hand-drawn members, and a hop
-  nothing states a protocol for (an entry pod drawn straight into a universal pod, a universal pod
-  bundled to the next one) is raw TCP. Changing it gives every landing pod a new port.
+  client IP, so it is an error under an Entry that receives no PROXY protocol.
+- **Relay protocol** — how the channels this node fans out are relayed to the universal pods its
+  members are bundled to (`TCP (raw)`, `TCP (TLS)`, `QUIC`). A hop nothing states a protocol for
+  (an entry pod drawn straight into a universal pod, a universal pod bundled to the next one) is
+  raw TCP. Changing it gives every landing pod a new port.
+- **Members** — 1 to 256, each with a name of your own (unique, at most 64 characters). The
+  inspector lists them with the far end of each bundle; add one with *Add member*, remove one with
+  its bin. A member keeps its handle and its bundle when renamed or reordered; removing a member
+  that still carries a bundle is refused until the bundle is cut. Exactly one member bundled is a
+  warning. There are no weights — fan-out is per member.
 
 Bundled *into*, a distribute node fans out again everything the bundles carry — the second tier of
 a fan-out (four transit servers spreading over two landing servers), or, bundled to from another
 distribute node, a nested strategy (a `Fallback` node whose members are two `Round robin` groups).
 Each upstream path gets lanes of its own on the target servers.
-- **Members** — 0, or between 2 and 256. `0` means no hand-drawn ports at all: a node used through
-  channels and bundles only. Unconnected members are skipped when the config is derived, not an
-  error; exactly one connected member is a warning. There are no weights — fan-out is per member
-  port.
 
 A channel must start at a **pod's** destination handle; anything else is refused. The channel list
-under the handles shows one coloured chip per channel. Hand-drawn members and channels never mix:
-the hand-drawn rule is derived through `member_*` and `destination` only.
-
-Disconnect a member before reducing the count: an edge on a port that would disappear blocks the
-edit.
+under the members shows one coloured chip per channel.
 
 ## Load balance (aggregate)
 
-![An Aggregate node card titled "join", summary line "Members: 0", four square bundle handles named hk-1 to hk-4 plus a faint "+ bundle" handle on the left, and two coloured channel inputs named after their entry pods on the right](/img/nodes/node-aggregate.avif)
+![An Aggregate node card titled "join", summary line "Members: 4", four square member handles named hk-1 to hk-4 on the left, and four coloured channel outputs named after their entry pods on the right](/img/nodes/node-aggregate.avif)
 
-The mirror of distribute: **one destination subtree reused by several consumers.** It contributes
-nothing of its own to the derived config — each copy resolves to whatever feeds `source`. Bundled
-in, it grows **one input per channel** the bundles carry, each waiting for an exit.
+The mirror of distribute: where the bundles meet again. Its **members** are the bundles it joins,
+one per transit server, named by you; bundled in, it grows **one output per channel** the bundles
+carry, each waiting for an exit. It contributes nothing of its own to the derived config.
 
 | Handle | Kind | Direction |
 |---|---|---|
-| `source` | destination (olive) | input |
-| `copy_0` … `copy_{n-1}` | destination (olive) | outputs |
-| one per bundle | bundle (grey square), named after the far server | target — one edge |
-| `+ bundle` | bundle (grey square), add | target — where a universal pod's `bundle out` is dropped |
-| one per channel | destination, channel colour | input — connect an exit to each |
+| one per member, your name | bundle (grey square) | target — one edge, from a universal pod's `bundle out` |
+| one per channel | destination, channel colour | output — connect an exit to each |
 
-**Members** (0, or 2–256) is the only setting; an aggregate has no balance mode, and the
-distribute ↔ aggregate choice is fixed when the node is created. Its inspector lists each channel
-with the exit feeding it, or `no exit`; until a universal pod is bundled in, the card shows *No
+**Members** (1–256, named) is the only setting; an aggregate has no balance mode, and the
+distribute ↔ aggregate choice is fixed when the node is created. Renaming keeps a member's bundle;
+removing a member that still carries one is refused. Its inspector lists each channel with the
+exit feeding it, or `no exit`; until a universal pod is bundled onto a member, the card shows *No
 channels yet*.
 
 ## Server
@@ -220,10 +213,12 @@ hand. It is where other servers' traffic lands without drawing a pod per rule: o
 incoming bundle (named after where it comes from), one coloured circle per entry pod drawn straight
 into it (a raw TCP hop of its own, no balancing), the faint `+ bundle` / `+ channel` handles
 accepting the next, and the single `bundle out` (grey square, exactly one edge) that hands the
-bundle on to the next universal pod, to a distribute node or to a load balance (aggregate) node.
-Every channel
-a bundle carries gets a real **landing pod** here, listed in the server's inspector with an editable
-port.
+bundle on to the next universal pod, to a distribute node or onto a member of a load balance
+(aggregate) node. Every channel a bundle carries gets a real **landing pod** here, listed in the
+server's inspector with an editable port. The header of the section shows one dot per channel
+(rule) landing here and counts both channels and landing pods: a rule that reaches the server by
+two paths (say, directly and through a second tier) lands twice and is joined here, so it is one
+channel with two pods.
 
 ## Channels and bundles
 
@@ -244,11 +239,14 @@ Lane nodes are managed: they cannot be retired or re-wired, and only a landing p
 addresses may be edited. A lane keeps its identity across edits, so it keeps its port, its row and
 its health history.
 
-Legal bundles are distribute → universal pod, distribute → distribute (nesting), universal pod →
-universal pod, universal pod → distribute (the next tier), and universal pod → aggregate.
+A bundle always leaves through a handle that is already there — a distribute node's member or a
+universal pod's `bundle out` — and is collected on the far side: a universal pod or a distribute
+node grows a square per bundle dropped on its `+ bundle`, an aggregate node takes it on one of its
+members. Legal bundles are member → universal pod, member → distribute (nesting), universal pod →
+universal pod, universal pod → distribute (the next tier), and universal pod → aggregate member.
 Distribute → aggregate is refused: bundle the distribute node to your transit servers' universal
-pods first. A bundle cycle is an error; a channel bundled to no server, or landing somewhere and
-going nowhere, is a warning.
+pods first. Two members of one node never bundle to the same far node. A bundle cycle is an error;
+a channel bundled to no server, or landing somewhere and going nowhere, is a warning.
 
 ## Export
 
