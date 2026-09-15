@@ -37,7 +37,7 @@
     },
     "typescript/guru-frontend": {
       "name": "guru-frontend",
-      "version": "0.1.0-beta",
+      "version": "0.2.0-beta",
       "dependencies": {
         "app-protobuf": "workspace:*",
         "nice-grpc": "^2.1.16",

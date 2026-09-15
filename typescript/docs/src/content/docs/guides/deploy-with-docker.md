@@ -102,8 +102,8 @@ with the datastore credentials (`SURREAL_ROOT_USER`, `SURREAL_ROOT_PASSWORD`, `R
 ```sh
 # /srv/guru/.env  (append)
 # The master and the frontend are tagged and released independently; pin each one.
-MASTER_VERSION=v0.2.0-beta
-FRONTEND_VERSION=v0.1.0-beta
+MASTER_VERSION=v0.3.0-beta
+FRONTEND_VERSION=v0.2.0-beta
 ```
 
 `GURU_MASTER_KEY` joins the same file in section 7, once `manage-tool` can print one.

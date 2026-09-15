@@ -96,8 +96,8 @@ C ツールチェーン、`cmake` はどれも不要です。これらが要る�
 ```sh
 # /srv/guru/.env  (append)
 # The master and the frontend are tagged and released independently; pin each one.
-MASTER_VERSION=v0.2.0-beta
-FRONTEND_VERSION=v0.1.0-beta
+MASTER_VERSION=v0.3.0-beta
+FRONTEND_VERSION=v0.2.0-beta
 ```
 
 `GURU_MASTER_KEY` は、`manage-tool` で生成できるようになるセクション 7 で同じファイルに追加します。

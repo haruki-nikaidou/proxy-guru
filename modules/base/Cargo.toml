@@ -1,6 +1,6 @@
 [package]
 name = "base"
-version = "0.2.0-beta"  # master side
+version = "0.3.0-beta"  # master side
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
