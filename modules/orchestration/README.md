@@ -192,7 +192,9 @@ may serve *now*, given what every other server is running:
   already serves — otherwise the previous shape is held and the server is
   recorded as `waiting_for` the target;
 - a listener is kept alive for as long as any snapshot still points at it, even
-  after the canvas stopped asking for it.
+  after the canvas stopped asking for it. A pod whose listener moved therefore
+  runs two for a while; the held one is tagged after its socket
+  (`osaka-hop (9443/relay_tcp)`), since a worker keys its listeners by tag.
 
 A multi-hop change therefore converges in as many passes as it has hops, with no
 coordinator and no ordering. An edit that would put a *different protocol* on an

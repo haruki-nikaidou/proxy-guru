@@ -138,6 +138,11 @@ per-pod derivation failure names the pod's listener as `bind:port` (`[::]:port` 
 bind), and a relay whose target server has no known address yet is reported there as
 `server … has no address yet`.
 
+A pod whose listener moves — a new port, or a relay protocol change re-rolling a landing port —
+serves both listeners until every dependant has switched. The worker keys listeners by tag, so the
+held one appears in the TOML under its socket, `osaka-hop (9443/relay_tcp)`, and leaves with that
+tag once nothing points at it.
+
 Each forwarding pairs a listener with a destination:
 
 - **Listener** — `raw`, `tls`, or an inbound relay.

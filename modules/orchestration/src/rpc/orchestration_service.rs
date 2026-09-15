@@ -21,7 +21,7 @@ use crate::entities::surreal::node::{
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
-use crate::entities::surreal::view::{ConfigSnapshot, ListenProtocol, ListenerCap};
+use crate::entities::surreal::view::{ConfigSnapshot, ListenerCap};
 use crate::events::live::{
     CanvasChangeKind, LiveMessage, NodeHealthLive, ServerHealthLive, live_time,
 };
@@ -949,13 +949,7 @@ fn listener_cap_to_proto(cap: &ListenerCap) -> pb::ListenerCap {
     pb::ListenerCap {
         server_id: cap.server_key(),
         port: u32::try_from(cap.port).unwrap_or_default(),
-        protocol: match cap.protocol {
-            ListenProtocol::Raw => "raw",
-            ListenProtocol::RelayTcp => "relay_tcp",
-            ListenProtocol::RelayTls => "relay_tls",
-            ListenProtocol::RelayQuic => "relay_quic",
-        }
-        .to_string(),
+        protocol: cap.protocol.name().to_string(),
     }
 }
 

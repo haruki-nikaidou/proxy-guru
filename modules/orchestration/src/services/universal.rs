@@ -391,6 +391,20 @@ impl<'a> Expansion<'a> {
         }
     }
 
+    /// The display form of a `via` path: the names of the nodes the channel came
+    /// through, first hop first (`hk1 → tier-2`).
+    fn path_names(&self, path: &str) -> String {
+        path.split('+')
+            .map(|key| {
+                self.universal
+                    .get(key)
+                    .map(|node| source_name(&self.index, node))
+                    .unwrap_or_else(|| key.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(" → ")
+    }
+
     /// The landing pod of channel `c` on universal pod `target`, dialled by a
     /// relay owned by `owner` speaking `protocol`; returns the relay's
     /// destination, the member the fan-out joins. `via` tells one upstream path
@@ -420,12 +434,24 @@ impl<'a> Expansion<'a> {
             EndRef::lane(&relay.key, "listen"),
         ));
         let member = EndRef::lane(&relay.key, "destination");
+        // A landing pod's name is the worker's tag for it, and one server may
+        // hold several landings of one channel: one per upstream path when the
+        // owner fans out for several. The path is part of the name so they stay
+        // apart on the worker.
+        let landing_name = match via {
+            None => format!("{pod_name} via {}", source_name(&self.index, owner)),
+            Some(path) => format!(
+                "{pod_name} via {} from {}",
+                source_name(&self.index, owner),
+                self.path_names(path)
+            ),
+        };
         self.desired.lanes.insert(
             landing.key.clone(),
             DesiredLane {
                 lane: landing,
                 canvas: target.node.canvas.clone(),
-                name: format!("{pod_name} via {}", source_name(&self.index, owner)),
+                name: landing_name,
                 position: target.node.position,
                 shape: LaneShape::Landing {
                     server: server.clone(),

@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use guru_worker_config::Config;
 use kanau::processor::Processor;
 use orchestration::entities::surreal::canvas::{CanvasId, FindCanvasById};
 use orchestration::entities::surreal::node::{
@@ -15,7 +16,9 @@ use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerI
 use orchestration::entities::surreal::view::{
     AckServerConfig, ListenProtocol, ListenerCap, ServerConfigViewEntity, TakeInFlight,
 };
-use orchestration::services::agent::{RegisterCredential, RegisterWorker};
+use orchestration::services::agent::{
+    AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
+};
 use orchestration::services::edge::{Connect, Disconnect};
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
 use orchestration::services::rollout::ForgetServerApplied;
@@ -388,6 +391,114 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
         canvas.derived_generation, canvas.generation,
         "a settled canvas has nothing left to derive"
     );
+    Ok(())
+}
+
+/// Moves osaka's pod to another port, which is how a worker comes to run two
+/// listeners of one pod: the new one, and the old one tokyo still dials.
+async fn move_osaka_hop(w: &World, f: &Fixture, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    w.nodes
+        .process(ReplaceNodeSpec {
+            actor: operator(),
+            node: f.osaka_hop.node.id.clone(),
+            spec: NodeSpec::Pod(PodConfig {
+                server: match &f.osaka_hop.node.spec {
+                    NodeSpec::Pod(cfg) => cfg.server.clone(),
+                    other => panic!("expected a pod, got {other:?}"),
+                },
+                port,
+                bind_ip: None,
+                advertise_ip: None,
+            }),
+            item_count: 0,
+        })
+        .await?;
+    Ok(())
+}
+
+fn tags_by_port(config: &Config) -> Vec<(String, u16)> {
+    let mut tags: Vec<(String, u16)> = config
+        .forwardings
+        .iter()
+        .map(|f| (f.tag.clone(), f.listen.port()))
+        .collect();
+    tags.sort_by_key(|(_, port)| *port);
+    tags
+}
+
+/// A worker keys its listeners by tag and an ack must name every tag of a revision
+/// exactly once, so the two listeners a moved pod serves during the switch need
+/// tags of their own — and the held one must keep its tag from pass to pass, or
+/// every pass would be a new revision.
+#[tokio::test]
+async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches() -> TestResult {
+    let w = world().await?;
+    let f = relay_chain(&w).await?;
+    settle(&w, &f).await?;
+
+    move_osaka_hop(&w, &f, 9444).await?;
+    w.derive(&f.canvas).await?;
+    let view = w.view(&f.osaka).await?;
+    assert!(view.derive_error.is_none(), "{:?}", view.derive_error);
+    let desired = view.desired.expect("osaka has a desired config");
+    let config = Config::from_toml_str(&desired.toml)?;
+    assert_eq!(
+        tags_by_port(&config),
+        vec![
+            ("osaka-hop (9443/relay_tcp)".to_string(), 9443),
+            ("osaka-hop".to_string(), 9444),
+        ],
+        "the listener tokyo still dials is held under a tag of its own"
+    );
+
+    // The worker acks each forwarding by its tag, through the same service the
+    // real worker reaches.
+    let row =
+        w.db.process(FindServerById { id: f.osaka.clone() })
+            .await?
+            .unwrap();
+    let snapshot =
+        w.db.process(TakeInFlight {
+            server: f.osaka.clone(),
+            generation: row.refresh_key_generation,
+            epoch: row.watch_epoch,
+        })
+        .await?
+        .expect("the moved pod is offered to osaka");
+    w.agents
+        .process(AckConfig {
+            agent: AgentIdentity {
+                server: f.osaka.clone(),
+                generation: row.refresh_key_generation,
+            },
+            revision: snapshot.revision,
+            error: None,
+            pods: config
+                .forwardings
+                .iter()
+                .map(|f| PodResult {
+                    tag: f.tag.clone(),
+                    error: None,
+                })
+                .collect(),
+        })
+        .await?;
+
+    // Tokyo has not switched yet, so osaka's next pass holds the same two entries
+    // under the same tags: a new revision here would restart the worker for nothing.
+    w.derive(&f.canvas).await?;
+    let again = w.view(&f.osaka).await?.desired.unwrap();
+    assert_eq!(
+        again.revision, desired.revision,
+        "the held tag is stable across passes: {}",
+        again.toml
+    );
+
+    // Tokyo adopts the switch; the held listener goes, tag and all.
+    ack_current(&w, &f.tokyo).await?;
+    w.derive(&f.canvas).await?;
+    let settled = Config::from_toml_str(&w.view(&f.osaka).await?.desired.unwrap().toml)?;
+    assert_eq!(tags_by_port(&settled), vec![("osaka-hop".to_string(), 9444)]);
     Ok(())
 }
 

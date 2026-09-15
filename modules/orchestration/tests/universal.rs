@@ -1477,9 +1477,10 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
     for server in [&p.hk1, &p.hk2] {
         let view = w.view(server).await?;
         let applied = view.applied.as_ref().expect("tier 1 converged");
+        assert!(view.derive_error.is_none(), "{:?}", view.derive_error);
         assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
         let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
-        assert_eq!(config.forwardings.len(), 2);
+        assert_eq!(config.forwardings.len(), 2, "{}", applied.toml);
         for f in &config.forwardings {
             assert!(
                 matches!(&f.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
@@ -1491,12 +1492,27 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
     for server in [&hk3, &hk4] {
         let view = w.view(server).await?;
         let applied = view.applied.as_ref().expect("tier 2 converged");
+        assert!(view.derive_error.is_none(), "{:?}", view.derive_error);
         assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
         assert_eq!(
             applied.forwardings.len(),
             4,
             "two channels from two upstream servers: {}",
             applied.toml
+        );
+        // The worker tells its four landings apart by tag, so each names the
+        // upstream server its channel arrived from.
+        let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
+        let mut tags: Vec<&str> = config.forwardings.iter().map(|f| f.tag.as_str()).collect();
+        tags.sort_unstable();
+        assert_eq!(
+            tags,
+            [
+                "ingress-10000 via tier-2 from hk1",
+                "ingress-10000 via tier-2 from hk2",
+                "ingress-10001 via tier-2 from hk1",
+                "ingress-10001 via tier-2 from hk2",
+            ]
         );
     }
     Ok(())

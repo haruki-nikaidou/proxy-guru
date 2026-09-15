@@ -22,6 +22,12 @@
 //! many passes as there are hops, with no coordinator and no ordering: each pass is
 //! a pure function of the fabric's current state, so a lost message or a crashed
 //! master costs a retry, never correctness.
+//!
+//! Rule 2 means a pod whose listener moved (a new port, or a new relay protocol
+//! re-rolling a landing port) runs *two* listeners until its dependants have
+//! switched. The worker tells listeners apart by tag, so the held one is renamed
+//! after its socket — `osaka-hop (9443/relay_tcp)` — and drops out, name and all,
+//! once nothing points at it.
 
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::node::NodeId;
@@ -161,6 +167,22 @@ pub fn converge(
         }
     }
 
+    // A pod may run two listeners while its dependants switch between them: the
+    // one derivation asks for and the one rule 2 holds. The worker keys its
+    // listeners by tag and an ack names every tag of a revision exactly once, so
+    // the held entry cannot keep the pod's tag; it is renamed after its socket.
+    // The next pass reads it back from the snapshot under that name (`entry_at`),
+    // so the name is stable and holding it costs no revision.
+    #[allow(clippy::mutable_key_type)]
+    let mut sockets: HashSet<ListenerCap> = HashSet::new();
+    merged.retain(|(_, deps)| sockets.insert(deps.serves.clone()));
+    let mut tags: HashSet<String> = HashSet::new();
+    for (forwarding, deps) in &mut merged {
+        while !tags.insert(forwarding.tag.clone()) {
+            forwarding.tag = held_tag(&forwarding.tag, &deps.serves);
+        }
+    }
+
     // `Transport` is not `Ord`, and a stable total order only needs the socket plus
     // a discriminant to separate two listeners that share one.
     merged.sort_by_key(|(f, _)| {
@@ -196,6 +218,13 @@ pub fn converge(
         invalid: ideal.invalid,
         certificates,
     })
+}
+
+/// The tag of a held listener that would otherwise share its pod's tag:
+/// `osaka-hop (9443/relay_tcp)`. Applied again only if a pod happens to be named
+/// like one, which is what keeps every tag of a config unique.
+fn held_tag(tag: &str, serves: &ListenerCap) -> String {
+    format!("{tag} ({}/{})", serves.port, serves.protocol.name())
 }
 
 /// This server's newest stored shape of one pod's forwarding, preferring what it

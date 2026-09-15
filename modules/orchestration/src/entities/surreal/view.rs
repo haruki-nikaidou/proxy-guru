@@ -28,6 +28,18 @@ pub enum ListenProtocol {
     RelayQuic,
 }
 
+impl ListenProtocol {
+    /// The stored spelling, for messages and tags.
+    pub fn name(self) -> &'static str {
+        match self {
+            ListenProtocol::Raw => "raw",
+            ListenProtocol::RelayTcp => "relay_tcp",
+            ListenProtocol::RelayTls => "relay_tls",
+            ListenProtocol::RelayQuic => "relay_quic",
+        }
+    }
+}
+
 /// A listener another server can point at.
 ///
 /// Identity is by content: the same server/port/protocol is the same capability
