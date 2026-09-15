@@ -35,8 +35,11 @@ pub struct WorkerAgentGrpc {
 }
 
 /// Empty strings on the wire mean "unknown".
+fn non_empty(s: String) -> Option<String> {
+    (!s.is_empty()).then_some(s)
+}
+
 fn reported_from_proto(reported: pb::ReportedAddresses) -> ReportedAddresses {
-    let non_empty = |s: String| (!s.is_empty()).then_some(s);
     ReportedAddresses {
         public_v4: non_empty(reported.public_v4),
         public_v6: non_empty(reported.public_v6),
@@ -166,6 +169,8 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 running_revision: input.running_revision,
                 observed,
                 reported: input.reported_addresses.map(reported_from_proto),
+                agent_version: non_empty(input.agent_version),
+                agent_arch: non_empty(input.agent_arch),
             })
             .await?;
         Ok(Response::new(pb::RegisterReply {

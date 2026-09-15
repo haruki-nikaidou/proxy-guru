@@ -166,6 +166,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
         running_revision: 0,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     };
 
     let row = sp
@@ -500,6 +502,8 @@ async fn register_promotes_a_reported_desired_revision() -> TestResult {
         running_revision: 3,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -554,6 +558,8 @@ async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
         running_revision: 1,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -603,6 +609,8 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
         running_revision: 7,
         observed: None,
         reported: None,
+        agent_version: None,
+        agent_arch: None,
     })
     .await?
     .expect("the free session is taken");
@@ -1031,6 +1039,8 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
             running_revision: running,
             observed: None,
             reported: None,
+            agent_version: None,
+            agent_arch: None,
         }
     };
 
@@ -1083,5 +1093,55 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
         .await?
         .expect("the desired revision is offered to the new worker again");
     assert_eq!(taken.revision, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn registration_records_the_worker_build_and_keeps_it_when_unreported() -> TestResult {
+    let sp = setup().await?;
+    let c = canvas(&sp, "prod").await?;
+    let s = server(&sp, &c, "tokyo").await?;
+    assert_eq!(s.agent_version, None);
+
+    let now = chrono::Utc::now();
+    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, build: Option<&str>| {
+        RegisterWorkerSession {
+            server: s.id.clone(),
+            canvas: c.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now,
+            running_revision: 0,
+            observed: None,
+            reported: None,
+            agent_version: build.map(str::to_owned),
+            agent_arch: build.map(|_| "x86_64".to_string()),
+        }
+    };
+
+    // A worker that reports its build has it recorded.
+    let row = sp
+        .process(register("digest-1", now, Some("0.2.0-beta")))
+        .await?
+        .expect("the free session is taken");
+    assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(row.agent_arch.as_deref(), Some("x86_64"));
+
+    // An older worker that reports nothing (empty on the wire, `None` here)
+    // must not blank what is known.
+    let later = now + chrono::TimeDelta::seconds(1);
+    let row = sp
+        .process(register("digest-2", later, None))
+        .await?
+        .expect("the lapsed lease is taken over");
+    assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(row.agent_arch.as_deref(), Some("x86_64"));
+
+    // A newer build replaces it.
+    let row = sp
+        .process(register("digest-3", later + chrono::TimeDelta::seconds(1), Some("0.3.0")))
+        .await?
+        .expect("the lapsed lease is taken over");
+    assert_eq!(row.agent_version.as_deref(), Some("0.3.0"));
     Ok(())
 }

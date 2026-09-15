@@ -208,6 +208,8 @@ async fn register(
             running_revision: 0,
             observed: None,
             reported: None,
+            agent_version: None,
+            agent_arch: None,
         })
         .await?;
     let row = server_row(w, server).await;

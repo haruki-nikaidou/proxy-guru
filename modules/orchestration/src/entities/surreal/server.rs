@@ -55,6 +55,13 @@ pub struct ServerEntity {
     pub observed_address: Option<String>,
     #[surreal(default)]
     pub observed_at: Option<DateTime<Utc>>,
+    /// The worker crate version the last registration reported; `None` until a
+    /// worker that reports one registers.
+    #[surreal(default)]
+    pub agent_version: Option<String>,
+    /// The CPU architecture that worker was built for (`x86_64`, `aarch64`).
+    #[surreal(default)]
+    pub agent_arch: Option<String>,
 }
 
 /// The address set a worker discovers about itself and sends with `Register`
@@ -328,6 +335,9 @@ pub struct RegisterWorkerSession {
     pub observed: Option<String>,
     /// What the worker reported about its addresses; `None` keeps the stored set.
     pub reported: Option<ReportedAddresses>,
+    /// The worker's build, when it reported one; `None` keeps the stored values.
+    pub agent_version: Option<String>,
+    pub agent_arch: Option<String>,
 }
 
 impl Processor<RegisterWorkerSession> for SurrealProcessor {
@@ -350,6 +360,8 @@ impl Processor<RegisterWorkerSession> for SurrealProcessor {
             .bind(("running_revision", input.running_revision))
             .bind(("observed", input.observed))
             .bind(("reported", input.reported))
+            .bind(("agent_version", input.agent_version))
+            .bind(("agent_arch", input.agent_arch))
             .await?;
         resp.take::<Option<ServerEntity>>(3)
     }

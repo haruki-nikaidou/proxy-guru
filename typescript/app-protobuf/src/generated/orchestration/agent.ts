@@ -28,7 +28,16 @@ export interface RegisterRequest {
   serverId: string;
   runningRevision: bigint;
   /** Best effort; may be unset. */
-  reportedAddresses: ReportedAddresses | undefined;
+  reportedAddresses:
+    | ReportedAddresses
+    | undefined;
+  /**
+   * The worker's own build: its crate version and the CPU architecture it was
+   * built for (`x86_64`, `aarch64`). Empty — an older worker — leaves whatever
+   * the master had.
+   */
+  agentVersion: string;
+  agentArch: string;
 }
 
 export interface RegisterReply {
@@ -221,7 +230,7 @@ export const ReportedAddresses: MessageFns<ReportedAddresses> = {
 };
 
 function createBaseRegisterRequest(): RegisterRequest {
-  return { serverId: "", runningRevision: 0n, reportedAddresses: undefined };
+  return { serverId: "", runningRevision: 0n, reportedAddresses: undefined, agentVersion: "", agentArch: "" };
 }
 
 export const RegisterRequest: MessageFns<RegisterRequest> = {
@@ -237,6 +246,12 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.reportedAddresses !== undefined) {
       ReportedAddresses.encode(message.reportedAddresses, writer.uint32(26).fork()).join();
+    }
+    if (message.agentVersion !== "") {
+      writer.uint32(34).string(message.agentVersion);
+    }
+    if (message.agentArch !== "") {
+      writer.uint32(42).string(message.agentArch);
     }
     return writer;
   },
@@ -272,6 +287,22 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
           message.reportedAddresses = ReportedAddresses.decode(reader, reader.uint32());
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.agentVersion = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.agentArch = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -298,6 +329,16 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
         : isSet(object.reported_addresses)
         ? ReportedAddresses.fromJSON(object.reported_addresses)
         : undefined,
+      agentVersion: isSet(object.agentVersion)
+        ? globalThis.String(object.agentVersion)
+        : isSet(object.agent_version)
+        ? globalThis.String(object.agent_version)
+        : "",
+      agentArch: isSet(object.agentArch)
+        ? globalThis.String(object.agentArch)
+        : isSet(object.agent_arch)
+        ? globalThis.String(object.agent_arch)
+        : "",
     };
   },
 
@@ -311,6 +352,12 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.reportedAddresses !== undefined) {
       obj.reportedAddresses = ReportedAddresses.toJSON(message.reportedAddresses);
+    }
+    if (message.agentVersion !== "") {
+      obj.agentVersion = message.agentVersion;
+    }
+    if (message.agentArch !== "") {
+      obj.agentArch = message.agentArch;
     }
     return obj;
   },
@@ -327,6 +374,8 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     message.reportedAddresses = (object.reportedAddresses !== undefined && object.reportedAddresses !== null)
       ? ReportedAddresses.fromPartial(object.reportedAddresses)
       : undefined;
+    message.agentVersion = object.agentVersion ?? "";
+    message.agentArch = object.agentArch ?? "";
     return message;
   },
 };

@@ -55,6 +55,10 @@ DEFINE FIELD extra_addresses ON orchestration_server TYPE array<string> DEFAULT 
 DEFINE FIELD reported_addresses ON orchestration_server TYPE option<object> FLEXIBLE;
 DEFINE FIELD observed_address ON orchestration_server TYPE option<string>;
 DEFINE FIELD observed_at ON orchestration_server TYPE option<datetime>;
+-- What the worker last registered as: `agent_version` is the worker crate's
+-- version, `agent_arch` the CPU architecture it was built for.
+DEFINE FIELD agent_version ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_arch ON orchestration_server TYPE option<string>;
 DEFINE INDEX orchestration_server_canvas ON orchestration_server FIELDS canvas;
 DEFINE INDEX orchestration_server_refresh_key ON orchestration_server FIELDS current_dynamic_refresh_key;
 

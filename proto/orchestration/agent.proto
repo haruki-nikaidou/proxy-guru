@@ -32,6 +32,11 @@ message RegisterRequest {
   int64 running_revision = 2;
   // Best effort; may be unset.
   ReportedAddresses reported_addresses = 3;
+  // The worker's own build: its crate version and the CPU architecture it was
+  // built for (`x86_64`, `aarch64`). Empty — an older worker — leaves whatever
+  // the master had.
+  string agent_version = 4;
+  string agent_arch = 5;
 }
 message RegisterReply {
   string refresh_key = 1;

@@ -51,6 +51,9 @@ pub struct RegisterWorker {
     pub observed: Option<std::net::IpAddr>,
     /// What the worker discovered about its own addresses.
     pub reported: Option<ReportedAddresses>,
+    /// The worker's build, when it reports one.
+    pub agent_version: Option<String>,
+    pub agent_arch: Option<String>,
 }
 
 impl Processor<RegisterWorker> for AgentService {
@@ -85,6 +88,8 @@ impl Processor<RegisterWorker> for AgentService {
                 running_revision: input.running_revision,
                 observed: input.observed.map(|a| a.to_string()),
                 reported: input.reported,
+                agent_version: input.agent_version,
+                agent_arch: input.agent_arch,
             })
             .await?
             .ok_or_else(|| {

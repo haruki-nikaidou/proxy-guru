@@ -1052,7 +1052,16 @@ export interface Server {
   logLevel: string;
   lastSeenAt: string;
   healthStatus: ServerHealthStatus;
-  addresses: ServerAddresses | undefined;
+  addresses:
+    | ServerAddresses
+    | undefined;
+  /**
+   * What the worker last registered as: its crate version and the CPU
+   * architecture it was built for. Empty until a worker that reports them
+   * registers.
+   */
+  agentVersion: string;
+  agentArch: string;
 }
 
 export interface Canvas {
@@ -3710,6 +3719,8 @@ function createBaseServer(): Server {
     lastSeenAt: "",
     healthStatus: 0,
     addresses: undefined,
+    agentVersion: "",
+    agentArch: "",
   };
 }
 
@@ -3747,6 +3758,12 @@ export const Server: MessageFns<Server> = {
     }
     if (message.addresses !== undefined) {
       ServerAddresses.encode(message.addresses, writer.uint32(98).fork()).join();
+    }
+    if (message.agentVersion !== "") {
+      writer.uint32(106).string(message.agentVersion);
+    }
+    if (message.agentArch !== "") {
+      writer.uint32(114).string(message.agentArch);
     }
     return writer;
   },
@@ -3846,6 +3863,22 @@ export const Server: MessageFns<Server> = {
           message.addresses = ServerAddresses.decode(reader, reader.uint32());
           continue;
         }
+        case 13: {
+          if (tag !== 106) {
+            break;
+          }
+
+          message.agentVersion = reader.string();
+          continue;
+        }
+        case 14: {
+          if (tag !== 114) {
+            break;
+          }
+
+          message.agentArch = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3888,6 +3921,16 @@ export const Server: MessageFns<Server> = {
         ? serverHealthStatusFromJSON(object.health_status)
         : 0,
       addresses: isSet(object.addresses) ? ServerAddresses.fromJSON(object.addresses) : undefined,
+      agentVersion: isSet(object.agentVersion)
+        ? globalThis.String(object.agentVersion)
+        : isSet(object.agent_version)
+        ? globalThis.String(object.agent_version)
+        : "",
+      agentArch: isSet(object.agentArch)
+        ? globalThis.String(object.agentArch)
+        : isSet(object.agent_arch)
+        ? globalThis.String(object.agent_arch)
+        : "",
     };
   },
 
@@ -3926,6 +3969,12 @@ export const Server: MessageFns<Server> = {
     if (message.addresses !== undefined) {
       obj.addresses = ServerAddresses.toJSON(message.addresses);
     }
+    if (message.agentVersion !== "") {
+      obj.agentVersion = message.agentVersion;
+    }
+    if (message.agentArch !== "") {
+      obj.agentArch = message.agentArch;
+    }
     return obj;
   },
 
@@ -3949,6 +3998,8 @@ export const Server: MessageFns<Server> = {
     message.addresses = (object.addresses !== undefined && object.addresses !== null)
       ? ServerAddresses.fromPartial(object.addresses)
       : undefined;
+    message.agentVersion = object.agentVersion ?? "";
+    message.agentArch = object.agentArch ?? "";
     return message;
   },
 };

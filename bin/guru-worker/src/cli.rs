@@ -9,6 +9,7 @@ pub const API_KEY_ENV: &str = "GURU_API_KEY";
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "guru-worker",
+    version,
     about = "guru data-plane worker",
     after_help = "Agent mode needs the operator API key in the GURU_API_KEY environment \
                   variable or in the file named by --api-key-file (exactly one of the two). \

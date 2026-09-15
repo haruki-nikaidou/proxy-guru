@@ -235,6 +235,8 @@ impl Builder {
             reported_addresses: None,
             observed_address: None,
             observed_at: None,
+            agent_version: None,
+            agent_arch: None,
         });
         id
     }

@@ -41,6 +41,10 @@ pub struct AgentOptions {
     pub sources: Sources,
 }
 
+/// What this build registers as; the master shows it next to the server and
+/// compares it against the published release to offer an update.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -122,6 +126,8 @@ async fn session(
         server_id: opts.server_id.clone(),
         running_revision,
         reported_addresses: Some(discovered.to_proto()),
+        agent_version: VERSION.to_owned(),
+        agent_arch: std::env::consts::ARCH.to_owned(),
     });
     register
         .metadata_mut()
@@ -137,6 +143,7 @@ async fn session(
     tracing::info!(
         server = %opts.server_id,
         running_revision,
+        version = VERSION,
         health_interval_secs = health_interval.as_secs(),
         "registered with master"
     );

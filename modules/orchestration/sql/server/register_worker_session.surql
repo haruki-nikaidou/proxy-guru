@@ -1,11 +1,14 @@
 BEGIN TRANSACTION;
 -- `observed_address` is what the master saw this registration come from;
--- `reported_addresses` is replaced only when the worker sent a set (`??` keeps
--- the previous one otherwise).
+-- `reported_addresses` and the worker's build (`agent_version`, `agent_arch`)
+-- are replaced only when the worker sent them (`??` keeps the previous value
+-- otherwise, so an older worker cannot blank a known version).
 LET $rotated = (UPDATE $server SET current_dynamic_refresh_key = $digest,
     refresh_key_generation += 1, session_lease_until = $lease_until, last_seen_at = $now,
     observed_address = $observed, observed_at = $now,
-    reported_addresses = $reported ?? reported_addresses
+    reported_addresses = $reported ?? reported_addresses,
+    agent_version = $agent_version ?? agent_version,
+    agent_arch = $agent_arch ?? agent_arch
     WHERE session_lease_until = NONE OR session_lease_until <= $now
     RETURN AFTER);
 IF array::len($rotated) > 0 {

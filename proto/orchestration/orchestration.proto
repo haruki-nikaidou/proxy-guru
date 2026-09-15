@@ -295,6 +295,11 @@ message Server {
   ServerHealthStatus health_status = 11;
   reserved 10; // ips
   ServerAddresses addresses = 12;
+  // What the worker last registered as: its crate version and the CPU
+  // architecture it was built for. Empty until a worker that reports them
+  // registers.
+  string agent_version = 13;
+  string agent_arch = 14;
 }
 message Canvas {
   string id = 1;

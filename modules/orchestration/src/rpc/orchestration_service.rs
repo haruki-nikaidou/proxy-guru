@@ -283,6 +283,8 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
             .unwrap_or_default(),
         health_status: server_health_to_proto(server.health_status),
         addresses: Some(addresses_to_proto(server)),
+        agent_version: server.agent_version.clone().unwrap_or_default(),
+        agent_arch: server.agent_arch.clone().unwrap_or_default(),
     }
 }
 

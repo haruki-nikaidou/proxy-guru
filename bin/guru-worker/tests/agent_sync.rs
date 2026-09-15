@@ -572,6 +572,7 @@ async fn register(
         server_id: server_key.to_string(),
         running_revision: 0,
         reported_addresses: None,
+        ..Default::default()
     });
     let key = api_key.parse().map_err(|_| Status::internal("api key"))?;
     request.metadata_mut().insert("x-api-key", key);
