@@ -1,9 +1,9 @@
 <script lang="ts">
 import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
-import NetworkIcon from '@lucide/svelte/icons/network';
 import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 import UsersIcon from '@lucide/svelte/icons/users';
 import { page } from '$app/state';
+import NavBrand from '#lib/components/nav/nav-brand.svelte';
 import NavUser from '#lib/components/nav/nav-user.svelte';
 import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 import type { Identity } from '#lib/dto/identity.js';
@@ -29,20 +29,7 @@ const activeHref = $derived(
 <Sidebar.Root>
 	<Sidebar.Header>
 		<Sidebar.Menu>
-			<Sidebar.MenuItem>
-				<Sidebar.MenuButton size="lg">
-					{#snippet child({ props })}
-						<a href="/" {...props}>
-							<div
-								class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"
-							>
-								<NetworkIcon class="size-4" />
-							</div>
-							<span class="font-semibold">{m.nav_brand()}</span>
-						</a>
-					{/snippet}
-				</Sidebar.MenuButton>
-			</Sidebar.MenuItem>
+			<NavBrand />
 		</Sidebar.Menu>
 	</Sidebar.Header>
 

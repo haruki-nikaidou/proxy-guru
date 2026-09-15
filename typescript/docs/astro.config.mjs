@@ -7,6 +7,11 @@ export default defineConfig({
 		starlight({
 			title: 'Proxy Guru',
 			description: 'A managed TCP/TLS proxy fabric: design a topology, ship one config per server.',
+			logo: {
+				src: './src/assets/logo.svg',
+				alt: 'Proxy Guru control tower'
+			},
+			favicon: '/favicon.svg',
 			editLink: {
 				baseUrl: 'https://github.com/haruki-nikaidou/proxy-guru/edit/main/typescript/docs/'
 			},

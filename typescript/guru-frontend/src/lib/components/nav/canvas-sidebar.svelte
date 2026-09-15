@@ -1,10 +1,10 @@
 <script lang="ts">
 import CircleHelpIcon from '@lucide/svelte/icons/circle-help';
 import HeartPulseIcon from '@lucide/svelte/icons/heart-pulse';
-import NetworkIcon from '@lucide/svelte/icons/network';
 import SettingsIcon from '@lucide/svelte/icons/settings';
 import WorkflowIcon from '@lucide/svelte/icons/workflow';
 import { page } from '$app/state';
+import NavBrand from '#lib/components/nav/nav-brand.svelte';
 import NavUser from '#lib/components/nav/nav-user.svelte';
 import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 import type { Identity } from '#lib/dto/identity.js';
@@ -31,20 +31,7 @@ const activeHref = $derived(
 <Sidebar.Root>
 	<Sidebar.Header>
 		<Sidebar.Menu>
-			<Sidebar.MenuItem>
-				<Sidebar.MenuButton size="lg">
-					{#snippet child({ props })}
-						<a href="/" {...props}>
-							<div
-								class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"
-							>
-								<NetworkIcon class="size-4" />
-							</div>
-							<span class="font-semibold">{m.nav_brand()}</span>
-						</a>
-					{/snippet}
-				</Sidebar.MenuButton>
-			</Sidebar.MenuItem>
+			<NavBrand />
 		</Sidebar.Menu>
 	</Sidebar.Header>
 

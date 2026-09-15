@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="typescript/docs/public/favicon.svg" alt="Proxy Guru" width="120" height="120">
+</p>
+
 # Proxy Guru
 
 A managed TCP/TLS proxy fabric: operators design a topology on a **canvas**, the
