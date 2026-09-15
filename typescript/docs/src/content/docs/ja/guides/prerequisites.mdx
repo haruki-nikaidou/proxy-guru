@@ -16,7 +16,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 |---|---|---|
 | SurrealDB ≥ 3.2 | 必要 | 必要 |
 | RabbitMQ 3.13/4.x | 必要 | 必要 |
-| Docker Engine + Compose | 必要（すべてイメージから実行） | 必要（データストアのみ） |
+| Docker Engine + Compose | 必要（公開済みアプリケーションイメージの実行に使用。データストアへの使用は任意） | 不要 |
 | `surrealkit` | 必要 | 必要 |
 | Rust ツールチェーン + `protoc` | 必要 — `manage-tool` はイメージとして公開されていません | 必要 — すべてのバイナリをビルドします |
 | C ツールチェーン、`make`、`cmake` | 必要 — `manage-tool` は証明書関連のクレート群（aws-lc 上の `instant-acme`/`rcgen`）を取り込み、同梱の C ソースのビルドにコンパイラーと cmake が必要です | 必要 — 理由は同じです |
@@ -27,11 +27,11 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Redis はモジュールの雛形に登場しますが、現時点でこれに接続するバイナリはありません。用意する必要はありません。
 
-## 1. Docker Engine と Compose
+## 1. Docker Engine と Compose（イメージデプロイのみ）
 
-SurrealDB と RabbitMQ はどちらの方式でもコンテナとして動くため、まずエンジンと Compose *プラグイン*
-（`docker compose`。旧来の `docker-compose` スクリプトではありません。ただし Arch ではそれが*パッケージ名*です）を
-インストールします。ディストリビューションを一度選べば、このページのすべてのタブが連動します。
+Docker が必要なのは、イメージデプロイを選ぶ場合だけです。ネイティブデプロイに Docker は不要であり、
+SurrealDB と RabbitMQ は直接インストールするか、マネージドサービスまたは別の実行方法を利用できます。
+ディストリビューションを一度選べば、このページのすべてのタブが連動します。
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
@@ -187,18 +187,13 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 <TabItem label="ネイティブデプロイ">
 
 コントロールプレーン、ダッシュボード、およびビルドしたものはすべて 1 つの非特権サービスユーザーとして動作します。
-そのためユーザーを先に作成し、*そのユーザーの*シェルからツールチェーンをインストールしてください。そうしないと
-自分のホームディレクトリに入ってしまい、systemd から見つけられません:
-
-```sh
-sudo useradd --create-home --shell /bin/bash guru
-sudo -iu guru                 # the rest of this section runs as guru
-```
+`sudo useradd --create-home --shell /bin/bash guru` でユーザーを作成し、`sudo -iu guru` でそのシェルに
+入ってください。このセクションの残りは `guru` として実行します。このシェルからツールチェーンをインストールすれば、
+systemd から見つけられるサービスユーザーのホームに配置されます。
 
 ネイティブガイドでは全体を通して `guru` と `/home/guru` を使います（ユニットの `User=`/`Group=` と Bun の
-パスも同様）。別の名前を使う場合は一貫して置き換えてください。このユーザーを `docker` グループに追加しては
-**いけません**。このグループは root 相当であり、Docker を呼び出すユニットは存在しないため、Compose の実行は
-オペレーターの操作のままにします。
+パスも同様）。別の名前を使う場合は一貫して置き換えてください。データストアをコンテナで実行する場合でも、
+サービスユーザーに Docker やその他のホスト管理権限を与えては**いけません**。
 
 </TabItem>
 <TabItem label="イメージデプロイ">
@@ -216,30 +211,34 @@ sudo -iu guru                 # the rest of this section runs as guru
    インストールします。ディストリビューションの `rust` パッケージで代替しないでください。古いコンパイラーでは
    edition 2024 をビルドできません。
 
-   ```sh
+   ```sh wrap frame="none"
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    . "$HOME/.cargo/env"
    ```
 
 2. **surrealkit** は
-   [データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)で使うスキーマツールです:
+   [データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)で使うスキーマツールです。
+   `cargo install surrealkit`（cargo-binstall がある場合は `cargo binstall surrealkit`）で
+   インストールしてください。このガイドはバージョン 0.7.0 を対象にしています。インストール済みの
+   バージョンを確認します:
 
-   ```sh
-   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
-   surrealkit --version              # the guides were written against 0.7.0
+   ```sh wrap frame="none"
+   surrealkit --version
    ```
 
-3. **チェックアウト。** どちらのガイドでも必要です。`database/` 以下のスキーマファイル、Compose ファイル、
-   `manage-tool` はいずれもリポジトリから取得するもので、イメージとして配布されているものはありません。
+3. **チェックアウト。** どちらのガイドでも `database/` 以下のスキーマファイルと `manage-tool` が必要です。
+   イメージガイドでは Compose ファイルも使います。ネイティブデプロイでこのファイルを使うのは、任意の
+   コンテナ構成を選んだ場合だけです。これらはアプリケーションイメージには含まれていません。
 
-   ```sh
-   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```sh wrap frame="none"
+   git clone \
+     https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
    ```
 
 4. **Bun** はネイティブデプロイのみで、ダッシュボードのビルドと実行に使います。Node はどこでも使いません。
    SvelteKit のビルド後処理は `Promise.withResolvers` を必要とし、Node 20 にはこれがありません。
 
-   ```sh
+   ```sh wrap frame="none"
    curl -fsSL https://bun.com/install | bash
    export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
    ```
@@ -259,12 +258,21 @@ sudo -iu guru                 # the rest of this section runs as guru
 | SurrealDB | **3.2 以降。** 3.0 系の古いバイナリはワークスペースがリンクしているクライアントと互換性がなく、同一トランザクション内で先に書き込まれた行を読む ASSERT を正しく扱えません。その結果、実際には存在しないはずの "table does not exist" やトランザクション中断のエラーとして現れます。 |
 | | **root 認証情報。** `guru-master` は `Root { username, password }` でサインインしてからネームスペースとデータベースを選択します。ネームスペースやデータベースにスコープされたユーザーではこれができません。 |
 | | **永続ストレージ。** バックアップ対象のボリューム上に `rocksdb:/data/guru.db` を置きます。これはシステム内で唯一、失うと復元できない状態です。 |
-| RabbitMQ | 3.13/4.x のサーバーであれば何でも構いません。コントロールプレーンは起動時に自身の exchange と永続キューを宣言するため、事前に作成しておくものはありません。デフォルト vhost のユーザーが 1 つあれば十分です。 |
+| RabbitMQ | 3.13/4.x のサーバーであれば何でも構いません。コントロールプレーンは起動時に自身の exchange と永続キューを宣言するため、事前に作成しておくものはありません。デフォルト vhost のユーザーが 1 つあれば十分です。このプロジェクトでテスト済みのブローカーは RabbitMQ だけです。 |
 | | URI の書式: `amqp://user:password@host:5672/` で、**末尾のスラッシュ**がデフォルト vhost を選択します。`/%2f` 形式はパーサーに拒否されます。 |
 | | ブローカーは**4 つのマスターモードすべてで必須**です。定期処理はメッセージそのものであり、ブローカーが停止している間は古いキャンバスのスイープも、応答のないサーバーを `Offline` にする処理も、証明書の更新も行われません。最適化ではなく依存コンポーネントとして扱ってください。 |
 
-マネージドの SurrealDB や既存のブローカーでも、上記の要件を満たしていれば問題ありません。このセクションの残りは
-セルフホストの手順です。
+:::caution[RabbitMQ 以外のブローカーはそのまま置き換えられません]
+コントロールプレーンは AMQP 0-9-1 クライアントの `amqprs` と、RabbitMQ の exchange／queue 宣言の
+セマンティクスを使用します。他のブローカーはテストされていません。特に Azure Service Bus は AMQP 1.0 を
+使用するため、互換性があると想定してはいけません。コントロールプレーンのメッセージングの一部または全部が
+失敗する可能性があります。代替ブローカーをエンドツーエンドで検証できる場合を除き、RabbitMQ を使用してください。
+:::
+
+データストアにコンテナや Docker Compose は必須ではありません。公式の
+[SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
+[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従うか、マネージドサービスまたは
+以下の Compose 例を使用してください。どの方法でも、上記の要件を満たす必要があります。
 
 ### 認証情報
 
@@ -279,8 +287,8 @@ openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
 `AMQP_URI` 内でパーセントエンコードしてください（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）。
 SurrealDB のパスワードは argv の値として渡されるため、クォートだけで済みます。
 
-生成した値は、データストアが読み込むファイルにこの時点で書き留めておきます。各デプロイガイドは後で、同じ
-ファイルに独自の変数（マスターキー、リッスンアドレス、イメージタグ）を追記します:
+接続用の認証情報を、コントロールプレーンが読み込むファイルに記録します。イメージデプロイ用の Compose 例も、
+データストアの認証情報をこのファイルから読み込みます:
 
 <Tabs syncKey="deployment">
 <TabItem label="ネイティブデプロイ">
@@ -297,9 +305,8 @@ RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
 ```
 
-このファイルはチェックアウトの `docker-compose.yml` の隣にあるため、Compose は `${…}` をここから補完します。
-また systemd は後で `EnvironmentFile=` から同じファイルをそのまま読み込みますが、systemd は `${…}` を
-**展開しません**。そのため `AMQP_URI` は完全な形で書き出しています。
+systemd は後で `EnvironmentFile=` からこのファイルをそのまま読み込みます。systemd は `${…}` を
+**展開しない**ため、`AMQP_URI` は完全な形で書き出してください。
 
 </TabItem>
 <TabItem label="イメージデプロイ">
@@ -327,15 +334,15 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="ネイティブデプロイ">
 
-リポジトリにはまさにこの用途の `docker-compose.yml` が同梱されています。SurrealDB は `./data/db` 以下の
-RocksDB、RabbitMQ は `./data/mq` 以下（どちらも gitignore 済み）、いずれもループバックのみで公開し、認証情報は
-チェックアウトの `.env` から読み込みます。
+公式の [SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
+[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従って、両方のサービスを
+インストールします。SurrealDB は永続ストレージ、root 認証情報、ポート `8000` のループバックリスナーを設定し、
+RabbitMQ は `.env` のユーザーとパスワード、デフォルト vhost、永続ストレージ、ポート `5672` の
+ループバックリスナーを設定します。オペレーティングシステムのサービスマネージャーを使って両方を起動し、
+ブート時に有効化してください。
 
-```sh
-cd /path/to/proxy-guru
-sudo docker compose up -d
-sudo docker compose ps        # wait for rabbitmq to report healthy
-```
+Docker Compose は任意の代替手段であり、デプロイ要件ではありません。使用する場合、リポジトリの
+`docker-compose.yml` が同じループバック限定の構成を提供し、永続データを `./data/` 以下に保存します。
 
 </TabItem>
 <TabItem label="イメージデプロイ">
@@ -395,10 +402,10 @@ sudo docker compose up -d surrealdb rabbitmq
 </TabItem>
 </Tabs>
 
-どちらの構成でも重要な点が 2 つあります。`surrealdb/surrealdb` イメージは非特権ユーザーで動作し、root 所有の
-ボリュームやバインドマウントには書き込めないため、`user: root` が必要です。RabbitMQ はデータディレクトリを
-ノード名 `rabbit@<hostname>` に基づいて命名するため、チェックアウトの Compose ファイルは `hostname:` を
-固定しています。これがないと、コンテナを作り直すたびに空のブローカーで起動してしまいます。
+Compose 例では、さらに重要な点が 2 つあります。`surrealdb/surrealdb` イメージは非特権ユーザーで動作し、
+root 所有のボリュームやバインドマウントには書き込めないため、`user: root` が必要です。RabbitMQ は
+データディレクトリをノード名 `rabbit@<hostname>` に基づいて命名するため、リポジトリの Compose ファイルは
+`hostname:` を固定しています。これがないと、コンテナを作り直すたびに空のブローカーで起動してしまいます。
 
 consumer がバインドするキューは自動的に作成されます。編集用の `guru_orchestration_canvas_dirty` に加え、
 5 つの定期ジョブ用に `guru_orchestration_derive_stale_canvases`、`guru_orchestration_sweep_liveness`、

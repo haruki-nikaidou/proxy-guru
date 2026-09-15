@@ -1,15 +1,15 @@
 ---
 title: Deploy Natively
-description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, keep SurrealDB and RabbitMQ in Docker, apply the schema with surrealkit, and terminate TLS for workers with nginx.
+description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to SurrealDB and RabbitMQ, apply the schema with surrealkit, and terminate TLS for workers with nginx.
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The [Deploy with Docker](/guides/deploy-with-docker/) guide runs everything from images. This guide is the other
-common shape: **one machine that is both the build box and the control plane**. The Rust binaries
-run from `target/release/` under systemd, the dashboard runs from its build output, and only the two
-datastores live in Docker. A code change is `cargo build` plus a unit restart, with no image in
-between.
+The [Deploy with Docker](/guides/deploy-with-docker/) guide runs the application from images. This
+guide is the other common shape: **one machine that is both the build box and the control plane**.
+The Rust binaries run from `target/release/` under systemd, and the dashboard runs from its build
+output. SurrealDB and RabbitMQ may be native services, managed services or containers; Docker is not
+required. A code change is `cargo build` plus a unit restart, with no application image in between.
 
 It also covers the one thing the image guide leaves out: putting the worker API behind **TLS on the
 same public hostname as the dashboard**, so workers anywhere on the internet can reach it with
@@ -22,8 +22,8 @@ checkout. Nothing else is host-specific.
 
 | Piece | Runs as | Listens on |
 |---|---|---|
-| SurrealDB 3.2 | Docker Compose (`docker-compose.yml` in the checkout) | `127.0.0.1:8000` |
-| RabbitMQ 4 | Docker Compose | `127.0.0.1:5672` |
+| SurrealDB 3.2 | Native service, managed service, or container | `127.0.0.1:8000` by default |
+| RabbitMQ 4 | Native service, managed service, or container | `127.0.0.1:5672` by default |
 | `guru-master` ×4 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
 | dashboard | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | your existing nginx, one server block | `:443` |
@@ -33,11 +33,11 @@ the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent
 
 ## 2. Prerequisites
 
-Work through **[Prerequisites](/guides/prerequisites/)** first: Docker Engine and Compose, the host
-packages (C toolchain, `cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, surrealkit, Bun, the
-checkout, SurrealDB and RabbitMQ, and a hostname with a certificate. For this deployment shape you
-need all of it — the native build is the one that compiles vendored OpenSSL and aws-lc, and the one
-that runs the dashboard from Bun.
+Work through **[Prerequisites](/guides/prerequisites/)** first: the host packages (C toolchain,
+`cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, surrealkit, Bun, the checkout, reachable
+SurrealDB and RabbitMQ services, and a hostname with a certificate. The native build compiles
+vendored OpenSSL and aws-lc and runs the dashboard from Bun. Docker is optional and only needed if
+you choose to run either datastore in a container.
 
 Two consequences of running from a checkout are worth restating before you start.
 
@@ -49,14 +49,16 @@ units in sections 5–6 run as it: the binaries, the `.env`, `data/` and the sur
 live inside the checkout it owns — which is also why those units cannot use
 `DynamicUser=`/`ProtectHome=`.
 
-This guide therefore has two shells, and says which one every command belongs to: **`guru`** for
-the build, the schema, `manage-tool` and the dashboard build; **your own sudo-capable account** for
-Docker, systemd and nginx. `guru` is deliberately not in the `docker` group and needs no sudo.
+This guide therefore has two execution contexts, and says which one every command belongs to:
+**`guru`** for the build, the schema, `manage-tool` and the dashboard build; **your own
+sudo-capable account** for systemd, nginx and any host-level datastore administration. `guru` needs
+no sudo.
 
 ### Where each piece listens
 
-The datastores are already up on loopback from the checkout's `docker-compose.yml` (prerequisites,
-section 4). Nothing else is exposed until section 7 adds the single nginx server block.
+The datastores are already reachable at the addresses configured in `.env` (prerequisites, section
+4). Keep local services on loopback. Nothing else is exposed until section 7 adds the single nginx
+server block.
 
 ## 3. Build
 
@@ -356,19 +358,20 @@ streams alive.
 
 ## 8. Verify
 
-Work through these in order — each fails loudly and independently. Everything here is written to be
-copy-pasteable into a **fresh operator shell**: the checks that belong to the service account are
-wrapped in `sudo -iu guru`, and the schema check spells the connection out instead of relying on the
-`sk` function, which only existed in the shell that defined it.
+Work through these in order — each fails loudly and independently. Run the datastore health checks
+provided by your service manager or managed provider. The first two commands below are examples for
+a local native installation; skip them for remote services. The remaining checks belong in a fresh
+operator shell. Checks for the service account are wrapped in `sudo -iu guru`.
 
 ```sh
-# 1. Datastores (operator: Docker)
-cd /path/to/proxy-guru && sudo docker compose ps     # surrealdb up, rabbitmq healthy
+# 1. Local datastore examples only; use provider health checks for remote services
+surreal is-ready --endpoint http://127.0.0.1:8000
+rabbitmq-diagnostics -q ping
 
 # 2. Schema (guru: it owns the manifests under database/)
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREALDB_PASSWORD" status'
+  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
+    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
 #   → the rollout you applied, [completed]
 
 # 3. Control plane: one banner per mode, no restart loop

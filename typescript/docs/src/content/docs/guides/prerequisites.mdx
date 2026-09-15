@@ -16,7 +16,7 @@ What each method actually needs:
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | SurrealDB ≥ 3.2              | yes                                                                                                                                       | yes                                                                        |
 | RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
-| Docker Engine + Compose      | yes (everything runs from images)                                                                                                         | yes (datastores only)                                                      |
+| Docker Engine + Compose      | yes (runs the published application images; optional for the datastores)                                                                  | no                                                                         |
 | `surrealkit`                 | yes                                                                                                                                       | yes                                                                        |
 | Rust toolchain + `protoc`    | yes — `manage-tool` is not published as an image                                                                                          | yes — it builds every binary                                               |
 | C toolchain, `make`, `cmake` | yes — `manage-tool` pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason                                                           |
@@ -27,11 +27,11 @@ What each method actually needs:
 
 Redis appears in the module scaffolding, but no binary connects to it today — do not provision one.
 
-## 1. Docker Engine and Compose
+## 1. Docker Engine and Compose (image deployment only)
 
-SurrealDB and RabbitMQ run as containers in both methods, so the engine plus the Compose _plugin_
-(`docker compose`, not the legacy `docker-compose` script — except on Arch, where that _is_ the
-package name) is the first thing to install. Pick your distro once; every tab on this page follows.
+Install Docker only if you are following the image deployment. Native deployment does not require
+Docker: install SurrealDB and RabbitMQ directly, use managed services, or run them by another method.
+Pick your distro once; every tab on this page follows.
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
@@ -186,18 +186,14 @@ checkout**, and that account differs per deployment method:
 <Tabs syncKey="deployment">
 <TabItem label="Native deployment">
 
-The control plane, the dashboard and everything you build run as one unprivileged service user, so
-create it now and install the toolchains from _its_ shell — otherwise they land in your home and
-systemd will not find them:
-
-```sh
-sudo useradd --create-home --shell /bin/bash guru
-sudo -iu guru                 # the rest of this section runs as guru
-```
+The control plane, the dashboard and everything you build run as one unprivileged service user.
+Create it with `sudo useradd --create-home --shell /bin/bash guru`, then enter its shell with
+`sudo -iu guru`; the rest of this section runs as `guru`. Installing the toolchains from that shell
+keeps them in the service user's home, where systemd can find them.
 
 The native guide uses `guru` and `/home/guru` throughout (including `User=`/`Group=` and the Bun
-path in its units); substitute your own name consistently. Do **not** add it to the `docker` group:
-that group is root-equivalent and no unit ever invokes Docker, so Compose stays an operator action.
+path in its units); substitute your own name consistently. Do **not** give the service user Docker
+or other host-administration privileges, even if you choose containers for the datastores.
 
 </TabItem>
 <TabItem label="Image deployment">
@@ -214,30 +210,33 @@ files — so your own operator account is the right place. Bun is not needed at 
    `rust-toolchain.toml` (channel `1.98`) and rustup installs that pin on the first `cargo`
    invocation. Do not substitute a distro `rust` package: an older compiler cannot build edition 2024.
 
-   ```sh
+   ```sh wrap frame="none"
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    . "$HOME/.cargo/env"
    ```
 
 2. **surrealkit**, the schema tool used by
-   [Setup Database Schema](/guides/setup-database-schema/):
+   [Setup Database Schema](/guides/setup-database-schema/). Install it with `cargo install
+   surrealkit` (or `cargo binstall surrealkit` if you have cargo-binstall). These guides target
+   version 0.7.0; confirm the installed version:
 
-   ```sh
-   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
-   surrealkit --version              # the guides were written against 0.7.0
+   ```sh wrap frame="none"
+   surrealkit --version
    ```
 
-3. **The checkout.** Both guides need it: the schema files under `database/`, the Compose file and
-   `manage-tool` all come from the repository, and none of them is shipped as an image.
+3. **The checkout.** Both guides need the schema files under `database/` and `manage-tool`. The image
+   guide also uses its Compose file; native deployment only uses that file if you choose the
+   optional container path. None of these are shipped in an application image.
 
-   ```sh
-   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```sh wrap frame="none"
+   git clone \
+     https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
    ```
 
 4. **Bun** — native deployment only, to build and run the dashboard. Node is not used anywhere;
    SvelteKit's post-build step needs `Promise.withResolvers`, which Node 20 lacks.
 
-   ```sh
+   ```sh wrap frame="none"
    curl -fsSL https://bun.com/install | bash
    export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
    ```
@@ -257,12 +256,21 @@ files — so your own operator account is the right place. Bun is not needed at 
 | SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
 |           | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that.                                                                                   |
 |           | **Durable storage.** `rocksdb:/data/guru.db` on a volume you back up. This is the only irreplaceable state in the system.                                                                                                                                       |
-| RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough.                                                                                 |
+| RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. RabbitMQ is the only broker tested by this project.                                  |
 |           | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser.                                                                                                                 |
 |           | The broker is **mandatory in all four master modes**. Periodic work _is_ a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
 
-A managed SurrealDB or an existing broker is fine as long as it meets the rows above; the rest of
-this section is the self-hosted path.
+:::caution[Non-RabbitMQ brokers are not supported drop-ins]
+The control plane uses the `amqprs` AMQP 0-9-1 client and RabbitMQ exchange and queue declaration
+semantics. Other brokers have not been tested. In particular, Azure Service Bus uses AMQP 1.0 and
+must not be assumed compatible; some or all control-plane messaging may fail. Use RabbitMQ unless
+you validate an alternative end to end.
+:::
+
+Neither containers nor Docker Compose are required for the datastores. Follow the official
+[SurrealDB installation guide](https://surrealdb.com/docs/running/installation) and
+[RabbitMQ download guide](https://www.rabbitmq.com/docs/download), use managed services, or use the
+Compose examples below. Whichever method you choose must satisfy the requirements above.
 
 ### Credentials
 
@@ -277,8 +285,8 @@ Hex avoids every quoting and percent-encoding question. If you insist on punctua
 it in `AMQP_URI` (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`); SurrealDB's password is passed
 as an argv value and needs quoting only.
 
-Write them down now, in the file the datastores will read. Each deployment guide appends its own
-variables (master key, listen addresses, image tags) to this same file later:
+Record the connection credentials in the file the control plane will read. The image-deployment
+Compose example also reads its datastore credentials from this file:
 
 <Tabs syncKey="deployment">
 <TabItem label="Native deployment">
@@ -295,9 +303,8 @@ RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
 ```
 
-Compose interpolates `${…}` from it because it sits next to the checkout's `docker-compose.yml`,
-and systemd later reads the same file verbatim through `EnvironmentFile=` — systemd does **not**
-expand `${…}`, which is why `AMQP_URI` is written out in full.
+systemd later reads this file verbatim through `EnvironmentFile=`. Keep `AMQP_URI` written out in
+full; systemd does **not** expand `${…}`.
 
 </TabItem>
 <TabItem label="Image deployment">
@@ -325,15 +332,16 @@ Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below liv
 <Tabs>
 <TabItem label="Native deployment">
 
-The repository ships a `docker-compose.yml` for exactly this: SurrealDB on RocksDB under
-`./data/db`, RabbitMQ under `./data/mq` (both gitignored), both published on loopback only, both
-reading their credentials from the checkout's `.env`.
+Install both services with the official
+[SurrealDB installation guide](https://surrealdb.com/docs/running/installation) and
+[RabbitMQ download guide](https://www.rabbitmq.com/docs/download). Configure SurrealDB with durable
+storage, root credentials and a loopback listener on port `8000`; configure RabbitMQ with the user
+and password from `.env`, the default vhost, durable storage and a loopback listener on port `5672`.
+Use your operating system's service manager to start both services and enable them at boot.
 
-```sh
-cd /path/to/proxy-guru
-sudo docker compose up -d
-sudo docker compose ps        # wait for rabbitmq to report healthy
-```
+Docker Compose is an optional alternative, not a deployment requirement. If you choose it, the
+repository's `docker-compose.yml` provides the same loopback-only layout with persistent data under
+`./data/`.
 
 </TabItem>
 <TabItem label="Image deployment">
@@ -393,9 +401,9 @@ first, because the schema has to be in place before any master starts.
 </TabItem>
 </Tabs>
 
-Two details are load-bearing in either shape. The `surrealdb/surrealdb` image runs as an
+The Compose examples need two additional details. The `surrealdb/surrealdb` image runs as an
 unprivileged user that cannot write a root-owned volume or bind mount, hence `user: root`. RabbitMQ
-names its data directory after its node name, `rabbit@<hostname>`, so the checkout's Compose file
+names its data directory after its node name, `rabbit@<hostname>`, so the repository's Compose file
 pins `hostname:`; without it every container recreation would start an empty broker.
 
 The queues the consumer binds are created for you: `guru_orchestration_canvas_dirty` for edits, plus

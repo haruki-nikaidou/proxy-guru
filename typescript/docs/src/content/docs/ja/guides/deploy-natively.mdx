@@ -1,11 +1,11 @@
 ---
 title: ネイティブにデプロイ
-description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB と RabbitMQ は Docker のまま維持し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
+description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB と RabbitMQ に接続し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、すべてをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行し、Docker で動かすのは 2 つのデータストアだけです。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、間にイメージは入りません。
+[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。SurrealDB と RabbitMQ はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
 
 さらに、イメージ版のガイドが扱っていない点も説明します。それは、ワーカー API を**ダッシュボードと同じ公開ホスト名上の TLS** の背後に置くことです。これにより、インターネット上のどこにいるワーカーでも VPN なしで `--master https://guru.example.com` で到達できます。
 
@@ -15,8 +15,8 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 | コンポーネント | 実行方法 | リスニング先 |
 |---|---|---|
-| SurrealDB 3.2 | Docker Compose（チェックアウト内の `docker-compose.yml`） | `127.0.0.1:8000` |
-| RabbitMQ 4 | Docker Compose | `127.0.0.1:5672` |
+| SurrealDB 3.2 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:8000` |
+| RabbitMQ 4 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5672` |
 | `guru-master` ×4 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | ダッシュボード | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 既存の nginx、server ブロック 1 つ | `:443` |
@@ -25,7 +25,7 @@ nginx 以外はすべてループバックにバインドします。公開さ�
 
 ## 2. 前提条件
 
-まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。Docker Engine と Compose、ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、SurrealDB と RabbitMQ、そして証明書付きのホスト名が必要です。このデプロイ形態ではそのすべてが必要になります。ネイティブビルドは、vendored OpenSSL と aws-lc をコンパイルする唯一の構成であり、ダッシュボードを Bun から実行する唯一の構成でもあります。
+まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、到達可能な SurrealDB と RabbitMQ、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
 
 チェックアウトから実行することによる 2 つの帰結は、始める前に改めて確認しておく価値があります。
 
@@ -33,11 +33,11 @@ nginx 以外はすべてループバックにバインドします。公開さ�
 
 前提条件のページでは（ツールチェーンの節の *ネイティブデプロイ* タブで）非特権の `guru` ユーザーを作成し、rustup、surrealkit、Bun、チェックアウトをそのユーザーとしてインストールします。セクション 5〜6 のユニットがそのユーザーとして動くからです。バイナリ、`.env`、`data/`、surrealkit のマニフェストはいずれも、そのユーザーが所有するチェックアウトの中にあります。これは、これらのユニットで `DynamicUser=`/`ProtectHome=` を使えない理由でもあります。
 
-そのため本ガイドにはシェルが 2 つ登場し、各コマンドがどちらに属するかを毎回明示します。ビルド、スキーマ、`manage-tool`、ダッシュボードのビルドは **`guru`**、Docker、systemd、nginx は**自分の sudo 可能なアカウント**です。`guru` はあえて `docker` グループに入れず、sudo も必要としません。
+そのため本ガイドには 2 つの実行コンテキストが登場し、各コマンドがどちらに属するかを毎回明示します。ビルド、スキーマ、`manage-tool`、ダッシュボードのビルドは **`guru`**、systemd、nginx、ホストレベルのデータストア管理は**自分の sudo 可能なアカウント**です。`guru` に sudo は必要ありません。
 
 ### 各コンポーネントのリスニング先
 
-データストアは、チェックアウトの `docker-compose.yml`（前提条件のセクション 4）によってすでにループバック上で起動しています。セクション 7 で唯一の nginx server ブロックを追加するまで、外部に公開されるものはありません。
+データストアには、前提条件のセクション 4 で `.env` に設定したアドレスから到達できる状態になっています。ローカルサービスはループバックだけで待ち受けるようにしてください。セクション 7 で唯一の nginx server ブロックを追加するまで、他に外部公開されるものはありません。
 
 ## 3. ビルド
 
@@ -299,16 +299,17 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## 8. 動作確認
 
-次の順番で進めてください。それぞれが独立して、はっきり失敗します。ここに書かれているものはすべて、**新しいオペレーターのシェル**にそのままコピー＆ペーストできるようになっています。サービスアカウントに属するチェックは `sudo -iu guru` で包んであり、スキーマのチェックは `sk` 関数（定義したシェルの中にしか存在しません）に頼らず接続情報を明示的に書いています。
+次の順番で進めてください。それぞれが独立して、はっきり失敗します。データストアは、サービスマネージャーまたはマネージドプロバイダーが提供するヘルスチェックで確認してください。最初の 2 コマンドはローカルにネイティブインストールした場合の例なので、リモートサービスでは省略します。残りのチェックは新しいオペレーターのシェルで実行します。サービスアカウントに属するチェックは `sudo -iu guru` で包んであります。
 
 ```sh
-# 1. Datastores (operator: Docker)
-cd /path/to/proxy-guru && sudo docker compose ps     # surrealdb up, rabbitmq healthy
+# 1. Local datastore examples only; use provider health checks for remote services
+surreal is-ready --endpoint http://127.0.0.1:8000
+rabbitmq-diagnostics -q ping
 
 # 2. Schema (guru: it owns the manifests under database/)
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREALDB_PASSWORD" status'
+  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
+    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
 #   → the rollout you applied, [completed]
 
 # 3. Control plane: one banner per mode, no restart loop

@@ -15,7 +15,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 |---|---|---|
 | SurrealDB ≥ 3.2 | 需要 | 需要 |
 | RabbitMQ 3.13/4.x | 需要 | 需要 |
-| Docker Engine + Compose | 需要（所有组件都从镜像运行） | 需要（仅用于数据存储） |
+| Docker Engine + Compose | 需要（用于运行已发布的应用镜像；数据存储是否使用它可自行选择） | 不需要 |
 | `surrealkit` | 需要 | 需要 |
 | Rust 工具链 + `protoc` | 需要——`manage-tool` 没有发布成镜像 | 需要——它要构建全部二进制 |
 | C 工具链、`make`、`cmake` | 需要——`manage-tool` 会引入证书相关依赖栈（基于 aws-lc 的 `instant-acme`/`rcgen`），其内置的 C 源码需要编译器和 cmake | 需要，原因相同 |
@@ -26,11 +26,10 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Redis 出现在模块脚手架中，但目前没有任何二进制会连接它——不要为它准备实例。
 
-## 1. Docker Engine 与 Compose
+## 1. Docker Engine 与 Compose（仅镜像部署）
 
-两种方式都以容器形式运行 SurrealDB 和 RabbitMQ，因此首先要安装引擎以及 Compose *插件*
-（`docker compose`，而不是旧版的 `docker-compose` 脚本——Arch 例外，那里的包名*就是*这个）。
-先选定你的发行版；本页所有标签页都会随之联动。
+只有选择镜像部署时才需要安装 Docker。原生部署不要求 Docker：你可以直接安装 SurrealDB 和
+RabbitMQ，也可以使用托管服务或其他运行方式。先选定你的发行版；本页所有标签页都会随之联动。
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
@@ -185,17 +184,14 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 <Tabs syncKey="deployment">
 <TabItem label="原生部署">
 
-控制平面、控制台以及你构建出来的所有东西都以同一个无特权服务用户运行，所以现在就创建它，
-并从*它的* shell 中安装工具链——否则工具链会装进你自己的 home，systemd 将找不到它们：
-
-```sh
-sudo useradd --create-home --shell /bin/bash guru
-sudo -iu guru                 # the rest of this section runs as guru
-```
+控制平面、控制台以及你构建出来的所有东西都以同一个无特权服务用户运行。使用
+`sudo useradd --create-home --shell /bin/bash guru` 创建该用户，再用 `sudo -iu guru` 进入它的
+shell；本节余下内容都以 `guru` 运行。从这个 shell 安装工具链可确保它们位于服务用户的 home 中，
+从而能被 systemd 找到。
 
 原生部署指南全篇都使用 `guru` 和 `/home/guru`（包括 `User=`/`Group=` 以及各 unit 中的 Bun
-路径）；如果换成你自己的名字，请保持一致。**不要**把它加入 `docker` 组：该组等同于 root，
-而且没有任何 unit 会调用 Docker，因此 Compose 始终只是运维人员的操作。
+路径）；如果换成你自己的名字，请保持一致。即使选择用容器运行数据存储，也不要授予服务用户
+Docker 或其他主机管理权限。
 
 </TabItem>
 <TabItem label="镜像部署">
@@ -212,30 +208,31 @@ sudo -iu guru                 # the rest of this section runs as guru
    工具链版本（channel `1.98`），rustup 会在第一次执行 `cargo` 时安装这个固定版本。不要用
    发行版自带的 `rust` 包替代：更旧的编译器无法构建 edition 2024。
 
-   ```sh
+   ```sh wrap frame="none"
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    . "$HOME/.cargo/env"
    ```
 
-2. **surrealkit**，即 [配置数据库 Schema](/zh-cn/guides/setup-database-schema/) 所使用的
-   schema 工具：
+2. **surrealkit** 是 [配置数据库 Schema](/zh-cn/guides/setup-database-schema/) 所使用的
+   schema 工具。使用 `cargo install surrealkit` 安装（若已安装 cargo-binstall，也可使用
+   `cargo binstall surrealkit`）。本指南以 0.7.0 版为准；请确认已安装的版本：
 
-   ```sh
-   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
-   surrealkit --version              # the guides were written against 0.7.0
+   ```sh wrap frame="none"
+   surrealkit --version
    ```
 
-3. **代码检出。** 两篇指南都需要它：`database/` 下的 schema 文件、Compose 文件以及
-   `manage-tool` 全都来自仓库，而它们都没有以镜像形式发布。
+3. **代码检出。** 两篇指南都需要 `database/` 下的 schema 文件和 `manage-tool`。镜像部署指南还会
+   使用 Compose 文件；原生部署只有在选择可选的容器方案时才使用它。这些内容都不包含在应用镜像中。
 
-   ```sh
-   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```sh wrap frame="none"
+   git clone \
+     https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
    ```
 
 4. **Bun**——仅原生部署需要，用于构建和运行控制台。项目任何地方都不使用 Node；
    SvelteKit 的构建后处理步骤需要 `Promise.withResolvers`，而 Node 20 没有它。
 
-   ```sh
+   ```sh wrap frame="none"
    curl -fsSL https://bun.com/install | bash
    export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
    ```
@@ -255,11 +252,20 @@ sudo -iu guru                 # the rest of this section runs as guru
 | SurrealDB | **3.2 或更高版本。** 更旧的 3.0 版本二进制与本工作区链接的客户端不兼容，并且会错误处理那些读取同一事务中先前写入行的断言，表现为莫名其妙的 "table does not exist" 或事务被取消的错误。 |
 | | **Root 凭据。** `guru-master` 以 `Root { username, password }` 登录，然后再选择命名空间和数据库；namespace 级或 database 级的用户做不到这一点。 |
 | | **持久化存储。** 把 `rocksdb:/data/guru.db` 放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。 |
-| RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。 |
+| RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。本项目只测试过 RabbitMQ。 |
 | | URI 形式：`amqp://user:password@host:5672/`，其中**结尾的斜杠**表示选择默认 vhost。`/%2f` 这种写法会被解析器拒绝。 |
 | | 在**全部四种 master 模式中消息代理都是必需的**。周期性工作本身*就是*消息：它停机期间，没有任何过期画布被清扫，没有任何静默的服务器被标记为 `Offline`，也没有任何证书会被续期。请把它当作依赖，而不是可选的优化。 |
 
-只要满足上表的要求，用托管版 SurrealDB 或现有的消息代理都没问题；本节余下内容是自托管路径。
+:::caution[非 RabbitMQ 消息代理并非可直接替换的实现]
+控制平面使用 AMQP 0-9-1 客户端 `amqprs`，并依赖 RabbitMQ 的 exchange 与 queue 声明语义。
+其他消息代理均未经过测试。尤其是 Azure Service Bus 使用 AMQP 1.0，不能假定它与本项目兼容；
+控制平面的部分或全部消息传递都可能失败。除非你能端到端验证其他实现，否则请使用 RabbitMQ。
+:::
+
+数据存储不要求使用容器或 Docker Compose。你可以按照官方
+[SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)和
+[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)安装，使用托管服务，或采用下方的
+Compose 示例。无论选择哪种方式，都必须满足上表的要求。
 
 ### 凭据
 
@@ -274,8 +280,8 @@ openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
 中对其做百分号编码（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）；SurrealDB 的密码
 是作为 argv 值传入的，只需要注意引号。
 
-现在就把它们记录到数据存储将要读取的那个文件里。之后每篇部署指南都会向同一个文件追加各自的
-变量（主密钥、监听地址、镜像标签）：
+现在就把连接凭据记录到控制平面将要读取的文件中。镜像部署的 Compose 示例也会从该文件读取
+数据存储凭据：
 
 <Tabs syncKey="deployment">
 <TabItem label="原生部署">
@@ -292,9 +298,8 @@ RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
 ```
 
-Compose 会从该文件插值 `${…}`，因为它就放在检出目录的 `docker-compose.yml` 旁边；
-而 systemd 之后会通过 `EnvironmentFile=` 逐字读取同一个文件——systemd **不会**展开
-`${…}`，这正是 `AMQP_URI` 要完整写出来的原因。
+systemd 之后会通过 `EnvironmentFile=` 逐字读取这个文件。请完整写出 `AMQP_URI`，因为 systemd
+**不会**展开 `${…}`。
 
 </TabItem>
 <TabItem label="镜像部署">
@@ -323,15 +328,14 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="原生部署">
 
-仓库为此专门提供了一个 `docker-compose.yml`：SurrealDB 以 RocksDB 存储在 `./data/db`，
-RabbitMQ 存储在 `./data/mq`（两者均已 gitignore），都只发布在回环地址上，并且都从检出目录的
-`.env` 读取凭据。
+按照官方 [SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)和
+[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)安装这两个服务。为 SurrealDB
+配置持久化存储、Root 凭据以及监听 `8000` 端口的回环地址；为 RabbitMQ 配置 `.env` 中的用户和
+密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址。使用操作系统的服务管理器启动两者，
+并将它们设为开机自启。
 
-```sh
-cd /path/to/proxy-guru
-sudo docker compose up -d
-sudo docker compose ps        # wait for rabbitmq to report healthy
-```
+Docker Compose 只是可选方案，并非部署要求。若选择它，仓库中的 `docker-compose.yml` 提供同样
+只监听回环地址的布局，并将持久化数据存放在 `./data/` 下。
 
 </TabItem>
 <TabItem label="镜像部署">
@@ -391,10 +395,9 @@ sudo docker compose up -d surrealdb rabbitmq
 </TabItem>
 </Tabs>
 
-无论采用哪种形态，有两个细节是关键的。`surrealdb/surrealdb` 镜像以一个无特权用户运行，
-它无法写入 root 所有的卷或绑定挂载，因此需要 `user: root`。RabbitMQ 会以自己的节点名
-`rabbit@<hostname>` 来命名数据目录，所以检出目录的 Compose 文件固定了 `hostname:`；
-否则每次重新创建容器都会得到一个空的消息代理。
+Compose 示例还有两个关键细节。`surrealdb/surrealdb` 镜像以一个无特权用户运行，无法写入 root
+所有的卷或绑定挂载，因此需要 `user: root`。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
+所以仓库的 Compose 文件固定了 `hostname:`；否则每次重新创建容器都会得到一个空的消息代理。
 
 consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orchestration_canvas_dirty`，
 以及对应五个周期任务的 `guru_orchestration_derive_stale_canvases`、

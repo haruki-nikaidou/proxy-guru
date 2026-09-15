@@ -1,13 +1,14 @@
 ---
 title: 原生部署
-description: 在一台 Linux 主机上安装依赖，以 systemd 从代码检出目录运行控制平面与控制台，把 SurrealDB 和 RabbitMQ 留在 Docker 中，用 surrealkit 应用 Schema，并用 nginx 为 Worker 终结 TLS。
+description: 在一台 Linux 主机上安装依赖，以 systemd 从代码检出目录运行控制平面与控制台，连接 SurrealDB 和 RabbitMQ，用 surrealkit 应用 Schema，并用 nginx 为 Worker 终结 TLS。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-[使用 Docker 部署](/zh-cn/guides/deploy-with-docker/)指南完全基于镜像运行。本指南讲的是另一种常见形态：**同一台机器既是构建机，也是控制平面**。Rust
-二进制由 systemd 直接从 `target/release/` 启动，控制台运行自己的构建产物，只有两个数据存储跑在 Docker 里。改完代码只需
-`cargo build` 加上重启 unit，中间不需要任何镜像。
+[使用 Docker 部署](/zh-cn/guides/deploy-with-docker/)指南从镜像运行应用。本指南讲的是另一种常见形态：
+**同一台机器既是构建机，也是控制平面**。Rust 二进制由 systemd 直接从 `target/release/` 启动，
+控制台运行自己的构建产物。SurrealDB 和 RabbitMQ 可以作为原生服务、托管服务或容器运行，不要求
+Docker。改完代码只需 `cargo build` 加上重启 unit，中间不需要应用镜像。
 
 本指南还补上了镜像方案里没有覆盖的一件事：把 Worker API 放在**与控制台相同的公网主机名下、由 TLS 保护**，这样互联网上任意位置的
 Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
@@ -18,8 +19,8 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 
 | 组件 | 运行方式 | 监听地址 |
 |---|---|---|
-| SurrealDB 3.2 | Docker Compose（检出目录中的 `docker-compose.yml`） | `127.0.0.1:8000` |
-| RabbitMQ 4 | Docker Compose | `127.0.0.1:5672` |
+| SurrealDB 3.2 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:8000` |
+| RabbitMQ 4 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:5672` |
 | `guru-master` ×4 | systemd 模板 `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | 控制台 | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 你现有的 nginx，一个 server 块 | `:443` |
@@ -29,9 +30,10 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 
 ## 2. 前置条件
 
-先完成 **[前置条件](/zh-cn/guides/prerequisites/)**：Docker Engine 与 Compose、主机软件包（C 工具链、`cmake`、`perl`、
-`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、代码检出、SurrealDB 与 RabbitMQ，以及一个已配好证书的主机名。这种部署形态需要其中的全部内容
-—— 原生构建是唯一会编译内置（vendored）OpenSSL 与 aws-lc 的方式，也是唯一用 Bun 运行控制台的方式。
+先完成 **[前置条件](/zh-cn/guides/prerequisites/)**：主机软件包（C 工具链、`cmake`、`perl`、
+`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、代码检出、可访问的 SurrealDB 与
+RabbitMQ，以及一个已配好证书的主机名。原生构建会编译内置（vendored）OpenSSL 与 aws-lc，并用
+Bun 运行控制台。Docker 是可选项，只有把某个数据存储放在容器中运行时才需要。
 
 从代码检出目录直接运行会带来两个后果，开始之前值得再强调一遍。
 
@@ -41,13 +43,14 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 5–6 节的 unit 就是以它运行的：二进制文件、`.env`、`data/` 以及 surrealkit 的清单文件都位于它所拥有的检出目录内 —— 这也正是这些 unit
 不能使用 `DynamicUser=`/`ProtectHome=` 的原因。
 
-因此本指南涉及两个 shell，并且会标明每条命令属于哪一个：**`guru`** 用于构建、Schema、`manage-tool` 以及控制台构建；
-**你自己具备 sudo 权限的账户**用于 Docker、systemd 和 nginx。`guru` 特意不加入 `docker` 组，也不需要 sudo。
+因此本指南涉及两个执行环境，并且会标明每条命令属于哪一个：**`guru`** 用于构建、Schema、
+`manage-tool` 以及控制台构建；**你自己具备 sudo 权限的账户**用于 systemd、nginx 和主机级的
+数据存储管理。`guru` 不需要 sudo。
 
 ### 各组件的监听位置
 
-数据存储已经通过检出目录中的 `docker-compose.yml` 在回环地址上运行（见前置条件第 4 节）。在第 7 节添加那唯一一个 nginx server
-块之前，没有任何其他东西对外暴露。
+数据存储已经可以通过前置条件第 4 节写入 `.env` 的地址访问。本地服务应只监听回环地址。在第 7
+节添加唯一的 nginx server 块之前，没有任何其他组件对外暴露。
 
 ## 3. 构建
 
@@ -328,18 +331,19 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## 8. 验证
 
-按顺序逐项执行 —— 每一项都会独立地明确报错。这里的所有命令都写成可以直接粘贴到一个**全新的运维 shell**
-中：属于服务账户的检查用 `sudo -iu guru` 包了起来，而 Schema 检查则把连接参数完整写出，而不依赖 `sk` 函数 —— 那个函数只存在于定义它的那个
-shell 中。
+按顺序逐项执行——每一项都会独立地明确报错。请使用服务管理器或托管服务商提供的健康检查确认
+数据存储。下面前两条命令只是本地原生安装的示例；远程服务应跳过它们。其余检查在一个全新的运维
+shell 中执行；属于服务账户的检查用 `sudo -iu guru` 包裹。
 
 ```sh
-# 1. Datastores (operator: Docker)
-cd /path/to/proxy-guru && sudo docker compose ps     # surrealdb up, rabbitmq healthy
+# 1. Local datastore examples only; use provider health checks for remote services
+surreal is-ready --endpoint http://127.0.0.1:8000
+rabbitmq-diagnostics -q ping
 
 # 2. Schema (guru: it owns the manifests under database/)
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREALDB_PASSWORD" status'
+  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
+    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
 #   → the rollout you applied, [completed]
 
 # 3. Control plane: one banner per mode, no restart loop
