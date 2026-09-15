@@ -2,6 +2,7 @@
 import DicesIcon from '@lucide/svelte/icons/dices';
 import FileTextIcon from '@lucide/svelte/icons/file-text';
 import PlusIcon from '@lucide/svelte/icons/plus';
+import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import { untrack } from 'svelte';
@@ -14,6 +15,7 @@ import {
 	getAgentRelease,
 	getServerConfigToml,
 	getServerRollout,
+	requestAgentUpdate,
 	updateServerNode
 } from '#lib/components/canvas/commands.js';
 import {
@@ -211,6 +213,12 @@ const save = () =>
 				agentUnit: server.agentUnit
 			}),
 		m.editor_saved()
+	);
+
+const updateAgent = () =>
+	run(
+		() => requestAgentUpdate({ canvasId, serverId: server.id }),
+		m.editor_agent_update_requested()
 	);
 
 // A pod is placed on exactly one server, so pods are created here. Their stored
@@ -669,8 +677,26 @@ const forget = () =>
 				<p>{m.editor_agent_no_base_url()}</p>
 			{/if}
 		</div>
+		{#if server.agentUpdateRequested}
+			<p class="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+				<Spinner class="size-3 shrink-0" />
+				{m.editor_agent_updating({ version: server.agentUpdateRequested })}
+			</p>
+		{/if}
+		{#if server.agentUpdateError}
+			<Alert.Root variant="destructive" class="mt-2">
+				<Alert.Title>{m.editor_agent_update_failed()}</Alert.Title>
+				<Alert.Description class="font-mono text-xs">{server.agentUpdateError}</Alert.Description>
+			</Alert.Root>
+		{/if}
 		{#if editable}
 			<div class="mt-3 flex flex-wrap gap-2">
+				{#if behind && !server.agentUpdateRequested}
+					<Button size="sm" disabled={!installReady || pending} onclick={updateAgent}>
+						<RefreshCwIcon />
+						{m.editor_agent_update({ version: published.version })}
+					</Button>
+				{/if}
 				<Button
 					size="sm"
 					variant={server.agentKeyIssuedAt ? 'outline' : 'secondary'}

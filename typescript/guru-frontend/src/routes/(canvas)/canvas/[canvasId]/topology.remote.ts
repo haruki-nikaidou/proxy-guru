@@ -804,6 +804,17 @@ export const issueServerAgentInstall = command(
 	}
 );
 
+/** Asks the server's worker to move to the published release at its next poll. */
+export const requestAgentUpdate = command(
+	v.object({ canvasId: idSchema, serverId: idSchema }),
+	async ({ canvasId, serverId }) => {
+		const metadata = sessionMetadata(requireSessionId());
+		await callGrpc(() => orchestrationClient().requestAgentUpdate({ serverId }, { metadata }));
+		await getCanvasGraph({ canvasId }).refresh();
+		return { ok: true as const };
+	}
+);
+
 /** The published worker release, which the panel offers to servers running another one. */
 export const getAgentRelease = query(async (): Promise<AgentReleaseDto> => {
 	const metadata = sessionMetadata(requireSessionId());
