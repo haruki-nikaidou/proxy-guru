@@ -980,3 +980,268 @@ async fn hand_drawn_members_coexist_with_channels() -> TestResult {
     assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
     Ok(())
 }
+
+
+// --- thin lines into universal pods and multi-tier fan-out ---------------------
+
+/// An entry pod drawn straight into a server's universal pod is a raw TCP hop
+/// of its own: one landing pod and one relay, no balancing, and the channel
+/// then travels on like any bundled one.
+#[tokio::test]
+async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
+    let w = world().await?;
+    let canvas = w
+        .canvases
+        .process(orchestration::services::canvas::CreateCanvas {
+            actor: operator(),
+            name: "thin".to_string(),
+            description: String::new(),
+        })
+        .await?
+        .id;
+    let us = create_server(&w, &canvas, "us", "198.51.100.1").await;
+    let hk = create_server(&w, &canvas, "hk", "203.0.113.1").await;
+    let up = universal_pod_of(&w, &canvas, &hk).await;
+    let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
+    let entry = create(
+        &w,
+        &canvas,
+        "entry",
+        NodeSpec::Entry(EntryConfig {
+            receive_proxy_protocol: None,
+            tls: None,
+        }),
+    )
+    .await;
+    connect(&w, &port_of(&p0, "listen"), &port_of(&entry, "listen")).await;
+    connect_universal(&w, handle(&up, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    let lanes_now = lanes(&w, &canvas).await;
+    assert_eq!(count(&lanes_now, LaneRole::Landing), 1, "{lanes_now:#?}");
+    assert_eq!(count(&lanes_now, LaneRole::Relay), 1);
+    assert_eq!(lanes_now.len(), 2);
+    for lane in lanes_now.values() {
+        if let NodeSpec::Relay(cfg) = &lane.node.spec {
+            assert_eq!(cfg.protocol, RelayProtocol::TcpRaw);
+        }
+    }
+    let up = reload(&w, &up.node.id).await;
+    assert!(up.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0))));
+    let found = problems(&w, &canvas).await;
+    assert!(found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoExit)), "{found:?}");
+
+    // Bundle on to an aggregate node and give the channel an exit.
+    let ua = create(&w, &canvas, "join", aggregator()).await;
+    bundle(&w, &up, &ua).await;
+    let ua = reload(&w, &ua.node.id).await;
+    let exit0 = create(&w, &canvas, "exit", exit("10.0.0.5:8080")).await;
+    connect(&w, &port_of(&exit0, "destination"), &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0)))).await;
+    assert_clean(&w, &canvas).await;
+
+    settle(&w, &canvas, &[&us, &hk]).await?;
+    let view = w.view(&us).await?;
+    let applied = view.applied.as_ref().expect("us converged");
+    assert_eq!(applied.forwardings.len(), 1, "{}", applied.toml);
+    assert_eq!(applied.forwardings[0].points_at.len(), 1);
+    assert_eq!(applied.forwardings[0].points_at[0].server_key(), record_key(&hk.0));
+    assert_eq!(applied.forwardings[0].points_at[0].protocol, ListenProtocol::RelayTcp);
+    let hk_view = w.view(&hk).await?;
+    assert_eq!(hk_view.applied.as_ref().unwrap().forwardings.len(), 1);
+    Ok(())
+}
+
+/// A distribute node bundled *into* fans everything it receives out again: the
+/// second tier gets one fan-out per upstream server, and the aggregate node at
+/// the end joins every landing pod of a channel.
+#[tokio::test]
+async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
+    let w = world().await?;
+    let p = picture(&w).await;
+    // Cut the two first-tier servers loose from the aggregate node and route
+    // them through a second distribute node onto two more servers.
+    let topology_now = topology(&w, &p.canvas).await;
+    for up in [&p.up1, &p.up2] {
+        let out = edges_touching(&topology_now, up)
+            .into_iter()
+            .find(|e| p.ua.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.target.0)))
+            .expect("bundle into the aggregate node");
+        disconnect(&w, &out).await?;
+    }
+    let hk3 = create_server(&w, &p.canvas, "hk3", "203.0.113.3").await;
+    let hk4 = create_server(&w, &p.canvas, "hk4", "203.0.113.4").await;
+    let up3 = universal_pod_of(&w, &p.canvas, &hk3).await;
+    let up4 = universal_pod_of(&w, &p.canvas, &hk4).await;
+    // Raw TCP throughout: the in-memory world has no internal CA to sign relay
+    // leaves with, and the protocol re-roll is covered elsewhere.
+    let ud2 = create(&w, &p.canvas, "tier-2", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    let up1 = reload(&w, &p.up1.node.id).await;
+    let up2 = reload(&w, &p.up2.node.id).await;
+    bundle(&w, &up1, &ud2).await;
+    bundle(&w, &up2, &reload(&w, &ud2.node.id).await).await;
+    let ud2 = reload(&w, &ud2.node.id).await;
+    bundle(&w, &ud2, &up3).await;
+    bundle(&w, &reload(&w, &ud2.node.id).await, &up4).await;
+    let up3 = reload(&w, &up3.node.id).await;
+    let up4 = reload(&w, &up4.node.id).await;
+    bundle(&w, &up3, &p.ua).await;
+    bundle(&w, &up4, &reload(&w, &p.ua.node.id).await).await;
+    let ua = reload(&w, &p.ua.node.id).await;
+    for (pod, e) in [(&p.p0, &p.e0), (&p.p1, &p.e1)] {
+        let chan = port_of(&ua, &universal::chan_key(&record_key(&pod.node.id.0)));
+        let topology_now = topology(&w, &p.canvas).await;
+        if edges_touching(&topology_now, e).is_empty() {
+            connect(&w, &port_of(e, "destination"), &chan).await;
+        }
+    }
+    assert_clean(&w, &p.canvas).await;
+
+    let lanes_now = lanes(&w, &p.canvas).await;
+    // Per channel: tier 1 = 2 landings + 2 relays + 1 fan-out (as before);
+    // tier 2 = per upstream server (2): 2 landings + 2 relays + 1 fan-out;
+    // aggregate joins: hk3 and hk4 each join their 2 landings, the aggregate
+    // node joins 2 feeders.
+    assert_eq!(count(&lanes_now, LaneRole::Landing), 2 * (2 + 4), "{lanes_now:#?}");
+    assert_eq!(count(&lanes_now, LaneRole::Relay), 2 * (2 + 4));
+    assert_eq!(count(&lanes_now, LaneRole::Distribute), 2 * (1 + 2));
+    assert_eq!(count(&lanes_now, LaneRole::Aggregate), 2 * (2 + 1));
+    let tier2_relays = lanes_now
+        .values()
+        .filter(|n| {
+            matches!(n.node.spec, NodeSpec::Relay(_))
+                && n.node.lane.as_ref().is_some_and(|l| record_key(&l.group.0) == record_key(&ud2.node.id.0))
+        })
+        .count();
+    assert_eq!(tier2_relays, 8, "the second tier owns one relay per channel, server and upstream path");
+
+    settle(&w, &p.canvas, &[&p.us, &p.hk1, &p.hk2, &hk3, &hk4]).await?;
+    for server in [&p.hk1, &p.hk2] {
+        let view = w.view(server).await?;
+        let applied = view.applied.as_ref().expect("tier 1 converged");
+        assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
+        let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
+        assert_eq!(config.forwardings.len(), 2);
+        for f in &config.forwardings {
+            assert!(
+                matches!(&f.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
+                "tier 1 landing pods balance over tier 2: {}",
+                applied.toml
+            );
+        }
+    }
+    for server in [&hk3, &hk4] {
+        let view = w.view(server).await?;
+        let applied = view.applied.as_ref().expect("tier 2 converged");
+        assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
+        assert_eq!(applied.forwardings.len(), 4, "two channels from two upstream servers: {}", applied.toml);
+    }
+    Ok(())
+}
+
+/// A distribute node bundled to another one nests strategies: a fallback over
+/// two round-robin groups derives as one nested load-balance tree.
+#[tokio::test]
+async fn nested_distribute_nodes_nest_strategies() -> TestResult {
+    let w = world().await?;
+    let canvas = w
+        .canvases
+        .process(orchestration::services::canvas::CreateCanvas {
+            actor: operator(),
+            name: "nested".to_string(),
+            description: String::new(),
+        })
+        .await?
+        .id;
+    let us = create_server(&w, &canvas, "us", "198.51.100.1").await;
+    let servers = ["a", "b", "c", "d"];
+    let mut ups = Vec::new();
+    let mut ids = Vec::new();
+    for (i, name) in servers.iter().enumerate() {
+        let id = create_server(&w, &canvas, name, &format!("203.0.113.{}", i + 1)).await;
+        ups.push(universal_pod_of(&w, &canvas, &id).await);
+        ids.push(id);
+    }
+    let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
+    let entry = create(&w, &canvas, "entry", NodeSpec::Entry(EntryConfig { receive_proxy_protocol: None, tls: None })).await;
+    connect(&w, &port_of(&p0, "listen"), &port_of(&entry, "listen")).await;
+    let outer = create(&w, &canvas, "outer", distributor(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw)).await;
+    let inner_a = create(&w, &canvas, "inner-a", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    let inner_b = create(&w, &canvas, "inner-b", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    connect_universal(&w, handle(&outer, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    bundle(&w, &reload(&w, &outer.node.id).await, &inner_a).await;
+    bundle(&w, &reload(&w, &outer.node.id).await, &inner_b).await;
+    bundle(&w, &reload(&w, &inner_a.node.id).await, &ups[0]).await;
+    bundle(&w, &reload(&w, &inner_a.node.id).await, &ups[1]).await;
+    bundle(&w, &reload(&w, &inner_b.node.id).await, &ups[2]).await;
+    bundle(&w, &reload(&w, &inner_b.node.id).await, &ups[3]).await;
+    let ua = create(&w, &canvas, "join", aggregator()).await;
+    for up in &ups {
+        bundle(&w, &reload(&w, &up.node.id).await, &reload(&w, &ua.node.id).await).await;
+    }
+    let ua = reload(&w, &ua.node.id).await;
+    let exit0 = create(&w, &canvas, "exit", exit("10.0.0.5:8080")).await;
+    connect(&w, &port_of(&exit0, "destination"), &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0)))).await;
+    assert_clean(&w, &canvas).await;
+
+    let lanes_now = lanes(&w, &canvas).await;
+    assert_eq!(count(&lanes_now, LaneRole::Landing), 4, "{lanes_now:#?}");
+    assert_eq!(count(&lanes_now, LaneRole::Relay), 4);
+    assert_eq!(count(&lanes_now, LaneRole::Distribute), 3, "outer + two inner");
+    assert_eq!(count(&lanes_now, LaneRole::Aggregate), 1);
+
+    settle(&w, &canvas, &[&us, &ids[0], &ids[1], &ids[2], &ids[3]]).await?;
+    let view = w.view(&us).await?;
+    let applied = view.applied.as_ref().expect("us converged");
+    assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
+    let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
+    let guru_worker_config::ForwardingTo::LoadBalance(outer_group) = &config.forwardings[0].to else {
+        panic!("outer should balance: {}", applied.toml);
+    };
+    assert_eq!(outer_group.strategy, guru_worker_config::LoadBalanceStrategy::Fallback);
+    assert_eq!(outer_group.members.len(), 2);
+    for member in &outer_group.members {
+        let guru_worker_config::ForwardingTo::LoadBalance(inner) = member else {
+            panic!("inner members should be groups: {}", applied.toml);
+        };
+        assert_eq!(inner.strategy, guru_worker_config::LoadBalanceStrategy::RoundRobin);
+        assert_eq!(inner.members.len(), 2);
+    }
+    Ok(())
+}
+
+/// The bundle out of a distribute node carries everything that came in: two
+/// channels by bundle from an upstream server plus one drawn in directly land
+/// as three pods on every server it bundles to.
+#[tokio::test]
+async fn bundles_and_thin_lines_add_up() -> TestResult {
+    let w = world().await?;
+    let p = picture(&w).await;
+    // hk1 carries the two channels; a new distribute node takes hk1's bundle
+    // plus a third entry pod, and bundles to hk2 only.
+    let topology_now = topology(&w, &p.canvas).await;
+    for up in [&p.up1] {
+        let out = edges_touching(&topology_now, up)
+            .into_iter()
+            .find(|e| p.ua.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.target.0)))
+            .expect("bundle into the aggregate node");
+        disconnect(&w, &out).await?;
+    }
+    let ud2 = create(&w, &p.canvas, "tier-2", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    let p2 = create(&w, &p.canvas, "ingress-10002", pod(&p.us, 10002)).await;
+    let entry = create(&w, &p.canvas, "entry-2", NodeSpec::Entry(EntryConfig { receive_proxy_protocol: None, tls: None })).await;
+    connect(&w, &port_of(&p2, "listen"), &port_of(&entry, "listen")).await;
+    bundle(&w, &reload(&w, &p.up1.node.id).await, &ud2).await;
+    connect_universal(&w, handle(&reload(&w, &ud2.node.id).await, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p2, "destination"))).await?;
+    bundle(&w, &reload(&w, &ud2.node.id).await, &reload(&w, &p.up2.node.id).await).await;
+    let lanes_now = lanes(&w, &p.canvas).await;
+    let hk2 = record_key(&p.hk2.0);
+    let on_hk2 = lanes_now
+        .values()
+        .filter(|n| matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2))
+        .count();
+    // Two channels from the first tier (direct from `fan`) plus the same two
+    // via hk1 and tier-2, plus the third drawn into tier-2.
+    assert_eq!(on_hk2, 2 + 2 + 1, "{lanes_now:#?}");
+    let ud2 = reload(&w, &ud2.node.id).await;
+    assert!(ud2.ports.iter().any(|x| x.key.starts_with("bundle_in:")));
+    assert!(ud2.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p2.node.id.0))));
+    Ok(())
+}

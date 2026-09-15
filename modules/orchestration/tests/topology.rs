@@ -723,10 +723,10 @@ fn expanded_builder() -> Builder {
     );
     b.connect("ud-bundle_out:hk-up", "hk-up-bundle_in:ud");
     // The lanes.
-    let landing = Lane::new(&ids::node_id("hk-up"), &ids::node_id("p0"), LaneRole::Landing, Some(&ids::node_id("ud")));
+    let landing = Lane::new(&ids::node_id("hk-up"), &ids::node_id("p0"), LaneRole::Landing, Some(&ids::node_id("ud")), None);
     b.node("landing", pod(&hk, 45000), pod_ports());
     b.lane(landing);
-    let relay_lane = Lane::new(&ids::node_id("ud"), &ids::node_id("p0"), LaneRole::Relay, Some(&ids::node_id("hk-up")));
+    let relay_lane = Lane::new(&ids::node_id("ud"), &ids::node_id("p0"), LaneRole::Relay, Some(&ids::node_id("hk-up")), None);
     b.node("relay", relay(RelayProtocol::TcpRaw), relay_ports());
     b.lane(relay_lane);
     b.connect("landing-listen", "relay-listen");
@@ -768,6 +768,57 @@ fn missing_lanes_are_a_warning() {
     assert!(errors(&problems).is_empty(), "{problems:?}");
     assert!(warnings(&problems).contains(&ProblemKind::LanesStale), "{problems:?}");
     let _ = &mut b;
+}
+
+/// A universal pod's own channel pair (an entry pod drawn straight into it) is
+/// looked through like a distribute node's, so the checker sees the flat hop.
+#[test]
+fn a_universal_pod_may_start_a_channel() {
+    let mut b = Builder::new("prod");
+    let us = b.server("us");
+    b.ip("_", &us, "198.51.100.1");
+    let hk = b.server("hk");
+    b.ip("_", &hk, "203.0.113.1");
+    b.node("p0", pod(&us, 10000), pod_ports());
+    let mut up_ports = channel_ports("p0", true, 0);
+    up_ports.push(bundle_port(universal::BUNDLE_OUT, PortDirection::Output));
+    b.node("hk-up", up(&hk), up_ports);
+    b.connect("hk-up-chan:p0", "p0-destination");
+    let problems = analyze(&b.build());
+    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(!errors(&problems).contains(&ProblemKind::ChannelTargetNotPod), "{problems:?}");
+    // Nothing generated yet: the expansion is stale until the write lands.
+    assert!(warnings(&problems).contains(&ProblemKind::LanesStale), "{problems:?}");
+}
+
+#[test]
+fn bundles_may_enter_a_distribute_node() {
+    // universal pod -> distribute (next tier) and distribute -> distribute (nesting)
+    let mut b = Builder::new("prod");
+    let hk = b.server("hk");
+    b.node(
+        "hk-up",
+        up(&hk),
+        vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)],
+    );
+    b.node(
+        "ud2",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        vec![
+            bundle_port(&universal::bundle_in_key("hk-up"), PortDirection::Input),
+            bundle_port(&universal::bundle_out_key("ud3"), PortDirection::Output),
+        ],
+    );
+    b.node(
+        "ud3",
+        ud(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw),
+        vec![bundle_port(&universal::bundle_in_key("ud2"), PortDirection::Input)],
+    );
+    b.connect("hk-up-bundle_out", "ud2-bundle_in:hk-up");
+    b.connect("ud2-bundle_out:ud3", "ud3-bundle_in:ud2");
+    let problems = analyze(&b.build());
+    assert!(!errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
 }
 
 #[test]

@@ -390,6 +390,7 @@ export enum ProblemKind {
   CHANNEL_NO_EXIT = 25,
   CHANNEL_NO_TRANSIT = 26,
   LANES_STALE = 27,
+  CHANNEL_DUPLICATE_PATH = 28,
   UNRECOGNIZED = -1,
 }
 
@@ -473,6 +474,9 @@ export function problemKindFromJSON(object: any): ProblemKind {
     case 27:
     case "LANES_STALE":
       return ProblemKind.LANES_STALE;
+    case 28:
+    case "CHANNEL_DUPLICATE_PATH":
+      return ProblemKind.CHANNEL_DUPLICATE_PATH;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -534,6 +538,8 @@ export function problemKindToJSON(object: ProblemKind): string {
       return "CHANNEL_NO_TRANSIT";
     case ProblemKind.LANES_STALE:
       return "LANES_STALE";
+    case ProblemKind.CHANNEL_DUPLICATE_PATH:
+      return "CHANNEL_DUPLICATE_PATH";
     case ProblemKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";

@@ -149,12 +149,7 @@ pub fn next_ordinal(topology: &CanvasTopology) -> i64 {
     topology
         .nodes
         .iter()
-        .filter(|n| {
-            matches!(
-                n.node.spec,
-                NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_)
-            )
-        })
+        .filter(|n| n.node.spec.takes_bundles())
         .flat_map(|n| n.ports.iter())
         .filter(|p| matches!(parse_port_key(&p.key), Some(UniversalPort::Chan(_))))
         .map(|p| p.position.saturating_add(1))
@@ -192,8 +187,19 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
             (NodeSpec::LoadBalanceDistribute(_), UniversalPort::BundleOut(Some(_))) => {
                 (port.kind, port.direction) == (Bundle, Output)
             }
+            (NodeSpec::LoadBalanceDistribute(_), UniversalPort::BundleIn(_)) => {
+                (port.kind, port.direction) == (Bundle, Input)
+            }
             (NodeSpec::UniversalPod(_), UniversalPort::BundleIn(_)) => {
                 (port.kind, port.direction) == (Bundle, Input)
+            }
+            (NodeSpec::UniversalPod(_), UniversalPort::Chan(pod)) => {
+                chans.insert(pod);
+                (port.kind, port.direction) == (DeriveDestination, Output)
+            }
+            (NodeSpec::UniversalPod(_), UniversalPort::Lane(pod)) => {
+                lanes.insert(pod);
+                (port.kind, port.direction) == (DeriveDestination, Input)
             }
             (NodeSpec::UniversalPod(_), UniversalPort::BundleOut(None)) => {
                 fixed_out = fixed_out.saturating_add(1);
@@ -305,12 +311,12 @@ pub struct Desired {
     pub problems: Vec<TopologyProblem>,
 }
 
-/// One channel: an entry pod connected to a distributor.
+/// One channel: an entry pod drawn into a distribute node or straight into a
+/// universal pod. Its ordinal is its colour; how it is relayed is decided by
+/// whichever distribute node fans it out (raw TCP where none does).
 struct Channel<'a> {
     pod: &'a NodeWithPorts,
     ordinal: i64,
-    mode: LoadBalanceMode,
-    protocol: RelayProtocol,
 }
 
 /// The server a universal pod stands for.
@@ -329,12 +335,173 @@ fn server_name<'a>(index: &Index<'a>, server: &ServerId) -> String {
         .unwrap_or_else(|| record_key(&server.0))
 }
 
-/// The display name of the far side of a bundle: a distributor's own name, a
-/// universal pod's server name.
+/// The display name of the far side of a bundle: a distribute node's own name,
+/// a universal pod's server name.
 fn source_name(index: &Index<'_>, node: &NodeWithPorts) -> String {
     match universal_server(node) {
         Some(server) => server_name(index, server),
         None => node.node.name.clone(),
+    }
+}
+
+/// The mode and relay protocol of a distribute node.
+fn distribute_cfg(node: &NodeWithPorts) -> Option<(LoadBalanceMode, RelayProtocol)> {
+    match &node.node.spec {
+        NodeSpec::LoadBalanceDistribute(cfg) => Some((cfg.mode, cfg.protocol)),
+        _ => None,
+    }
+}
+
+/// Deepest chain of nested distribute nodes the fan-out follows; a bundle cycle
+/// is reported separately, this only keeps the recursion finite.
+const MAX_FANOUT_DEPTH: usize = 64;
+
+/// Everything the materialisation walks, plus what it produces.
+struct Expansion<'a> {
+    index: Index<'a>,
+    universal: BTreeMap<String, &'a NodeWithPorts>,
+    outs: BTreeMap<String, BTreeSet<String>>,
+    channels: BTreeMap<String, Channel<'a>>,
+    desired: Desired,
+}
+
+impl<'a> Expansion<'a> {
+    fn lane_at(&self, group: &NodeWithPorts, lane: Lane, name: String, shape: LaneShape) -> DesiredLane {
+        DesiredLane {
+            lane,
+            canvas: group.node.canvas.clone(),
+            name,
+            position: group.node.position,
+            shape,
+        }
+    }
+
+    /// The landing pod of channel `c` on universal pod `target`, dialled by a
+    /// relay owned by `owner` speaking `protocol`; returns the relay's
+    /// destination, the member the fan-out joins. `via` tells one upstream path
+    /// apart from another when `owner` fans the channel out for several.
+    fn hop(
+        &mut self,
+        owner: &'a NodeWithPorts,
+        target: &'a NodeWithPorts,
+        channel: &Channel<'a>,
+        protocol: RelayProtocol,
+        relay_source: Option<&NodeId>,
+        via: Option<&str>,
+    ) -> Option<EndRef> {
+        let server = universal_server(target)?;
+        let pod_id = channel.pod.node.id.clone();
+        let pod_name = channel.pod.node.name.clone();
+        let landing = Lane::new(&target.node.id, &pod_id, LaneRole::Landing, Some(&owner.node.id), via);
+        let relay = Lane::new(&owner.node.id, &pod_id, LaneRole::Relay, relay_source, via);
+        self.desired.edges.insert((
+            EndRef::lane(&landing.key, "listen"),
+            EndRef::lane(&relay.key, "listen"),
+        ));
+        let member = EndRef::lane(&relay.key, "destination");
+        self.desired.lanes.insert(
+            landing.key.clone(),
+            DesiredLane {
+                lane: landing,
+                canvas: target.node.canvas.clone(),
+                name: format!("{pod_name} via {}", source_name(&self.index, owner)),
+                position: target.node.position,
+                shape: LaneShape::Landing {
+                    server: server.clone(),
+                    protocol,
+                },
+            },
+        );
+        let relay_name = format!("{pod_name} → {}", server_name(&self.index, server));
+        self.desired.lanes.insert(
+            relay.key.clone(),
+            self.lane_at(owner, relay, relay_name, LaneShape::Relay { protocol }),
+        );
+        Some(member)
+    }
+
+    /// Fans channel `c` out of distribute node `x` over its bundle targets:
+    /// a hop per universal pod, a nested fan-out per distribute node. Returns
+    /// the one end the upstream side must feed (a relay's destination, or the
+    /// generated load balancer's), `None` when nothing is bundled out yet.
+    /// `via` is the upstream path that brought the channel here (`None` at the
+    /// node the channel starts on); every path gets its own lanes.
+    fn fanout(
+        &mut self,
+        x: &'a NodeWithPorts,
+        channel: &Channel<'a>,
+        via: Option<&str>,
+        depth: usize,
+    ) -> Option<EndRef> {
+        let (mode, protocol) = distribute_cfg(x)?;
+        let key = record_key(&x.node.id.0);
+        let pod_id = channel.pod.node.id.clone();
+        let pod_name = channel.pod.node.name.clone();
+        if depth > MAX_FANOUT_DEPTH {
+            return None;
+        }
+        let targets: Vec<&'a NodeWithPorts> = self
+            .outs
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| self.universal.get(t.as_str()).copied())
+            .filter(|t| universal_server(t).is_some() || distribute_cfg(t).is_some())
+            .collect();
+        if targets.is_empty() {
+            self.desired.problems.push(
+                TopologyProblem::warning(
+                    ProblemKind::ChannelNoTransit,
+                    format!(
+                        "channel {pod_name} on {} is not bundled to any server yet",
+                        x.node.name
+                    ),
+                )
+                .with_nodes(vec![x.node.id.clone(), pod_id]),
+            );
+            return None;
+        }
+        let nested_via = match via {
+            None => key.clone(),
+            Some(path) => format!("{path}+{key}"),
+        };
+        let mut members: Vec<EndRef> = Vec::new();
+        for target in targets {
+            let member = if universal_server(target).is_some() {
+                self.hop(x, target, channel, protocol, Some(&target.node.id), via)
+            } else {
+                self.fanout(target, channel, Some(&nested_via), depth.saturating_add(1))
+            };
+            if let Some(member) = member {
+                members.push(member);
+            }
+        }
+        match members.len() {
+            0 => None,
+            1 => members.pop(),
+            n => {
+                let fan = Lane::new(&x.node.id, &pod_id, LaneRole::Distribute, None, via);
+                for (i, member) in members.into_iter().enumerate() {
+                    self.desired
+                        .edges
+                        .insert((member, EndRef::lane(&fan.key, &format!("member_{i}"))));
+                }
+                let out = EndRef::lane(&fan.key, "destination");
+                self.desired.lanes.insert(
+                    fan.key.clone(),
+                    self.lane_at(
+                        x,
+                        fan,
+                        format!("{pod_name} · fan-out"),
+                        LaneShape::Distribute {
+                            mode,
+                            members: u32::try_from(n).unwrap_or(u32::MAX),
+                        },
+                    ),
+                );
+                Some(out)
+            }
+        }
     }
 }
 
@@ -369,96 +536,18 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         ins.entry(t).or_default().insert(s);
     }
 
-    // On-demand ports follow the edges alone, whatever the lanes end up being;
-    // a load-balance node's hand-drawn ports are carried over untouched.
-    for (key, node) in &universal {
-        let mut ports: Vec<NewPort> = node
-            .ports
-            .iter()
-            .filter(|p| !is_on_demand(p))
-            .map(|p| NewPort {
-                kind: p.kind,
-                direction: p.direction,
-                key: p.key.clone(),
-                position: p.position,
-            })
-            .collect();
-        let port = |key: String, kind: PortKind, direction: PortDirection, position: i64| NewPort {
-            kind,
-            direction,
-            key,
-            position,
-        };
-        match &node.node.spec {
-            NodeSpec::LoadBalanceDistribute(_) => {
-                for p in &node.ports {
-                    if let Some(UniversalPort::Chan(pod)) = parse_port_key(&p.key)
-                        && index.edge_on(p).is_some()
-                    {
-                        ports.push(port(
-                            chan_key(pod),
-                            PortKind::DeriveDestination,
-                            PortDirection::Output,
-                            p.position,
-                        ));
-                        ports.push(port(
-                            lane_key(pod),
-                            PortKind::DeriveDestination,
-                            PortDirection::Input,
-                            p.position,
-                        ));
-                    }
-                }
-                for target in outs.get(key).into_iter().flatten() {
-                    ports.push(port(
-                        bundle_out_key(target),
-                        PortKind::Bundle,
-                        PortDirection::Output,
-                        0,
-                    ));
-                }
-            }
-            NodeSpec::UniversalPod(_) => {
-                for source in ins.get(key).into_iter().flatten() {
-                    ports.push(port(
-                        bundle_in_key(source),
-                        PortKind::Bundle,
-                        PortDirection::Input,
-                        0,
-                    ));
-                }
-                ports.push(port(
-                    BUNDLE_OUT.to_string(),
-                    PortKind::Bundle,
-                    PortDirection::Output,
-                    0,
-                ));
-            }
-            NodeSpec::LoadBalanceAggregate(_) => {
-                for source in ins.get(key).into_iter().flatten() {
-                    ports.push(port(
-                        bundle_in_key(source),
-                        PortKind::Bundle,
-                        PortDirection::Input,
-                        0,
-                    ));
-                }
-                // The channel ports are added below, once carried sets are known.
-            }
-            _ => {}
-        }
-        desired.ports.insert(key.clone(), ports);
-    }
-
-    // Channels: a distribute node's `chan:` port whose edge lands on that pod's
-    // `destination`. Anything else on such a port is reported by the checker
-    // and carries nothing.
+    // Channels: a `chan:` port of a distribute node or a universal pod whose
+    // edge lands on that pod's `destination`. Anything else on such a port is
+    // reported by the checker and carries nothing.
     let mut channels: BTreeMap<String, Channel<'_>> = BTreeMap::new();
     let mut own: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (key, node) in &universal {
-        let NodeSpec::LoadBalanceDistribute(cfg) = &node.node.spec else {
+        if !matches!(
+            node.node.spec,
+            NodeSpec::LoadBalanceDistribute(_) | NodeSpec::UniversalPod(_)
+        ) {
             continue;
-        };
+        }
         for p in &node.ports {
             let Some(UniversalPort::Chan(pod_key)) = parse_port_key(&p.key) else {
                 continue;
@@ -485,12 +574,88 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                 Channel {
                     pod: far_node,
                     ordinal: p.position,
-                    mode: cfg.mode,
-                    protocol: cfg.protocol,
                 },
             );
             own.entry(key.clone()).or_default().insert(pod_key.to_string());
         }
+    }
+
+    // On-demand ports follow the edges alone, whatever the lanes end up being;
+    // a load-balance node's hand-drawn ports are carried over untouched.
+    for (key, node) in &universal {
+        let mut ports: Vec<NewPort> = node
+            .ports
+            .iter()
+            .filter(|p| !is_on_demand(p))
+            .map(|p| NewPort {
+                kind: p.kind,
+                direction: p.direction,
+                key: p.key.clone(),
+                position: p.position,
+            })
+            .collect();
+        let port = |key: String, kind: PortKind, direction: PortDirection, position: i64| NewPort {
+            kind,
+            direction,
+            key,
+            position,
+        };
+        let starts_channels = matches!(
+            node.node.spec,
+            NodeSpec::LoadBalanceDistribute(_) | NodeSpec::UniversalPod(_)
+        );
+        if starts_channels {
+            for p in &node.ports {
+                if let Some(UniversalPort::Chan(pod)) = parse_port_key(&p.key)
+                    && index.edge_on(p).is_some()
+                {
+                    ports.push(port(
+                        chan_key(pod),
+                        PortKind::DeriveDestination,
+                        PortDirection::Output,
+                        p.position,
+                    ));
+                    ports.push(port(
+                        lane_key(pod),
+                        PortKind::DeriveDestination,
+                        PortDirection::Input,
+                        p.position,
+                    ));
+                }
+            }
+        }
+        for source in ins.get(key).into_iter().flatten() {
+            ports.push(port(
+                bundle_in_key(source),
+                PortKind::Bundle,
+                PortDirection::Input,
+                0,
+            ));
+        }
+        match &node.node.spec {
+            NodeSpec::LoadBalanceDistribute(_) => {
+                for target in outs.get(key).into_iter().flatten() {
+                    ports.push(port(
+                        bundle_out_key(target),
+                        PortKind::Bundle,
+                        PortDirection::Output,
+                        0,
+                    ));
+                }
+            }
+            NodeSpec::UniversalPod(_) => {
+                ports.push(port(
+                    BUNDLE_OUT.to_string(),
+                    PortKind::Bundle,
+                    PortDirection::Output,
+                    0,
+                ));
+            }
+            // An aggregate node's channel ports are added below, once carried
+            // sets are known.
+            _ => {}
+        }
+        desired.ports.insert(key.clone(), ports);
     }
 
     // Topological order over the bundle graph (Kahn); what is left is a cycle.
@@ -549,228 +714,137 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         }
         carried.insert((*key).to_string(), set);
     }
+    // The order outlives the borrows above: the walk below owns the tables.
+    let order: Vec<String> = order.iter().map(|k| (*k).to_string()).collect();
+
+    let mut ex = Expansion {
+        index,
+        universal,
+        outs,
+        channels,
+        desired,
+    };
 
     // Materialisation, in bundle order so a node's landing pods exist before the
-    // node decides how to join them.
+    // node decides how to join them. A distribute node's own channels start at
+    // its `lane:` port; the channels a universal pod passes into a distribute
+    // node start at that universal pod's landing side.
     let mut feeders: BTreeMap<(String, String), Vec<EndRef>> = BTreeMap::new();
-    let is_pod = |k: &str| universal.get(k).and_then(|n| universal_server(n)).is_some();
-    let is_aggregate = |k: &str| {
-        matches!(
-            universal.get(k).map(|n| &n.node.spec),
-            Some(NodeSpec::LoadBalanceAggregate(_))
-        )
-    };
     for key in &order {
-        let Some(node) = universal.get(*key) else {
+        let key: &str = key.as_str();
+        let Some(node) = ex.universal.get(key).copied() else {
             continue;
         };
         let group = node.node.id.clone();
-        let canvas = node.node.canvas.clone();
-        let position = node.node.position;
-        let lane = |lane: Lane, name: String, shape: LaneShape| DesiredLane {
-            lane,
-            canvas: canvas.clone(),
-            name,
-            position,
-            shape,
-        };
         match &node.node.spec {
             NodeSpec::LoadBalanceDistribute(_) => {
-                let targets: Vec<&String> = outs
-                    .get(*key)
-                    .into_iter()
-                    .flatten()
-                    .filter(|t| is_pod(t))
-                    .collect();
-                for pod_key in own.get(*key).into_iter().flatten() {
-                    let Some(channel) = channels.get(pod_key) else {
+                for pod_key in own.get(key).into_iter().flatten() {
+                    let Some(channel) = ex.channels.get(pod_key) else {
                         continue;
                     };
-                    let pod_id = channel.pod.node.id.clone();
-                    let pod_name = channel.pod.node.name.clone();
-                    if targets.is_empty() {
-                        desired.problems.push(
-                            TopologyProblem::warning(
-                                ProblemKind::ChannelNoTransit,
-                                format!(
-                                    "channel {pod_name} on {} is not bundled to any server yet",
-                                    node.node.name
-                                ),
-                            )
-                            .with_nodes(vec![group.clone(), pod_id]),
-                        );
-                        continue;
-                    }
-                    let mut relays: Vec<String> = Vec::new();
-                    for target_key in &targets {
-                        let Some(target) = universal.get(target_key.as_str()) else {
-                            continue;
-                        };
-                        let Some(server) = universal_server(target) else {
-                            continue;
-                        };
-                        let landing = Lane::new(
-                            &target.node.id,
-                            &pod_id,
-                            LaneRole::Landing,
-                            Some(&group),
-                        );
-                        let relay =
-                            Lane::new(&group, &pod_id, LaneRole::Relay, Some(&target.node.id));
-                        desired.edges.insert((
-                            EndRef::lane(&landing.key, "listen"),
-                            EndRef::lane(&relay.key, "listen"),
-                        ));
-                        relays.push(relay.key.clone());
-                        desired.lanes.insert(
-                            landing.key.clone(),
-                            DesiredLane {
-                                lane: landing,
-                                canvas: target.node.canvas.clone(),
-                                name: format!("{pod_name} via {}", node.node.name),
-                                position: target.node.position,
-                                shape: LaneShape::Landing {
-                                    server: server.clone(),
-                                    protocol: channel.protocol,
-                                },
-                            },
-                        );
-                        desired.lanes.insert(
-                            relay.key.clone(),
-                            lane(
-                                relay,
-                                format!("{pod_name} → {}", server_name(&index, server)),
-                                LaneShape::Relay {
-                                    protocol: channel.protocol,
-                                },
-                            ),
-                        );
-                    }
-                    let sink = EndRef::node(&group, lane_key(pod_key));
-                    if let [only] = relays.as_slice() {
-                        desired
+                    let channel = Channel {
+                        pod: channel.pod,
+                        ordinal: channel.ordinal,
+                    };
+                    if let Some(member) = ex.fanout(node, &channel, None, 0) {
+                        ex.desired
                             .edges
-                            .insert((EndRef::lane(only, "destination"), sink));
-                    } else {
-                        let fan = Lane::new(&group, &pod_id, LaneRole::Distribute, None);
-                        for (i, relay) in relays.iter().enumerate() {
-                            desired.edges.insert((
-                                EndRef::lane(relay, "destination"),
-                                EndRef::lane(&fan.key, &format!("member_{i}")),
-                            ));
-                        }
-                        desired
-                            .edges
-                            .insert((EndRef::lane(&fan.key, "destination"), sink));
-                        desired.lanes.insert(
-                            fan.key.clone(),
-                            lane(
-                                fan,
-                                format!("{pod_name} · fan-out"),
-                                LaneShape::Distribute {
-                                    mode: channel.mode,
-                                    members: u32::try_from(relays.len()).unwrap_or(u32::MAX),
-                                },
-                            ),
-                        );
+                            .insert((member, EndRef::node(&group, lane_key(pod_key))));
                     }
                 }
             }
             NodeSpec::UniversalPod(_) => {
-                let out = outs
-                    .get(*key)
+                let out = ex
+                    .outs
+                    .get(key)
                     .into_iter()
                     .flatten()
-                    .find(|t| is_pod(t) || is_aggregate(t));
-                for pod_key in carried.get(*key).into_iter().flatten() {
-                    let Some(channel) = channels.get(pod_key) else {
+                    .find_map(|t| ex.universal.get(t.as_str()).copied());
+                let own_here = own.get(key).cloned().unwrap_or_default();
+                for pod_key in carried.get(key).into_iter().flatten() {
+                    let Some(channel) = ex.channels.get(pod_key) else {
                         continue;
+                    };
+                    let channel = Channel {
+                        pod: channel.pod,
+                        ordinal: channel.ordinal,
                     };
                     let pod_id = channel.pod.node.id.clone();
                     let pod_name = channel.pod.node.name.clone();
-                    // The landing pods this node holds for the channel, one per
-                    // incoming bundle carrying it.
-                    let landings: Vec<String> = ins
-                        .get(*key)
-                        .into_iter()
-                        .flatten()
-                        .filter(|s| carried.get(*s).is_some_and(|c| c.contains(pod_key)))
-                        .filter_map(|s| universal.get(s.as_str()))
-                        .map(|s| Lane::key_for(&group, &pod_id, LaneRole::Landing, Some(&s.node.id)))
+                    // An entry pod drawn straight into this node: a raw TCP hop
+                    // of its own, landing here like any bundled channel.
+                    if own_here.contains(pod_key)
+                        && let Some(member) =
+                            ex.hop(node, node, &channel, RelayProtocol::TcpRaw, Some(&pod_id), None)
+                    {
+                        ex.desired
+                            .edges
+                            .insert((member, EndRef::node(&group, lane_key(pod_key))));
+                    }
+                    // The landing pods this node holds for the channel: every
+                    // upstream hop created its own (in bundle order, they all
+                    // exist by now).
+                    let landings: Vec<String> = ex
+                        .desired
+                        .lanes
+                        .iter()
+                        .filter(|(_, l)| {
+                            l.lane.role == LaneRole::Landing
+                                && record_key(&l.lane.group.0) == key
+                                && record_key(&l.lane.channel.0) == *pod_key
+                        })
+                        .map(|(k, _)| k.clone())
                         .collect();
                     let feeder = match landings.as_slice() {
                         [] => continue,
                         [only] => EndRef::lane(only, "destination"),
                         many => {
-                            let join = Lane::new(&group, &pod_id, LaneRole::Aggregate, None);
+                            let join = Lane::new(&group, &pod_id, LaneRole::Aggregate, None, None);
                             for (i, landing) in many.iter().enumerate() {
-                                desired.edges.insert((
+                                ex.desired.edges.insert((
                                     EndRef::lane(&join.key, &format!("copy_{i}")),
                                     EndRef::lane(landing, "destination"),
                                 ));
                             }
                             let feeder = EndRef::lane(&join.key, "source");
-                            desired.lanes.insert(
-                                join.key.clone(),
-                                lane(
-                                    join,
-                                    format!("{pod_name} · join"),
-                                    LaneShape::Aggregate {
-                                        copies: u32::try_from(many.len()).unwrap_or(u32::MAX),
-                                    },
-                                ),
+                            let joined = ex.lane_at(
+                                node,
+                                join.clone(),
+                                format!("{pod_name} · join"),
+                                LaneShape::Aggregate {
+                                    copies: u32::try_from(many.len()).unwrap_or(u32::MAX),
+                                },
                             );
+                            ex.desired.lanes.insert(join.key.clone(), joined);
                             feeder
                         }
                     };
-                    match out.and_then(|t| universal.get(t.as_str())) {
-                        None => desired.problems.push(
+                    match out {
+                        None => ex.desired.problems.push(
                             TopologyProblem::warning(
                                 ProblemKind::ChannelNoExit,
                                 format!(
                                     "channel {pod_name} lands on {} but goes nowhere from there",
-                                    source_name(&index, node)
+                                    source_name(&ex.index, node)
                                 ),
                             )
                             .with_nodes(vec![group.clone(), pod_id]),
                         ),
                         Some(next) if universal_server(next).is_some() => {
-                            let Some(server) = universal_server(next) else {
-                                continue;
-                            };
-                            let landing =
-                                Lane::new(&next.node.id, &pod_id, LaneRole::Landing, Some(&group));
-                            let relay = Lane::new(&group, &pod_id, LaneRole::Relay, None);
-                            desired.edges.insert((
-                                EndRef::lane(&landing.key, "listen"),
-                                EndRef::lane(&relay.key, "listen"),
-                            ));
-                            desired
-                                .edges
-                                .insert((EndRef::lane(&relay.key, "destination"), feeder));
-                            desired.lanes.insert(
-                                landing.key.clone(),
-                                DesiredLane {
-                                    lane: landing,
-                                    canvas: next.node.canvas.clone(),
-                                    name: format!("{pod_name} via {}", source_name(&index, node)),
-                                    position: next.node.position,
-                                    shape: LaneShape::Landing {
-                                        server: server.clone(),
-                                        protocol: channel.protocol,
-                                    },
-                                },
-                            );
-                            desired.lanes.insert(
-                                relay.key.clone(),
-                                lane(
-                                    relay,
-                                    format!("{pod_name} → {}", server_name(&index, server)),
-                                    LaneShape::Relay {
-                                        protocol: channel.protocol,
-                                    },
-                                ),
-                            );
+                            // A plain hop to the next server: raw TCP, nothing
+                            // on the way says otherwise.
+                            if let Some(member) =
+                                ex.hop(node, next, &channel, RelayProtocol::TcpRaw, None, None)
+                            {
+                                ex.desired.edges.insert((member, feeder));
+                            }
+                        }
+                        Some(next) if distribute_cfg(next).is_some() => {
+                            // The next tier fans the channel out again, once per
+                            // server it arrives from: this one.
+                            if let Some(member) = ex.fanout(next, &channel, Some(key), 0) {
+                                ex.desired.edges.insert((member, feeder));
+                            }
                         }
                         Some(aggregate) => {
                             feeders
@@ -782,64 +856,65 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                 }
             }
             NodeSpec::LoadBalanceAggregate(_) => {
-                let ports = desired.ports.entry((*key).to_string()).or_default();
-                for pod_key in carried.get(*key).into_iter().flatten() {
-                    let Some(channel) = channels.get(pod_key) else {
+                let mut ports = ex.desired.ports.remove(key).unwrap_or_default();
+                for pod_key in carried.get(key).into_iter().flatten() {
+                    let Some(channel) = ex.channels.get(pod_key) else {
                         continue;
                     };
                     let pod_id = channel.pod.node.id.clone();
                     let pod_name = channel.pod.node.name.clone();
+                    let ordinal = channel.ordinal;
                     ports.push(NewPort {
                         kind: PortKind::DeriveDestination,
                         direction: PortDirection::Input,
                         key: chan_key(pod_key),
-                        position: channel.ordinal,
+                        position: ordinal,
                     });
                     ports.push(NewPort {
                         kind: PortKind::DeriveDestination,
                         direction: PortDirection::Output,
                         key: lane_key(pod_key),
-                        position: channel.ordinal,
+                        position: ordinal,
                     });
                     let source = EndRef::node(&group, lane_key(pod_key));
                     let mut requests = feeders
-                        .remove(&((*key).to_string(), pod_key.clone()))
+                        .remove(&(key.to_string(), pod_key.clone()))
                         .unwrap_or_default();
                     requests.sort();
                     match requests.as_slice() {
                         [] => {}
                         [only] => {
-                            desired.edges.insert((source, only.clone()));
+                            ex.desired.edges.insert((source, only.clone()));
                         }
                         many => {
-                            let join = Lane::new(&group, &pod_id, LaneRole::Aggregate, None);
-                            desired
+                            let join = Lane::new(&group, &pod_id, LaneRole::Aggregate, None, None);
+                            ex.desired
                                 .edges
                                 .insert((source, EndRef::lane(&join.key, "source")));
                             for (i, request) in many.iter().enumerate() {
-                                desired.edges.insert((
+                                ex.desired.edges.insert((
                                     EndRef::lane(&join.key, &format!("copy_{i}")),
                                     request.clone(),
                                 ));
                             }
-                            desired.lanes.insert(
-                                join.key.clone(),
-                                lane(
-                                    join,
-                                    format!("{pod_name} · join"),
-                                    LaneShape::Aggregate {
-                                        copies: u32::try_from(many.len()).unwrap_or(u32::MAX),
-                                    },
-                                ),
+                            let joined = ex.lane_at(
+                                node,
+                                join.clone(),
+                                format!("{pod_name} · join"),
+                                LaneShape::Aggregate {
+                                    copies: u32::try_from(many.len()).unwrap_or(u32::MAX),
+                                },
                             );
+                            ex.desired.lanes.insert(join.key.clone(), joined);
                         }
                     }
                 }
+                ex.desired.ports.insert(key.to_string(), ports);
             }
             _ => {}
         }
     }
-    desired
+    ex.desired
 }
 
 // --- the diff ------------------------------------------------------------------

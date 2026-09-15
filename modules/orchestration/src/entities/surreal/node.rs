@@ -48,26 +48,50 @@ pub struct Lane {
     /// distributor's relay: the universal pod it dials. `None` otherwise.
     #[surreal(default)]
     pub source: Option<NodeId>,
+    /// The chain of nodes a channel came through before the node that
+    /// generated this lane fanned it out again (`a+b+c`, record keys), so a
+    /// channel reaching one distribute node from several upstream servers
+    /// gets one fan-out per upstream path. `None` where the channel starts.
+    #[surreal(default)]
+    pub via: Option<String>,
 }
 
 impl Lane {
-    pub fn key_for(group: &NodeId, channel: &NodeId, role: LaneRole, source: Option<&NodeId>) -> String {
-        format!(
+    pub fn key_for(
+        group: &NodeId,
+        channel: &NodeId,
+        role: LaneRole,
+        source: Option<&NodeId>,
+        via: Option<&str>,
+    ) -> String {
+        let mut key = format!(
             "{}:{}:{}:{}",
             record_key(&group.0),
             record_key(&channel.0),
             role.name(),
             source.map(|s| record_key(&s.0)).unwrap_or_else(|| "-".to_string())
-        )
+        );
+        if let Some(via) = via {
+            key.push(':');
+            key.push_str(via);
+        }
+        key
     }
 
-    pub fn new(group: &NodeId, channel: &NodeId, role: LaneRole, source: Option<&NodeId>) -> Self {
+    pub fn new(
+        group: &NodeId,
+        channel: &NodeId,
+        role: LaneRole,
+        source: Option<&NodeId>,
+        via: Option<&str>,
+    ) -> Self {
         Self {
-            key: Self::key_for(group, channel, role, source),
+            key: Self::key_for(group, channel, role, source, via),
             group: group.clone(),
             channel: channel.clone(),
             role,
             source: source.cloned(),
+            via: via.map(str::to_string),
         }
     }
 }

@@ -244,9 +244,12 @@ impl Processor<ConnectUniversal> for EdgeService {
                 },
                 ConnectEnd::Port(port),
             ) => {
-                if !matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_)) {
+                if !matches!(
+                    source.node.spec,
+                    NodeSpec::LoadBalanceDistribute(_) | NodeSpec::UniversalPod(_)
+                ) {
                     return Err(OrchestrationError::Invalid(
-                        "only a load-balance distribute node has channel outputs".into(),
+                        "only a distribute node or a universal pod starts channels".into(),
                     ));
                 }
                 let (port, owner) = port_in(&topology, port)?;
@@ -311,12 +314,9 @@ impl Processor<ConnectUniversal> for EdgeService {
                         ));
                     }
                 };
-                if !matches!(
-                    target.node.spec,
-                    NodeSpec::UniversalPod(_) | NodeSpec::LoadBalanceAggregate(_)
-                ) {
+                if !target.node.spec.takes_bundles() {
                     return Err(OrchestrationError::Invalid(
-                        "only a universal pod or an aggregate node takes bundles in".into(),
+                        "only a universal pod, a distribute node or an aggregate node takes bundles in".into(),
                     ));
                 }
                 if matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_))

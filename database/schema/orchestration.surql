@@ -173,6 +173,7 @@ DEFINE FIELD lane.group ON orchestration_node TYPE record<orchestration_node>;
 DEFINE FIELD lane.channel ON orchestration_node TYPE record<orchestration_node>;
 DEFINE FIELD lane.role ON orchestration_node TYPE string ASSERT $value INSIDE ["distribute", "relay", "landing", "aggregate"];
 DEFINE FIELD lane.source ON orchestration_node TYPE option<record<orchestration_node>>;
+DEFINE FIELD lane.via ON orchestration_node TYPE option<string>;
 DEFINE INDEX orchestration_node_lane_key ON orchestration_node FIELDS lane.key;
 DEFINE INDEX orchestration_node_lane_group ON orchestration_node FIELDS lane.group;
 

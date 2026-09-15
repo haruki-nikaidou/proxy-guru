@@ -418,7 +418,12 @@ impl<'a> Index<'a> {
                         None => return Some(far_node),
                     }
                 }
-                NodeSpec::UniversalPod(_) => return None,
+                // A universal pod's channel pair is looked through like a
+                // distribute node's; its bundle ports end the walk.
+                NodeSpec::UniversalPod(_) => {
+                    let twin = universal::channel_twin(&far_port.key)?;
+                    current = far_node.ports.iter().find(|p| p.key == twin)?;
+                }
                 _ => return Some(far_node),
             }
         }
@@ -570,8 +575,10 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
                 .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
             );
         }
-        if matches!(source_node.node.spec, NodeSpec::LoadBalanceDistribute(_))
-            && let Some(UniversalPort::Chan(pod)) = universal::parse_port_key(&source.key)
+        if matches!(
+            source_node.node.spec,
+            NodeSpec::LoadBalanceDistribute(_) | NodeSpec::UniversalPod(_)
+        ) && let Some(UniversalPort::Chan(pod)) = universal::parse_port_key(&source.key)
             && (target.key != "destination"
                 || !matches!(target_node.node.spec, NodeSpec::Pod(_))
                 || record_key(&target_node.node.id.0) != pod)
@@ -633,9 +640,10 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
     }
 }
 
-/// Why a bundle edge is not one of the three allowed shapes (distributor to
-/// universal pod, universal pod to universal pod, universal pod to aggregator)
-/// on ports named after each other; `None` when it is.
+/// Why a bundle edge is not one of the allowed shapes — a distribute node or a
+/// universal pod bundling to a universal pod or a distribute node, or a
+/// universal pod bundling to an aggregate node — on ports named after each
+/// other; `None` when it is.
 fn bundle_edge_problem(
     source: &PortEntity,
     source_node: &NodeWithPorts,
@@ -646,9 +654,10 @@ fn bundle_edge_problem(
     let target_key = record_key(&target_node.node.id.0);
     let pair_ok = matches!(
         (&source_node.node.spec, &target_node.node.spec),
-        (NodeSpec::LoadBalanceDistribute(_), NodeSpec::UniversalPod(_))
-            | (NodeSpec::UniversalPod(_), NodeSpec::UniversalPod(_))
-            | (NodeSpec::UniversalPod(_), NodeSpec::LoadBalanceAggregate(_))
+        (
+            NodeSpec::LoadBalanceDistribute(_) | NodeSpec::UniversalPod(_),
+            NodeSpec::UniversalPod(_) | NodeSpec::LoadBalanceDistribute(_)
+        ) | (NodeSpec::UniversalPod(_), NodeSpec::LoadBalanceAggregate(_))
     );
     if !pair_ok {
         return Some("bundles nodes that cannot be bundled".to_string());
