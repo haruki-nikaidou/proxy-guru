@@ -19,9 +19,10 @@ use crate::entities::surreal::node::{
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::converge::ensure_switch_safe;
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::universal::{self, PENDING_PORT_PREFIX};
 use crate::utils::ids;
@@ -35,7 +36,7 @@ use wakuwaku::surreal::SurrealProcessor;
 #[derive(Clone)]
 pub struct NodeService {
     pub db: SurrealProcessor,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
 
@@ -571,6 +572,14 @@ impl Processor<CreateNode> for NodeService {
         let views = self.views_for(&projected).await?;
         ensure_switch_safe(&projected, &views, &self.config)?;
 
+        // Captured before the write moves the spec: an import changes which tree
+        // the *target* belongs to, and a watcher already open on that target has
+        // a match set containing only itself. Without an event addressed to it,
+        // it would never learn it has acquired ancestors.
+        let imported = match &input.spec {
+            NodeSpec::CanvasImport(cfg) => Some(cfg.canvas.clone()),
+            _ => None,
+        };
         let created = self
             .db
             .process(CreateNodeRow {
@@ -584,6 +593,15 @@ impl Processor<CreateNode> for NodeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
+        let ids = vec![record_key(&created.node.id.0)];
+        self.notifier
+            .canvas_changed(&topology.root, CanvasChangeKind::NodeCreated, ids.clone())
+            .await;
+        if let Some(target) = imported {
+            self.notifier
+                .canvas_changed(&target, CanvasChangeKind::NodeCreated, ids)
+                .await;
+        }
         Ok(created)
     }
 }
@@ -742,7 +760,16 @@ impl Processor<ReplaceNodeSpec> for NodeService {
                 },
             };
             let prepared = universal::prepare(&self.db, &self.config, &topology, primary).await?;
-            universal::apply(&self.db, &self.notifier, prepared).await?;
+            universal::apply(
+                &self.db,
+                &self.notifier,
+                prepared,
+                Some((
+                    CanvasChangeKind::NodeReplaced,
+                    vec![record_key(&input.node.0)],
+                )),
+            )
+            .await?;
             return self
                 .db
                 .process(FindNodeWithPorts { id: input.node })
@@ -757,7 +784,7 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         let updated = self
             .db
             .process(UpdateNodeSpecRow {
-                id: input.node,
+                id: input.node.clone(),
                 canvas: canvas.clone(),
                 spec: input.spec,
                 ports,
@@ -765,6 +792,13 @@ impl Processor<ReplaceNodeSpec> for NodeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
+        self.notifier
+            .canvas_changed(
+                &topology.root,
+                CanvasChangeKind::NodeReplaced,
+                vec![record_key(&input.node.0)],
+            )
+            .await;
         Ok(updated)
     }
 }
@@ -845,7 +879,7 @@ impl Processor<UpdateNodeMeta> for NodeService {
         let updated = self
             .db
             .process(UpdateNodeMetaRow {
-                id: input.node,
+                id: input.node.clone(),
                 canvas: canvas.clone(),
                 name: input.name,
                 comment: input.comment,
@@ -853,9 +887,19 @@ impl Processor<UpdateNodeMeta> for NodeService {
                 import_sync,
             })
             .await?;
+        // Only a rename changes a config, so only a rename schedules a
+        // derivation — but the dashboard renders the position and the comment
+        // too, so the live event goes out either way.
         if updated.renamed {
             self.notifier.notify(&canvas).await;
         }
+        self.notifier
+            .canvas_changed(
+                &canvas,
+                CanvasChangeKind::NodeMetaUpdated,
+                vec![record_key(&input.node.0)],
+            )
+            .await;
         Ok(NodeWithPorts {
             node: updated.node,
             ports: updated.ports,
@@ -910,13 +954,17 @@ fn retirement(topology: &CanvasTopology, node: &NodeEntity) -> Retirement {
 }
 
 impl NodeService {
+    /// `kind` separates a checked retire from an Admin's force delete: the two
+    /// callers write identical rows but mean different things to a dashboard.
     async fn delete_node(
         &self,
         topology: &CanvasTopology,
         node: NodeEntity,
         retirement: Retirement,
+        kind: CanvasChangeKind,
     ) -> Result<(), OrchestrationError> {
         let frees = retirement.frees_canvas.clone();
+        let ids = vec![record_key(&node.id.0)];
         self.db
             .process(DeleteNodeRow {
                 id: node.id,
@@ -926,8 +974,14 @@ impl NodeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
+        self.notifier
+            .canvas_changed(&topology.root, kind, ids.clone())
+            .await;
+        // Retiring an import frees the canvas it embedded: that canvas is now a
+        // root of its own, and anything watching it has to reload too.
         if let Some(freed) = frees {
             self.notifier.notify(&freed).await;
+            self.notifier.canvas_changed(&freed, kind, ids).await;
         }
         Ok(())
     }
@@ -982,7 +1036,16 @@ impl Processor<RetireNode> for NodeService {
             };
             let prepared = universal::prepare(&self.db, &self.config, &topology, primary).await?;
             if prepared.reconciled {
-                return universal::apply(&self.db, &self.notifier, prepared).await;
+                return universal::apply(
+                    &self.db,
+                    &self.notifier,
+                    prepared,
+                    Some((
+                        CanvasChangeKind::NodeRetired,
+                        vec![record_key(&input.node.0)],
+                    )),
+                )
+                .await;
             }
         } else {
             let projected = topology.project(&retirement.edits);
@@ -991,7 +1054,8 @@ impl Processor<RetireNode> for NodeService {
             ensure_switch_safe(&projected, &views, &self.config)?;
         }
 
-        self.delete_node(&topology, node, retirement).await
+        self.delete_node(&topology, node, retirement, CanvasChangeKind::NodeRetired)
+            .await
     }
 }
 
@@ -1061,6 +1125,7 @@ impl Processor<ForceDeleteNode> for NodeService {
             })
             .await?;
         let retirement = retirement(&topology, &node);
-        self.delete_node(&topology, node, retirement).await
+        self.delete_node(&topology, node, retirement, CanvasChangeKind::NodeDeleted)
+            .await
     }
 }

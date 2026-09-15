@@ -1,14 +1,14 @@
 ---
 title: ローカル開発
-description: SurrealDB、RabbitMQ、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
+description: SurrealDB、RabbitMQ、Redis、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
 ---
 
-コントロールプレーンには SurrealDB インスタンスと AMQP ブローカーが必要です。それ以外はすべてワークスペースから
-実行できます。
+コントロールプレーンには SurrealDB インスタンス、AMQP ブローカー、そして Redis サーバーが必要です。
+それ以外はすべてワークスペースから実行できます。
 
 :::caution[リポジトリの `.env` は開発用プロファイルではありません]
 ルートの `.env` には**本番**の認証情報（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`）が入っていることがあり、起動した
+`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`）が入っていることがあり、起動した
 すべてのプロセスがそれを継承します。データベース関連のフラグを明示的に渡す（あるいは変数を上書きする）ことで、
 ローカル実行がうっかりリモートのデータベースに接続しないようにしてください。
 :::
@@ -20,12 +20,18 @@ docker run -d --name guru-surreal -p 8000:8000 \
   surrealdb/surrealdb:latest start --user root --pass root
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+
+# Pub/sub only, so nothing is persisted; `docker compose up redis` from the
+# repository root starts the same thing.
+docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
+  redis-server --save '' --appendonly no
 ```
 
 SurrealDB は **3.2 以降**のサーバーを使用してください。3.0 系の古いバイナリはワークスペースがリンクしている
 クライアントと互換性がなく、同一トランザクション内で先に書き込まれた行を読む ASSERT を正しく扱えません。
 
 ブローカーの URI の書式には注意が必要です。デフォルトの vhost には `amqp://guest:guest@127.0.0.1:5672/` を使います。
+Redis は `redis://127.0.0.1:6379/` を受け取り、認証情報はありません。
 
 ## 2. スキーマ
 
@@ -80,7 +86,8 @@ cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 `consumer` が動いていないとキャンバスは一切導出されないため、2 つ目のシェルで起動してください。これは編集の
@@ -92,7 +99,8 @@ cargo run -p guru-master -- \
   --mode consumer \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 3 つ目のシェルではクロックを動かします。`cron` は実行時刻になったジョブごとに実行シグナルを 1 件発行するだけで、
@@ -107,7 +115,11 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
 
 4 つ目のモードは `workers_grpc` で、ワーカー API と設定ビューのポーラーを兼ねており、引数は `dashboard_grpc` と
 まったく同じです。すべてのモードはブローカーを必要とします。RabbitMQ が停止していれば何も起動せず、`cron` か
-`consumer` が停止していれば定期ジョブは一切実行されません。
+`consumer` が停止していれば定期ジョブは一切実行されません。データベースに接続する 3 つのモード
+（`dashboard_grpc`、`workers_grpc`、`consumer`）は Redis も必要とし、`--redis-url`/`REDIS_URL` がなければ
+起動しません。`cron` は使いません。これはオペレーター API の `Watch*` ストリームを支えるライブバスです。
+Redis が停止すると、開いているストリームは受信をやめますが、編集と導出はいつもどおり続きます。
+ダッシュボードはまだそれらのストリームを利用していないため、どちらにしてもブラウザーからは何もわかりません。
 
 定期ジョブを間隔の到来を待たずに実行させたい場合は、そのクレーム行を削除します。テーブルは
 `orchestration_job_run` で、ジョブ名をキーにジョブごとに 1 行あるため、

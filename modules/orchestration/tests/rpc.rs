@@ -7,6 +7,8 @@ mod common;
 
 use base::services::config::ConfigStore;
 use common::*;
+use kanau::processor::Processor;
+use orchestration::config::OrchestrationConfig;
 use orchestration::rpc::OrchestrationGrpc;
 use orchestration::services::config::OrchestrationConfigService;
 use rpguru_sdk::orchestration as pb;
@@ -26,7 +28,20 @@ fn grpc(w: &World) -> OrchestrationGrpc {
         configs: OrchestrationConfigService {
             configs: ConfigStore { db: w.db.clone() },
         },
+        live: w.live.clone(),
+        sessions: w.sessions.clone(),
     }
+}
+
+/// A request carrying both the injected identity and the session metadata a
+/// live stream needs.
+fn as_session<T>(message: T, token: &str) -> Request<T> {
+    let mut request = as_operator(message);
+    request.metadata_mut().insert(
+        auth::rpc::middleware::SESSION_ID_METADATA,
+        token.parse().expect("a session token is valid metadata"),
+    );
+    request
 }
 
 /// A request carrying the identity the auth middleware would have injected.
@@ -240,5 +255,255 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
         .await
         .expect_err("no port and no handle");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    Ok(())
+}
+
+// --- live streams ------------------------------------------------------------
+
+/// Pulls the next stream item, or `None` when nothing arrives in time.
+async fn next_item<T>(
+    stream: &mut (impl tokio_stream::Stream<Item = Result<T, tonic::Status>> + Unpin),
+    within: std::time::Duration,
+) -> Option<Result<T, tonic::Status>> {
+    tokio::time::timeout(within, tokio_stream::StreamExt::next(stream))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The three transport contracts of a live stream: it needs a session, it
+/// keeps itself alive, and it ends the moment that session does.
+#[tokio::test]
+async fn watch_canvas_stream_keepalive_and_session_cut() -> TestResult {
+    let w = world_with(OrchestrationConfig {
+        stream_keepalive_secs: 1,
+        ..OrchestrationConfig::default()
+    })
+    .await?;
+    let api = grpc(&w);
+    let canvas = create_canvas(&api, "prod").await;
+    let token = w.login().await?;
+
+    // No session metadata: refused at open, before any view is spawned.
+    let err = api
+        .watch_canvas(as_operator(pb::WatchCanvasRequest {
+            canvas_id: canvas.id.clone(),
+        }))
+        .await
+        .expect_err("a stream without a session");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+    let mut stream = api
+        .watch_canvas(as_session(
+            pb::WatchCanvasRequest {
+                canvas_id: canvas.id.clone(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+
+    let first = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an opening item")?;
+    assert!(
+        matches!(first.event, Some(pb::canvas_event::Event::Snapshot(_))),
+        "a stream opens with a snapshot"
+    );
+
+    let idle = next_item(&mut stream, std::time::Duration::from_millis(2500))
+        .await
+        .expect("a keep-alive on an idle stream")?;
+    assert!(
+        matches!(idle.event, Some(pb::canvas_event::Event::KeepAlive(_))),
+        "an idle stream sends keep-alives"
+    );
+
+    w.sessions
+        .process(auth::services::session::Logout {
+            session_id: token.clone(),
+        })
+        .await?;
+    // The next tick re-validates and finds nothing.
+    let cut = loop {
+        match next_item(&mut stream, std::time::Duration::from_secs(5))
+            .await
+            .expect("the stream reacts to the logout")
+        {
+            Ok(_) => continue,
+            Err(status) => break status,
+        }
+    };
+    assert_eq!(cut.code(), tonic::Code::Unauthenticated);
+    assert!(
+        next_item(&mut stream, std::time::Duration::from_millis(500))
+            .await
+            .is_none(),
+        "the stream is over"
+    );
+    Ok(())
+}
+
+/// A watcher that stops reading is not owed a backlog: the bounded channel plus
+/// the coalescing view mean it receives fewer, newer snapshots — and the last
+/// one it can read is the current state.
+#[tokio::test]
+async fn paused_client_gets_newest_not_backlog() -> TestResult {
+    let w = world().await?;
+    let api = grpc(&w);
+    let canvas = create_canvas(&api, "prod").await;
+    let token = w.login().await?;
+    let server = api
+        .create_server(as_operator(pb::CreateServerRequest {
+            canvas_id: canvas.id.clone(),
+            name: "tokyo".to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: None,
+            ipv6_resolve: i32::from(pb::Ipv6Resolve::Ipv6Tolerated),
+            log_level: "info".to_string(),
+            override_v4: String::new(),
+            override_v6: String::new(),
+            extra_addresses: Vec::new(),
+        }))
+        .await?
+        .into_inner()
+        .server
+        .expect("a server");
+
+    let mut stream = api
+        .watch_canvas(as_session(
+            pb::WatchCanvasRequest {
+                canvas_id: canvas.id.clone(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+
+    const MOVES: i64 = 40;
+    for step in 1..=MOVES {
+        api.move_server(as_operator(pb::MoveServerRequest {
+            server_id: server.id.clone(),
+            position: Some(pb::CanvasUiPosition { x: step, y: step }),
+        }))
+        .await?;
+    }
+
+    // Drain everything that is ready without waiting for more.
+    let mut snapshots = Vec::new();
+    while let Some(item) = next_item(&mut stream, std::time::Duration::from_millis(400)).await {
+        if let Some(pb::canvas_event::Event::Snapshot(snapshot)) = item?.event {
+            snapshots.push(snapshot);
+        }
+    }
+    assert!(
+        snapshots.len() < MOVES as usize,
+        "{} snapshots for {MOVES} moves: nothing coalesced",
+        snapshots.len()
+    );
+    let last = snapshots.last().expect("at least the opening snapshot");
+    let position = last
+        .contents
+        .as_ref()
+        .expect("a snapshot carries the contents")
+        .servers
+        .iter()
+        .find(|s| s.id == server.id)
+        .expect("the server is still there")
+        .position
+        .expect("a server has a position");
+    assert_eq!(
+        (position.x, position.y),
+        (MOVES, MOVES),
+        "the last snapshot carries the final position"
+    );
+    Ok(())
+}
+
+/// The rollout snapshot covers the whole tree, not just the canvas asked about.
+#[tokio::test]
+async fn watch_rollouts_covers_the_whole_tree() -> TestResult {
+    let w = world().await?;
+    let api = grpc(&w);
+    let root = create_canvas(&api, "root").await;
+    let sub = create_canvas(&api, "sub").await;
+    api.create_node(as_operator(pb::CreateNodeRequest {
+        canvas_id: root.id.clone(),
+        name: "sub".to_string(),
+        comment: String::new(),
+        spec: Some(pb::NodeSpec {
+            spec: Some(pb::node_spec::Spec::CanvasImport(pb::CanvasImportConfig {
+                canvas_id: sub.id.clone(),
+            })),
+        }),
+        position: None,
+        item_count: 0,
+    }))
+    .await?;
+    for (canvas, name, address) in [
+        (&root.id, "tokyo", "203.0.113.10"),
+        (&sub.id, "osaka", "203.0.113.11"),
+    ] {
+        api.create_server(as_operator(pb::CreateServerRequest {
+            canvas_id: canvas.clone(),
+            name: name.to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: None,
+            ipv6_resolve: i32::from(pb::Ipv6Resolve::Ipv6Tolerated),
+            log_level: "info".to_string(),
+            override_v4: address.to_string(),
+            override_v6: String::new(),
+            extra_addresses: Vec::new(),
+        }))
+        .await?;
+    }
+    let token = w.login().await?;
+
+    // Asked about the subcanvas; the answer covers the tree it belongs to.
+    let mut stream = api
+        .watch_rollouts(as_session(
+            pb::WatchRolloutsRequest {
+                canvas_id: sub.id.clone(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let first = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an opening item")?;
+    let Some(pb::rollout_event::Event::Snapshot(snapshot)) = first.event else {
+        panic!("a stream opens with a snapshot, got {first:?}");
+    };
+    let mut canvases: Vec<_> = snapshot.servers.iter().map(|s| s.canvas_id.clone()).collect();
+    canvases.sort();
+    let mut expected = vec![root.id.clone(), sub.id.clone()];
+    expected.sort();
+    assert_eq!(canvases, expected, "every server of the tree is listed");
+    Ok(())
+}
+
+/// An unknown canvas is a `NOT_FOUND` on the stream, not a silent wait.
+#[tokio::test]
+async fn watch_canvas_reports_a_missing_canvas() -> TestResult {
+    let w = world().await?;
+    let api = grpc(&w);
+    let token = w.login().await?;
+    let mut stream = api
+        .watch_canvas(as_session(
+            pb::WatchCanvasRequest {
+                canvas_id: "nope".to_string(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let status = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an item")
+        .expect_err("a missing canvas");
+    assert_eq!(status.code(), tonic::Code::NotFound);
     Ok(())
 }

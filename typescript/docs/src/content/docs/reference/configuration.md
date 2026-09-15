@@ -18,6 +18,7 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--namespace` | `SURREALDB_NAMESPACE` | *required* |
 | `--database` | `SURREALDB_NAME` | *required* |
 | `--amqp-uri` | `AMQP_URI` | *required in every mode* |
+| `--redis-url` | `REDIS_URL` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
@@ -30,6 +31,19 @@ environment. See [Module configuration](#module-configuration).
 `amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost. The broker is
 required in **every** mode, `cron` included: periodic work is published as a message, so a broker
 outage stalls derivation, liveness and certificate renewal until the broker returns.
+
+Redis is required in the three modes that open a database connection, and for the same kind of
+reason: it is the live bus behind the operator API's `Watch*` streams. A URL looks like
+`redis://127.0.0.1:6379/`. Every mutation publishes one event on the channel
+`guru:orchestration:live`, and every `dashboard_grpc` replica subscribes to it once, so an edit made
+on one replica reaches the streams served by the others. Nothing is stored: the fleet needs no
+persistence, no AOF and no RDB from this server. A Redis outage costs open `Watch*` streams their
+deliveries — the subscriber reconnects with backoff and asks every watcher to re-read the database,
+so nothing stays stale once it returns — but it never affects derivation or what a worker runs.
+
+The bundled dashboard does not consume these streams yet; it reads the unary API and refreshes on
+navigation. They are a gRPC API for clients that want push, and the log line `live bus connected`
+is how you check the bus rather than watching a browser.
 
 `GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
 certificate and CA private keys — and is required in the three modes that read one:
@@ -291,7 +305,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it) |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it) |
 
 Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do

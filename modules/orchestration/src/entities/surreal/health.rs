@@ -6,6 +6,7 @@
 //! the retention cron; the current server status is denormalised on
 //! `orchestration_server.health_status`.
 
+use crate::entities::surreal::canvas::CanvasId;
 use crate::entities::surreal::node::NodeId;
 use crate::entities::surreal::server::ServerId;
 use chrono::{DateTime, Utc};
@@ -28,7 +29,19 @@ pub struct ServerHealthRecordEntity {
     pub max_connections: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, SurrealValue)]
+/// The `rkyv` derives put this enum on the live bus unchanged
+/// ([`crate::events::live::ServerHealthLive`]).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    SurrealValue,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum ServerHealthStatus {
     /// The server is online and runs what it was asked to.
@@ -85,6 +98,23 @@ impl Processor<ListServerHealthHistory> for SurrealProcessor {
     }
 }
 
+/// What a health write did, for the caller that has to publish it.
+///
+/// The three pieces are all read inside the write's own transaction: the row it
+/// created, the canvas the server belongs to (a live event is addressed by
+/// canvas, and re-reading the server row afterwards could see a moved one) and
+/// the status the server held *before* the update, which is the only way to tell
+/// a routine report from a status flip.
+#[derive(Debug, Clone, SurrealValue)]
+pub struct HealthWrite {
+    pub record: ServerHealthRecordEntity,
+    pub canvas: CanvasId,
+    pub previous_status: ServerHealthStatus,
+    /// The node rows written alongside the report; empty for a status flip.
+    #[surreal(default)]
+    pub nodes: Vec<NodeHealthRecordEntity>,
+}
+
 /// One accepted report, in one conditional transaction: the server's liveness
 /// (`last_health_report_at`, and `last_seen_at` alongside the watch heartbeat)
 /// is advanced only while it still belongs to the reporting session
@@ -104,29 +134,37 @@ pub struct InsertServerHealthRecord {
 }
 
 impl Processor<InsertServerHealthRecord> for SurrealProcessor {
-    /// `false` when the server no longer holds `generation`.
-    type Output = bool;
+    /// `None` when the server no longer holds `generation`.
+    type Output = Option<HealthWrite>;
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:InsertServerHealthRecord", skip_all, err)]
     async fn process(&self, input: InsertServerHealthRecord) -> Result<Self::Output, Self::Error> {
-        // Statement 0 is BEGIN; the RETURN is statement 3.
+        // Statement 0 is BEGIN; the RETURN is statement 5. `$before` is read
+        // ahead of the UPDATE on purpose: a row written earlier in the same
+        // transaction is not guaranteed to be visible to a later read.
         let mut resp = self
             .db()
             .query(
                 "BEGIN TRANSACTION;
+                 LET $before = (SELECT VALUE health_status FROM ONLY $server);
                  LET $matched = UPDATE $server
                      SET last_health_report_at = $report_time, last_seen_at = $report_time,
                          health_status = $status
                      WHERE refresh_key_generation = $generation RETURN AFTER;
-                 IF array::len($matched) > 0 {
-                     CREATE server_health_record SET server = $server, status = $status,
+                 LET $rec = IF array::len($matched) > 0 {
+                     (CREATE ONLY server_health_record SET server = $server, status = $status,
                          report_time = $report_time, upload_bytes = $upload_bytes,
                          download_bytes = $download_bytes,
                          current_connections = $current_connections,
-                         max_connections = $max_connections;
-                     IF array::len($nodes) > 0 { INSERT INTO node_health_record $nodes };
-                 };
-                 RETURN array::len($matched) > 0;
+                         max_connections = $max_connections RETURN AFTER)
+                 } ELSE { NONE };
+                 LET $node_rows = IF array::len($matched) > 0 AND array::len($nodes) > 0 {
+                     (INSERT INTO node_health_record $nodes RETURN AFTER)
+                 } ELSE { [] };
+                 RETURN IF array::len($matched) > 0 {
+                     { record: $rec, canvas: $matched[0].canvas,
+                       previous_status: $before, nodes: $node_rows }
+                 } ELSE { NONE };
                  COMMIT TRANSACTION;",
             )
             .bind(("server", input.server))
@@ -139,7 +177,7 @@ impl Processor<InsertServerHealthRecord> for SurrealProcessor {
             .bind(("max_connections", input.max_connections))
             .bind(("nodes", input.nodes))
             .await?;
-        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
+        resp.take::<Option<HealthWrite>>(5)
     }
 }
 
@@ -159,26 +197,30 @@ pub struct SetServerHealthStatus {
 }
 
 impl Processor<SetServerHealthStatus> for SurrealProcessor {
-    /// `false` when nothing changed.
-    type Output = bool;
+    /// `None` when nothing changed.
+    type Output = Option<HealthWrite>;
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:SetServerHealthStatus", skip_all, err)]
     async fn process(&self, input: SetServerHealthStatus) -> Result<Self::Output, Self::Error> {
-        // Statement 0 is BEGIN; the RETURN is statement 3.
+        // Statement 0 is BEGIN; the RETURN is statement 4.
         let mut resp = self
             .db()
             .query(
                 "BEGIN TRANSACTION;
+                 LET $before = (SELECT VALUE health_status FROM ONLY $server);
                  LET $matched = UPDATE $server SET health_status = $status
                      WHERE health_status != $status
                        AND ($generation = NONE OR refresh_key_generation = $generation)
                      RETURN AFTER;
-                 IF array::len($matched) > 0 {
-                     CREATE server_health_record SET server = $server, status = $status,
+                 LET $rec = IF array::len($matched) > 0 {
+                     (CREATE ONLY server_health_record SET server = $server, status = $status,
                          report_time = $now, upload_bytes = 0, download_bytes = 0,
-                         current_connections = 0, max_connections = 0;
-                 };
-                 RETURN array::len($matched) > 0;
+                         current_connections = 0, max_connections = 0 RETURN AFTER)
+                 } ELSE { NONE };
+                 RETURN IF array::len($matched) > 0 {
+                     { record: $rec, canvas: $matched[0].canvas,
+                       previous_status: $before, nodes: [] }
+                 } ELSE { NONE };
                  COMMIT TRANSACTION;",
             )
             .bind(("server", input.server))
@@ -186,7 +228,7 @@ impl Processor<SetServerHealthStatus> for SurrealProcessor {
             .bind(("status", input.status))
             .bind(("now", input.now))
             .await?;
-        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
+        resp.take::<Option<HealthWrite>>(4)
     }
 }
 
@@ -229,7 +271,19 @@ pub struct NodeHealthRecordEntity {
     pub report_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, SurrealValue)]
+/// The `rkyv` derives put this enum on the live bus unchanged
+/// ([`crate::events::live::NodeHealthLive`]).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    SurrealValue,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum NodeHealthStatus {
     /// The node's config is applied on its server and the pod is healthy.
@@ -251,6 +305,10 @@ impl NodeHealthStatus {
 }
 
 /// Node records in `[start, end]`, newest first, at most `limit`.
+///
+/// `id` breaks the tie: one event writes a whole batch of rows with the same
+/// `report_time`, so `report_time` alone is not a total order and a paging
+/// reader could see the same row twice or miss one.
 #[derive(Debug)]
 pub struct ListNodeHealthHistory {
     pub node: NodeId,
@@ -269,11 +327,55 @@ impl Processor<ListNodeHealthHistory> for SurrealProcessor {
             .query(
                 "SELECT * FROM node_health_record \
                  WHERE node = $node AND report_time >= $start AND report_time <= $end \
-                 ORDER BY report_time DESC LIMIT $limit",
+                 ORDER BY report_time DESC, id DESC LIMIT $limit",
             )
             .bind(("node", input.node))
             .bind(("start", input.start))
             .bind(("end", input.end))
+            .bind(("limit", input.limit))
+            .await?;
+        resp.take::<Vec<NodeHealthRecordEntity>>(0)
+    }
+}
+
+/// Node records strictly after the `(report_time, id)` cursor, **oldest first**,
+/// at most `limit`.
+///
+/// The recovery read of a live node-health stream, and deliberately not
+/// [`ListNodeHealthHistory`]: that one is newest-first with a cap, so a gap
+/// wider than the cap would hand back only the newest rows and the stream would
+/// skip the rest for good. Ascending, from a total-order cursor, makes the last
+/// row returned the next cursor — the caller pages until it is caught up, and a
+/// batch of rows sharing one `report_time` cannot straddle a page boundary
+/// unnoticed.
+#[derive(Debug)]
+pub struct ListNodeHealthAfter {
+    pub node: NodeId,
+    pub after: DateTime<Utc>,
+    /// The last row already delivered at `after`, if any. `None` means "every
+    /// row at `after` too", which is what a stream that has sent nothing wants.
+    pub after_id: Option<NodeHealthRecordId>,
+    pub limit: i64,
+}
+
+impl Processor<ListNodeHealthAfter> for SurrealProcessor {
+    type Output = Vec<NodeHealthRecordEntity>;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:ListNodeHealthAfter", skip_all, err)]
+    async fn process(&self, input: ListNodeHealthAfter) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "SELECT * FROM node_health_record \
+                 WHERE node = $node \
+                   AND (report_time > $after \
+                        OR (report_time = $after \
+                            AND ($after_id = NONE OR id > $after_id))) \
+                 ORDER BY report_time ASC, id ASC LIMIT $limit",
+            )
+            .bind(("node", input.node))
+            .bind(("after", input.after))
+            .bind(("after_id", input.after_id))
             .bind(("limit", input.limit))
             .await?;
         resp.take::<Vec<NodeHealthRecordEntity>>(0)
@@ -298,19 +400,20 @@ pub struct InsertNodeHealthRecords {
 }
 
 impl Processor<InsertNodeHealthRecords> for SurrealProcessor {
-    type Output = ();
+    /// The rows written, so the caller can put them on the live bus.
+    type Output = Vec<NodeHealthRecordEntity>;
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query:InsertNodeHealthRecords", skip_all, err)]
     async fn process(&self, input: InsertNodeHealthRecords) -> Result<Self::Output, Self::Error> {
         if input.records.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        self.db()
-            .query("INSERT INTO node_health_record $records")
+        let mut resp = self
+            .db()
+            .query("INSERT INTO node_health_record $records RETURN AFTER")
             .bind(("records", input.records))
-            .await?
-            .check()?;
-        Ok(())
+            .await?;
+        resp.take::<Vec<NodeHealthRecordEntity>>(0)
     }
 }
 

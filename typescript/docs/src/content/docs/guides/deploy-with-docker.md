@@ -1,6 +1,6 @@
 ---
 title: Deploy with Docker
-description: Run the control plane from the GHCR images, apply the schema with surrealkit, set up SurrealDB and RabbitMQ, and ship the worker binary from a GitHub release.
+description: Run the control plane from the GHCR images, apply the schema with surrealkit, set up SurrealDB, RabbitMQ and Redis, and ship the worker binary from a GitHub release.
 ---
 
 This guide walks a single-host production deployment from an empty machine to a working dashboard.
@@ -16,9 +16,9 @@ Four processes, all from **one** image, plus the dashboard:
 
 | Component | Run mode | Talks to |
 |---|---|---|
-| Operator API | `dashboard_grpc` | SurrealDB, RabbitMQ |
-| Worker API | `workers_grpc` | SurrealDB, RabbitMQ |
-| Periodic + derivation hooks | `consumer` | SurrealDB, RabbitMQ |
+| Operator API | `dashboard_grpc` | SurrealDB, RabbitMQ, Redis |
+| Worker API | `workers_grpc` | SurrealDB, RabbitMQ, Redis |
+| Periodic + derivation hooks | `consumer` | SurrealDB, RabbitMQ, Redis |
 | Scheduler | `cron` | RabbitMQ |
 | Dashboard | — | Operator API (gRPC) |
 
@@ -27,11 +27,11 @@ Because of the nature of a TCP reverse proxy server, deploying a worker inside a
 is bad practice. Therefore, we do not provide a Docker image for worker nodes.
 :::
 
-State lives in exactly two places: **SurrealDB** (canvases, servers, nodes, edges, accounts,
+Durable state lives in exactly two places: **SurrealDB** (canvases, servers, nodes, edges, accounts,
 config views) and **RabbitMQ** (one durable queue for "this canvas changed" hints, plus one per
-periodic job). Nothing is kept on a container filesystem, so every container is disposable. Redis
-appears in the module scaffolding but the control plane does not connect to it today — you do not
-need a Redis server.
+periodic job). **Redis** is the third datastore and the only one that keeps nothing: it carries the
+operator API's live events between master replicas on a single pub/sub channel, with no persistence
+configured. Nothing is kept on a container filesystem, so every container is disposable.
 
 The two hook modes are the split to understand before you size anything. `cron` is a clock: it
 publishes one execution signal per due job and opens no database connection at all. `consumer`
@@ -47,6 +47,7 @@ Ports, and who is allowed to reach them:
 | `3000` | dashboard | Behind your HTTPS reverse proxy; never publish directly. |
 | `8000` | SurrealDB | **Private.** Root credentials are all it has. |
 | `5672` | RabbitMQ | **Private.** |
+| `6379` | Redis | **Private.** No credentials at all; the listener is the access control. |
 
 :::caution[The gRPC ports are plaintext]
 Both master modes serve cleartext HTTP/2, and the dashboard opens its channel with
@@ -60,8 +61,8 @@ crosses the public internet.
 Work through **[Prerequisites](/guides/prerequisites/)** before this guide. For an image deployment
 you need, from that page: Docker Engine and the Compose plugin, a checkout of this repository on an
 operator machine (the schema files under `database/` are not shipped anywhere else), `surrealkit`,
-`openssl`, a DNS name with a TLS certificate — and SurrealDB and RabbitMQ themselves, which that
-page brings up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
+`openssl`, a DNS name with a TLS certificate — and SurrealDB, RabbitMQ and Redis themselves, which
+that page brings up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
 
 `guru-master` and `manage-tool` are published as plain binaries too: every `master-v*` tag attaches
 them to a GitHub release next to the image (section 10), so a Rust toolchain, `protobuf-compiler`,
@@ -117,22 +118,28 @@ explicitly when you run schema commands. A forgotten flag is how a "local" comma
 rewriting production.
 :::
 
-## 5. SurrealDB and RabbitMQ
+## 5. SurrealDB, RabbitMQ and Redis
 
-Both datastores, their Compose services and the requirements behind them (SurrealDB ≥ 3.2, root
-credentials, durable RocksDB storage; RabbitMQ on the default vhost with a trailing-slash URI) live
-in **[Prerequisites → SurrealDB and RabbitMQ](/guides/prerequisites/#4-surrealdb-and-rabbitmq)**.
+All three datastores, their Compose services and the requirements behind them (SurrealDB ≥ 3.2, root
+credentials, durable RocksDB storage; RabbitMQ on the default vhost with a trailing-slash URI; Redis
+7.x with no credentials and no persistence) live in
+**[Prerequisites → SurrealDB, RabbitMQ and Redis](/guides/prerequisites/#4-surrealdb-rabbitmq-and-redis)**.
 They must be up before any master starts:
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy
+docker compose ps          # surrealdb up, rabbitmq healthy, redis up
 ```
 
-Two consequences worth repeating here, because they shape this deployment: the broker is mandatory
+Three consequences worth repeating here, because they shape this deployment: the broker is mandatory
 in **all four** master modes — periodic work is a message, so a broker outage stalls derivation,
 liveness and certificate renewal — and the masters sign in to SurrealDB as **root**, so the
-credentials in `/srv/guru/.env` are the ones the `x-master` anchor in section 7 passes on.
+credentials in `/srv/guru/.env` are the ones the `x-master` anchor in section 7 passes on. Redis is
+the third: required by the three modes that open a database connection, and far cheaper to lose.
+An outage stops delivery on open `Watch*` streams and nothing else — edits still apply, canvases
+still derive, workers still get their config — and the subscriber reconnects on its own, then has
+every watcher re-read the database. The bundled dashboard does not consume those streams yet, so
+losing Redis is currently invisible in the browser.
 
 ## 6. Apply the schema with `surrealkit`
 
@@ -164,23 +171,25 @@ than committing them.
 ## 7. Run the control plane
 
 `guru-master`'s *deployment* settings come from the environment: `GURU_WORKER_MODE` picks the mode,
-and `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and `GURU_MASTER_KEY` have **no defaults**.
-Everything an operator tunes per installation — health thresholds and retention, the default ACME
-directory, the renewal window, how often each periodic job runs — lives in the database instead
-(step 8), so replicas need no matching environment.
+and `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`, `REDIS_URL` and `GURU_MASTER_KEY` have
+**no defaults**. Everything an operator tunes per installation — health thresholds and retention,
+the default ACME directory, the renewal window, how often each periodic job runs — lives in the
+database instead (step 8), so replicas need no matching environment.
 
 Generate the master key once and keep it with the database credentials — it encrypts every DNS
 provider token and certificate key at rest, and there is no way to recover them without it. The
 three modes that read a secret need it; `cron` never does, and the anchor below simply hands the
-same environment to all four. `manage-tool` is either built from your checkout or downloaded from a
-`master-v*` release (steps 8 and 10); this subcommand needs no database:
+same environment to all four. `REDIS_URL` has that same scope — the three modes that open a
+database connection refuse to start without it, `cron` ignores it. `manage-tool` is either built
+from your checkout or downloaded from a `master-v*` release (steps 8 and 10); this subcommand needs
+no database:
 
 ```sh
 ./target/release/manage-tool generate-master-key
 ```
 
 Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the four
-services inside it, next to `surrealdb` and `rabbitmq`:
+services inside it, next to `surrealdb`, `rabbitmq` and `redis`:
 
 ```yaml
 x-master: &master
@@ -193,6 +202,7 @@ x-master: &master
     SURREALDB_NAMESPACE: ${GURU_NS}
     SURREALDB_NAME: ${GURU_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
@@ -200,9 +210,11 @@ x-master: &master
       condition: service_started
     rabbitmq:
       condition: service_healthy
+    redis:
+      condition: service_started
 
 services:
-  # ... surrealdb and rabbitmq from section 5 ...
+  # ... surrealdb, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -271,7 +283,7 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 It prints the CA certificate and marks every canvas holding a TLS/QUIC relay for re-derivation. It
 refuses to run twice.
 
-Two operational notes that follow from the code:
+Three operational notes that follow from the code:
 
 - The `consumer` and `cron` modes **exit non-zero when the AMQP connection drops** (the client does
   not reconnect, and a silently dead consumer or a clock that publishes nowhere is worse than a
@@ -279,6 +291,11 @@ Two operational notes that follow from the code:
   `restart: unless-stopped` is what makes that self-healing — do not remove it.
 - The images are distroless: no shell, no `curl`. A Compose `healthcheck` that shells out cannot
   work. Monitor from outside instead (a TCP connect to `50051`/`50052`, or scrape the logs).
+- Redis behaves the other way round: the subscriber reconnects by itself (500 ms doubling to 10 s)
+  and logs `live bus connected` each time, and after every reconnect it has every open `Watch*`
+  stream re-read the database, so nothing stays stale. What it held in the meantime is lost and that
+  is fine — the channel carries in-flight events, never state. SurrealDB is still the only thing in
+  this deployment worth backing up (section 13).
 
 Start them:
 
@@ -566,7 +583,7 @@ Work through these in order — each one fails loudly and independently:
 
 ```sh
 # 1. Datastores
-docker compose ps                     # surrealdb + rabbitmq healthy
+docker compose ps                     # surrealdb + rabbitmq healthy, redis up
 
 # 2. Schema
 sk status                             # from section 6
@@ -581,11 +598,17 @@ nc -z <host> 50052 && echo "workers_grpc reachable"
 # 5. Dashboard through the proxy (303 to /auth)
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. Log in with the admin account — this is the only check that exercises
+# 6. Live bus: one line per dashboard replica, printed at startup and after every
+#    Redis reconnect. It is what the `Watch*` streams of the operator API are
+#    served from; the dashboard does not consume them yet, so this log line —
+#    not the browser — is what tells you the bus is healthy.
+docker compose logs master-dashboard | grep 'live bus connected'
+
+# 7. Log in with the admin account — this is the only check that exercises
 #    dashboard → operator API → SurrealDB end to end.
 ```
 
-If step 6 fails with `Forbidden` while steps 1–5 pass, re-read the proxy warning in section 9.
+If step 7 fails with `Forbidden` while steps 1–5 pass, re-read the proxy warning in section 9.
 
 ## 13. Upgrades, backups, rollback
 
@@ -612,7 +635,9 @@ docker compose exec -T surrealdb /surreal export \
 Snapshot the `surreal-data` volume too if you want a fast restore path. RabbitMQ needs no backup:
 its queues hold edit hints and execution signals, both of which the scheduler re-publishes and the
 generation counters make idempotent — but the broker has to be *running*, because no periodic job
-happens while it is not.
+happens while it is not. Redis needs no backup either, and for a stronger reason: it is configured
+without AOF and without RDB, so there is nothing in it to save. Replace the container and the
+masters resubscribe.
 
 **Logs.** Everything is structured `tracing` output on stdout, with `GURU_LOG_LEVEL` taking a full
 `EnvFilter` string (`info`, `warn`, `guru_master=debug,orchestration=debug`, …). Ship it with your
@@ -630,6 +655,8 @@ usual Docker log driver.
 | A TLS Entry's pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
 | Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All four modes require the broker. Check the trailing `/` on the URI. |
+| Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` does not. |
+| A `Watch*` stream stops delivering snapshots (the same read over the unary API shows the change) | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
 | `consumer` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
 | `table does not exist` / cancelled transactions right after a clean install | SurrealDB older than 3.2, or the schema was never applied. Check `surrealkit status`. |
 | `surrealkit` wrote to the wrong database | A `.env` in the working directory supplied the connection. Always pass `--host/--ns/--db/--user/--pass`. |

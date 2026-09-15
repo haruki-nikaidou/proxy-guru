@@ -1,13 +1,13 @@
 ---
 title: 原生部署
-description: 在一台 Linux 主机上安装依赖，以 systemd 从代码检出目录运行控制平面与控制台，连接 SurrealDB 和 RabbitMQ，用 surrealkit 应用 Schema，并用 nginx 为 Worker 终结 TLS。
+description: 在一台 Linux 主机上安装依赖，以 systemd 从代码检出目录运行控制平面与控制台，连接 SurrealDB、RabbitMQ 和 Redis，用 surrealkit 应用 Schema，并用 nginx 为 Worker 终结 TLS。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 [使用 Docker 部署](/zh-cn/guides/deploy-with-docker/)指南从镜像运行应用。本指南讲的是另一种常见形态：
 **同一台机器既是构建机，也是控制平面**。Rust 二进制由 systemd 直接从 `target/release/` 启动，
-控制台运行自己的构建产物。SurrealDB 和 RabbitMQ 可以作为原生服务、托管服务或容器运行，不要求
+控制台运行自己的构建产物。SurrealDB、RabbitMQ 和 Redis 可以作为原生服务、托管服务或容器运行，不要求
 Docker。改完代码只需 `cargo build` 加上重启 unit，中间不需要应用镜像。
 
 本指南还补上了镜像方案里没有覆盖的一件事：把 Worker API 放在**与控制台相同的公网主机名下、由 TLS 保护**，这样互联网上任意位置的
@@ -21,6 +21,7 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 |---|---|---|
 | SurrealDB 3.2 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:8000` |
 | RabbitMQ 4 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:5672` |
+| Redis 7 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:6379` |
 | `guru-master` ×4 | systemd 模板 `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | 控制台 | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 你现有的 nginx，一个 server 块 | `:443` |
@@ -31,8 +32,8 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 ## 2. 前置条件
 
 先完成 **[前置条件](/zh-cn/guides/prerequisites/)**：主机软件包（C 工具链、`cmake`、`perl`、
-`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、代码检出、可访问的 SurrealDB 与
-RabbitMQ，以及一个已配好证书的主机名。原生构建会编译内置（vendored）OpenSSL 与 aws-lc，并用
+`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、代码检出、可访问的 SurrealDB、RabbitMQ 与
+Redis，以及一个已配好证书的主机名。原生构建会编译内置（vendored）OpenSSL 与 aws-lc，并用
 Bun 运行控制台。Docker 是可选项，只有把某个数据存储放在容器中运行时才需要。
 
 从代码检出目录直接运行会带来两个后果，开始之前值得再强调一遍。
@@ -67,7 +68,7 @@ cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 ### 密钥文件
 
 [前置条件](/zh-cn/guides/prerequisites/)已经创建了 `/path/to/proxy-guru/.env`，其中包含数据存储凭据（`SURREALDB_*`、
-`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`）。各个 master 通过 `EnvironmentFile=` 读取同一个文件，因此把它们额外需要的内容追加进去：
+`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`、`REDIS_URL`）。各个 master 通过 `EnvironmentFile=` 读取同一个文件，因此把它们额外需要的内容追加进去：
 
 <Steps>
 
@@ -181,6 +182,10 @@ journalctl -u 'guru-master@*' -n 20
 ```
 
 当 broker 连接断开时，`consumer` 和 `cron` 会以非零状态退出；负责自愈的正是 `Restart=always`，所以请保留它。
+在启用这些 unit 之前，请先让 SurrealDB、RabbitMQ 和 Redis 处于运行状态（或设为开机自启）：
+`dashboard_grpc`、`workers_grpc` 和 `consumer` 在 `REDIS_URL` 不可达时会拒绝启动 —— `cron` 既不需要它
+也不需要数据库 —— 而 `Restart=always` 正是把它们带过"数据存储稍后才起来"这一段的机制。master 起来之后，
+死掉的 Redis 会被就地重连；这期间暂停的只有已打开的 `Watch*` 流的投递。
 
 代码变更后的重新部署要用两个 shell：以 `guru` 身份构建，以运维账户重启。
 
@@ -336,27 +341,30 @@ sudo nginx -t && sudo systemctl reload nginx
 shell 中执行；属于服务账户的检查用 `sudo -iu guru` 包裹。
 
 ```sh
-# 1. Local datastore examples only; use provider health checks for remote services
+# 1. 仅为本地数据存储的示例；远程服务请用服务商的健康检查
 surreal is-ready --endpoint http://127.0.0.1:8000
 rabbitmq-diagnostics -q ping
+redis-cli -h 127.0.0.1 ping                        # PONG；`Watch*` 流所用的实时总线
 
-# 2. Schema (guru: it owns the manifests under database/)
+# 2. Schema（guru：`database/` 下的清单由它拥有）
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
   surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
     --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
-#   → the rollout you applied, [completed]
+#   → 你应用的那次 rollout，[completed]
 
-# 3. Control plane: one banner per mode, no restart loop
+# 3. 控制平面：每种模式一条启动横幅，没有重启循环，并且 dashboard_grpc 打印了一行
+#    `live bus connected` —— 运维 API 的 `Watch*` 流正是由它提供的
+#    （控制台目前还不消费这些流，所以判断依据就是这行日志）
 journalctl -u 'guru-master@*' -n 20
 
-# 4. Dashboard behind nginx (303 to /auth)
+# 4. nginx 后面的控制台（303 跳到 /auth）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 5. gRPC reaches the master through TLS: HTTP/2 200 with a grpc-status header
+# 5. gRPC 经 TLS 到达 master：HTTP/2 200，并带有 grpc-status 响应头
 curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
   --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
-# 6. A worker with a bogus key must be rejected by the master, not by TLS or nginx
+# 6. 使用伪造密钥的 Worker 必须被 master 拒绝，而不是被 TLS 或 nginx 拒绝
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
   ./target/release/guru-worker --master https://guru.example.com \
     --server probe --state-dir /tmp/gw'

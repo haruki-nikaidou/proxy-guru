@@ -1,6 +1,6 @@
 ---
 title: Deploy Natively
-description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to SurrealDB and RabbitMQ, apply the schema with surrealkit, and terminate TLS for workers with nginx.
+description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to SurrealDB, RabbitMQ and Redis, apply the schema with surrealkit, and terminate TLS for workers with nginx.
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -8,8 +8,9 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 The [Deploy with Docker](/guides/deploy-with-docker/) guide runs the application from images. This
 guide is the other common shape: **one machine that is both the build box and the control plane**.
 The Rust binaries run from `target/release/` under systemd, and the dashboard runs from its build
-output. SurrealDB and RabbitMQ may be native services, managed services or containers; Docker is not
-required. A code change is `cargo build` plus a unit restart, with no application image in between.
+output. SurrealDB, RabbitMQ and Redis may be native services, managed services or containers; Docker
+is not required. A code change is `cargo build` plus a unit restart, with no application image in
+between.
 
 It also covers the one thing the image guide leaves out: putting the worker API behind **TLS on the
 same public hostname as the dashboard**, so workers anywhere on the internet can reach it with
@@ -24,6 +25,7 @@ checkout. Nothing else is host-specific.
 |---|---|---|
 | SurrealDB 3.2 | Native service, managed service, or container | `127.0.0.1:8000` by default |
 | RabbitMQ 4 | Native service, managed service, or container | `127.0.0.1:5672` by default |
+| Redis 7 | Native service, managed service, or container | `127.0.0.1:6379` by default |
 | `guru-master` ×4 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
 | dashboard | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | your existing nginx, one server block | `:443` |
@@ -35,9 +37,9 @@ the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent
 
 Work through **[Prerequisites](/guides/prerequisites/)** first: the host packages (C toolchain,
 `cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, surrealkit, Bun, the checkout, reachable
-SurrealDB and RabbitMQ services, and a hostname with a certificate. The native build compiles
+SurrealDB, RabbitMQ and Redis services, and a hostname with a certificate. The native build compiles
 vendored OpenSSL and aws-lc and runs the dashboard from Bun. Docker is optional and only needed if
-you choose to run either datastore in a container.
+you choose to run one of the datastores in a container.
 
 Two consequences of running from a checkout are worth restating before you start.
 
@@ -76,8 +78,9 @@ continuing.
 ### The secrets file
 
 [Prerequisites](/guides/prerequisites/) already created `/path/to/proxy-guru/.env` with the
-datastore credentials (`SURREALDB_*`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`). The masters
-read the same file through `EnvironmentFile=`, so append what they add:
+datastore credentials — `SURREALDB_*`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`, and
+`REDIS_URL=redis://127.0.0.1:6379/`, which needs no credentials at all. The masters read the same
+file through `EnvironmentFile=`, so append what they add:
 
 <Steps>
 
@@ -200,7 +203,11 @@ journalctl -u 'guru-master@*' -n 20
 ```
 
 `consumer` and `cron` exit non-zero when the broker connection drops; `Restart=always` is what heals
-them, so keep it.
+them, so keep it. Have SurrealDB, RabbitMQ and Redis running (or enabled at boot) before you enable
+these units: `dashboard_grpc`, `workers_grpc` and `consumer` refuse to start without a reachable
+`REDIS_URL` — `cron` needs neither it nor the database — and `Restart=always` is what carries them
+over a datastore that comes up later. Once a master is up, a Redis that dies is reconnected in
+place; only delivery on open `Watch*` streams pauses meanwhile.
 
 Redeploying after a code change is two shells: build as `guru`, restart as the operator.
 
@@ -379,14 +386,15 @@ per-server key is in the command the dashboard renders, never in a served file.
 ## 8. Verify
 
 Work through these in order — each fails loudly and independently. Run the datastore health checks
-provided by your service manager or managed provider. The first two commands below are examples for
-a local native installation; skip them for remote services. The remaining checks belong in a fresh
-operator shell. Checks for the service account are wrapped in `sudo -iu guru`.
+provided by your service manager or managed provider. The first three commands below are examples
+for a local native installation; skip them for remote services. The remaining checks belong in a
+fresh operator shell. Checks for the service account are wrapped in `sudo -iu guru`.
 
 ```sh
 # 1. Local datastore examples only; use provider health checks for remote services
 surreal is-ready --endpoint http://127.0.0.1:8000
 rabbitmq-diagnostics -q ping
+redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
 # 2. Schema (guru: it owns the manifests under database/)
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
@@ -394,7 +402,9 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a &
     --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
 #   → the rollout you applied, [completed]
 
-# 3. Control plane: one banner per mode, no restart loop
+# 3. Control plane: one banner per mode, no restart loop, and one `live bus connected`
+#    from dashboard_grpc — the operator API's `Watch*` streams are served from it
+#    (the dashboard does not consume them yet, so this line is the check)
 journalctl -u 'guru-master@*' -n 20
 
 # 4. Dashboard behind nginx (303 to /auth)

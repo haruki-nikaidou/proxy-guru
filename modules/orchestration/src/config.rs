@@ -66,6 +66,10 @@ pub struct OrchestrationConfig {
     /// documented TLS-terminating proxy; turn off when `:50052` is exposed
     /// directly, or a worker could spoof its observed address.
     pub trust_proxy_address_headers: bool,
+    /// How often an idle `Watch*` stream sends an empty keep-alive and
+    /// re-checks the session that opened it. Keep it under any proxy idle
+    /// timeout in front of the dashboard API.
+    pub stream_keepalive_secs: u64,
     /// The public origin workers dial and the install command downloads from,
     /// e.g. `https://guru.example.com`. Empty means the dashboard cannot render
     /// an install command.
@@ -97,6 +101,7 @@ impl Default for OrchestrationConfig {
             acme_interval_secs: 60,
             relay_rotation_interval_secs: 3600,
             trust_proxy_address_headers: true,
+            stream_keepalive_secs: 15,
             agent_public_base_url: String::new(),
             agent_download_path: "/agent".to_string(),
             agent_update_poll_secs: 60,
@@ -186,6 +191,13 @@ impl OrchestrationConfig {
 
     pub fn relay_rotation_interval(&self) -> Duration {
         Duration::from_secs(self.relay_rotation_interval_secs)
+    }
+
+    /// The keep-alive cadence of a live stream, never zero:
+    /// `tokio::time::interval` panics on a zero period, and an operator who
+    /// writes `0` means "as often as reasonable", not "crash the API".
+    pub fn stream_keepalive(&self) -> Duration {
+        Duration::from_secs(self.stream_keepalive_secs.max(1))
     }
 
     /// The directory an Entry resolves to: its own, or the default when empty.

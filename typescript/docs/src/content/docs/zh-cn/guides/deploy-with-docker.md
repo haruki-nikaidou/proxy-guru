@@ -1,6 +1,6 @@
 ---
 title: 使用 Docker 部署
-description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，搭建 SurrealDB 与 RabbitMQ，并从 GitHub release 分发 worker 二进制文件。
+description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，搭建 SurrealDB、RabbitMQ 与 Redis，并从 GitHub release 分发 worker 二进制文件。
 ---
 
 本指南带你把单机生产部署从一台空机器一路做到可用的控制台。它假设你熟悉 Linux、Docker 和反向代理，
@@ -15,9 +15,9 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 
 | 组件 | 运行模式 | 通信对象 |
 |---|---|---|
-| 运维 API | `dashboard_grpc` | SurrealDB、RabbitMQ |
-| Worker API | `workers_grpc` | SurrealDB、RabbitMQ |
-| 周期任务 + 派生钩子 | `consumer` | SurrealDB、RabbitMQ |
+| 运维 API | `dashboard_grpc` | SurrealDB、RabbitMQ、Redis |
+| Worker API | `workers_grpc` | SurrealDB、RabbitMQ、Redis |
+| 周期任务 + 派生钩子 | `consumer` | SurrealDB、RabbitMQ、Redis |
 | 调度器 | `cron` | RabbitMQ |
 | 控制台 | — | 运维 API（gRPC） |
 
@@ -28,7 +28,8 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 
 状态只存在两个地方：**SurrealDB**（画布、服务器、节点、边、账号、配置视图）和 **RabbitMQ**
 （一个持久队列承载"这个画布变了"的提示，外加每个周期任务一个队列）。容器文件系统上不保存任何东西，
-所以每个容器都是可丢弃的。Redis 出现在模块脚手架里，但控制平面目前并不连接它 —— 你不需要 Redis 服务器。
+所以每个容器都是可丢弃的。**Redis** 也是必需的，但它不持有状态：它在单一 pub/sub 频道上，把运维 API
+的实时事件在各个 master 副本之间传递，并且不配置任何持久化，重启它最多丢掉正在路上的那几个事件。
 
 这两种钩子模式的分工，是你在做容量规划之前就应该理解的。`cron` 是一只时钟：它为每个到期任务发布一条执行
 信号，完全不打开数据库连接。`consumer` 才真正干活 —— 派生钩子*以及*所有周期任务 —— 因此清扫、存活检测和
@@ -43,6 +44,7 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 | `3000` | 控制台 | 放在你的 HTTPS 反向代理之后；绝不要直接对外暴露。 |
 | `8000` | SurrealDB | **私有。** 它持有的只有 root 凭据。 |
 | `5672` | RabbitMQ | **私有。** |
+| `6379` | Redis | **私有。** 只承载 pub/sub；其中没有任何持久状态。 |
 
 :::caution[两个 gRPC 端口都是明文的]
 两种 master 模式都以明文 HTTP/2 提供服务，而控制台用 `ChannelCredentials.createInsecure()` 打开通道。
@@ -54,8 +56,8 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 
 先完成 **[前置条件](/zh-cn/guides/prerequisites/)**，再来看本指南。对于镜像部署，你需要那一页中的：
 Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（`database/` 下的 Schema 文件不以镜像形式
-发布）、`surrealkit`、`openssl`、一个带 TLS 证书的 DNS 名称 —— 以及 SurrealDB 和 RabbitMQ 本身，那一页
-会用 `/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
+发布）、`surrealkit`、`openssl`、一个带 TLS 证书的 DNS 名称 —— 以及 SurrealDB、RabbitMQ 和 Redis 本身，
+那一页会用 `/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
 
 `manage-tool` CLI 同样不在镜像里，但它不必自己构建：它和 `guru-master` 一样，会作为原始二进制文件随每个
 `master-v*` release 发布（第 10 节）。因此 Rust 工具链、`protobuf-compiler`、C 工具链和 `cmake` 只有在你
@@ -100,22 +102,25 @@ Schema 命令时请始终显式传入 `--host/--ns/--db/--user/--pass`。一个�
 生产库的原因。
 :::
 
-## 5. SurrealDB 与 RabbitMQ
+## 5. SurrealDB、RabbitMQ 与 Redis
 
-两个数据存储、它们的 Compose 服务以及背后的要求（SurrealDB ≥ 3.2、root 凭据、持久的 RocksDB 存储；
-RabbitMQ 使用默认 vhost，URI 以斜杠结尾）都在
-**[前置条件 → SurrealDB 与 RabbitMQ](/zh-cn/guides/prerequisites/#4-surrealdb-与-rabbitmq)** 中。
+三个数据存储、它们的 Compose 服务以及背后的要求（SurrealDB ≥ 3.2、root 凭据、持久的 RocksDB 存储；
+RabbitMQ 使用默认 vhost，URI 以斜杠结尾；Redis 7.x，只做 pub/sub，不需要任何持久化）都在
+**[前置条件 → SurrealDB、RabbitMQ 与 Redis](/zh-cn/guides/prerequisites/#4-surrealdbrabbitmq-与-redis)** 中。
 它们必须在任何 master 启动之前就位：
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy
+docker compose ps          # surrealdb up, rabbitmq healthy, redis up
 ```
 
-有两个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部四种** master 模式下消息中间件都是
-必需的 —— 周期性工作就是一条消息，所以 broker 中断会让派生、存活检测和证书续期一起停摆 —— 以及 master
+有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部四种** master 模式下消息中间件都是
+必需的 —— 周期性工作就是一条消息，所以 broker 中断会让派生、存活检测和证书续期一起停摆；master
 是以 **root** 身份登录 SurrealDB 的，所以 `/srv/guru/.env` 里的凭据正是第 7 节中 `x-master` 锚点向下
-传递的那一份。
+传递的那一份；而 Redis 在会打开数据库连接的那三种模式下必填（`cron` 不用它），丢掉它的代价也小得多。
+中断只会让已打开的 `Watch*` 流停止投递，除此之外别无影响 —— 编辑照样生效，画布照样派生，Worker 照样
+拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。随包发布的控制台目前
+还不消费这些流，所以丢掉 Redis 在浏览器里暂时是看不出来的。
 
 ## 6. 用 `surrealkit` 应用 Schema
 
@@ -145,7 +150,7 @@ Schema 匹配的 master 版本**之后**。首次安装时两个半程可以背�
 ## 7. 运行控制平面
 
 `guru-master` 的*部署*类设置来自环境变量：`GURU_WORKER_MODE` 选择运行模式，而
-`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI` 和 `GURU_MASTER_KEY` **没有默认值**。
+`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL` 和 `GURU_MASTER_KEY` **没有默认值**。
 所有由运维按安装实例调优的项 —— 健康阈值与保留期、默认的 ACME 目录、续期窗口、各个周期任务的运行频率 ——
 都改为存放在数据库里（第 8 节），因此副本之间不需要保持环境变量一致。
 
@@ -172,6 +177,7 @@ x-master: &master
     SURREALDB_NAMESPACE: ${GURU_NS}
     SURREALDB_NAME: ${GURU_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
@@ -179,9 +185,11 @@ x-master: &master
       condition: service_started
     rabbitmq:
       condition: service_healthy
+    redis:
+      condition: service_started
 
 services:
-  # ... surrealdb and rabbitmq from section 5 ...
+  # ... surrealdb, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -246,12 +254,16 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 
 它会打印 CA 证书，并把每个包含 TLS/QUIC relay 的画布标记为需要重新派生。它拒绝被执行第二次。
 
-从代码中可以直接得出的两条运维注意事项：
+从代码中可以直接得出的三条运维注意事项：
 
 - `consumer` 和 `cron` 模式在 **AMQP 连接断开时会以非零码退出**（客户端不会重连，而一个静默死掉的
   consumer、或者一个把消息发到虚无处的时钟，比重启更糟）：
   `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`。
   `restart: unless-stopped` 正是让它自愈的机制 —— 不要移除它。
+- **Redis 里没有任何需要保护的状态。** 它的 Compose 服务以 `--save "" --appendonly no` 运行，因为经过
+  它的只有实时事件；重启它最多让已打开的 `Watch*` 流错过几次投递，订阅端每次重连都会打印一行
+  `live bus connected`，随后让每个 watcher 重新读一遍数据库，所以不会有内容停留在旧状态。但它在启动时
+  必须可达：`REDIS_URL` 未设置或服务端连不上时，三种打开数据库连接的模式都会立即退出。
 - 镜像是 distroless 的：没有 shell，没有 `curl`。依赖调用 shell 的 Compose `healthcheck` 无法工作。
   请改从外部监控（TCP 连接 `50051`/`50052`，或采集日志）。
 
@@ -530,27 +542,32 @@ chmod +x guru-worker
 按顺序逐项完成 —— 每一项都会独立地、显式地失败：
 
 ```sh
-# 1. Datastores
-docker compose ps                     # surrealdb + rabbitmq healthy
+# 1. 数据存储
+docker compose ps                     # surrealdb、rabbitmq、redis 均已启动
 
 # 2. Schema
-sk status                             # from section 6
-#   → the rollout you applied, [completed]
+sk status                             # 来自第 6 节
+#   → 你应用的那次 rollout，[completed]
 
-# 3. Control plane: one banner per mode, and no restart loop
+# 3. 控制平面：每种模式一条启动横幅，且没有重启循环
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
 
-# 4. Worker API reachable from a data-plane node's network
+# 4. Worker API 可从数据平面节点的网络访问
 nc -z <host> 50052 && echo "workers_grpc reachable"
 
-# 5. Dashboard through the proxy (303 to /auth)
+# 5. 经反向代理访问控制台（303 跳到 /auth）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. Log in with the admin account — this is the only check that exercises
-#    dashboard → operator API → SurrealDB end to end.
+# 6. 实时总线：每个 `dashboard_grpc` 副本一行，在启动时以及每次 Redis 重连后打印。运维 API 的
+#    `Watch*` 流正是由它来提供的；控制台目前还不消费这些流，所以判断总线是否健康靠的是
+#    这行日志，而不是浏览器。
+docker compose logs master-dashboard | grep 'live bus connected'
+
+# 7. 用管理员账号登录 —— 这是唯一能端到端走通
+#    控制台 → 运维 API → SurrealDB 的检查。
 ```
 
-如果第 1–5 步都通过，而第 6 步以 `Forbidden` 失败，请重读第 9 节里的代理警告。
+如果第 1–5 步都通过，而第 7 步以 `Forbidden` 失败，请重读第 9 节里的代理警告。
 
 ## 13. 升级、备份、回滚
 
@@ -577,6 +594,8 @@ docker compose exec -T surrealdb /surreal export \
 如果你想要一条快速恢复路径，也请给 `surreal-data` 卷做快照。RabbitMQ 不需要备份：它的队列里装的是编辑
 提示和执行信号，两者都会被调度器重新发布，而代数计数器保证了幂等 —— 但 broker 必须是*运行中*的，
 因为它不在的时候不会有任何周期任务发生。
+Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB 配置运行，里面根本没有可保存的东西。
+换掉容器，各个 master 会重新订阅。
 
 **日志。** 所有输出都是 stdout 上结构化的 `tracing` 日志，`GURU_LOG_LEVEL` 接受完整的 `EnvFilter`
 字符串（`info`、`warn`、`guru_master=debug,orchestration=debug`，……）。用你惯用的 Docker 日志驱动
@@ -594,6 +613,8 @@ docker compose exec -T surrealdb /surreal export \
 | 某个 TLS Entry 的 pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
 | 某个 relay pod 一直停在 `invalid_pods`，提示 `internal CA not initialised` | 执行一次 `manage-tool orchestration init-ca`。 |
 | master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。四种模式都需要 broker。检查 URI 结尾的 `/`。 |
+| master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 不需要。 |
+| 某个 `Watch*` 流不再投递快照（用一元 API 读同一份数据却能看到那次变更） | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
 | `consumer` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
 | 全新安装后立刻出现 `table does not exist` / 事务被取消 | SurrealDB 版本低于 3.2，或者 Schema 从未被应用。检查 `surrealkit status`。 |
 | `surrealkit` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了连接信息。请始终显式传入 `--host/--ns/--db/--user/--pass`。 |

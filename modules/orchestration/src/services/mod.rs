@@ -10,7 +10,8 @@
 //!    ([`converge::ensure_switch_safe`]),
 //! 6. write the rows and bump the canvas generation in one transaction,
 //! 7. publish [`CanvasDirty`](crate::events::CanvasDirty) so the derivation hook
-//!    picks the canvas up ([`rollout::DirtyNotifier`]).
+//!    picks the canvas up ([`notify::Notifier`]), together with the live
+//!    dashboard event for the same change.
 
 pub mod acme;
 pub mod agent;
@@ -22,7 +23,9 @@ pub mod derive;
 pub mod dns;
 pub mod edge;
 pub mod health;
+pub mod live;
 pub mod node;
+pub mod notify;
 pub mod rollout;
 pub mod server;
 pub mod topology;

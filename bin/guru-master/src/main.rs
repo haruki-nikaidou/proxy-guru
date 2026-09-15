@@ -2,7 +2,9 @@
 //!
 //! The control plane. One binary, four run modes selected with `--mode`:
 //!
-//! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration`),
+//! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration`), including
+//!   the live `Watch*` streams, which it feeds from Redis pub/sub so a change
+//!   made on one replica reaches the dashboards attached to the others,
 //! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller,
 //! - `consumer` — the AMQP derivation hook and every periodic job,
 //! - `cron` — the scheduler: it publishes one execution signal per due job and
@@ -36,6 +38,7 @@ use orchestration::events::{
 use orchestration::hooks::acme::AcmeCronHook;
 use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::hooks::health::HealthCronHook;
+use orchestration::hooks::live::{LiveBus, run_redis_subscriber};
 use orchestration::hooks::schedule::IntervalJob;
 use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::rpc::{OrchestrationGrpc, WorkerAgentGrpc};
@@ -47,8 +50,10 @@ use orchestration::services::config::OrchestrationConfigService;
 use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
 use orchestration::services::health::HealthService;
+use orchestration::services::live::LiveService;
 use orchestration::services::node::NodeService;
-use orchestration::services::rollout::{DirtyNotifier, RolloutService};
+use orchestration::services::notify::{LivePublisher, Notifier};
+use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::secret::SecretKey;
@@ -122,6 +127,13 @@ struct Cli {
                 consumes, and cron publishes the periodic execution signals."
     )]
     amqp_uri: Option<String>,
+    #[arg(
+        long,
+        env = "REDIS_URL",
+        help = "Redis URL, e.g. redis://127.0.0.1:6379/. Required in every mode \
+                but cron: it carries the live dashboard events between replicas."
+    )]
+    redis_url: Option<String>,
     // A zero interval panics `tokio::time::interval`, so the range is enforced
     // here: clap applies the parser to the environment variable as well.
     #[arg(
@@ -197,9 +209,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: auth_config,
     };
     let api_keys = ApiKeyService { db: db.clone() };
+    // The broker and Redis are opened once for every serving mode: all three
+    // publish dirty-canvas events, and all three publish live events (a
+    // consumer's derivation pass moves what a dashboard renders just as much as
+    // an operator's edit does).
+    let uri = amqp_uri(cli.amqp_uri.as_deref())?;
+    let (connection, pool) = amqp_pool(uri).await?;
+    let redis = redis::Client::open(redis_url(cli.redis_url.as_deref())?)?;
+    let notifier = Notifier {
+        amqp: Some(pool.clone()),
+        live: Some(LivePublisher::Redis(
+            redis::aio::ConnectionManager::new(redis.clone()).await?,
+        )),
+    };
     let health = HealthService {
         db: db.clone(),
         config: config.clone(),
+        notifier: notifier.clone(),
     };
     let ca = CaService {
         db: db.clone(),
@@ -210,11 +236,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: db.clone(),
         secrets: secrets.clone(),
         config: config.clone(),
+        notifier: notifier.clone(),
     };
 
     match cli.mode {
         WorkerMode::DashboardGrpc => {
-            let (_connection, notifier) = notifier(cli.amqp_uri.as_deref()).await?;
+            let bus = LiveBus::new();
+            let live_token = CancellationToken::new();
+            let subscriber = tokio::spawn(run_redis_subscriber(
+                redis.clone(),
+                bus.clone(),
+                live_token.clone(),
+            ));
             let accounts = AccountService {
                 db: db.clone(),
                 hasher,
@@ -251,7 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 certificates: AcmeService {
                     db: db.clone(),
                     secrets,
-                    config,
+                    config: config.clone(),
                     notifier,
                     http: reqwest::Client::new(),
                     issuer: Arc::new(InstantAcmeIssuer),
@@ -262,6 +295,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 configs: OrchestrationConfigService {
                     configs: configs.clone(),
                 },
+                live: LiveService::new(db.clone(), bus, config.clone()),
+                sessions: sessions.clone(),
             };
             let auth = AuthGrpc {
                 accounts,
@@ -270,15 +305,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 configs: AuthConfigService { configs },
             };
             tracing::info!(addr = %cli.dashboard_addr, "serving operator API");
+            // Keepalive is load-bearing for the `Watch*` streams: a browser or
+            // bridge that dies without closing its TCP connection would
+            // otherwise hold a shared view open forever.
             Server::builder()
+                .http2_keepalive_interval(Some(Duration::from_secs(30)))
+                .http2_keepalive_timeout(Some(Duration::from_secs(20)))
                 .layer(AuthLayer::new(sessions, api_keys))
                 .add_service(AuthServer::new(auth))
                 .add_service(OrchestrationServer::new(orchestration))
                 .serve_with_shutdown(cli.dashboard_addr, shutdown())
                 .await?;
+            live_token.cancel();
+            // A panicking subscriber must not be absorbed: without it every open
+            // dashboard silently stops updating, so the process exits non-zero.
+            if let Err(error) = subscriber.await {
+                tracing::error!(%error, "the live bus subscriber task failed");
+                return Err(error.into());
+            }
         }
         WorkerMode::WorkersGrpc => {
-            let (_connection, notifier) = notifier(cli.amqp_uri.as_deref()).await?;
             let hub = WatchHub::default();
             let lease = SessionLease::default();
             let agents = AgentService {
@@ -327,13 +373,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         WorkerMode::Consumer => {
-            let uri = amqp_uri(cli.amqp_uri.as_deref())?;
-            let (connection, pool) = amqp_pool(uri).await?;
-            // This mode publishes as well as consumes: an issuance touches the
-            // canvases of everything it re-certified, and those need deriving.
-            let notifier = DirtyNotifier {
-                amqp: Some(pool.clone()),
-            };
             let acme = AcmeCronHook {
                 acme: AcmeService {
                     db: db.clone(),
@@ -558,14 +597,15 @@ async fn amqp_pool(uri: &str) -> Result<(Connection, AmqpPool), Box<dyn std::err
     Ok((connection, pool))
 }
 
-/// The dirty-canvas notifier for a serving mode. The broker is mandatory: a
-/// serving master that cannot publish dirty-canvas events would accept edits
-/// nothing derives.
-async fn notifier(
-    uri: Option<&str>,
-) -> Result<(Connection, DirtyNotifier), Box<dyn std::error::Error>> {
-    let (connection, pool) = amqp_pool(amqp_uri(uri)?).await?;
-    Ok((connection, DirtyNotifier { amqp: Some(pool) }))
+/// The configured Redis URL, or an actionable error: the live bus is not
+/// optional either. A serving master without it would accept edits whose
+/// events never reach the dashboards attached to the other replicas.
+fn redis_url(url: Option<&str>) -> Result<&str, Box<dyn std::error::Error>> {
+    url.ok_or_else(|| {
+        "Redis is required: set REDIS_URL (or pass --redis-url), for example \
+         redis://127.0.0.1:6379/"
+            .into()
+    })
 }
 
 /// The configured broker URI, or an actionable error: AMQP is not optional.

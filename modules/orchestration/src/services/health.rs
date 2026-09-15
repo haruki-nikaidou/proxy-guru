@@ -8,7 +8,7 @@
 
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::health::{
-    DeleteHealthRecordsBefore, InsertServerHealthRecord,
+    DeleteHealthRecordsBefore, HealthWrite, InsertServerHealthRecord,
     ListNodeHealthHistory as ListNodeHealthHistoryRows,
     ListServerHealthHistory as ListServerHealthHistoryRows, ListServersForLivenessSweep,
     NewNodeHealthRecord, NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity,
@@ -21,8 +21,10 @@ use crate::entities::surreal::server::{
 use crate::entities::surreal::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
 };
+use crate::events::live::{CanvasChangeKind, LiveMessage};
 use crate::services::OrchestrationError;
 use crate::services::agent::{AgentIdentity, PodResult};
+use crate::services::notify::Notifier;
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -40,6 +42,32 @@ pub const DEFAULT_NODE_HISTORY_LIMIT: i64 = 500;
 pub struct HealthService {
     pub db: SurrealProcessor,
     pub config: OrchestrationConfig,
+    pub notifier: Notifier,
+}
+
+impl HealthService {
+    /// Puts one accepted health write on the live bus: the server record every
+    /// server-health stream follows, plus the node rows it carried.
+    ///
+    /// `status_changed` is what canvas views filter on — a report every interval
+    /// per server would otherwise reload every open canvas.
+    async fn publish(&self, server: &ServerId, write: &HealthWrite) {
+        self.notifier
+            .live(LiveMessage::ServerHealth {
+                server: record_key(&server.0),
+                canvas: record_key(&write.canvas.0),
+                record: (&write.record).into(),
+                status_changed: write.previous_status != write.record.status,
+            })
+            .await;
+        if !write.nodes.is_empty() {
+            self.notifier
+                .live(LiveMessage::NodeHealth {
+                    records: write.nodes.iter().map(Into::into).collect(),
+                })
+                .await;
+        }
+    }
 }
 
 /// One `[[forwarding]]` of a stored snapshot: the entry as the worker sees it,
@@ -130,7 +158,7 @@ impl Processor<RecordHealthReport> for HealthService {
         let server_id = input.agent.server.clone();
         // The generation is checked inside the write itself, so a report from a
         // session that was superseded between two statements lands nowhere.
-        let accepted = self
+        let write = self
             .db
             .process(InsertServerHealthRecord {
                 server: input.agent.server,
@@ -149,9 +177,10 @@ impl Processor<RecordHealthReport> for HealthService {
                 nodes: node_records(&view, &report.pods, now),
             })
             .await?;
-        if !accepted {
+        let Some(write) = write else {
             return Err(OrchestrationError::PermissionDenied);
-        }
+        };
+        self.publish(&server_id, &write).await;
         // A changed address set re-derives every destination that dials this
         // server. The write is fenced on the generation and touches the canvas
         // only when something actually changed; the stale-canvas sweep picks the
@@ -171,12 +200,19 @@ impl Processor<RecordHealthReport> for HealthService {
             if !unchanged {
                 self.db
                     .process(UpdateReportedAddresses {
-                        server: server_id,
-                        canvas: server.canvas,
+                        server: server_id.clone(),
+                        canvas: server.canvas.clone(),
                         generation: input.agent.generation,
                         reported,
                     })
                     .await?;
+                self.notifier
+                    .canvas_changed(
+                        &server.canvas,
+                        CanvasChangeKind::ServerIpChanged,
+                        vec![record_key(&server_id.0)],
+                    )
+                    .await;
             }
         }
         Ok(())
@@ -323,15 +359,19 @@ impl Processor<MarkServerOffline> for HealthService {
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:MarkServerOffline", skip_all, err)]
     async fn process(&self, input: MarkServerOffline) -> Result<Self::Output, Self::Error> {
-        Ok(self
+        let write = self
             .db
             .process(SetServerHealthStatus {
-                server: input.server,
+                server: input.server.clone(),
                 generation: input.generation,
                 status: ServerHealthStatus::Offline,
                 now: Utc::now(),
             })
-            .await?)
+            .await?;
+        if let Some(write) = &write {
+            self.publish(&input.server, write).await;
+        }
+        Ok(write.is_some())
     }
 }
 
@@ -360,7 +400,8 @@ impl Processor<SweepLiveness> for HealthService {
             if !silent {
                 continue;
             }
-            self.db
+            let write = self
+                .db
                 .process(SetServerHealthStatus {
                     server: server.id.clone(),
                     generation: None,
@@ -368,7 +409,13 @@ impl Processor<SweepLiveness> for HealthService {
                     now: input.now,
                 })
                 .await?;
-            flipped.push(server.id);
+            // `None` means the write changed nothing — the server went offline
+            // between the list and the update, or lost its session. Either way it
+            // is not this sweep's flip, and the caller's contract is the flips.
+            if let Some(write) = &write {
+                self.publish(&server.id, write).await;
+                flipped.push(server.id);
+            }
         }
         Ok(flipped)
     }

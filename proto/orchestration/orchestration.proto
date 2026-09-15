@@ -717,6 +717,103 @@ message SetOrchestrationConfigReply {
   guru.base.ConfigDocument config = 1;
 }
 
+// ---- live streams -----------------------------------------------------------
+// Every Watch* stream opens with a snapshot and then sends a new message per
+// change; an empty KeepAlive is sent every `stream_keepalive_secs`. Streams need
+// a human session and end with UNAUTHENTICATED once that session is gone, and
+// with NOT_FOUND if the watched record disappears. The server never asks the
+// client to re-request: a slow consumer receives fewer, newer snapshots.
+message KeepAlive {}
+
+enum CanvasChangeKind {
+  CANVAS_CHANGE_KIND_UNSPECIFIED = 0; // the opening snapshot, or a refresh after a bus reconnect
+  CANVAS_UPDATED = 1;
+  CANVAS_DELETED = 2;
+  SERVER_CREATED = 3;
+  SERVER_UPDATED = 4;
+  SERVER_MOVED = 5;
+  SERVER_DELETED = 6;
+  SERVER_IP_CHANGED = 7;
+  NODE_CREATED = 8;
+  NODE_REPLACED = 9;
+  NODE_META_UPDATED = 10;
+  NODE_RETIRED = 11;
+  NODE_DELETED = 12;
+  EDGE_CONNECTED = 13;
+  EDGE_RETIRED = 14;
+  EDGE_DELETED = 15;
+  SERVER_HEALTH_CHANGED = 16;
+}
+message WatchCanvasRequest {
+  string canvas_id = 1;
+}
+// The whole GetCanvas reply again. `generation` is the root canvas's edit counter
+// and is informational only: metadata edits (positions, names) do not bump it.
+// Several changes may collapse into one snapshot; `cause` is then the latest.
+message CanvasSnapshot {
+  int64 generation = 1;
+  CanvasChangeKind cause = 2;
+  repeated string affected_ids = 3;
+  GetCanvasReply contents = 4;
+}
+message CanvasEvent {
+  oneof event {
+    CanvasSnapshot snapshot = 1;
+    KeepAlive keep_alive = 2;
+  }
+}
+// `since` is RFC 3339; empty means one hour ago.
+message WatchServerHealthRequest {
+  string server_id = 1;
+  string since = 2;
+}
+message ServerHealthSnapshot {
+  ServerHealthStatus status = 1;
+  string last_seen_at = 2;
+  repeated ServerHealthRecord records = 3; // oldest first
+}
+message ServerHealthEvent {
+  oneof event {
+    ServerHealthSnapshot snapshot = 1;
+    ServerHealthRecord record = 2;
+    KeepAlive keep_alive = 3;
+  }
+}
+// `limit` bounds the opening snapshot; 0 means 50.
+message WatchNodeHealthRequest {
+  string node_id = 1;
+  uint32 limit = 2;
+}
+message NodeHealthSnapshot {
+  NodeHealthStatus status = 1; // the newest record's status; UNSPECIFIED when there is none
+  repeated NodeHealthRecord records = 2; // newest first
+}
+message NodeHealthEvent {
+  oneof event {
+    NodeHealthSnapshot snapshot = 1;
+    NodeHealthRecord record = 2;
+    KeepAlive keep_alive = 3;
+  }
+}
+// Any canvas of a tree may be given; the snapshot covers every server of the tree.
+message WatchRolloutsRequest {
+  string canvas_id = 1;
+}
+message ServerRollout {
+  string server_id = 1;
+  string canvas_id = 2;
+  GetServerRolloutStatusReply status = 3;
+}
+message RolloutSnapshot {
+  repeated ServerRollout servers = 1;
+}
+message RolloutEvent {
+  oneof event {
+    RolloutSnapshot snapshot = 1;
+    KeepAlive keep_alive = 2;
+  }
+}
+
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
   rpc ListCanvases(ListCanvasesRequest) returns (ListCanvasesReply);
@@ -747,6 +844,10 @@ service Orchestration {
   rpc RequestAgentUpdate(RequestAgentUpdateRequest) returns (RequestAgentUpdateReply);
   rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
   rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
+  rpc WatchCanvas(WatchCanvasRequest) returns (stream CanvasEvent);
+  rpc WatchServerHealth(WatchServerHealthRequest) returns (stream ServerHealthEvent);
+  rpc WatchNodeHealth(WatchNodeHealthRequest) returns (stream NodeHealthEvent);
+  rpc WatchRollouts(WatchRolloutsRequest) returns (stream RolloutEvent);
   rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);
   rpc ListDnsProviders(ListDnsProvidersRequest) returns (ListDnsProvidersReply);
   rpc UpdateDnsProvider(UpdateDnsProviderRequest) returns (UpdateDnsProviderReply);

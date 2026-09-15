@@ -18,6 +18,7 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 | `--namespace` | `SURREALDB_NAMESPACE` | *必填* |
 | `--database` | `SURREALDB_NAME` | *必填* |
 | `--amqp-uri` | `AMQP_URI` | *所有模式下均必填* |
+| `--redis-url` | `REDIS_URL` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（必须 ≥ 1） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填*（仅支持环境变量；32 字节随机数据的 base64 编码 —— `manage-tool generate-master-key`） |
@@ -29,6 +30,17 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 `amqp://guru:guru@127.0.0.1:5672/`，末尾的 `/` 表示选用默认 vhost。**所有**模式都需要消息代理，
 `cron` 也不例外：周期性工作是以消息形式发布的，因此代理中断会让派生、存活检测和证书续期一直停滞，
 直到代理恢复。
+
+在会打开数据库连接的那三种模式下 Redis 同样必填，理由也属于同一类：它是运维 API `Watch*` 流背后的
+实时总线。URL 形如 `redis://127.0.0.1:6379/`。每一次变更都会在频道 `guru:orchestration:live` 上发布
+一个事件，而每个 `dashboard_grpc` 副本只订阅它一次，因此在某个副本上做出的编辑也会到达由其他副本
+提供的那些流。这里什么都不会被存下来：整个集群不需要该服务器提供任何持久化，既不需要 AOF，也不需要
+RDB。Redis 中断只会让已打开的 `Watch*` 流收不到投递——订阅端会带退避地重连，并在每次重连后让每个
+watcher 重新读取数据库，因此它一恢复就不会有任何内容停留在旧状态——但它绝不会影响派生，也不会影响
+Worker 实际运行的内容。
+
+随包发布的控制台目前还不消费这些流；它读取一元（unary）API，并在页面跳转时刷新。它们是为需要推送的
+客户端准备的 gRPC API，因此检查这条总线靠的是日志行 `live bus connected`，而不是盯着浏览器。
 
 `GURU_MASTER_KEY` 用于加密所有静态存储的密钥材料——DNS 提供商 API 令牌、ACME 账户密钥、证书和 CA
 私钥——凡是需要读取密钥材料的三种模式都必须提供：`dashboard_grpc`、`workers_grpc` 和 `consumer`。
@@ -265,7 +277,7 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 | 键 | 结构体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址） |
 
 在 `surrealkit sync` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
 查看已存储的内容。`list` 和 `get` 会原样打印该行 —— 它们不做解码，因此即便某份文档会让 master 启动时

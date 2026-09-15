@@ -41,7 +41,19 @@ pub struct CertificateEntity {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, SurrealValue)]
+/// The `rkyv` derives put this enum on the live bus unchanged
+/// ([`crate::events::live::LiveMessage::CertificateChanged`]).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    SurrealValue,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum CertificateStatus {
     /// Wanted by an Entry, not yet issued.

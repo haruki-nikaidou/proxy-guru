@@ -18,6 +18,7 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 | `--namespace` | `SURREALDB_NAMESPACE` | *必須* |
 | `--database` | `SURREALDB_NAME` | *必須* |
 | `--amqp-uri` | `AMQP_URI` | *すべてのモードで必須* |
+| `--redis-url` | `REDIS_URL` | *`dashboard_grpc`、`workers_grpc`、`consumer` で必須* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（1 以上である必要があります） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *`dashboard_grpc`、`workers_grpc`、`consumer` では必須*（環境変数のみ。32 バイトのランダム値を base64 エンコードしたもの — `manage-tool generate-master-key`） |
@@ -30,6 +31,19 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 `amqp://guru:guru@127.0.0.1:5672/` のような形式で、末尾の `/` がデフォルトの vhost を選択します。ブローカーは
 `cron` を含む**すべて**のモードで必須です。定期処理はメッセージとして publish されるため、ブローカーが停止すると、
 復旧するまで導出・liveness・証明書更新が止まります。
+
+Redis は、データベース接続を開く 3 つのモードで必須であり、その理由も同じ種類のものです。これは
+オペレーター API の `Watch*` ストリームを支えるライブバスです。URL は `redis://127.0.0.1:6379/` のような
+形式です。すべての変更はチャンネル `guru:orchestration:live` にイベントを 1 件 publish し、各
+`dashboard_grpc` レプリカはこれを一度だけ subscribe します。そのため、あるレプリカに対して行われた編集は、
+他のレプリカが提供しているストリームにも届きます。何も保存されません。フリートはこのサーバーに
+永続化を求めず、AOF も RDB も必要としません。Redis が停止すると、開いている `Watch*` ストリームは配信を
+失います — subscriber はバックオフしながら再接続し、すべての watcher にデータベースの再読み込みを求めるため、
+復旧すれば古い状態が残ることはありません — が、導出やワーカーが実行する内容に影響することは決してありません。
+
+同梱のダッシュボードはまだこれらのストリームを利用していません。unary API を読み、画面遷移のたびに
+取得し直します。これらは push を求めるクライアント向けの gRPC API であり、バスの状態はブラウザーを
+眺めるのではなく、ログ行 `live bus connected` で確認します。
 
 `GURU_MASTER_KEY` は保存時のすべてのシークレット — DNS プロバイダーの API トークン、ACME アカウントキー、
 証明書と CA の秘密鍵 — を暗号化するもので、シークレットを読み取る 3 つのモード
@@ -285,7 +299,7 @@ destination = "backend.internal:8080"
 | キー | 構造体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます） |
 
 `surrealkit sync` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
 `manage-tool config list` で保存されている内容を確認できます。`list` と `get` は行をそのまま出力し、

@@ -7,4 +7,5 @@
 pub mod acme;
 pub mod derive;
 pub mod health;
+pub mod live;
 pub mod schedule;

@@ -933,8 +933,8 @@ async fn retention_deletes_only_records_older_than_their_ttl() -> TestResult {
     };
     let stale = now - w.health.config.server_health_ttl() - TimeDelta::hours(1);
     let fresh = now - w.health.config.server_health_ttl() + TimeDelta::hours(1);
-    assert!(insert(stale).await?);
-    assert!(insert(fresh).await?);
+    assert!(insert(stale).await?.is_some());
+    assert!(insert(fresh).await?.is_some());
 
     w.health.process(TrimHealthHistory { now }).await?;
 
@@ -979,6 +979,7 @@ async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> DateTime<Ut
         })
         .await
         .unwrap()
+        .is_some()
     );
     stale
 }
@@ -1013,6 +1014,7 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
                 liveness_interval_secs: 0,
                 ..w.config.clone()
             },
+            notifier: w.notifier.clone(),
         },
     };
     let tick = Utc::now();

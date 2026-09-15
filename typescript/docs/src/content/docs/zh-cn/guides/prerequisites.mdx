@@ -1,6 +1,6 @@
 ---
 title: 前置条件
-description: 在部署控制平面之前先准备好它依赖的一切——SurrealDB、RabbitMQ、Docker、构建工具链、surrealkit、Bun，以及一个带证书的主机名。
+description: 在部署控制平面之前先准备好它依赖的一切——SurrealDB、RabbitMQ、Redis、Docker、构建工具链、surrealkit、Bun，以及一个带证书的主机名。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -15,6 +15,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 |---|---|---|
 | SurrealDB ≥ 3.2 | 需要 | 需要 |
 | RabbitMQ 3.13/4.x | 需要 | 需要 |
+| Redis ≥ 7 | 需要 | 需要 |
 | Docker Engine + Compose | 需要（用于运行已发布的应用镜像；数据存储是否使用它可自行选择） | 不需要 |
 | `surrealkit` | 需要 | 需要 |
 | Rust 工具链 + `protoc` | 仅在你选择自行构建 `manage-tool` 时需要——它也可以从 `master-v*` release 下载 | 需要——它要构建全部二进制 |
@@ -22,9 +23,6 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | `perl` | 不需要 | 需要——`guru-worker` 会编译内置的 OpenSSL，而它由一个 perl 脚本完成配置 |
 | Bun | 不需要 | 需要（构建并运行控制台） |
 | 主机名 + TLS 证书 | 需要 | 需要 |
-| Redis | 不需要 | 不需要 |
-
-Redis 出现在模块脚手架中，但目前没有任何二进制会连接它——不要为它准备实例。
 
 ## 1. Docker Engine 与 Compose（仅镜像部署）
 
@@ -245,7 +243,7 @@ Docker 或其他主机管理权限。
 
 </Steps>
 
-## 4. SurrealDB 与 RabbitMQ
+## 4. SurrealDB、RabbitMQ 与 Redis
 
 ### 控制平面对它们的要求
 
@@ -257,6 +255,9 @@ Docker 或其他主机管理权限。
 | RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。本项目只测试过 RabbitMQ。 |
 | | URI 形式：`amqp://user:password@host:5672/`，其中**结尾的斜杠**表示选择默认 vhost。`/%2f` 这种写法会被解析器拒绝。 |
 | | 在**全部四种 master 模式中消息代理都是必需的**。周期性工作本身*就是*消息：它停机期间，没有任何过期画布被清扫，没有任何静默的服务器被标记为 `Offline`，也没有任何证书会被续期。请把它当作依赖，而不是可选的优化。 |
+| Redis | **7.x 或更高版本。** 只用到 pub/sub —— 控制平面不在其中存储任何东西，不声明任何东西，也不需要持久化，因此任何可访问的服务端都可以，包括托管服务。整个集群共用一个实例：各副本正是通过它彼此发现的。 |
+| | URL 形式：`redis://127.0.0.1:6379/`，通过 `REDIS_URL` 传入。在会打开数据库连接的**那三种 master 模式下必填**（`dashboard_grpc`、`workers_grpc`、`consumer`）；`cron` 从不接触它。 |
+| | 它承载运维 API 的 `Watch*` 流：每一次变更都会在频道 `guru:orchestration:live` 上发布一个事件，而每个 `dashboard_grpc` 副本只订阅它一次，再把事件分发给自己提供的那些流。中断只会让已打开的流收不到投递，除此之外别无影响——编辑照样生效、照样派生，订阅端也会带退避地重连，并在之后让每个 watcher 重新读取数据库。随包发布的控制台目前还不消费这些流，所以检查的依据是某个 master 日志里的 `live bus connected`，而不是浏览器。 |
 
 :::caution[非 RabbitMQ 消息代理并非可直接替换的实现]
 控制平面使用 AMQP 0-9-1 客户端 `amqprs`，并依赖 RabbitMQ 的 exchange 与 queue 声明语义。
@@ -265,9 +266,10 @@ Docker 或其他主机管理权限。
 :::
 
 数据存储不要求使用容器或 Docker Compose。你可以按照官方
-[SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)和
-[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)安装，使用托管服务，或采用下方的
-Compose 示例。无论选择哪种方式，都必须满足上表的要求。
+[SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)、
+[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
+[Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装，使用托管服务，或采用
+下方的 Compose 示例。无论选择哪种方式，都必须满足上表的要求。
 
 ### 凭据
 
@@ -298,6 +300,7 @@ SURREALDB_NAME=guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd 之后会通过 `EnvironmentFile=` 逐字读取这个文件。请完整写出 `AMQP_URI`，因为 systemd
@@ -330,11 +333,13 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="原生部署">
 
-按照官方 [SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)和
-[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)安装这两个服务。为 SurrealDB
+按照官方 [SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)、
+[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
+[Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装这三个服务。为 SurrealDB
 配置持久化存储、Root 凭据以及监听 `8000` 端口的回环地址；为 RabbitMQ 配置 `.env` 中的用户和
-密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址。使用操作系统的服务管理器启动两者，
-并将它们设为开机自启。
+密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址；Redis 只需要一个监听 `6379` 端口的回环
+地址，并关掉它的持久化（`--save '' --appendonly no`）——控制平面不在其中存放任何状态。使用操作系统的
+服务管理器启动这三个服务，并将它们设为开机自启。
 
 Docker Compose 只是可选方案，并非部署要求。若选择它，仓库中的 `docker-compose.yml` 提供同样
 只监听回环地址的布局，并将持久化数据存放在 `./data/` 下。
@@ -342,7 +347,7 @@ Docker Compose 只是可选方案，并非部署要求。若选择它，仓库�
 </TabItem>
 <TabItem label="镜像部署">
 
-创建部署目录（镜像部署指南中为 `/srv/guru`），把两个数据存储写进它的 Compose 文件，
+创建部署目录（镜像部署指南中为 `/srv/guru`），把三个数据存储写进它的 Compose 文件，
 与保存其凭据的 `.env` 放在一起：
 
 ```yaml
@@ -381,6 +386,12 @@ services:
       timeout: 10s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Pub/sub only: nothing is persisted.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
 volumes:
   surreal-data:
   rabbit-data:
@@ -388,7 +399,7 @@ volumes:
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq
+sudo docker compose up -d surrealdb rabbitmq redis
 ```
 
 各个 master 会在之后的镜像部署指南中加入同一个文件——数据存储必须先存在，因为在任何 master
@@ -397,9 +408,10 @@ sudo docker compose up -d surrealdb rabbitmq
 </TabItem>
 </Tabs>
 
-Compose 示例还有两个关键细节。`surrealdb/surrealdb` 镜像以一个无特权用户运行，无法写入 root
+Compose 示例还有三个关键细节。`surrealdb/surrealdb` 镜像以一个无特权用户运行，无法写入 root
 所有的卷或绑定挂载，因此需要 `user: root`。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
-所以仓库的 Compose 文件固定了 `hostname:`；否则每次重新创建容器都会得到一个空的消息代理。
+所以仓库的 Compose 文件固定了 `hostname:`；否则每次重新创建容器都会得到一个空的消息代理。Redis
+刻意没有卷：它的服务命令关掉了 RDB 与 AOF，因为经过它的一切都只是过路的实时事件。
 
 consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orchestration_canvas_dirty`，
 以及对应五个周期任务的 `guru_orchestration_derive_stale_canvases`、

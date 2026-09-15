@@ -17,9 +17,10 @@ use crate::entities::surreal::server::{
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
 };
+use crate::events::live::{CanvasChangeKind, LiveMessage, RolloutScope};
 use crate::services::OrchestrationError;
 use crate::services::health::{NodeVerdicts, ParsedSnapshot, SnapshotEntry, parse_snapshot};
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::watch::{SessionLease, WatchHub};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
@@ -42,7 +43,7 @@ pub struct AgentService {
     pub db: SurrealProcessor,
     pub hub: WatchHub,
     pub lease: SessionLease,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
 
@@ -129,6 +130,18 @@ impl Processor<RegisterWorker> for AgentService {
         self.hub
             .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
         self.notifier.notify(&server.canvas).await;
+        // A registration reconciles what the worker runs and clears `in_flight`,
+        // and it may have brought a new observed address with it.
+        self.notifier
+            .canvas_changed(
+                &server.canvas,
+                CanvasChangeKind::ServerIpChanged,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
+        self.notifier
+            .rollout_changed(RolloutScope::Server(record_key(&server.id.0)))
+            .await;
         Ok(secret)
     }
 }
@@ -216,26 +229,14 @@ impl Processor<PollAgentUpdate> for AgentService {
         // A failure ends the request; the operator reads why and asks again.
         if let Some(error) = input.last_error {
             tracing::warn!(server = %key, %error, "worker reported a failed self-update");
-            self.db
-                .process(SettleAgentUpdate {
-                    id: server.id,
-                    reported_version: None,
-                    error: Some(error),
-                })
-                .await?;
+            self.settle_update(&server, None, Some(error)).await?;
             return Ok(None);
         }
         let Some(requested) = server.agent_update_requested.clone() else {
             return Ok(None);
         };
         if server.agent_version.as_deref() == Some(requested.as_str()) {
-            self.db
-                .process(SettleAgentUpdate {
-                    id: server.id,
-                    reported_version: Some(requested),
-                    error: None,
-                })
-                .await?;
+            self.settle_update(&server, Some(requested), None).await?;
             return Ok(None);
         }
         // The request names the release that was published when it was made;
@@ -264,14 +265,35 @@ impl Processor<PollAgentUpdate> for AgentService {
             ),
         };
         tracing::warn!(server = %key, %error, "dropping an update request");
+        self.settle_update(&server, None, Some(error)).await?;
+        Ok(None)
+    }
+}
+
+impl AgentService {
+    /// Ends an update request on the row and tells open canvas views the
+    /// server's agent state changed. No dirty hint: nothing derived reads it.
+    async fn settle_update(
+        &self,
+        server: &ServerEntity,
+        reported_version: Option<String>,
+        error: Option<String>,
+    ) -> Result<(), OrchestrationError> {
         self.db
             .process(SettleAgentUpdate {
-                id: server.id,
-                reported_version: None,
-                error: Some(error),
+                id: server.id.clone(),
+                reported_version,
+                error,
             })
             .await?;
-        Ok(None)
+        self.notifier
+            .canvas_changed(
+                &server.canvas,
+                CanvasChangeKind::ServerUpdated,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
+        Ok(())
     }
 }
 
@@ -396,12 +418,14 @@ impl Processor<AckConfig> for AgentService {
         // The verdict is known now; nobody should have to wait for the next
         // report to see it. The status write is fenced on the session like the
         // ack itself.
-        self.db
+        let node_rows = self
+            .db
             .process(InsertNodeHealthRecords { records: nodes })
             .await?;
-        self.db
+        let health = self
+            .db
             .process(SetServerHealthStatus {
-                server: server.id,
+                server: server.id.clone(),
                 generation: Some(input.agent.generation),
                 status: if degraded {
                     ServerHealthStatus::Degraded
@@ -412,6 +436,27 @@ impl Processor<AckConfig> for AgentService {
             })
             .await?;
         self.notifier.notify(&server.canvas).await;
+        let server_key = record_key(&server.id.0);
+        self.notifier
+            .rollout_changed(RolloutScope::Server(server_key.clone()))
+            .await;
+        if !node_rows.is_empty() {
+            self.notifier
+                .live(LiveMessage::NodeHealth {
+                    records: node_rows.iter().map(Into::into).collect(),
+                })
+                .await;
+        }
+        if let Some(write) = &health {
+            self.notifier
+                .live(LiveMessage::ServerHealth {
+                    server: server_key,
+                    canvas: record_key(&write.canvas.0),
+                    record: (&write.record).into(),
+                    status_changed: write.previous_status != write.record.status,
+                })
+                .await;
+        }
         Ok(())
     }
 }

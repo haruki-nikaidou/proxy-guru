@@ -1,16 +1,16 @@
 ---
 title: Local Development
-description: Bring up SurrealDB, RabbitMQ, the control plane and the dashboard on one machine.
+description: Bring up SurrealDB, RabbitMQ, Redis, the control plane and the dashboard on one machine.
 ---
 
-The control plane needs a SurrealDB instance and an AMQP broker. Everything else runs from the
-workspace.
+The control plane needs a SurrealDB instance, an AMQP broker and a Redis server. Everything else
+runs from the workspace.
 
 :::caution[The repository `.env` is not a dev profile]
 The root `.env` can hold **production** credentials (`SURREALDB_HOST`, `SURREALDB_USER`,
-`SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`), and every process you
-start inherits it. Pass the database flags explicitly — or override the variables — so a local run
-cannot talk to a remote database by accident.
+`SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`, `REDIS_URL`), and every
+process you start inherits it. Pass the database flags explicitly — or override the variables — so
+a local run cannot talk to a remote database by accident.
 :::
 
 ## 1. Dependencies
@@ -20,12 +20,18 @@ docker run -d --name guru-surreal -p 8000:8000 \
   surrealdb/surrealdb:latest start --user root --pass root
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+
+# Pub/sub only, so nothing is persisted; `docker compose up redis` from the
+# repository root starts the same thing.
+docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
+  redis-server --save '' --appendonly no
 ```
 
 Use a SurrealDB **3.2 or newer** server. Older 3.0 binaries disagree with the client the workspace
 links against and mis-handle assertions that read a row written earlier in the same transaction.
 
-The broker URI form matters: use `amqp://guest:guest@127.0.0.1:5672/` for the default vhost.
+The broker URI form matters: use `amqp://guest:guest@127.0.0.1:5672/` for the default vhost. Redis
+takes `redis://127.0.0.1:6379/` and no credentials.
 
 ## 2. Schema
 
@@ -80,7 +86,8 @@ cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 Nothing derives a canvas until a `consumer` runs, so start one in a second shell — it is both the
@@ -92,7 +99,8 @@ cargo run -p guru-master -- \
   --mode consumer \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 In a third shell, the clock. `cron` publishes one execution signal per due job and nothing else:
@@ -107,7 +115,13 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
 
 `workers_grpc` is the fourth mode — the worker API plus the config-view poller — and takes exactly
 the same arguments as `dashboard_grpc`. Every mode needs the broker: with RabbitMQ down, nothing
-starts, and with `cron` or the `consumer` down, no periodic job happens.
+starts, and with `cron` or the `consumer` down, no periodic job happens. `--redis-url` (or
+`REDIS_URL`) is required by the three modes above that open a database connection, and unused by
+`cron`; without it they abort with
+`Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/`. It
+is the live bus behind the operator API's `Watch*` streams: with Redis down, an open stream stops
+receiving, while edits and derivation carry on as usual. The dashboard does not consume those
+streams yet, so a browser notices nothing either way.
 
 To make a periodic job run without waiting for its interval, delete its claim row — the table is
 `orchestration_job_run`, one row per job keyed by the job name, so

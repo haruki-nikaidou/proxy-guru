@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
-use auth::entities::surreal::account::{AccountId, AccountRole};
+use auth::config::AuthConfig;
+use auth::entities::surreal::account::{AccountId, AccountRole, CreateAccount};
 use auth::services::identity::{Identity, IdentityKind};
+use auth::services::session::{Login, LoginResult, SessionService};
+use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::surreal::canvas::{
@@ -16,6 +19,7 @@ use orchestration::entities::surreal::server::{
 };
 use orchestration::entities::surreal::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
+use orchestration::hooks::live::LiveBus;
 use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
 use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
@@ -23,7 +27,9 @@ use orchestration::services::canvas::CanvasService;
 use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
 use orchestration::services::health::HealthService;
+use orchestration::services::live::LiveService;
 use orchestration::services::node::NodeService;
+use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
 use orchestration::utils::secret::SecretKey;
@@ -43,6 +49,13 @@ pub async fn setup() -> Result<SurrealProcessor, Box<dyn std::error::Error>> {
         "/../../database/schema/orchestration.surql"
     ))?;
     sp.db().query(ddl).await?.check()?;
+    // The live streams re-validate their session on every keep-alive tick, so
+    // the gRPC-level tests need real `account` and `session` tables.
+    let auth_ddl = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../database/schema/auth.surql"
+    ))?;
+    sp.db().query(auth_ddl).await?.check()?;
     Ok(sp)
 }
 
@@ -198,6 +211,9 @@ pub struct World {
     pub db: SurrealProcessor,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
+    /// The in-process live bus every service in this world publishes to.
+    pub bus: LiveBus,
+    pub notifier: Notifier,
     pub canvases: CanvasService,
     pub servers: ServerService,
     pub nodes: NodeService,
@@ -209,46 +225,64 @@ pub struct World {
     pub dns: DnsProviderService,
     pub certificates: AcmeService,
     pub deriver: CanvasDeriver,
+    pub live: LiveService,
+    pub sessions: SessionService,
 }
 
 pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
+    world_with(OrchestrationConfig::default()).await
+}
+
+/// A world whose services carry `config`; the gRPC stream tests shorten the
+/// keep-alive so a test does not have to wait fifteen seconds for one.
+pub async fn world_with(
+    config: OrchestrationConfig,
+) -> Result<World, Box<dyn std::error::Error>> {
     let db = setup().await?;
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
-    let config = OrchestrationConfig::default();
+    let bus = LiveBus::new();
+    // No broker, but a real bus: `amqp: None` keeps the derivation hook driven
+    // by the tests themselves, while live events travel as they would in
+    // production minus the Redis round trip.
+    let notifier = Notifier {
+        amqp: None,
+        live: Some(LivePublisher::InProcess(bus.clone())),
+    };
     Ok(World {
         canvases: CanvasService {
             db: db.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
         },
         servers: ServerService {
             db: db.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
             config: config.clone(),
         },
         nodes: NodeService {
             db: db.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
             config: config.clone(),
         },
         edges: EdgeService {
             db: db.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
             config: config.clone(),
         },
         agents: AgentService {
             db: db.clone(),
             hub: Default::default(),
             lease: Default::default(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
             config: config.clone(),
         },
         rollout: RolloutService {
             db: db.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
         },
         health: HealthService {
             db: db.clone(),
-            config: Default::default(),
+            config: config.clone(),
+            notifier: notifier.clone(),
         },
         dns: DnsProviderService {
             db: db.clone(),
@@ -258,7 +292,7 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
             db: db.clone(),
             secrets: secrets.clone(),
             config: config.clone(),
-            notifier: Default::default(),
+            notifier: notifier.clone(),
             http: reqwest::Client::new(),
             issuer: Arc::new(InstantAcmeIssuer),
         },
@@ -271,7 +305,16 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
             db: db.clone(),
             secrets: secrets.clone(),
             config: config.clone(),
+            notifier: notifier.clone(),
         },
+        live: LiveService::new(db.clone(), bus.clone(), config.clone()),
+        sessions: SessionService {
+            db: db.clone(),
+            hasher: Argon2PasswordAlgorithm::default(),
+            config: AuthConfig::default(),
+        },
+        bus,
+        notifier,
         db,
         secrets,
         config,
@@ -300,5 +343,30 @@ impl World {
             })
             .await?
             .expect("every server has a config view"))
+    }
+
+    /// Creates a Maintainer and logs it in; returns the session token, which is
+    /// also the session id the `Watch*` streams re-validate.
+    pub async fn login(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let hasher = Argon2PasswordAlgorithm::default();
+        self.db
+            .process(CreateAccount {
+                email: "operator@example.com".to_string(),
+                password_hash: hasher.hash_password("operator-password")?,
+                role: AccountRole::Maintainer,
+            })
+            .await?;
+        match self
+            .sessions
+            .process(Login {
+                email: "operator@example.com".to_string(),
+                password: "operator-password".to_string(),
+                user_agent: "tests".to_string(),
+            })
+            .await?
+        {
+            LoginResult::Success(token) => Ok(token),
+            LoginResult::InvalidCredentials => Err("login failed".into()),
+        }
     }
 }

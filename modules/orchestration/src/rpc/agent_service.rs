@@ -6,6 +6,7 @@ use crate::entities::surreal::server::{
     ReportedAddresses, ServerEntity, ServerId,
 };
 use crate::entities::surreal::view::TakeInFlight;
+use crate::events::live::RolloutScope;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
 use crate::services::agent::{
     AckConfig, AgentService, PodResult, PollAgentUpdate, RegisterCredential, RegisterWorker,
@@ -114,6 +115,12 @@ impl WorkerAgentGrpc {
         let Some(snapshot) = taken else {
             return Ok(true);
         };
+        // The one publish outside a service: promoting `desired` to `in_flight`
+        // happens here, because only the stream knows a worker is listening.
+        self.agents
+            .notifier
+            .rollout_changed(RolloutScope::Server(ids::record_key(&server.0)))
+            .await;
         let needs_ca = Config::from_toml_str(&snapshot.toml)
             .map_err(|e| Status::internal(format!("stored revision does not parse: {e}")))?
             .relay_ca

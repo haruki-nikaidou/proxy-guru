@@ -4,6 +4,8 @@
 //! publishes one signal per due job and `--mode consumer` runs the pass, so a
 //! sweep fails over and scales exactly like an edit does.
 
+pub mod live;
+
 use kanau::{RkyvMessageDe, RkyvMessageSer};
 use std::task::Poll;
 use time::OffsetDateTime;

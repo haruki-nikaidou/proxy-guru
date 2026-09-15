@@ -7,8 +7,9 @@ use crate::entities::surreal::canvas::{
 };
 use crate::entities::surreal::node::FindImporterOf;
 use crate::entities::surreal::topology::{LoadCanvasContents, LoadCanvasTopology};
+use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyProblem, analyze};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
@@ -19,7 +20,7 @@ use wakuwaku::surreal::SurrealProcessor;
 #[derive(Clone)]
 pub struct CanvasService {
     pub db: SurrealProcessor,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
 }
 
 pub struct CreateCanvas {
@@ -147,15 +148,24 @@ impl Processor<UpdateCanvas> for CanvasService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        // Metadata only: no revision, no re-derivation.
-        Ok(self
+        // Metadata only: no revision, no re-derivation — but the dashboard
+        // renders the name, so the live event is sent all the same.
+        let canvas = self
             .db
             .process(UpdateCanvasMeta {
-                id: input.canvas,
+                id: input.canvas.clone(),
                 name: input.name,
                 description: input.description,
             })
-            .await?)
+            .await?;
+        self.notifier
+            .canvas_changed(
+                &input.canvas,
+                CanvasChangeKind::CanvasUpdated,
+                vec![record_key(&input.canvas.0)],
+            )
+            .await;
+        Ok(canvas)
     }
 }
 
@@ -197,8 +207,17 @@ impl Processor<DeleteCanvas> for CanvasService {
         }
         // The transaction re-checks the import and throws on a race.
         self.db
-            .process(DeleteCanvasRow { id: input.canvas })
+            .process(DeleteCanvasRow {
+                id: input.canvas.clone(),
+            })
             .await?;
+        self.notifier
+            .canvas_changed(
+                &input.canvas,
+                CanvasChangeKind::CanvasDeleted,
+                vec![record_key(&input.canvas.0)],
+            )
+            .await;
         Ok(())
     }
 }

@@ -38,3 +38,12 @@ services:
       interval: 10s
       timeout: 10s
       retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: guru-redis
+    restart: unless-stopped
+    # Pub/sub only: nothing is persisted.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"

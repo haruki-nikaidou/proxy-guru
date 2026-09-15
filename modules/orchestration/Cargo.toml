@@ -24,6 +24,7 @@ surrealdb-types = { workspace = true }
 
 # Messaging
 amqprs = { workspace = true }
+redis = { workspace = true }
 
 # gRPC / transport
 tonic = { workspace = true }
@@ -62,6 +63,6 @@ tokio-util = { workspace = true }
 
 [dev-dependencies]
 surrealdb = { workspace = true, features = ["kv-mem"] }
-testcontainers-modules = { version = "0.15.0", features = ["rabbitmq"] }
+testcontainers-modules = { version = "0.15.0", features = ["rabbitmq", "redis"] }
 x509-parser = { workspace = true, features = ["verify-aws"] }
 tokio = { workspace = true }
