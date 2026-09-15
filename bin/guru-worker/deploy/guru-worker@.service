@@ -6,7 +6,8 @@
 Description=guru data-plane worker (agent, %i)
 After=network-online.target
 Wants=network-online.target
-# A data-plane node never gives up restarting.
+# A data-plane node never gives up restarting. A binary that cannot start is
+# rolled back by the start guard below, not abandoned by systemd.
 StartLimitIntervalSec=0
 
 [Service]
@@ -14,6 +15,7 @@ Type=simple
 User=guru-worker
 Group=guru-worker
 EnvironmentFile=/etc/guru-worker/%i.env
+ExecStartPre=/usr/local/libexec/guru-worker-guard %i
 ExecStart=/opt/guru-worker/current/guru-worker
 Restart=always
 RestartSec=5

@@ -20,6 +20,7 @@ pub mod state;
 pub mod stats;
 pub mod supervisor;
 pub mod tls;
+pub mod update;
 
 use std::sync::atomic::Ordering;
 
@@ -142,6 +143,10 @@ fn read_api_key(file: Option<&std::path::Path>) -> Result<String, BoxError> {
     }
 }
 
+/// How often a worker asks for updates when the master's register reply does
+/// not say.
+const DEFAULT_UPDATE_POLL_SECS: u64 = 60;
+
 async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
     let Some(server_id) = cli.server.clone() else {
         return Err("agent mode requires --server".into());
@@ -179,6 +184,10 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
     }
 
     let shutdown = tokio_util::sync::CancellationToken::new();
+    // An installed update ends the process the same way a signal does; systemd
+    // starts the new version. A rollback the start guard performed since the
+    // last run is reported with the next registration.
+    let update_done = std::sync::Arc::new(tokio::sync::Notify::new());
     let agent = tokio::spawn(agent::run(
         agent::AgentOptions {
             master,
@@ -192,6 +201,10 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
                 ipv6_urls: cli.public_ipv6_urls.clone(),
                 geo_url: cli.geo_url.clone(),
             },
+            update_poll: std::time::Duration::from_secs(DEFAULT_UPDATE_POLL_SECS),
+            self_update: !cli.no_self_update,
+            update_done: update_done.clone(),
+            last_update_error: parking_lot::Mutex::new(update::take_failed()),
         },
         sup.clone(),
         shutdown.clone(),
@@ -203,6 +216,9 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
     tokio::select! {
         _ = term.recv() => {}
         _ = int.recv() => {}
+        _ = update_done.notified() => {
+            tracing::info!("update installed; exiting so systemd starts the new version");
+        }
     }
     tracing::info!("shutting down");
     shutdown.cancel();

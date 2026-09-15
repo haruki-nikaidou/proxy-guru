@@ -134,9 +134,9 @@ enum OrchestrationCommand {
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Publish a built `guru-worker`: copy it under its version into the
-    /// directory nginx serves as `/agent/`, refresh the installer and systemd
-    /// unit next to it, and record its version, SHA-256 and architecture so
-    /// the dashboard offers it. The binary is run once
+    /// directory nginx serves as `/agent/`, refresh the installer, systemd unit
+    /// and start guard next to it, and record its version, SHA-256 and
+    /// architecture so the dashboard offers it. The binary is run once
     /// (`--version`), so publish on a host that can execute it.
     Publish {
         /// The built binary, e.g. `target/release/guru-worker`.
@@ -439,10 +439,11 @@ async fn create_admin(
 }
 
 /// What `agent publish` ships next to the binary. Embedded, so the tool needs
-/// no checkout at runtime and both always come from the same source revision
-/// as the binary they accompany.
+/// no checkout at runtime and the three always come from the same source
+/// revision as the binary they accompany.
 const INSTALL_SH: &str = include_str!("../../guru-worker/deploy/install.sh");
 const UNIT_FILE: &str = include_str!("../../guru-worker/deploy/guru-worker@.service");
+const GUARD_SH: &str = include_str!("../../guru-worker/deploy/guru-worker-guard");
 
 /// Publishes a built `guru-worker` for the install command and self-update.
 ///
@@ -468,6 +469,7 @@ async fn agent_publish(
     publish_file(&version_dir.join("guru-worker"), &bytes, 0o755)?;
     publish_file(&dir.join("install.sh"), INSTALL_SH.as_bytes(), 0o644)?;
     publish_file(&dir.join("guru-worker@.service"), UNIT_FILE.as_bytes(), 0o644)?;
+    publish_file(&dir.join("guru-worker-guard"), GUARD_SH.as_bytes(), 0o644)?;
 
     db.process(PublishAgentRelease {
         version: version.clone(),

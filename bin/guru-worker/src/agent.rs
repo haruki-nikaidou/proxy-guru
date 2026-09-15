@@ -9,9 +9,10 @@ use crate::addresses::{self, Discovered, Sources};
 use crate::certs;
 use crate::state::{self, LastKnownGood};
 use crate::supervisor::{ApplyOutcome, Supervisor};
+use crate::update::{self, UpdateOptions, UpdatePlan};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigRequest, HealthReport, PodStatus, RegisterRequest, ReportedAddresses,
-    WatchConfigRequest, worker_agent_client::WorkerAgentClient,
+    AckConfigRequest, HealthReport, PodStatus, PollAgentUpdateRequest, RegisterRequest,
+    ReportedAddresses, WatchConfigRequest, worker_agent_client::WorkerAgentClient,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -39,6 +40,17 @@ pub struct AgentOptions {
     pub health_interval: Duration,
     /// Where the worker learns its own public addresses and country.
     pub sources: Sources,
+    /// Time between two update polls when the master's register reply does not
+    /// dictate one.
+    pub update_poll: Duration,
+    /// Off: an offered update is refused and reported, never installed.
+    pub self_update: bool,
+    /// Signalled once an update is installed and the process should exit for
+    /// systemd to start the new version.
+    pub update_done: Arc<tokio::sync::Notify>,
+    /// What the start guard recorded about the last update on this host, sent
+    /// with the next successful registration and then forgotten.
+    pub last_update_error: parking_lot::Mutex<Option<String>>,
 }
 
 /// What this build registers as; the master shows it next to the server and
@@ -128,19 +140,29 @@ async fn session(
         reported_addresses: Some(discovered.to_proto()),
         agent_version: VERSION.to_owned(),
         agent_arch: std::env::consts::ARCH.to_owned(),
-        // Filled in once the worker can self-update; nothing to report yet.
-        last_update_error: String::new(),
+        last_update_error: opts.last_update_error.lock().clone().unwrap_or_default(),
     });
     register
         .metadata_mut()
         .insert("x-api-key", opts.api_key.parse()?);
     let reply = client.register(register).await?.into_inner();
+    // Delivered; a registration that failed keeps it for the next attempt.
+    opts.last_update_error.lock().take();
     let refresh_key: MetadataValue<Ascii> = reply.refresh_key.parse()?;
     // The master's interval wins so both sides agree on the offline threshold; the
     // `--health-interval` flag only covers a master that does not send one.
     let health_interval = match reply.health_report_interval_secs {
         0 => opts.health_interval,
         secs => Duration::from_secs(u64::from(secs)),
+    };
+    let update = UpdateOptions {
+        poll: match reply.agent_update_poll_secs {
+            0 => opts.update_poll,
+            secs => Duration::from_secs(u64::from(secs)),
+        },
+        enabled: opts.self_update,
+        master: opts.master.clone(),
+        done: opts.update_done.clone(),
     };
     tracing::info!(
         server = %opts.server_id,
@@ -169,6 +191,7 @@ async fn session(
         opts.applied_revision.clone(),
         opts.sources.clone(),
         discovered,
+        update,
         health_token,
     ));
 
@@ -308,7 +331,8 @@ async fn apply_revision(
 }
 
 /// Streams one `HealthReport` per interval until `token` is cancelled or the master
-/// ends the stream. The first report goes out at once.
+/// ends the stream. The first report goes out at once. On its own, slower cadence
+/// it also asks the master for updates and installs the one it is given.
 #[allow(clippy::too_many_arguments)]
 async fn report_health(
     mut client: WorkerAgentClient<Channel>,
@@ -318,11 +342,17 @@ async fn report_health(
     applied_revision: Arc<AtomicI64>,
     sources: Sources,
     mut last_addresses: Discovered,
+    update: UpdateOptions,
     token: CancellationToken,
 ) -> Result<(), BoxError> {
+    // The streaming call below borrows `client` for the whole session; the update
+    // poll needs its own handle (a clone shares the connection).
+    let mut poller = client.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<HealthReport>(1);
     let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
-    request.metadata_mut().insert("x-refresh-key", refresh_key);
+    request
+        .metadata_mut()
+        .insert("x-refresh-key", refresh_key.clone());
     let call = client.report_health(request);
     tokio::pin!(call);
 
@@ -334,6 +364,14 @@ async fn report_health(
     address_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     address_ticker.tick().await; // the immediate first tick was covered by Register
     let mut pending_addresses: Option<ReportedAddresses> = None;
+    // Update polls are spread so a fleet restarted together does not ask in
+    // lockstep; the immediate first tick is skipped, registration just happened.
+    let mut update_ticker = tokio::time::interval(jitter(update.poll));
+    update_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    update_ticker.tick().await;
+    // The first report that gets through proves this binary: it runs, connects
+    // and authenticates, so a swap that installed it is confirmed.
+    let mut confirmed = false;
     let stats = sup.lock().await.stats();
     loop {
         tokio::select! {
@@ -347,6 +385,20 @@ async fn report_health(
                 if discovered != last_addresses {
                     pending_addresses = Some(discovered.to_proto());
                     last_addresses = discovered;
+                }
+            }
+            _ = update_ticker.tick() => {
+                if let Some(plan) = poll_update(&mut poller, &refresh_key, None).await {
+                    tracing::info!(from = VERSION, to = %plan.version, "update offered; installing");
+                    match update::apply(&plan, &update).await {
+                        Ok(()) => update.done.notify_one(),
+                        Err(error) => {
+                            tracing::error!(to = %plan.version, %error, "update failed");
+                            // Reported at once, so the dashboard shows why without
+                            // waiting a poll interval.
+                            poll_update(&mut poller, &refresh_key, Some(error)).await;
+                        }
+                    }
                 }
             }
             _ = ticker.tick() => {
@@ -372,7 +424,42 @@ async fn report_health(
                     // iteration observes the reply.
                     continue;
                 }
+                if !confirmed {
+                    confirmed = true;
+                    update::confirm_pending();
+                }
             }
+        }
+    }
+}
+
+/// One `PollAgentUpdate`: reports `last_error` if there is one, and returns the
+/// update the master wants installed — never the running version, and nothing
+/// when the call fails (the next tick asks again).
+async fn poll_update(
+    client: &mut WorkerAgentClient<Channel>,
+    refresh_key: &MetadataValue<Ascii>,
+    last_error: Option<String>,
+) -> Option<UpdatePlan> {
+    let mut request = tonic::Request::new(PollAgentUpdateRequest {
+        last_error: last_error.unwrap_or_default(),
+    });
+    request
+        .metadata_mut()
+        .insert("x-refresh-key", refresh_key.clone());
+    match client.poll_agent_update(request).await {
+        Ok(reply) => reply
+            .into_inner()
+            .update
+            .filter(|update| update.version != VERSION)
+            .map(|update| UpdatePlan {
+                version: update.version,
+                url: update.url,
+                sha256: update.sha256,
+            }),
+        Err(status) => {
+            tracing::warn!(error = %status, "update poll failed");
+            None
         }
     }
 }

@@ -71,4 +71,8 @@ pub struct Cli {
     pub geo_url: String,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+    /// Agent mode: never self-update, even when the dashboard asks. A requested
+    /// update is reported back as refused, so the operator sees why.
+    #[arg(long, env = "GURU_NO_SELF_UPDATE")]
+    pub no_self_update: bool,
 }

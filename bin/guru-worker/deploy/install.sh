@@ -22,6 +22,8 @@ set -eu
 
 PREFIX=/opt/guru-worker
 ETC=/etc/guru-worker
+LIBEXEC=/usr/local/libexec
+GUARD="$LIBEXEC/guru-worker-guard"
 UNIT=/etc/systemd/system/guru-worker@.service
 SVC_USER=guru-worker
 
@@ -51,10 +53,11 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
 fi
 install -d -m 0755 -o "$SVC_USER" -g "$SVC_USER" "$PREFIX"
 install -d -m 0750 -o root -g "$SVC_USER" "$ETC"
+install -d -m 0755 "$LIBEXEC"
 
 # 2. The binary: downloaded next to where it will live, verified, then
 #    installed under its version and made `current`. The version that was
-#    current stays on disk as `previous`.
+#    current stays on disk as `previous` so the start guard can roll back to it.
 tmp="$(mktemp "$PREFIX/.download.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 fetch "$BASE/$GURU_AGENT_VERSION/guru-worker" "$tmp"
@@ -68,6 +71,9 @@ if [ -L "$PREFIX/current" ] && [ "$(readlink "$PREFIX/current")" != "$GURU_AGENT
     ln -sfn "$(readlink "$PREFIX/current")" "$PREFIX/previous"
 fi
 ln -sfn "$GURU_AGENT_VERSION" "$PREFIX/current"
+# A marker left by an interrupted self-update would make the guard count this
+# start against it; the operator just installed this version on purpose.
+rm -f "$PREFIX/pending" "$PREFIX/failed"
 
 # 3. The environment file: the only place the worker's settings live. It holds
 #    the key, so it is readable by root and the service group only.
@@ -84,7 +90,10 @@ chown root:"$SVC_USER" "$ETC/$GURU_UNIT.env.tmp"
 chmod 0640 "$ETC/$GURU_UNIT.env.tmp"
 mv "$ETC/$GURU_UNIT.env.tmp" "$ETC/$GURU_UNIT.env"
 
-# 4. The template unit, refreshed from the same publication as the binary.
+# 4. The start guard (outside the tree self-update writes to) and the template
+#    unit, both refreshed from the same publication as the binary.
+fetch "$BASE/guru-worker-guard" "$GUARD.tmp"
+chmod 0755 "$GUARD.tmp" && mv "$GUARD.tmp" "$GUARD"
 fetch "$BASE/guru-worker@.service" "$UNIT.tmp"
 chmod 0644 "$UNIT.tmp" && mv "$UNIT.tmp" "$UNIT"
 
