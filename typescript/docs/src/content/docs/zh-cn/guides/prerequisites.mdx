@@ -35,9 +35,8 @@ Redis 出现在模块脚手架中，但目前没有任何二进制会连接它�
 <Tabs syncKey="distro">
 <TabItem label="Debian">
 
-来自 [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/)：
-
 ```sh
+# See https://docs.docker.com/engine/install/debian/
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -61,11 +60,10 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin d
 </TabItem>
 <TabItem label="Ubuntu">
 
-来自 [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/)。
-仓库路径和 suite 表达式都与 Debian 不同——Ubuntu 衍生发行版会在 `VERSION_CODENAME` 中报告
-自己的代号，所以这里必须让 Ubuntu 的取值优先：
-
 ```sh
+# See https://docs.docker.com/engine/install/ubuntu/
+# Both the repository path and the suite expression differ from Debian's.
+# Ubuntu derivatives report their own codename in `VERSION_CODENAME`.
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -89,18 +87,15 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin d
 </TabItem>
 <TabItem label="Fedora / RHEL">
 
-在 Fedora 上（[文档](https://docs.docker.com/engine/install/fedora/)）：
-
 ```sh
+# On Fedora: https://docs.docker.com/engine/install/fedora/
 sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-在 RHEL 上（[文档](https://docs.docker.com/engine/install/rhel/)）添加仓库要用较旧的子命令
-形式——两者并不能互换：
-
 ```sh
+# On RHEL: https://docs.docker.com/engine/install/rhel/
 sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -110,10 +105,8 @@ sudo systemctl enable --now docker
 </TabItem>
 <TabItem label="Arch">
 
-Docker 没有发布 Arch 软件包；[ArchWiki 页面](https://wiki.archlinux.org/title/Docker)
-才是该发行版的参考。这里的 `docker-compose` 就是 Compose v2 插件：
-
 ```sh
+# See https://wiki.archlinux.org/title/Docker
 sudo pacman -S --needed docker docker-compose
 sudo systemctl enable --now docker.service
 ```
@@ -121,9 +114,8 @@ sudo systemctl enable --now docker.service
 </TabItem>
 </Tabs>
 
-确认引擎可用，并且把 Compose 保持为运维人员的操作——要么用 `sudo docker compose …`（指南中
-采用的方式），要么把你自己的账号加入 `docker` 组；后者在主机上等同于 root 权限，因此绝不应该
-授予服务账号：
+确认引擎可用，并把 Compose 保持为运维人员的操作。你可以使用 `sudo docker compose`，也可以把自己的账号加入
+`docker` 组；后者在主机上等同于 root 权限，因此绝不应该授予服务账号：
 
 ```sh
 sudo docker run --rm hello-world

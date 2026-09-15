@@ -3,42 +3,41 @@ title: Prerequisites
 description: Set up everything the control plane depends on before you deploy it — SurrealDB, RabbitMQ, Docker, the build toolchain, surrealkit, Bun, and a hostname with a certificate.
 ---
 
-import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Steps, Tabs, TabItem } from "@astrojs/starlight/components";
 
-Both deployment guides — [Deploy with Docker](/guides/deploy-with-docker/) and
-[Deploy Natively](/guides/deploy-natively/) — start here. This page sets up the external
+Both deployment guides, [Deploy with Docker](/guides/deploy-with-docker/) and
+[Deploy Natively](/guides/deploy-natively/), start here. This page sets up the external
 dependencies and the operator tooling; the deployment guide you follow afterwards only wires the
 control plane to them.
 
 What each method actually needs:
 
-| | Deploy with Docker | Deploy Natively |
-|---|---|---|
-| SurrealDB ≥ 3.2 | yes | yes |
-| RabbitMQ 3.13/4.x | yes | yes |
-| Docker Engine + Compose | yes (everything runs from images) | yes (datastores only) |
-| `surrealkit` | yes | yes |
-| Rust toolchain + `protoc` | yes — `manage-tool` is not published as an image | yes — it builds every binary |
-| C toolchain, `make`, `cmake` | yes — `manage-tool` pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason |
-| `perl` | no | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
-| Bun | no | yes (builds and runs the dashboard) |
-| Hostname + TLS certificate | yes | yes |
-| Redis | no | no |
+|                              | Deploy with Docker                                                                                                                        | Deploy Natively                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| SurrealDB ≥ 3.2              | yes                                                                                                                                       | yes                                                                        |
+| RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
+| Docker Engine + Compose      | yes (everything runs from images)                                                                                                         | yes (datastores only)                                                      |
+| `surrealkit`                 | yes                                                                                                                                       | yes                                                                        |
+| Rust toolchain + `protoc`    | yes — `manage-tool` is not published as an image                                                                                          | yes — it builds every binary                                               |
+| C toolchain, `make`, `cmake` | yes — `manage-tool` pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason                                                           |
+| `perl`                       | no                                                                                                                                        | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
+| Bun                          | no                                                                                                                                        | yes (builds and runs the dashboard)                                        |
+| Hostname + TLS certificate   | yes                                                                                                                                       | yes                                                                        |
+| Redis                        | no                                                                                                                                        | no                                                                         |
 
 Redis appears in the module scaffolding, but no binary connects to it today — do not provision one.
 
 ## 1. Docker Engine and Compose
 
-SurrealDB and RabbitMQ run as containers in both methods, so the engine plus the Compose *plugin*
-(`docker compose`, not the legacy `docker-compose` script — except on Arch, where that *is* the
+SurrealDB and RabbitMQ run as containers in both methods, so the engine plus the Compose _plugin_
+(`docker compose`, not the legacy `docker-compose` script — except on Arch, where that _is_ the
 package name) is the first thing to install. Pick your distro once; every tab on this page follows.
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
 
-From [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/):
-
 ```sh
+# See https://docs.docker.com/engine/install/debian/
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -62,11 +61,10 @@ package here.
 </TabItem>
 <TabItem label="Ubuntu">
 
-From [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/). Both
-the repository path and the suite expression differ from Debian's — Ubuntu derivatives report their
-own codename in `VERSION_CODENAME`, so the Ubuntu one has to win:
-
 ```sh
+# See https://docs.docker.com/engine/install/ubuntu/
+# Both the repository path and the suite expression differ from Debian's.
+# Ubuntu derivatives report their own codename in `VERSION_CODENAME`.
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -90,18 +88,15 @@ boot by the package here.
 </TabItem>
 <TabItem label="Fedora / RHEL">
 
-On Fedora ([docs](https://docs.docker.com/engine/install/fedora/)):
-
 ```sh
+# On Fedora: https://docs.docker.com/engine/install/fedora/
 sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-On RHEL ([docs](https://docs.docker.com/engine/install/rhel/)) the repository is added with the
-older subcommand form — the two are not interchangeable:
-
 ```sh
+# On RHEL: https://docs.docker.com/engine/install/rhel/
 sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -111,10 +106,8 @@ sudo systemctl enable --now docker
 </TabItem>
 <TabItem label="Arch">
 
-Docker publishes no Arch packages; the [ArchWiki page](https://wiki.archlinux.org/title/Docker) is
-the distro reference. `docker-compose` is the Compose v2 plugin here:
-
 ```sh
+# See https://wiki.archlinux.org/title/Docker
 sudo pacman -S --needed docker docker-compose
 sudo systemctl enable --now docker.service
 ```
@@ -122,8 +115,7 @@ sudo systemctl enable --now docker.service
 </TabItem>
 </Tabs>
 
-Confirm the engine, and keep Compose an operator action — either `sudo docker compose …` (what the
-guides use) or your own account added to the `docker` group, which is root-equivalent on the host
+Confirm the engine, and keep Compose an operator action. You can either use `sudo docker compose` or add your own account to the `docker` group, which is root-equivalent on the host
 and should therefore never be granted to a service account:
 
 ```sh
@@ -172,16 +164,16 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 
 None of these are decoration — each is a real dependency of this workspace:
 
-| Package | Needed because |
-|---|---|
+| Package                                            | Needed because                                                                                                                                                                                                                                                       |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `protoc` (`protobuf-compiler`, on Arch `protobuf`) | `lib/rpguru_sdk`'s build script compiles `proto/` with `tonic-prost-build`, which shells out to `protoc`. Every binary depends on that crate, `manage-tool` included, so a missing `protoc` fails the build. Set `PROTOC=/path/to/protoc` if yours is not on `PATH`. |
-| C compiler, `make` | Both methods build `manage-tool`, which reaches the certificate stack through the `orchestration` module; several of its crates (`aws-lc-sys`, `ring`, `zstd-sys`) compile vendored C sources. |
-| `cmake` | `aws-lc-sys` builds its vendored sources with cmake, so it is needed wherever `manage-tool` is built. |
-| `perl` | `guru-worker` links OpenSSL with the `vendored` feature: OpenSSL is compiled from the bundled source tree, and its `Configure` is a perl script. Native deployment only. |
-| `pkgconf` / `pkg-config` | Build-dependency of the `*-sys` crates above. |
-| `openssl` | The deployment guides generate passwords and keys with `openssl rand -hex 32`. |
-| `unzip` | Required by the Bun installer on Linux. |
-| `nginx` | Terminates TLS for the dashboard, and for the worker API in the native guide. Any current build has `http_ssl_module` and `http_v2_module`, which is what `grpc_pass` (nginx ≥ 1.13.10) needs. |
+| C compiler, `make`                                 | Both methods build `manage-tool`, which reaches the certificate stack through the `orchestration` module; several of its crates (`aws-lc-sys`, `ring`, `zstd-sys`) compile vendored C sources.                                                                       |
+| `cmake`                                            | `aws-lc-sys` builds its vendored sources with cmake, so it is needed wherever `manage-tool` is built.                                                                                                                                                                |
+| `perl`                                             | `guru-worker` links OpenSSL with the `vendored` feature: OpenSSL is compiled from the bundled source tree, and its `Configure` is a perl script. Native deployment only.                                                                                             |
+| `pkgconf` / `pkg-config`                           | Build-dependency of the `*-sys` crates above.                                                                                                                                                                                                                        |
+| `openssl`                                          | The deployment guides generate passwords and keys with `openssl rand -hex 32`.                                                                                                                                                                                       |
+| `unzip`                                            | Required by the Bun installer on Linux.                                                                                                                                                                                                                              |
+| `nginx`                                            | Terminates TLS for the dashboard, and for the worker API in the native guide. Any current build has `http_ssl_module` and `http_v2_module`, which is what `grpc_pass` (nginx ≥ 1.13.10) needs.                                                                       |
 
 No `libssl-dev`/`openssl-devel` and no `libprotobuf` development packages: what the Rust build needs
 of those, it vendors.
@@ -195,7 +187,7 @@ checkout**, and that account differs per deployment method:
 <TabItem label="Native deployment">
 
 The control plane, the dashboard and everything you build run as one unprivileged service user, so
-create it now and install the toolchains from *its* shell — otherwise they land in your home and
+create it now and install the toolchains from _its_ shell — otherwise they land in your home and
 systemd will not find them:
 
 ```sh
@@ -220,8 +212,7 @@ files — so your own operator account is the right place. Bun is not needed at 
 
 1. **Rust**, via [rustup](https://rustup.rs/). The workspace pins the toolchain in
    `rust-toolchain.toml` (channel `1.98`) and rustup installs that pin on the first `cargo`
-   invocation. Do not substitute a distro `rust` package: an older compiler cannot build edition
-   2024.
+   invocation. Do not substitute a distro `rust` package: an older compiler cannot build edition 2024.
 
    ```sh
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -261,14 +252,14 @@ files — so your own operator account is the right place. Bun is not needed at 
 
 ### What the control plane needs from them
 
-| | Requirement |
-|---|---|
+|           | Requirement                                                                                                                                                                                                                                                     |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
-| | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that. |
-| | **Durable storage.** `rocksdb:/data/guru.db` on a volume you back up. This is the only irreplaceable state in the system. |
-| RabbitMQ | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. |
-| | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser. |
-| | The broker is **mandatory in all four master modes**. Periodic work *is* a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
+|           | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that.                                                                                   |
+|           | **Durable storage.** `rocksdb:/data/guru.db` on a volume you back up. This is the only irreplaceable state in the system.                                                                                                                                       |
+| RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough.                                                                                 |
+|           | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser.                                                                                                                 |
+|           | The broker is **mandatory in all four master modes**. Periodic work _is_ a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
 
 A managed SurrealDB or an existing broker is fine as long as it meets the rows above; the rest of
 this section is the self-hosted path.

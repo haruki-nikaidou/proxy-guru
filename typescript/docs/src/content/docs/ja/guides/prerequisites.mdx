@@ -36,9 +36,8 @@ SurrealDB と RabbitMQ はどちらの方式でもコンテナとして動くた
 <Tabs syncKey="distro">
 <TabItem label="Debian">
 
-[docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/) より:
-
 ```sh
+# See https://docs.docker.com/engine/install/debian/
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -61,11 +60,10 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin d
 </TabItem>
 <TabItem label="Ubuntu">
 
-[docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/) より。リポジトリの
-パスとスイートの式はどちらも Debian のものとは異なります。Ubuntu 派生ディストリビューションは
-`VERSION_CODENAME` に自身のコードネームを入れるため、Ubuntu 側を優先させる必要があります:
-
 ```sh
+# See https://docs.docker.com/engine/install/ubuntu/
+# Both the repository path and the suite expression differ from Debian's.
+# Ubuntu derivatives report their own codename in `VERSION_CODENAME`.
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -89,18 +87,15 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin d
 </TabItem>
 <TabItem label="Fedora / RHEL">
 
-Fedora の場合（[ドキュメント](https://docs.docker.com/engine/install/fedora/)）:
-
 ```sh
+# On Fedora: https://docs.docker.com/engine/install/fedora/
 sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-RHEL の場合（[ドキュメント](https://docs.docker.com/engine/install/rhel/)）はリポジトリの追加に古い形式の
-サブコマンドを使います。この 2 つは互換ではありません:
-
 ```sh
+# On RHEL: https://docs.docker.com/engine/install/rhel/
 sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -110,10 +105,8 @@ sudo systemctl enable --now docker
 </TabItem>
 <TabItem label="Arch">
 
-Docker は Arch 向けパッケージを公開していないため、[ArchWiki のページ](https://wiki.archlinux.org/title/Docker)が
-ディストリビューション側の参照先になります。ここでの `docker-compose` は Compose v2 プラグインです:
-
 ```sh
+# See https://wiki.archlinux.org/title/Docker
 sudo pacman -S --needed docker docker-compose
 sudo systemctl enable --now docker.service
 ```
@@ -121,9 +114,9 @@ sudo systemctl enable --now docker.service
 </TabItem>
 </Tabs>
 
-エンジンが動作することを確認します。Compose の実行はオペレーターの操作として扱ってください。つまり
-`sudo docker compose …`（ガイドで使う方法）か、自分のアカウントを `docker` グループに追加する方法です。後者は
-ホスト上で root 相当の権限になるため、サービスアカウントには決して付与しないでください:
+エンジンが動作することを確認します。Compose の実行はオペレーターの操作として扱ってください。`sudo docker compose` を使うか、
+自分のアカウントを `docker` グループに追加するかのどちらかです。後者はホスト上で root 相当の権限になるため、
+サービスアカウントには決して付与しないでください:
 
 ```sh
 sudo docker run --rm hello-world
