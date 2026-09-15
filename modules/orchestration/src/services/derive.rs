@@ -30,7 +30,7 @@ use crate::services::ca::{CA_FILE, acme_cert_paths, relay_cert_paths};
 use crate::services::topology::Index;
 use crate::utils::ids::record_key;
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, ListenAs, LoadBalanceGroup, LogConfig, RelayHost,
+    Config, Forwarding, ForwardingTo, KeepAlive, ListenAs, LoadBalanceGroup, LogConfig, RelayHost,
     RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
 };
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
@@ -246,6 +246,9 @@ pub fn derive_server_config(
             level: server_row.log_level.clone(),
         },
         relay_ca: certificates.ca_present.then(|| PathBuf::from(CA_FILE)),
+        // The defaults, which the TOML then omits: a worker built before the
+        // section existed rejects unknown keys.
+        keepalive: KeepAlive::default(),
         forwardings,
     };
     // Every entry validated itself in `derive_pod`; what is left is the cross-pod

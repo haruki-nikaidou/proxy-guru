@@ -16,6 +16,8 @@ pub enum ConfigError {
     MissingSni(String),
     #[error("forwarding {0} has an empty load-balance group")]
     EmptyLoadBalance(String),
+    #[error("{0}")]
+    KeepAlive(String),
     #[error("read {path}: {source}")]
     Io {
         path: PathBuf,

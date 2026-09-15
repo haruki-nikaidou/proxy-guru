@@ -40,8 +40,8 @@ impl LoadBalanceGroup {
 mod tests {
     use super::*;
     use crate::{
-        Config, ConfigError, Forwarding, ForwardingTo, Ipv6Resolve, ListenAs, LogConfig, RelayHost,
-        RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
+        Config, ConfigError, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig,
+        RelayHost, RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
     };
     use smallvec::SmallVec;
     use std::path::PathBuf;
@@ -79,6 +79,7 @@ mod tests {
                 level: "debug".to_string(),
             },
             relay_ca: None,
+            keepalive: KeepAlive::default(),
             forwardings: vec![
                 Forwarding {
                     tag: "raw-exit".to_string(),

@@ -211,6 +211,7 @@ pub fn converge(
             ipv6_resolve: ideal.config.ipv6_resolve,
             log: ideal.config.log,
             relay_ca: ideal.config.relay_ca,
+            keepalive: ideal.config.keepalive,
             forwardings,
         },
         forwardings: deps,

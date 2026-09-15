@@ -5,7 +5,7 @@
 
 use guru_worker::supervisor::{ApplyOutcome, PodStatus, Supervisor};
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, ListenAs, LogConfig, Remote,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, Remote,
 };
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -56,6 +56,7 @@ fn config(forwardings: Vec<Forwarding>) -> Config {
         ipv6_resolve: Ipv6Resolve::Tolerated,
         log: LogConfig::default(),
         relay_ca: None,
+        keepalive: KeepAlive::default(),
         forwardings,
     }
 }

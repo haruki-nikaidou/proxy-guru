@@ -236,6 +236,11 @@ pub struct Config {
     /// Unset means the system roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_ca: Option<PathBuf>,
+    /// Liveness probing on every data-plane connection. Written out only when it
+    /// differs from the defaults: every struct here rejects unknown keys, so a
+    /// master must not send the section to a worker built before it existed.
+    #[serde(default, skip_serializing_if = "KeepAlive::is_default")]
+    pub keepalive: KeepAlive,
     #[serde(rename = "forwarding", default)]
     pub forwardings: Vec<Forwarding>,
 }
@@ -251,6 +256,77 @@ impl Default for LogConfig {
         Self {
             level: "info".to_string(),
         }
+    }
+}
+
+/// How a worker tells a quiet peer from a vanished one.
+///
+/// TCP has no liveness of its own: a peer that disappears without a FIN or RST
+/// (a phone off the network, a NAT entry expired, a host powered off) leaves the
+/// connection open forever on this side, and with it the pipe it was spliced to.
+/// `SO_KEEPALIVE` on every accepted and dialed TCP socket makes the kernel probe an
+/// idle connection and fail it after `tcp_retries` unanswered probes. A QUIC relay
+/// hop has the opposite problem: quinn times an idle connection out after thirty
+/// seconds unless it is kept alive, cutting long connections that are merely quiet.
+///
+/// None of this is an idle limit: a connection whose peer answers the probes stays
+/// open for as long as the peer likes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeepAlive {
+    /// Seconds a TCP connection is idle before the first probe (`TCP_KEEPIDLE`).
+    pub tcp_idle_secs: u32,
+    /// Seconds between probes once probing has started (`TCP_KEEPINTVL`).
+    pub tcp_interval_secs: u32,
+    /// Unanswered probes after which the connection is failed (`TCP_KEEPCNT`).
+    pub tcp_retries: u32,
+    /// Seconds between QUIC keep-alive pings on an idle relay connection.
+    pub quic_ping_secs: u32,
+    /// Seconds without any packet after which a QUIC relay connection is
+    /// considered lost; must exceed `quic_ping_secs`.
+    pub quic_idle_secs: u32,
+}
+
+impl Default for KeepAlive {
+    fn default() -> Self {
+        Self {
+            tcp_idle_secs: 60,
+            tcp_interval_secs: 10,
+            tcp_retries: 3,
+            quic_ping_secs: 15,
+            quic_idle_secs: 60,
+        }
+    }
+}
+
+impl KeepAlive {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Every value must be a whole positive second — the kernel and quinn both take
+    /// zero as "disabled", which would silently bring the leak back — and a QUIC
+    /// connection has to get a ping in before its idle timeout fires.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let fields = [
+            ("tcp_idle_secs", self.tcp_idle_secs),
+            ("tcp_interval_secs", self.tcp_interval_secs),
+            ("tcp_retries", self.tcp_retries),
+            ("quic_ping_secs", self.quic_ping_secs),
+            ("quic_idle_secs", self.quic_idle_secs),
+        ];
+        if let Some((name, _)) = fields.iter().find(|(_, value)| *value == 0) {
+            return Err(ConfigError::KeepAlive(format!(
+                "keepalive.{name} must be at least 1"
+            )));
+        }
+        if self.quic_idle_secs <= self.quic_ping_secs {
+            return Err(ConfigError::KeepAlive(format!(
+                "keepalive.quic_idle_secs ({}) must exceed quic_ping_secs ({})",
+                self.quic_idle_secs, self.quic_ping_secs
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -312,6 +388,7 @@ impl Config {
     /// may claim the same socket, and no two may share a tag — the tag is how a
     /// worker tells its listeners apart and how it reports on each of them.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.keepalive.validate()?;
         let mut seen = HashSet::new();
         let mut tags = HashSet::new();
         for f in &self.forwardings {
@@ -441,6 +518,43 @@ destination = "10.0.0.5:8080"
             Err(ConfigError::DuplicateTag(tag)) => assert_eq!(tag, "alpha"),
             other => panic!("expected a duplicate tag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn keepalive_defaults_apply_and_are_not_written_out() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.keepalive, KeepAlive::default());
+        let text = cfg.to_toml_string().unwrap();
+        assert!(
+            !text.contains("keepalive"),
+            "a default section would be rejected by workers that predate it: {text}"
+        );
+
+        let mut tuned = cfg.clone();
+        tuned.keepalive.quic_ping_secs = 5;
+        let text = tuned.to_toml_string().unwrap();
+        assert!(
+            text.contains("[keepalive]"),
+            "a tuned section is written: {text}"
+        );
+        assert_eq!(Config::from_toml_str(&text).unwrap(), tuned);
+    }
+
+    #[test]
+    fn keepalive_rejects_zero_and_an_idle_timeout_the_ping_cannot_beat() {
+        let zero = "[keepalive]\ntcp_retries = 0\n";
+        match Config::from_toml_str(zero) {
+            Err(ConfigError::KeepAlive(msg)) => assert!(msg.contains("tcp_retries"), "{msg}"),
+            other => panic!("expected a keepalive error, got {other:?}"),
+        }
+        let late = "[keepalive]\nquic_ping_secs = 30\nquic_idle_secs = 30\n";
+        match Config::from_toml_str(late) {
+            Err(ConfigError::KeepAlive(msg)) => assert!(msg.contains("quic_idle_secs"), "{msg}"),
+            other => panic!("expected a keepalive error, got {other:?}"),
+        }
+        assert!(
+            Config::from_toml_str("[keepalive]\nquic_ping_secs = 1\nquic_idle_secs = 2\n").is_ok()
+        );
     }
 
     #[test]

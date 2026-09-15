@@ -6,8 +6,8 @@
 
 use guru_worker::supervisor::{ApplyOutcome, Supervisor};
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, ListenAs, LogConfig, RelayHost, RelayProtocol,
-    Remote, TlsHostConfig,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, RelayHost,
+    RelayProtocol, Remote, TlsHostConfig,
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 use std::net::SocketAddr;
@@ -65,6 +65,7 @@ fn config(relay_ca: Option<PathBuf>, forwarding: Forwarding) -> Config {
         ipv6_resolve: Ipv6Resolve::Tolerated,
         log: LogConfig::default(),
         relay_ca,
+        keepalive: KeepAlive::default(),
         forwardings: vec![forwarding],
     }
 }

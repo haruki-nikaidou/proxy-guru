@@ -17,7 +17,8 @@ use guru_worker::agent::{self, AgentOptions};
 use guru_worker::state;
 use guru_worker::supervisor::Supervisor;
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, ListenAs, LogConfig, Remote, TlsHostConfig,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, Remote,
+    TlsHostConfig,
 };
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -931,6 +932,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
         ipv6_resolve: Ipv6Resolve::Tolerated,
         log: LogConfig::default(),
         relay_ca: Some("certs/ca.pem".into()),
+        keepalive: KeepAlive::default(),
         forwardings: vec![Forwarding {
             tag: "edge".to_string(),
             listen,
