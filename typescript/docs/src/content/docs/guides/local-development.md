@@ -31,7 +31,9 @@ Use a SurrealDB **3.2 or newer** server. Older 3.0 binaries disagree with the cl
 links against and mis-handle assertions that read a row written earlier in the same transaction.
 
 The broker URI form matters: use `amqp://guest:guest@127.0.0.1:5672/` for the default vhost. Redis
-takes `redis://127.0.0.1:6379/` and no credentials.
+takes `redis://127.0.0.1:6379/` and no credentials. If something else already listens on `6379`, set
+`REDIS_PORT` in `.env` before `docker compose up redis` to move the host side (say to `16379`) and
+name that port in `REDIS_URL`.
 
 ## 2. Schema
 

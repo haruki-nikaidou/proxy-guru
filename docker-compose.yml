@@ -43,7 +43,13 @@ services:
     image: redis:7-alpine
     container_name: guru-redis
     restart: unless-stopped
-    # Pub/sub only: nothing is persisted.
+    # Pub/sub only: nothing is persisted. The data directory is mounted like the
+    # other stores' so the layout under ./data is uniform, not because anything
+    # lands there.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - ./data/redis:/data
     ports:
-      - "127.0.0.1:6379:6379"
+      # REDIS_PORT moves the host side off 6379 on a box where something else
+      # already listens there; REDIS_URL must name the same port.
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"

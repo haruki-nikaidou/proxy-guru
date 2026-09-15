@@ -28,7 +28,9 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 消息代理 URI 的写法很关键：默认 vhost 请使用 `amqp://guest:guest@127.0.0.1:5672/`。Redis 的 URL 是
 `redis://127.0.0.1:6379/`；它只做 pub/sub——运维 API `Watch*` 流的实时事件都经由它，因此这里关掉了
-持久化，重启它也不会丢掉任何需要保留的东西。
+持久化，重启它也不会丢掉任何需要保留的东西。如果本机 `6379` 已被别的程序占用，在
+`docker compose up redis` 之前于 `.env` 中设置 `REDIS_PORT`（比如 `16379`）把宿主端口挪开，并在
+`REDIS_URL` 里写同一个端口。
 
 ## 2. Schema
 
