@@ -237,6 +237,9 @@ impl Builder {
             observed_at: None,
             agent_version: None,
             agent_arch: None,
+            agent_unit: None,
+            agent_key_digest: None,
+            agent_key_issued_at: None,
         });
         id
     }

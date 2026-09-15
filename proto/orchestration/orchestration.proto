@@ -300,6 +300,10 @@ message Server {
   // registers.
   string agent_version = 13;
   string agent_arch = 14;
+  // The systemd instance the install command creates: `guru-worker@<unit>`.
+  string agent_unit = 15;
+  // When the server's own agent key was issued; empty when it has none.
+  string agent_key_issued_at = 18;
 }
 message Canvas {
   string id = 1;
@@ -415,9 +419,38 @@ message UpdateServerRequest {
   string override_v4 = 7;
   string override_v6 = 8;
   repeated string extra_addresses = 9;
+  // The systemd instance the install command targets (`guru-worker@<unit>`):
+  // 1-32 lowercase letters, digits or dashes. Empty clears it.
+  string agent_unit = 10;
 }
 message UpdateServerReply {
   Server server = 1;
+}
+// Issues the server's own agent key and renders the install command carrying
+// it. The key appears exactly once, inside `command`; issuing again replaces
+// it, so a worker still holding the previous key is refused at its next
+// registration. `unit` empty keeps the stored instance name, or derives one
+// from the server name. Maintainer+.
+message IssueServerAgentInstallRequest {
+  string server_id = 1;
+  string unit = 2;
+}
+message IssueServerAgentInstallReply {
+  string command = 1;
+  string unit = 2;
+  string version = 3;
+  Server server = 4;
+}
+// The published worker release (`manage-tool agent publish`): empty `version`
+// means none yet. `base_url_configured` is whether the install command has an
+// origin to download from at all.
+message GetAgentReleaseRequest {}
+message GetAgentReleaseReply {
+  string version = 1;
+  string sha256 = 2;
+  string arch = 3;
+  string published_at = 4;
+  bool base_url_configured = 5;
 }
 message DeleteServerRequest {
   string server_id = 1;
@@ -694,6 +727,8 @@ service Orchestration {
   rpc GetServerConfig(GetServerConfigRequest) returns (GetServerConfigReply);
   rpc GetServerRolloutStatus(GetServerRolloutStatusRequest) returns (GetServerRolloutStatusReply);
   rpc ForgetServerApplied(ForgetServerAppliedRequest) returns (ForgetServerAppliedReply);
+  rpc IssueServerAgentInstall(IssueServerAgentInstallRequest) returns (IssueServerAgentInstallReply);
+  rpc GetAgentRelease(GetAgentReleaseRequest) returns (GetAgentReleaseReply);
   rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
   rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
   rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);

@@ -19,6 +19,9 @@ const API_KEY_PREFIX: &str = "gk_";
 /// Prefix identifying a worker's dynamic refresh key (`gr` = "guru refresh").
 const REFRESH_KEY_PREFIX: &str = "gr_";
 
+/// Prefix identifying a server's own agent key (`gs` = "guru server").
+const SERVER_AGENT_KEY_PREFIX: &str = "gs_";
+
 /// Generate a fresh opaque session token (~256 bits of entropy).
 pub fn generate_session_token() -> String {
     random_alphanumeric(TOKEN_LEN)
@@ -39,6 +42,23 @@ pub fn generate_refresh_key() -> String {
     secret.push_str(REFRESH_KEY_PREFIX);
     secret.push_str(&random_alphanumeric(TOKEN_LEN));
     secret
+}
+
+/// Generate a fresh agent key for one server: the `gs_` prefix plus ~256 bits
+/// of entropy. It authenticates that server's `Register` in place of an
+/// operator API key; only its digest is persisted, on the server row.
+pub fn generate_server_agent_key() -> String {
+    let mut secret =
+        String::with_capacity(SERVER_AGENT_KEY_PREFIX.len().saturating_add(TOKEN_LEN));
+    secret.push_str(SERVER_AGENT_KEY_PREFIX);
+    secret.push_str(&random_alphanumeric(TOKEN_LEN));
+    secret
+}
+
+/// Whether `secret` is shaped like a server agent key. A dispatch hint only —
+/// what a key can do is decided by looking its digest up, never by its prefix.
+pub fn is_server_agent_key(secret: &str) -> bool {
+    secret.starts_with(SERVER_AGENT_KEY_PREFIX)
 }
 
 /// Lowercase hexadecimal SHA-256 digest of `input`.

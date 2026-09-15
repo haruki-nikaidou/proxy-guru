@@ -62,6 +62,15 @@ pub struct ServerEntity {
     /// The CPU architecture that worker was built for (`x86_64`, `aarch64`).
     #[surreal(default)]
     pub agent_arch: Option<String>,
+    /// The systemd instance the install command creates: `guru-worker@<unit>`.
+    #[surreal(default)]
+    pub agent_unit: Option<String>,
+    /// SHA-256 of the server's own agent key, which authenticates `Register` in
+    /// place of an operator API key. Only the digest is ever stored.
+    #[surreal(default)]
+    pub agent_key_digest: Option<String>,
+    #[surreal(default)]
+    pub agent_key_issued_at: Option<DateTime<Utc>>,
 }
 
 /// The address set a worker discovers about itself and sends with `Register`
@@ -236,6 +245,8 @@ pub struct UpdateServerSettings {
     pub override_v4: Option<String>,
     pub override_v6: Option<String>,
     pub extra_addresses: Vec<String>,
+    /// The systemd instance the install command targets; `None` clears it.
+    pub agent_unit: Option<String>,
 }
 
 impl Processor<UpdateServerSettings> for SurrealProcessor {
@@ -259,9 +270,64 @@ impl Processor<UpdateServerSettings> for SurrealProcessor {
             .bind(("override_v4", input.override_v4))
             .bind(("override_v6", input.override_v6))
             .bind(("extra_addresses", input.extra_addresses))
+            .bind(("agent_unit", input.agent_unit))
             .await?;
         resp.take::<Option<ServerEntity>>(1)?
             .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
+    }
+}
+
+/// Issues (or replaces) a server's own agent key — only its digest is stored —
+/// and names the systemd instance the install command carrying it targets.
+#[derive(Debug)]
+pub struct SetServerAgentKey {
+    pub id: ServerId,
+    pub digest: String,
+    pub unit: String,
+    pub now: DateTime<Utc>,
+}
+
+impl Processor<SetServerAgentKey> for SurrealProcessor {
+    type Output = ServerEntity;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:SetServerAgentKey", skip_all, err, fields(id = ?input.id))]
+    async fn process(&self, input: SetServerAgentKey) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "UPDATE $id SET agent_key_digest = $digest, agent_key_issued_at = $now,
+                     agent_unit = $unit RETURN AFTER",
+            )
+            .bind(("id", input.id))
+            .bind(("digest", input.digest))
+            .bind(("now", input.now))
+            .bind(("unit", input.unit))
+            .await?;
+        resp.take::<Option<ServerEntity>>(0)?
+            .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
+    }
+}
+
+/// The server whose agent key has this digest — the key names the server, the
+/// caller only confirms it.
+pub struct FindServerByAgentKeyDigest {
+    pub digest: String,
+}
+
+impl Processor<FindServerByAgentKeyDigest> for SurrealProcessor {
+    type Output = Option<ServerEntity>;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:FindServerByAgentKeyDigest", skip_all, err)]
+    async fn process(
+        &self,
+        input: FindServerByAgentKeyDigest,
+    ) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query("SELECT * FROM orchestration_server WHERE agent_key_digest = $digest LIMIT 1")
+            .bind(("digest", input.digest))
+            .await?;
+        resp.take::<Option<ServerEntity>>(0)
     }
 }
 

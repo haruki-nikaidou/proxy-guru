@@ -26,7 +26,7 @@ use orchestration::entities::surreal::view::{
 };
 use orchestration::hooks::derive::rotate_expiring_relay_certificates;
 use orchestration::services::OrchestrationError;
-use orchestration::services::agent::RegisterWorker;
+use orchestration::services::agent::{RegisterCredential, RegisterWorker};
 use orchestration::services::ca::{
     BundleCertificates, CA_COMMON_NAME, CA_FILE, CertificateFile, EnsureRelayCertificates,
     InitInternalCa,
@@ -448,7 +448,7 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     if !registered {
         w.agents
             .process(RegisterWorker {
-                actor: machine(),
+                credential: RegisterCredential::Operator(machine()),
                 server_id: server.clone(),
                 running_revision: 0,
                 observed: None,

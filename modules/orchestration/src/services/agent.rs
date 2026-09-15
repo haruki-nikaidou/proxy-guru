@@ -9,8 +9,8 @@ use crate::entities::surreal::health::{
     SetServerHealthStatus,
 };
 use crate::entities::surreal::server::{
-    FindServerById, FindServerByRefreshKeyDigest, RegisterWorkerSession, ReportedAddresses,
-    ServerId,
+    FindServerByAgentKeyDigest, FindServerById, FindServerByRefreshKeyDigest,
+    RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId,
 };
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
@@ -43,8 +43,16 @@ pub struct AgentService {
     pub notifier: DirtyNotifier,
 }
 
+/// What a worker presented to `Register`: an operator API key the auth
+/// middleware resolved to an identity, or the raw `x-api-key` it could not — a
+/// server's own agent key, checked here against the digest on the server row.
+pub enum RegisterCredential {
+    Operator(Identity),
+    ServerKey(String),
+}
+
 pub struct RegisterWorker {
-    pub actor: Identity,
+    pub credential: RegisterCredential,
     pub server_id: ServerId,
     pub running_revision: i64,
     /// The peer address the registration arrived from, if the transport knows.
@@ -62,14 +70,9 @@ impl Processor<RegisterWorker> for AgentService {
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:RegisterWorker", skip_all, err)]
     async fn process(&self, input: RegisterWorker) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ServerCall)?;
         let server = self
-            .db
-            .process(FindServerById {
-                id: input.server_id.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
+            .authenticate_registration(&input.credential, &input.server_id)
+            .await?;
 
         let secret = generate_refresh_key();
         let now = Utc::now();
@@ -102,6 +105,54 @@ impl Processor<RegisterWorker> for AgentService {
             .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
         self.notifier.notify(&server.canvas).await;
         Ok(secret)
+    }
+}
+
+impl AgentService {
+    /// The server a registration is for, once its credential checks out.
+    ///
+    /// An operator key needs `ServerCall` and may register any server it names.
+    /// A server key names the server itself — the row is found by the key's
+    /// digest — and the `server_id` the worker sent must agree, so a key issued
+    /// for one server can never register as another. An unknown key is refused
+    /// the same way as a mismatch, without saying which.
+    async fn authenticate_registration(
+        &self,
+        credential: &RegisterCredential,
+        server_id: &ServerId,
+    ) -> Result<ServerEntity, OrchestrationError> {
+        match credential {
+            RegisterCredential::Operator(actor) => {
+                actor.ensure(Permission::ServerCall)?;
+                self.db
+                    .process(FindServerById {
+                        id: server_id.clone(),
+                    })
+                    .await?
+                    .ok_or(OrchestrationError::NotFound)
+            }
+            RegisterCredential::ServerKey(secret) => {
+                let found = self
+                    .db
+                    .process(FindServerByAgentKeyDigest {
+                        digest: sha256_hex(secret),
+                    })
+                    .await?;
+                match found {
+                    Some(server) if server.id.0 == server_id.0 => Ok(server),
+                    // Unknown key and a key for another server are refused alike;
+                    // the log tells them apart, the caller is not told.
+                    found => {
+                        tracing::warn!(
+                            server = %record_key(&server_id.0),
+                            known = found.is_some(),
+                            "agent key refused at registration"
+                        );
+                        Err(OrchestrationError::PermissionDenied)
+                    }
+                }
+            }
+        }
     }
 }
 

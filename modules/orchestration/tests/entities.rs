@@ -113,6 +113,7 @@ async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
             override_v4: None,
             override_v6: None,
             extra_addresses: Vec::new(),
+            agent_unit: None,
         })
         .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);

@@ -55,12 +55,19 @@ DEFINE FIELD extra_addresses ON orchestration_server TYPE array<string> DEFAULT 
 DEFINE FIELD reported_addresses ON orchestration_server TYPE option<object> FLEXIBLE;
 DEFINE FIELD observed_address ON orchestration_server TYPE option<string>;
 DEFINE FIELD observed_at ON orchestration_server TYPE option<datetime>;
--- What the worker last registered as: `agent_version` is the worker crate's
--- version, `agent_arch` the CPU architecture it was built for.
+-- What the worker last registered as (`agent_version` is the worker crate's
+-- version, `agent_arch` the CPU architecture it was built for). `agent_unit`
+-- names the systemd instance the install command creates. The server's own
+-- agent key authenticates `Register` in place of an operator API key and is
+-- stored as a digest, like the refresh key.
 DEFINE FIELD agent_version ON orchestration_server TYPE option<string>;
 DEFINE FIELD agent_arch ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_unit ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_key_digest ON orchestration_server TYPE option<string>;
+DEFINE FIELD agent_key_issued_at ON orchestration_server TYPE option<datetime>;
 DEFINE INDEX orchestration_server_canvas ON orchestration_server FIELDS canvas;
 DEFINE INDEX orchestration_server_refresh_key ON orchestration_server FIELDS current_dynamic_refresh_key;
+DEFINE INDEX orchestration_server_agent_key ON orchestration_server FIELDS agent_key_digest;
 
 DEFINE TABLE orchestration_node SCHEMAFULL;
 DEFINE FIELD canvas ON orchestration_node TYPE record<orchestration_canvas>;

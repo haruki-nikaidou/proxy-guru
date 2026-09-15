@@ -285,6 +285,11 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         addresses: Some(addresses_to_proto(server)),
         agent_version: server.agent_version.clone().unwrap_or_default(),
         agent_arch: server.agent_arch.clone().unwrap_or_default(),
+        agent_unit: server.agent_unit.clone().unwrap_or_default(),
+        agent_key_issued_at: server
+            .agent_key_issued_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
     }
 }
 
@@ -960,10 +965,55 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                     &input.override_v6,
                     &input.extra_addresses,
                 )?,
+                agent_unit: server::agent_unit_from(&input.agent_unit)?,
             })
             .await?;
         Ok(Response::new(pb::UpdateServerReply {
             server: Some(server_to_proto(&server)),
+        }))
+    }
+
+    async fn issue_server_agent_install(
+        &self,
+        request: Request<pb::IssueServerAgentInstallRequest>,
+    ) -> Result<Response<pb::IssueServerAgentInstallReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let install = self
+            .servers
+            .process(server::IssueServerAgentInstall {
+                actor,
+                server: ids::server_id(&input.server_id),
+                unit: server::agent_unit_from(&input.unit)?,
+            })
+            .await?;
+        Ok(Response::new(pb::IssueServerAgentInstallReply {
+            command: install.command,
+            unit: install.unit,
+            version: install.version,
+            server: Some(server_to_proto(&install.server)),
+        }))
+    }
+
+    async fn get_agent_release(
+        &self,
+        request: Request<pb::GetAgentReleaseRequest>,
+    ) -> Result<Response<pb::GetAgentReleaseReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let info = self
+            .servers
+            .process(server::GetAgentRelease { actor })
+            .await?;
+        let release = info.release;
+        Ok(Response::new(pb::GetAgentReleaseReply {
+            version: release.as_ref().map(|r| r.version.clone()).unwrap_or_default(),
+            sha256: release.as_ref().map(|r| r.sha256.clone()).unwrap_or_default(),
+            arch: release.as_ref().map(|r| r.arch.clone()).unwrap_or_default(),
+            published_at: release
+                .as_ref()
+                .map(|r| r.published_at.to_rfc3339())
+                .unwrap_or_default(),
+            base_url_configured: info.base_url_configured,
         }))
     }
 

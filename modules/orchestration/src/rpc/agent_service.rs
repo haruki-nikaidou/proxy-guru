@@ -7,7 +7,9 @@ use crate::entities::surreal::server::{
 };
 use crate::entities::surreal::view::TakeInFlight;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
-use crate::services::agent::{AckConfig, AgentService, PodResult, RegisterWorker};
+use crate::services::agent::{
+    AckConfig, AgentService, PodResult, RegisterCredential, RegisterWorker,
+};
 use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
     HealthReportInput, HealthService, MarkServerOffline, RecordHealthReport,
@@ -53,6 +55,25 @@ fn pod_result(pod: pb::PodStatus) -> PodResult {
     PodResult {
         tag: pod.tag,
         error: pod.error,
+    }
+}
+
+/// What `Register` was presented with: a server's own `gs_` key, which the auth
+/// middleware never resolves and which is handed down raw, or an operator
+/// credential the middleware did resolve — or refused, exactly as before
+/// ("Missing identity"). The prefix only picks the path; the service decides.
+fn register_credential<T>(request: &Request<T>) -> Result<RegisterCredential, Status> {
+    let raw = request
+        .metadata()
+        .get(auth::rpc::middleware::API_KEY_METADATA)
+        .and_then(|value| value.to_str().ok());
+    match raw {
+        Some(key) if auth::utils::token::is_server_agent_key(key) => {
+            Ok(RegisterCredential::ServerKey(key.to_owned()))
+        }
+        _ => Ok(RegisterCredential::Operator(
+            auth::rpc::middleware::from_request(request)?,
+        )),
     }
 }
 
@@ -158,13 +179,13 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         &self,
         request: Request<pb::RegisterRequest>,
     ) -> Result<Response<pb::RegisterReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
+        let credential = register_credential(&request)?;
         let observed = peer_address(&request, self.health.config.trust_proxy_address_headers);
         let input = request.into_inner();
         let refresh_key = self
             .agents
             .process(RegisterWorker {
-                actor,
+                credential,
                 server_id: ids::server_id(&input.server_id),
                 running_revision: input.running_revision,
                 observed,

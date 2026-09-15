@@ -11,11 +11,12 @@
 //! receives on a generated pod of this server.
 
 use crate::config::OrchestrationConfig;
+use crate::entities::surreal::agent_release::{AgentReleaseEntity, FindAgentRelease};
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::surreal::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
 use crate::entities::surreal::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, UpdateServerSettings,
+    ServerEntity, ServerId, ServerIpv6Resolve, SetServerAgentKey, UpdateServerSettings,
 };
 use crate::entities::surreal::topology::LoadCanvasTopology;
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
@@ -27,6 +28,8 @@ use crate::services::{OrchestrationError, rollout};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use auth::utils::token::{generate_server_agent_key, sha256_hex};
+use chrono::Utc;
 use kanau::processor::Processor;
 use std::net::IpAddr;
 use std::ops::RangeInclusive;
@@ -181,6 +184,8 @@ pub struct UpdateServer {
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
     pub addresses: AddressOverrides,
+    /// Already validated by [`agent_unit_from`]; `None` clears it.
+    pub agent_unit: Option<String>,
 }
 
 impl Processor<UpdateServer> for ServerService {
@@ -231,12 +236,204 @@ impl Processor<UpdateServer> for ServerService {
                 override_v4: input.addresses.override_v4,
                 override_v6: input.addresses.override_v6,
                 extra_addresses: input.addresses.extra_addresses,
+                agent_unit: input.agent_unit,
             })
             .await?;
         self.notifier.notify(&canvas).await;
         Ok(server)
     }
 }
+
+/// Longest systemd instance name the install command accepts.
+const AGENT_UNIT_MAX_LEN: usize = 32;
+
+/// Validates an operator-typed systemd instance name: empty means none, else
+/// 1–32 lowercase letters, digits or dashes, starting with a letter or digit —
+/// what fits unescaped into `guru-worker@<unit>` and its file paths.
+pub fn agent_unit_from(raw: &str) -> Result<Option<String>, OrchestrationError> {
+    let unit = raw.trim();
+    if unit.is_empty() {
+        return Ok(None);
+    }
+    let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let valid = unit.len() <= AGENT_UNIT_MAX_LEN
+        && unit.bytes().next().is_some_and(allowed)
+        && unit.bytes().all(|b| allowed(b) || b == b'-');
+    if !valid {
+        return Err(OrchestrationError::Invalid(
+            "agent_unit must be 1-32 lowercase letters, digits or dashes, starting with a \
+             letter or digit"
+                .into(),
+        ));
+    }
+    Ok(Some(unit.to_string()))
+}
+
+/// The instance name a server gets when the operator typed none: its name as a
+/// slug, or its record key when the name has nothing a slug can keep.
+pub fn default_agent_unit(name: &str, key: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(ch);
+            pending_dash = false;
+        } else {
+            pending_dash = true;
+        }
+        if slug.len() >= AGENT_UNIT_MAX_LEN {
+            break;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        key.chars().take(AGENT_UNIT_MAX_LEN).collect()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// A rendered install command and what it was rendered for.
+#[derive(Debug, Clone)]
+pub struct AgentInstall {
+    /// The one-liner to paste on the host. Carries the freshly issued agent key,
+    /// which is not stored in the clear anywhere else.
+    pub command: String,
+    pub unit: String,
+    pub version: String,
+    pub server: ServerEntity,
+}
+
+/// Issues the server's agent key and renders the install command carrying it.
+///
+/// Issuing replaces any previous key: a worker still holding it is refused at
+/// its next registration, which is what "regenerate" means to an operator. The
+/// instance name is the one given, else the stored one, else derived from the
+/// server name.
+pub struct IssueServerAgentInstall {
+    pub actor: Identity,
+    pub server: ServerId,
+    pub unit: Option<String>,
+}
+
+impl Processor<IssueServerAgentInstall> for ServerService {
+    type Output = AgentInstall;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:IssueServerAgentInstall", skip_all, err)]
+    async fn process(&self, input: IssueServerAgentInstall) -> Result<Self::Output, Self::Error> {
+        input.actor.ensure(Permission::ManageApiKeys)?;
+        let base = self.config.agent_download_base().ok_or_else(|| {
+            OrchestrationError::Invalid(
+                "agent_public_base_url is not configured on the orchestration config".into(),
+            )
+        })?;
+        let release = self
+            .db
+            .process(FindAgentRelease)
+            .await?
+            .ok_or_else(|| {
+                OrchestrationError::Invalid(
+                    "no worker release is published: run `manage-tool agent publish`".into(),
+                )
+            })?;
+        let server = self
+            .db
+            .process(FindServerById {
+                id: input.server.clone(),
+            })
+            .await?
+            .ok_or(OrchestrationError::NotFound)?;
+        let unit = input
+            .unit
+            .or_else(|| server.agent_unit.clone())
+            .unwrap_or_else(|| default_agent_unit(&server.name, &record_key(&server.id.0)));
+
+        let secret = generate_server_agent_key();
+        let server = self
+            .db
+            .process(SetServerAgentKey {
+                id: server.id.clone(),
+                digest: sha256_hex(&secret),
+                unit: unit.clone(),
+                now: Utc::now(),
+            })
+            .await?;
+        tracing::info!(server = %record_key(&server.id.0), unit, "issued a server agent key");
+        let command = render_install_command(&self.config, &base, &release, &server, &unit, &secret);
+        Ok(AgentInstall {
+            command,
+            unit,
+            version: release.version,
+            server,
+        })
+    }
+}
+
+/// The one-liner the operator pastes on the host: the installer piped into
+/// `sudo env … sh`, every setting in the environment and none on the command
+/// line. The download base is spelled out only when it is not the installer's
+/// default (`<master>/agent`).
+fn render_install_command(
+    config: &OrchestrationConfig,
+    base: &str,
+    release: &AgentReleaseEntity,
+    server: &ServerEntity,
+    unit: &str,
+    secret: &str,
+) -> String {
+    let master = config.agent_public_base_url.trim().trim_end_matches('/');
+    let mut env = vec![
+        format!("GURU_MASTER={master}"),
+        format!("GURU_SERVER_ID={}", record_key(&server.id.0)),
+        format!("GURU_UNIT={unit}"),
+        format!("GURU_AGENT_VERSION={}", release.version),
+        format!("GURU_AGENT_SHA256={}", release.sha256),
+    ];
+    if base != format!("{master}/agent") {
+        env.push(format!("GURU_DOWNLOAD_BASE={base}"));
+    }
+    env.push(format!("GURU_API_KEY={secret}"));
+    let mut lines = vec![format!("curl -fsSL {base}/install.sh \\")];
+    for (i, var) in env.iter().enumerate() {
+        if i == 0 {
+            lines.push(format!("  | sudo env {var} \\"));
+        } else {
+            lines.push(format!("             {var} \\"));
+        }
+    }
+    lines.push("             sh".to_string());
+    lines.join("\n")
+}
+
+/// The published worker release, and whether an install command can be
+/// rendered for it.
+pub struct GetAgentRelease {
+    pub actor: Identity,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentReleaseInfo {
+    pub release: Option<AgentReleaseEntity>,
+    /// `agent_public_base_url` is set, so the install command has an origin.
+    pub base_url_configured: bool,
+}
+
+impl Processor<GetAgentRelease> for ServerService {
+    type Output = AgentReleaseInfo;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:GetAgentRelease", skip_all, err)]
+    async fn process(&self, input: GetAgentRelease) -> Result<Self::Output, Self::Error> {
+        input.actor.ensure(Permission::ViewWorkspace)?;
+        Ok(AgentReleaseInfo {
+            release: self.db.process(FindAgentRelease).await?,
+            base_url_configured: self.config.agent_download_base().is_some(),
+        })
+    }
+}
+
 
 pub struct MoveServer {
     pub actor: Identity,
@@ -346,5 +543,28 @@ impl Processor<DeleteServer> for ServerService {
             .await?;
         self.notifier.notify(&canvas).await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_names_are_slugs_of_the_server_name() {
+        assert_eq!(default_agent_unit("HK Edge 1", "k"), "hk-edge-1");
+        assert_eq!(default_agent_unit("  tokyo--relay  ", "k"), "tokyo-relay");
+        assert_eq!(default_agent_unit("東京", "uz0ih3b30nrekqzs1h1y"), "uz0ih3b30nrekqzs1h1y");
+        assert_eq!(default_agent_unit(&"a".repeat(40), "k").len(), AGENT_UNIT_MAX_LEN);
+    }
+
+    #[test]
+    fn typed_unit_names_are_validated() {
+        assert_eq!(agent_unit_from("  ").unwrap_or(None), None);
+        assert_eq!(agent_unit_from("hk-1").unwrap_or(None).as_deref(), Some("hk-1"));
+        assert!(agent_unit_from("-hk").is_err());
+        assert!(agent_unit_from("HK").is_err());
+        assert!(agent_unit_from("hk 1").is_err());
+        assert!(agent_unit_from(&"a".repeat(33)).is_err());
     }
 }
