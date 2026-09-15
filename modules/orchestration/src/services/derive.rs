@@ -20,7 +20,7 @@ use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus
 use crate::entities::surreal::node::{
     NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayProtocol as EntityRelayProtocol,
 };
-use crate::entities::surreal::port::{PortDirection, PortEntity};
+use crate::entities::surreal::port::PortEntity;
 use crate::entities::surreal::server::ServerId;
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::entities::surreal::view::{
@@ -593,15 +593,13 @@ fn derive_destination(
             };
             derive_destination(index, source, visited, points_at, nodes, certificates)?
         }
-        // Boundary and universal nodes are never reached: `Index::peer`
-        // resolves through them (or stops at a bundle).
+        // Boundary nodes and universal pods are never reached: `Index::peer`
+        // resolves through the former and stops at the latter's bundles.
         NodeSpec::Pod(_)
         | NodeSpec::Entry(_)
         | NodeSpec::CanvasImport(_)
         | NodeSpec::CanvasExport(_)
-        | NodeSpec::UniversalPod(_)
-        | NodeSpec::UniversalDistribute(_)
-        | NodeSpec::UniversalAggregate(_) => {
+        | NodeSpec::UniversalPod(_) => {
             return Err(DeriveError::UnsupportedSpec {
                 node: node.node.name.clone(),
             });
@@ -612,12 +610,8 @@ fn derive_destination(
     Ok(result)
 }
 
+/// A load-balance node's hand-drawn inputs; its on-demand `lane:` ports belong
+/// to the channels it bundles, which are derived through the channel pods.
 fn inputs_in_order(node: &NodeWithPorts) -> Vec<&PortEntity> {
-    let mut ports: Vec<&PortEntity> = node
-        .ports
-        .iter()
-        .filter(|p| p.direction == PortDirection::Input)
-        .collect();
-    ports.sort_by_key(|p| p.position);
-    ports
+    crate::services::topology::manual_inputs(node)
 }

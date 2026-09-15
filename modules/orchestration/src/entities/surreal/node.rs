@@ -108,19 +108,24 @@ pub enum NodeSpec {
     LoadBalanceDistribute(LoadBalanceDistributeConfig),
     LoadBalanceAggregate(LoadBalanceAggregateConfig),
     UniversalPod(UniversalPodConfig),
-    UniversalDistribute(UniversalDistributeConfig),
-    UniversalAggregate(UniversalAggregateConfig),
 }
 
 impl NodeSpec {
-    /// Whether this is one of the three universal nodes, whose ports are created
-    /// on demand and whose traffic graph is generated (see `services::universal`).
+    /// Whether this is a server's universal pod: a node with no traffic path of
+    /// its own, whose ports are all bundle ports (see `services::universal`).
     pub fn is_universal(&self) -> bool {
+        matches!(self, NodeSpec::UniversalPod(_))
+    }
+
+    /// Whether bundles can be drawn on this node: a universal pod, or a
+    /// load-balance node, whose on-demand `chan:` / `bundle_*` ports sit next to
+    /// its hand-drawn ones.
+    pub fn takes_bundles(&self) -> bool {
         matches!(
             self,
             NodeSpec::UniversalPod(_)
-                | NodeSpec::UniversalDistribute(_)
-                | NodeSpec::UniversalAggregate(_)
+                | NodeSpec::LoadBalanceDistribute(_)
+                | NodeSpec::LoadBalanceAggregate(_)
         )
     }
 }
@@ -128,24 +133,11 @@ impl NodeSpec {
 /// A server's universal pod: created with the server, exactly one per server.
 /// Bundles come in on `bundle_in:<source>` ports, every channel they carry lands
 /// on a generated pod of this server, and the fixed `bundle_out` hands the
-/// bundle on to another universal pod or to an aggregator.
+/// bundle on to another universal pod or to a load-balance aggregate node.
 #[derive(Debug, Clone, SurrealValue)]
 pub struct UniversalPodConfig {
     pub server: ServerId,
 }
-
-/// Fans every channel connected to a `chan:<pod>` port over every universal pod
-/// bundled to it, with one load-balance mode and one relay protocol for all.
-#[derive(Debug, Clone, SurrealValue, PartialEq, Eq)]
-pub struct UniversalDistributeConfig {
-    pub mode: LoadBalanceMode,
-    pub protocol: RelayProtocol,
-}
-
-/// Exposes one `chan:<pod>` input per channel its incoming bundles carry, to
-/// be fed by an exit.
-#[derive(Debug, Clone, SurrealValue)]
-pub struct UniversalAggregateConfig {}
 
 #[derive(Debug, Clone, SurrealValue)]
 pub struct CanvasExportConfig {
@@ -265,9 +257,10 @@ pub struct RelayConfig {
     pub override_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Copy, SurrealValue, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, SurrealValue, PartialEq, Eq, Default)]
 #[surreal(untagged, rename_all = "snake_case")]
 pub enum RelayProtocol {
+    #[default]
     TcpRaw,
     TcpTls,
     Quic,
@@ -279,9 +272,13 @@ pub struct ExitConfig {
     pub pass_proxy_protocol: Option<ProxyProtocolVersion>,
 }
 
-#[derive(Debug, Clone, SurrealValue)]
+/// `protocol` is how the channels bundled out of this node are relayed to the
+/// universal pods they land on; the hand-drawn members never see it.
+#[derive(Debug, Clone, SurrealValue, PartialEq, Eq)]
 pub struct LoadBalanceDistributeConfig {
     pub mode: LoadBalanceMode,
+    #[surreal(default)]
+    pub protocol: RelayProtocol,
 }
 
 #[derive(Debug, Clone, SurrealValue)]

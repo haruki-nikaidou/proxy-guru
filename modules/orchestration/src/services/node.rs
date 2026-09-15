@@ -173,6 +173,9 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
         )],
         NodeSpec::LoadBalanceDistribute(_) => {
             let count = load_balance_count(item_count)?;
+            if count == 0 {
+                return Ok(Vec::new());
+            }
             let mut ports: Vec<NewPort> = (0..count)
                 .map(|i| {
                     port(
@@ -193,6 +196,9 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
         }
         NodeSpec::LoadBalanceAggregate(_) => {
             let count = load_balance_count(item_count)?;
+            if count == 0 {
+                return Ok(Vec::new());
+            }
             let mut ports = vec![port(
                 "source",
                 PortKind::DeriveDestination,
@@ -220,11 +226,9 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
                 "import ports are derived from the target canvas".into(),
             ));
         }
-        // A universal node starts with its fixed ports only; the rest are created
+        // A universal pod starts with its fixed port only; the rest are created
         // on demand by connects (see `services::universal`).
-        spec @ (NodeSpec::UniversalPod(_)
-        | NodeSpec::UniversalDistribute(_)
-        | NodeSpec::UniversalAggregate(_)) => universal::initial_ports(spec),
+        spec @ NodeSpec::UniversalPod(_) => universal::initial_ports(spec),
     })
 }
 
@@ -237,10 +241,12 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
 /// staying cheap to build and validate.
 pub const MAX_LOAD_BALANCE_MEMBERS: u32 = 256;
 
+/// Zero members means no hand-drawn ports at all: a node used through bundles
+/// and channels only (see `services::universal`).
 fn load_balance_count(item_count: u32) -> Result<i64, OrchestrationError> {
-    if item_count < 2 {
+    if item_count == 1 {
         return Err(OrchestrationError::Invalid(
-            "load balance nodes need at least 2 members".into(),
+            "load balance nodes need at least 2 members, or none".into(),
         ));
     }
     if item_count > MAX_LOAD_BALANCE_MEMBERS {
@@ -521,12 +527,29 @@ impl Processor<ReplaceNodeSpec> for NodeService {
             ));
         }
         if old.node.spec.is_universal() {
-            return self.replace_universal_spec(input, old).await;
+            return Err(OrchestrationError::Invalid(
+                "a universal pod has nothing to edit".into(),
+            ));
         }
         ensure_lane_edit_allowed(&old, &input.spec)?;
         let mut input = input;
         ensure_tls_valid(&self.db, &mut input.spec).await?;
-        let ports = port_layout(&input.spec, input.item_count)?;
+        // A load-balance node's on-demand ports (channels, bundles) are the
+        // control plane's: the hand-drawn layout is replaced, they are kept.
+        let mut ports = port_layout(&input.spec, input.item_count)?;
+        if input.spec.takes_bundles() {
+            ports.extend(
+                old.ports
+                    .iter()
+                    .filter(|p| universal::is_on_demand(p))
+                    .map(|p| NewPort {
+                        kind: p.kind,
+                        direction: p.direction,
+                        key: p.key.clone(),
+                        position: p.position,
+                    }),
+            );
+        }
 
         let canvas = old.node.canvas.clone();
         let topology = self
@@ -598,6 +621,33 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         {
             edits.push(edit);
         }
+        // A load-balance node's edit may change what its channels expand to (a
+        // new relay protocol re-rolls every landing port): the lanes are
+        // regenerated in the same write.
+        if input.spec.takes_bundles() {
+            let primary = universal::Primary {
+                edits,
+                batch: crate::entities::surreal::batch::ApplyTopologyBatch {
+                    canvas: Some(canvas.clone()),
+                    set_specs: vec![crate::entities::surreal::batch::SpecUpdate {
+                        node: input.node.clone(),
+                        spec: input.spec.clone(),
+                    }],
+                    reshape: vec![crate::entities::surreal::batch::PortReshape {
+                        node: input.node.clone(),
+                        ports: ports.clone(),
+                    }],
+                    ..Default::default()
+                },
+            };
+            let prepared = universal::prepare(&self.db, &self.config, &topology, primary).await?;
+            universal::apply(&self.db, &self.notifier, prepared).await?;
+            return self
+                .db
+                .process(FindNodeWithPorts { id: input.node })
+                .await?
+                .ok_or(OrchestrationError::NotFound);
+        }
         let projected = topology.project(&edits);
         ensure_valid(&projected)?;
         let views = self.views_for(&projected).await?;
@@ -637,51 +687,6 @@ fn ensure_lane_edit_allowed(old: &NodeWithPorts, spec: &NodeSpec) -> Result<(), 
             "node is generated by a universal node ({}); edit that node instead",
             lane.role.name()
         ))),
-    }
-}
-
-impl NodeService {
-    /// A universal node's spec edit: its ports are left alone (they are created
-    /// on demand), and the lanes it generates are regenerated in the same
-    /// write. A distributor's protocol change re-rolls the ports of every
-    /// landing pod its channels reach, since a listener cannot change protocol
-    /// in place.
-    async fn replace_universal_spec(
-        &self,
-        input: ReplaceNodeSpec,
-        old: NodeWithPorts,
-    ) -> Result<NodeWithPorts, OrchestrationError> {
-        if matches!(input.spec, NodeSpec::UniversalPod(_)) {
-            return Err(OrchestrationError::Invalid(
-                "a universal pod has nothing to edit".into(),
-            ));
-        }
-        let topology = self
-            .db
-            .process(LoadCanvasTopology {
-                canvas: old.node.canvas.clone(),
-            })
-            .await?;
-        let primary = universal::Primary {
-            edits: vec![TopologyEdit::SetSpec {
-                node: input.node.clone(),
-                spec: input.spec.clone(),
-            }],
-            batch: crate::entities::surreal::batch::ApplyTopologyBatch {
-                canvas: Some(old.node.canvas.clone()),
-                set_specs: vec![crate::entities::surreal::batch::SpecUpdate {
-                    node: input.node.clone(),
-                    spec: input.spec,
-                }],
-                ..Default::default()
-            },
-        };
-        let prepared = universal::prepare(&self.db, &self.config, &topology, primary).await?;
-        universal::apply(&self.db, &self.notifier, prepared).await?;
-        self.db
-            .process(FindNodeWithPorts { id: input.node })
-            .await?
-            .ok_or(OrchestrationError::NotFound)
     }
 }
 
@@ -903,13 +908,14 @@ fn ensure_retire_allowed(topology: &CanvasTopology, node: &NodeEntity) -> Result
         NodeSpec::UniversalPod(_) => Err(OrchestrationError::Conflict(
             "a universal pod goes with its server; delete the server instead".into(),
         )),
-        NodeSpec::UniversalDistribute(_) | NodeSpec::UniversalAggregate(_) => {
+        NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_) => {
             let key = record_key(&node.id.0);
             let ports: std::collections::HashSet<String> = topology
                 .nodes
                 .iter()
                 .filter(|n| record_key(&n.node.id.0) == key)
-                .flat_map(|n| n.ports.iter().map(|p| record_key(&p.id.0)))
+                .flat_map(|n| n.ports.iter().filter(|p| universal::is_on_demand(p)))
+                .map(|p| record_key(&p.id.0))
                 .collect();
             let wired = topology.edges.iter().any(|e| {
                 ports.contains(&record_key(&e.source.0)) || ports.contains(&record_key(&e.target.0))

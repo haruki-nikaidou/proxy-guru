@@ -382,10 +382,11 @@ impl<'a> Index<'a> {
     /// stands for the mirrored port on the node importing its canvas. `None` when
     /// any hop is missing (no edge, unresolved import, export without importer).
     ///
-    /// A distributor's or aggregator's channel port pair (`chan:x` / `lane:x`)
-    /// is looked through the same way: the operator's edge on one side continues
-    /// on the generated edge on the other. A universal pod's bundle ports end
-    /// the walk: bundles are not traffic.
+    /// A load-balance node's channel port pair (`chan:x` / `lane:x`) is looked
+    /// through the same way: the operator's edge on one side continues on the
+    /// generated edge on the other; arriving on one of its hand-drawn ports is
+    /// arriving at the node. A universal pod's bundle ports end the walk:
+    /// bundles are not traffic.
     pub(crate) fn peer(&self, port: &PortEntity) -> Option<&'a NodeWithPorts> {
         let mut current: &PortEntity = port;
         for _ in 0..MAX_BOUNDARY_HOPS {
@@ -411,9 +412,11 @@ impl<'a> Index<'a> {
                     let key = record_key(&far_node.node.id.0);
                     current = importer.ports.iter().find(|p| p.key == key)?;
                 }
-                NodeSpec::UniversalDistribute(_) | NodeSpec::UniversalAggregate(_) => {
-                    let twin = universal::channel_twin(&far_port.key)?;
-                    current = far_node.ports.iter().find(|p| p.key == twin)?;
+                NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_) => {
+                    match universal::channel_twin(&far_port.key) {
+                        Some(twin) => current = far_node.ports.iter().find(|p| p.key == twin)?,
+                        None => return Some(far_node),
+                    }
                 }
                 NodeSpec::UniversalPod(_) => return None,
                 _ => return Some(far_node),
@@ -567,7 +570,7 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
                 .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
             );
         }
-        if matches!(source_node.node.spec, NodeSpec::UniversalDistribute(_))
+        if matches!(source_node.node.spec, NodeSpec::LoadBalanceDistribute(_))
             && let Some(UniversalPort::Chan(pod)) = universal::parse_port_key(&source.key)
             && (target.key != "destination"
                 || !matches!(target_node.node.spec, NodeSpec::Pod(_))
@@ -643,9 +646,9 @@ fn bundle_edge_problem(
     let target_key = record_key(&target_node.node.id.0);
     let pair_ok = matches!(
         (&source_node.node.spec, &target_node.node.spec),
-        (NodeSpec::UniversalDistribute(_), NodeSpec::UniversalPod(_))
+        (NodeSpec::LoadBalanceDistribute(_), NodeSpec::UniversalPod(_))
             | (NodeSpec::UniversalPod(_), NodeSpec::UniversalPod(_))
-            | (NodeSpec::UniversalPod(_), NodeSpec::UniversalAggregate(_))
+            | (NodeSpec::UniversalPod(_), NodeSpec::LoadBalanceAggregate(_))
     );
     if !pair_ok {
         return Some("bundles nodes that cannot be bundled".to_string());
@@ -667,10 +670,12 @@ fn bundle_edge_problem(
     None
 }
 
-/// `(kind, direction, exact count or "at least 2")` a spec's ports must match.
+/// `(kind, direction, multiplicity)` a spec's hand-drawn ports must match.
 /// `None` for an import node, whose ports are checked against its target's
-/// exports instead, and for a universal node, whose ports are created on demand
-/// (see [`universal::universal_port_shape_ok`]).
+/// exports instead, and for a universal pod, whose ports are all created on
+/// demand (see [`universal::universal_port_shape_ok`]). A load-balance node's
+/// hand-drawn ports may be absent altogether (a node used through bundles
+/// only) but never half there.
 fn expected_ports(spec: &NodeSpec) -> Option<Vec<(PortKind, PortDirection, Multiplicity)>> {
     use Multiplicity::{AtLeastTwo, One};
     use PortDirection::{Input, Output};
@@ -691,10 +696,7 @@ fn expected_ports(spec: &NodeSpec) -> Option<Vec<(PortKind, PortDirection, Multi
         NodeSpec::CanvasExport(cfg) => {
             vec![(cfg.kind, export_port_direction(cfg.direction), One)]
         }
-        NodeSpec::CanvasImport(_)
-        | NodeSpec::UniversalPod(_)
-        | NodeSpec::UniversalDistribute(_)
-        | NodeSpec::UniversalAggregate(_) => return None,
+        NodeSpec::CanvasImport(_) | NodeSpec::UniversalPod(_) => return None,
     })
 }
 
@@ -702,6 +704,49 @@ fn expected_ports(spec: &NodeSpec) -> Option<Vec<(PortKind, PortDirection, Multi
 enum Multiplicity {
     One,
     AtLeastTwo,
+}
+
+/// Whether the hand-drawn ports of a node match `expected`. A load-balance
+/// node may have none at all; otherwise every slot must be there.
+fn manual_shape_ok(
+    spec: &NodeSpec,
+    ports: &[&PortEntity],
+    expected: &[(PortKind, PortDirection, Multiplicity)],
+) -> bool {
+    if ports.is_empty()
+        && matches!(
+            spec,
+            NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_)
+        )
+    {
+        return true;
+    }
+    let mut counts: HashMap<(PortKind, PortDirection), usize> = HashMap::new();
+    for port in ports {
+        let slot = counts.entry((port.kind, port.direction)).or_insert(0);
+        *slot = slot.saturating_add(1);
+    }
+    let mut ok = counts.len() == expected.len();
+    for (kind, direction, multiplicity) in expected {
+        let count = counts.get(&(*kind, *direction)).copied().unwrap_or(0);
+        ok &= match multiplicity {
+            Multiplicity::One => count == 1,
+            Multiplicity::AtLeastTwo => count >= 2,
+        };
+    }
+    ok
+}
+
+/// The hand-drawn input ports of a node, in position order: a load-balance
+/// node's `member_*` / `source`, never its on-demand `lane:` ports.
+pub(crate) fn manual_inputs(node: &NodeWithPorts) -> Vec<&PortEntity> {
+    let mut ports: Vec<&PortEntity> = node
+        .ports
+        .iter()
+        .filter(|p| p.direction == PortDirection::Input && !universal::is_on_demand(p))
+        .collect();
+    ports.sort_by_key(|p| p.position);
+    ports
 }
 
 fn check_port_shapes(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
@@ -729,25 +774,22 @@ fn check_port_shapes(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                     .collect();
                 expected == actual && node.ports.len() == actual.len()
             }
-            spec if spec.is_universal() => universal::universal_port_shape_ok(node),
+            spec if spec.takes_bundles() => {
+                let manual: Vec<&PortEntity> = node
+                    .ports
+                    .iter()
+                    .filter(|p| !universal::is_on_demand(p))
+                    .collect();
+                universal::universal_port_shape_ok(node)
+                    && expected_ports(spec)
+                        .is_none_or(|expected| manual_shape_ok(spec, &manual, &expected))
+            }
             spec => {
                 let Some(expected) = expected_ports(spec) else {
                     continue;
                 };
-                let mut counts: HashMap<(PortKind, PortDirection), usize> = HashMap::new();
-                for port in &node.ports {
-                    let slot = counts.entry((port.kind, port.direction)).or_insert(0);
-                    *slot = slot.saturating_add(1);
-                }
-                let mut ok = counts.len() == expected.len();
-                for (kind, direction, multiplicity) in expected {
-                    let count = counts.get(&(kind, direction)).copied().unwrap_or(0);
-                    ok &= match multiplicity {
-                        Multiplicity::One => count == 1,
-                        Multiplicity::AtLeastTwo => count >= 2,
-                    };
-                }
-                ok
+                let ports: Vec<&PortEntity> = node.ports.iter().collect();
+                manual_shape_ok(spec, &ports, &expected)
             }
         };
         if !ok {
@@ -946,7 +988,7 @@ fn check_universal(
     errors: &mut Vec<TopologyProblem>,
     warnings: &mut Vec<TopologyProblem>,
 ) {
-    if !topology.nodes.iter().any(|n| n.node.spec.is_universal()) {
+    if !topology.nodes.iter().any(|n| n.node.spec.takes_bundles()) {
         return;
     }
     let mut desired = universal::expand(topology);
@@ -976,11 +1018,7 @@ fn dependency_graph(index: &Index<'_>) -> HashMap<String, Vec<String>> {
     for node in index.nodes.values().filter(|n| is_traffic_node(n)) {
         let key = record_key(&node.node.id.0);
         let deps = graph.entry(key).or_default();
-        for port in node
-            .ports
-            .iter()
-            .filter(|p| p.direction == PortDirection::Input)
-        {
+        for port in manual_inputs(node) {
             if let Some(peer) = index.peer(port) {
                 deps.push(record_key(&peer.node.id.0));
             }
@@ -1073,16 +1111,14 @@ fn iphash_reachable(index: &Index<'_>, node: &NodeWithPorts, depth: usize) -> bo
             if cfg.mode == crate::entities::surreal::node::LoadBalanceMode::IpHash {
                 return true;
             }
-            node.ports
-                .iter()
-                .filter(|p| p.direction == PortDirection::Input)
+            manual_inputs(node)
+                .into_iter()
                 .filter_map(|p| index.peer(p))
                 .any(|member| iphash_reachable(index, member, depth.saturating_add(1)))
         }
-        NodeSpec::LoadBalanceAggregate(_) => node
-            .ports
-            .iter()
-            .find(|p| p.direction == PortDirection::Input)
+        NodeSpec::LoadBalanceAggregate(_) => manual_inputs(node)
+            .into_iter()
+            .next()
             .and_then(|p| index.peer(p))
             .map(|source| iphash_reachable(index, source, depth.saturating_add(1)))
             .unwrap_or(false),
@@ -1153,10 +1189,8 @@ fn check_warnings(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                 }
             }
             NodeSpec::LoadBalanceDistribute(_) => {
-                let connected = node
-                    .ports
-                    .iter()
-                    .filter(|p| p.direction == PortDirection::Input)
+                let connected = manual_inputs(node)
+                    .into_iter()
                     .filter(|p| index.edge_on(p).is_some())
                     .count();
                 if connected == 1 {

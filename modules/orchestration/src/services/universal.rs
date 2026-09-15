@@ -1,17 +1,21 @@
 //! Universal nodes: the canvas shorthand for "one rule × N transit servers".
 //!
-//! Three node kinds let an operator draw a fan-out once instead of once per
-//! transit server:
+//! One node kind and two adaptive ones let an operator draw a fan-out once
+//! instead of once per transit server:
 //!
-//! - a **universal distributor** takes any number of entry pods (each one a
-//!   *channel*, connected to a `chan:<pod>` port) and bundles all of them to any
-//!   number of universal pods;
+//! - a **load-balance distribute** node takes any number of entry pods (each one
+//!   a *channel*, connected to a `chan:<pod>` port) and bundles all of them to
+//!   any number of universal pods, relaying with its `protocol`;
 //! - a **universal pod** — one per server, created with it — receives bundles
 //!   and lands every channel they carry on a generated pod of its server, then
 //!   hands the bundle on (`bundle_out`) to another universal pod or to an
-//!   aggregator;
-//! - a **universal aggregator** exposes one `chan:<pod>` input per channel its
-//!   bundles carry, to be fed by an exit.
+//!   aggregate node;
+//! - a **load-balance aggregate** node exposes one `chan:<pod>` input per
+//!   channel its bundles carry, to be fed by an exit.
+//!
+//! The load-balance nodes keep their hand-drawn ports (`member_*` /
+//! `destination`, `source` / `copy_*`) next to the on-demand ones; the two
+//! never mix — a hand-drawn rule is derived through the hand-drawn ports only.
 //!
 //! None of this is a new traffic model. The universal nodes are *expanded* into
 //! ordinary pod, relay and load-balance nodes — the **lanes**, tagged with
@@ -23,7 +27,7 @@
 //! written. Lanes are diffed by key, so an edit that leaves a lane's identity
 //! alone leaves its row, its port ids and its listening port alone.
 //!
-//! The distributor's and aggregator's per-channel ports come in pairs: the
+//! The distribute and aggregate nodes' per-channel ports come in pairs: the
 //! outer `chan:<pod>` the operator connects, and a hidden `lane:<pod>` the
 //! generated edges attach to. [`crate::services::topology::Index::peer`] looks
 //! through the pair, exactly as it looks through an import/export boundary, so
@@ -132,9 +136,15 @@ pub fn is_managed_port(port: &PortEntity, owner: &NodeEntity) -> bool {
     owner.lane.is_some() || matches!(parse_port_key(&port.key), Some(UniversalPort::Lane(_)))
 }
 
+/// Whether a port is one of the on-demand ports of a bundle-capable node (a
+/// channel pair or a bundle port), as opposed to a hand-drawn one.
+pub fn is_on_demand(port: &PortEntity) -> bool {
+    parse_port_key(&port.key).is_some()
+}
+
 /// The next channel ordinal in a tree: one past the highest `chan:` position of
-/// every distributor and aggregator. Ordinals are never reused, so a channel's
-/// colour survives its neighbours' deletion.
+/// every distribute and aggregate node. Ordinals are never reused, so a
+/// channel's colour survives its neighbours' deletion.
 pub fn next_ordinal(topology: &CanvasTopology) -> i64 {
     topology
         .nodes
@@ -142,7 +152,7 @@ pub fn next_ordinal(topology: &CanvasTopology) -> i64 {
         .filter(|n| {
             matches!(
                 n.node.spec,
-                NodeSpec::UniversalDistribute(_) | NodeSpec::UniversalAggregate(_)
+                NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_)
             )
         })
         .flat_map(|n| n.ports.iter())
@@ -152,9 +162,11 @@ pub fn next_ordinal(topology: &CanvasTopology) -> i64 {
         .unwrap_or(0)
 }
 
-/// Whether a universal node's ports have the shape its kind allows: only the
-/// known keys, each with the right kind and direction, `chan:`/`lane:` in
-/// pairs, and exactly one fixed `bundle_out` on a universal pod.
+/// Whether a bundle-capable node's on-demand ports have the shape its kind
+/// allows: only the known keys, each with the right kind and direction,
+/// `chan:`/`lane:` in pairs, and exactly one fixed `bundle_out` on a universal
+/// pod. A load-balance node's hand-drawn ports are skipped here (the checker
+/// counts them separately); a universal pod has none.
 pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
     use PortDirection::{Input, Output};
     use PortKind::{Bundle, DeriveDestination};
@@ -163,18 +175,21 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
     let mut fixed_out = 0usize;
     for port in &node.ports {
         let Some(decoded) = parse_port_key(&port.key) else {
-            return false;
+            if matches!(node.node.spec, NodeSpec::UniversalPod(_)) {
+                return false;
+            }
+            continue;
         };
         let ok = match (&node.node.spec, decoded) {
-            (NodeSpec::UniversalDistribute(_), UniversalPort::Chan(pod)) => {
+            (NodeSpec::LoadBalanceDistribute(_), UniversalPort::Chan(pod)) => {
                 chans.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Output)
             }
-            (NodeSpec::UniversalDistribute(_), UniversalPort::Lane(pod)) => {
+            (NodeSpec::LoadBalanceDistribute(_), UniversalPort::Lane(pod)) => {
                 lanes.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Input)
             }
-            (NodeSpec::UniversalDistribute(_), UniversalPort::BundleOut(Some(_))) => {
+            (NodeSpec::LoadBalanceDistribute(_), UniversalPort::BundleOut(Some(_))) => {
                 (port.kind, port.direction) == (Bundle, Output)
             }
             (NodeSpec::UniversalPod(_), UniversalPort::BundleIn(_)) => {
@@ -184,14 +199,14 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
                 fixed_out = fixed_out.saturating_add(1);
                 (port.kind, port.direction) == (Bundle, Output)
             }
-            (NodeSpec::UniversalAggregate(_), UniversalPort::BundleIn(_)) => {
+            (NodeSpec::LoadBalanceAggregate(_), UniversalPort::BundleIn(_)) => {
                 (port.kind, port.direction) == (Bundle, Input)
             }
-            (NodeSpec::UniversalAggregate(_), UniversalPort::Chan(pod)) => {
+            (NodeSpec::LoadBalanceAggregate(_), UniversalPort::Chan(pod)) => {
                 chans.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Input)
             }
-            (NodeSpec::UniversalAggregate(_), UniversalPort::Lane(pod)) => {
+            (NodeSpec::LoadBalanceAggregate(_), UniversalPort::Lane(pod)) => {
                 lanes.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Output)
             }
@@ -207,7 +222,7 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
     !matches!(node.node.spec, NodeSpec::UniversalPod(_)) || fixed_out == 1
 }
 
-/// The port shape of a freshly created universal node (before any connect).
+/// The port shape of a freshly created universal pod (before any connect).
 pub fn initial_ports(spec: &NodeSpec) -> Vec<NewPort> {
     match spec {
         NodeSpec::UniversalPod(_) => vec![NewPort {
@@ -327,10 +342,10 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     let index = Index::build(topology);
     let mut desired = Desired::default();
 
-    // The universal nodes, keyed, and the bundle graph between them.
+    // The bundle-capable nodes, keyed, and the bundle graph between them.
     let mut universal: BTreeMap<String, &NodeWithPorts> = BTreeMap::new();
     for node in &topology.nodes {
-        if node.node.spec.is_universal() {
+        if node.node.spec.takes_bundles() {
             universal.insert(record_key(&node.node.id.0), node);
         }
     }
@@ -345,7 +360,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         if source.kind != PortKind::Bundle || target.kind != PortKind::Bundle {
             continue;
         }
-        if !source_node.node.spec.is_universal() || !target_node.node.spec.is_universal() {
+        if !source_node.node.spec.takes_bundles() || !target_node.node.spec.takes_bundles() {
             continue;
         }
         let s = record_key(&source_node.node.id.0);
@@ -354,9 +369,20 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         ins.entry(t).or_default().insert(s);
     }
 
-    // Ports follow the edges alone, whatever the lanes end up being.
+    // On-demand ports follow the edges alone, whatever the lanes end up being;
+    // a load-balance node's hand-drawn ports are carried over untouched.
     for (key, node) in &universal {
-        let mut ports: Vec<NewPort> = Vec::new();
+        let mut ports: Vec<NewPort> = node
+            .ports
+            .iter()
+            .filter(|p| !is_on_demand(p))
+            .map(|p| NewPort {
+                kind: p.kind,
+                direction: p.direction,
+                key: p.key.clone(),
+                position: p.position,
+            })
+            .collect();
         let port = |key: String, kind: PortKind, direction: PortDirection, position: i64| NewPort {
             kind,
             direction,
@@ -364,7 +390,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             position,
         };
         match &node.node.spec {
-            NodeSpec::UniversalDistribute(_) => {
+            NodeSpec::LoadBalanceDistribute(_) => {
                 for p in &node.ports {
                     if let Some(UniversalPort::Chan(pod)) = parse_port_key(&p.key)
                         && index.edge_on(p).is_some()
@@ -408,7 +434,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     0,
                 ));
             }
-            NodeSpec::UniversalAggregate(_) => {
+            NodeSpec::LoadBalanceAggregate(_) => {
                 for source in ins.get(key).into_iter().flatten() {
                     ports.push(port(
                         bundle_in_key(source),
@@ -424,13 +450,13 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         desired.ports.insert(key.clone(), ports);
     }
 
-    // Channels: a distributor's `chan:` port whose edge lands on that pod's
+    // Channels: a distribute node's `chan:` port whose edge lands on that pod's
     // `destination`. Anything else on such a port is reported by the checker
     // and carries nothing.
     let mut channels: BTreeMap<String, Channel<'_>> = BTreeMap::new();
     let mut own: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (key, node) in &universal {
-        let NodeSpec::UniversalDistribute(cfg) = &node.node.spec else {
+        let NodeSpec::LoadBalanceDistribute(cfg) = &node.node.spec else {
             continue;
         };
         for p in &node.ports {
@@ -531,7 +557,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     let is_aggregate = |k: &str| {
         matches!(
             universal.get(k).map(|n| &n.node.spec),
-            Some(NodeSpec::UniversalAggregate(_))
+            Some(NodeSpec::LoadBalanceAggregate(_))
         )
     };
     for key in &order {
@@ -549,7 +575,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             shape,
         };
         match &node.node.spec {
-            NodeSpec::UniversalDistribute(_) => {
+            NodeSpec::LoadBalanceDistribute(_) => {
                 let targets: Vec<&String> = outs
                     .get(*key)
                     .into_iter()
@@ -755,7 +781,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     }
                 }
             }
-            NodeSpec::UniversalAggregate(_) => {
+            NodeSpec::LoadBalanceAggregate(_) => {
                 let ports = desired.ports.entry((*key).to_string()).or_default();
                 for pod_key in carried.get(*key).into_iter().flatten() {
                     let Some(channel) = channels.get(pod_key) else {
@@ -871,7 +897,10 @@ fn free_port(taken: &mut HashSet<(String, u16)>, server: &ServerId) -> Result<u1
 fn lane_spec(shape: &LaneShape, port: u16, keep: Option<&PodConfig>) -> (NodeSpec, u32) {
     match shape {
         LaneShape::Distribute { mode, members } => (
-            NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode: *mode }),
+            NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
+                mode: *mode,
+                protocol: RelayProtocol::TcpRaw,
+            }),
             *members,
         ),
         LaneShape::Relay { protocol } => (
@@ -932,7 +961,7 @@ pub fn diff(topology: &CanvasTopology, desired: &Desired) -> Result<Plan, Orches
     let canvas = topology
         .nodes
         .iter()
-        .find(|n| n.node.spec.is_universal())
+        .find(|n| n.node.spec.takes_bundles())
         .map(|n| n.node.canvas.clone())
         .or_else(|| topology.canvases.first().map(|c| c.id.clone()));
     plan.batch.canvas = canvas;

@@ -11,8 +11,9 @@ use kanau::processor::Processor;
 use orchestration::entities::surreal::canvas::{CanvasId, FindCanvasById};
 use orchestration::entities::surreal::connection::EdgeConnectionEntity;
 use orchestration::entities::surreal::node::{
-    EntryConfig, ExitConfig, FindNodeWithPorts, LaneRole, LoadBalanceMode, NodeId, NodeSpec,
-    NodeWithPorts, PodConfig, RelayProtocol, UniversalAggregateConfig, UniversalDistributeConfig,
+    EntryConfig, ExitConfig, FindNodeWithPorts, LaneRole, LoadBalanceAggregateConfig,
+    LoadBalanceDistributeConfig, LoadBalanceMode, NodeId, NodeSpec, NodeWithPorts, PodConfig,
+    RelayProtocol,
 };
 use orchestration::entities::surreal::port::PortId;
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
@@ -159,7 +160,11 @@ fn exit(destination: &str) -> NodeSpec {
 }
 
 fn distributor(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
-    NodeSpec::UniversalDistribute(UniversalDistributeConfig { mode, protocol })
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol })
+}
+
+fn aggregator() -> NodeSpec {
+    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
 }
 
 async fn picture(w: &World) -> Picture {
@@ -205,7 +210,7 @@ async fn picture(w: &World) -> Picture {
         w,
         &canvas,
         "join",
-        NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
+        aggregator(),
     )
     .await;
     let e0 = create(w, &canvas, "exit-0", exit("10.0.0.5:8080")).await;
@@ -734,7 +739,7 @@ async fn universal_pods_chain() -> TestResult {
     let up2 = universal_pod_of(&w, &canvas, &hk2).await;
     let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
     let ud = create(&w, &canvas, "fan", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpTls)).await;
-    let ua = create(&w, &canvas, "join", NodeSpec::UniversalAggregate(UniversalAggregateConfig {})).await;
+    let ua = create(&w, &canvas, "join", aggregator()).await;
     connect_universal(&w, handle(&ud, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
     let ud = reload(&w, &ud.node.id).await;
     bundle(&w, &ud, &up1).await;
@@ -874,5 +879,104 @@ async fn the_picture_derives_the_flat_fabric() -> TestResult {
         assert!(exits[0].contains("10.0.0.5") && exits[1].contains("10.0.0.6"), "{exits:?}");
         assert!(applied.forwardings.iter().all(|d| d.serves.protocol == ListenProtocol::RelayTcp));
     }
+    Ok(())
+}
+
+// --- hand-drawn ports next to channels ------------------------------------------
+
+/// A distribute node's hand-drawn members are a rule of their own: growing the
+/// node from 0 to 2 members keeps every channel lane and port, the hand-drawn
+/// rule derives through the members only, and shrinking back to 0 is refused
+/// while a member is wired and then drops only the hand-drawn ports.
+#[tokio::test]
+async fn hand_drawn_members_coexist_with_channels() -> TestResult {
+    let w = world().await?;
+    let p = picture(&w).await;
+    let before = lanes(&w, &p.canvas).await;
+    let replace = |count: u32| ReplaceNodeSpec {
+        actor: operator(),
+        node: p.ud.node.id.clone(),
+        spec: distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        item_count: count,
+    };
+    let grown = w.nodes.process(replace(2)).await?;
+    let keys: Vec<&str> = grown.ports.iter().map(|x| x.key.as_str()).collect();
+    for key in ["member_0", "member_1", "destination"] {
+        assert!(keys.contains(&key), "{keys:?}");
+    }
+    assert_eq!(grown.ports.len(), 6 + 3, "{keys:?}");
+    let after = lanes(&w, &p.canvas).await;
+    assert_eq!(ids_of(&before), ids_of(&after));
+    assert_eq!(landing_ports(&before), landing_ports(&after));
+
+    // A hand-drawn rule on the same node: a third pod fed by the node, two exits
+    // as members.
+    let p2 = create(&w, &p.canvas, "manual-10002", pod(&p.us, 10002)).await;
+    connect(&w, &port_of(&grown, "destination"), &port_of(&p2, "destination")).await;
+    let m0 = create(&w, &p.canvas, "manual-exit-0", exit("10.0.0.7:8080")).await;
+    let m1 = create(&w, &p.canvas, "manual-exit-1", exit("10.0.0.8:8080")).await;
+    connect(&w, &port_of(&m0, "destination"), &port_of(&grown, "member_0")).await;
+    connect(&w, &port_of(&m1, "destination"), &port_of(&grown, "member_1")).await;
+    let entry = create(
+        &w,
+        &p.canvas,
+        "manual-entry",
+        NodeSpec::Entry(EntryConfig {
+            receive_proxy_protocol: None,
+            tls: None,
+        }),
+    )
+    .await;
+    connect(&w, &port_of(&p2, "listen"), &port_of(&entry, "listen")).await;
+    assert_clean(&w, &p.canvas).await;
+    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+
+    settle(&w, &p.canvas, &[&p.us, &p.hk1, &p.hk2]).await?;
+    let us = w.view(&p.us).await?;
+    let applied = us.applied.as_ref().expect("us converged");
+    assert!(us.invalid_pods.is_empty(), "{:?}", us.invalid_pods);
+    let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
+    assert_eq!(config.forwardings.len(), 3, "{}", applied.toml);
+    let manual = config
+        .forwardings
+        .iter()
+        .find(|f| f.tag == "manual-10002")
+        .expect("the hand-drawn rule");
+    match &manual.to {
+        guru_worker_config::ForwardingTo::LoadBalance(group) => {
+            assert_eq!(group.members.len(), 2);
+            assert!(group.members.iter().all(|m| matches!(m, guru_worker_config::ForwardingTo::Exit { .. })));
+        }
+        other => panic!("hand-drawn rule should balance over its exits, got {other:?}"),
+    }
+    for f in config.forwardings.iter().filter(|f| f.tag != "manual-10002") {
+        assert!(
+            matches!(&f.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2
+                && g.members.iter().all(|m| matches!(m, guru_worker_config::ForwardingTo::Relay { .. }))),
+            "channels still relay over both transit servers: {}",
+            applied.toml
+        );
+    }
+
+    // Shrinking to 0 with wired members is refused; unwired, it drops only the
+    // hand-drawn ports.
+    let err = w.nodes.process(replace(0)).await.expect_err("members are wired");
+    assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
+    let topology = topology(&w, &p.canvas).await;
+    let grown = reload(&w, &grown.node.id).await;
+    for edge in edges_touching(&topology, &grown) {
+        let manual_ports: Vec<String> = grown
+            .ports
+            .iter()
+            .filter(|x| !x.key.contains(':'))
+            .map(|x| record_key(&x.id.0))
+            .collect();
+        if manual_ports.contains(&record_key(&edge.source.0)) || manual_ports.contains(&record_key(&edge.target.0)) {
+            disconnect(&w, &edge).await?;
+        }
+    }
+    let shrunk = w.nodes.process(replace(0)).await?;
+    assert_eq!(shrunk.ports.len(), 6, "{:?}", shrunk.ports.iter().map(|x| &x.key).collect::<Vec<_>>());
+    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
     Ok(())
 }

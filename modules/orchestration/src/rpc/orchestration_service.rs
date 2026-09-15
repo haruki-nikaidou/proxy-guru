@@ -14,8 +14,7 @@ use crate::entities::surreal::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
     LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode,
     NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig,
-    RelayProtocol, TlsConfig, UniversalAggregateConfig, UniversalDistributeConfig,
-    UniversalPodConfig,
+    RelayProtocol, TlsConfig, UniversalPodConfig,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
@@ -465,6 +464,7 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
         NodeSpec::LoadBalanceDistribute(cfg) => {
             Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
                 mode: lb_mode_to_proto(cfg.mode),
+                protocol: relay_protocol_to_proto(cfg.protocol),
             })
         }
         NodeSpec::LoadBalanceAggregate(_) => {
@@ -473,15 +473,7 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
         NodeSpec::UniversalPod(cfg) => Spec::UniversalPod(pb::UniversalPodConfig {
             server_id: ids::record_key(&cfg.server.0),
         }),
-        NodeSpec::UniversalDistribute(cfg) => {
-            Spec::UniversalDistribute(pb::UniversalDistributeConfig {
-                mode: lb_mode_to_proto(cfg.mode),
-                protocol: relay_protocol_to_proto(cfg.protocol),
-            })
-        }
-        NodeSpec::UniversalAggregate(_) => {
-            Spec::UniversalAggregate(pb::UniversalAggregateConfig {})
-        }
+
         NodeSpec::CanvasImport(cfg) => Spec::CanvasImport(pb::CanvasImportConfig {
             canvas_id: ids::record_key(&cfg.canvas.0),
         }),
@@ -565,6 +557,11 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
         Spec::LoadBalanceDistribute(cfg) => {
             NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
                 mode: lb_mode_from_proto(cfg.mode)?,
+                // Unspecified is the default: raw TCP, like a relay's default.
+                protocol: match pb::RelayProtocol::try_from(cfg.protocol) {
+                    Ok(pb::RelayProtocol::Unspecified) => RelayProtocol::TcpRaw,
+                    _ => relay_protocol_from_proto(cfg.protocol)?,
+                },
             })
         }
         Spec::LoadBalanceAggregate(_) => {
@@ -578,13 +575,7 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
                 server: ids::server_id(&cfg.server_id),
             })
         }
-        Spec::UniversalDistribute(cfg) => {
-            NodeSpec::UniversalDistribute(UniversalDistributeConfig {
-                mode: lb_mode_from_proto(cfg.mode)?,
-                protocol: relay_protocol_from_proto(cfg.protocol)?,
-            })
-        }
-        Spec::UniversalAggregate(_) => NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
+
         Spec::CanvasImport(cfg) => {
             if cfg.canvas_id.is_empty() {
                 return Err(Status::invalid_argument("canvas_id is required"));

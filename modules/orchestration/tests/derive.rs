@@ -175,6 +175,7 @@ fn load_balance_members_follow_port_position() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::Fallback,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(3),
     );
@@ -660,6 +661,7 @@ fn an_empty_load_balance_group_invalidates_only_its_pod() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -729,6 +731,7 @@ fn a_destination_through_an_import_node_derives_like_the_flat_graph() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::Fallback,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(3),
     );

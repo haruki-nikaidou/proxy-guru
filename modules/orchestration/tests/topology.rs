@@ -120,6 +120,7 @@ fn a_node_cannot_connect_to_itself() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -506,6 +507,7 @@ fn ip_hash_needs_the_client_address() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -532,6 +534,7 @@ fn ip_hash_needs_the_client_address() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -560,6 +563,7 @@ fn ip_hash_behind_an_aggregate_is_still_reachable() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -622,6 +626,7 @@ fn a_single_member_load_balancer_is_a_warning() {
         "lb",
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
+            protocol: RelayProtocol::TcpRaw,
         }),
         distribute_ports(2),
     );
@@ -660,9 +665,7 @@ fn projection_validates_a_change_before_it_is_written() {
 
 // --- universal nodes -----------------------------------------------------------
 
-use orchestration::entities::surreal::node::{
-    Lane, LaneRole, UniversalAggregateConfig, UniversalDistributeConfig, UniversalPodConfig,
-};
+use orchestration::entities::surreal::node::{Lane, LaneRole, UniversalPodConfig};
 use orchestration::services::universal;
 
 fn bundle_port(key: &str, direction: PortDirection) -> (String, PortKind, PortDirection, i64) {
@@ -682,7 +685,11 @@ fn channel_ports(pod: &str, out_first: bool, ordinal: i64) -> Vec<(String, PortK
 }
 
 fn ud(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
-    NodeSpec::UniversalDistribute(UniversalDistributeConfig { mode, protocol })
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol })
+}
+
+fn ua() -> NodeSpec {
+    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
 }
 
 fn up(server: &ServerId) -> NodeSpec {
@@ -774,7 +781,7 @@ fn bundles_only_join_the_allowed_pairs_on_matching_keys() {
     );
     b.node(
         "ua",
-        NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
+        ua(),
         vec![bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input)],
     );
     b.connect("ud-bundle_out:ua", "ua-bundle_in:ud");
@@ -861,13 +868,40 @@ fn universal_ports_must_have_their_kind_shape() {
     let problems = analyze(&b.build());
     assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
 
-    // An aggregator with its pair the right way round is fine.
+    // An aggregate node with its pair the right way round is fine, with or
+    // without hand-drawn ports next to it.
+    let mut b = Builder::new("prod");
+    b.node("ua", ua(), channel_ports("p0", false, 0));
+    let mut mixed = channel_ports("p0", false, 0);
+    mixed.extend(aggregate_ports(2));
+    b.node("ua2", ua(), mixed);
+    let problems = analyze(&b.build());
+    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+
+    // Hand-drawn ports are all or nothing: a lone `source` is half a node.
     let mut b = Builder::new("prod");
     b.node(
         "ua",
-        NodeSpec::UniversalAggregate(UniversalAggregateConfig {}),
-        channel_ports("p0", false, 0),
+        ua(),
+        vec![("source".to_string(), PortKind::DeriveDestination, PortDirection::Input, 0)],
     );
     let problems = analyze(&b.build());
-    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+}
+
+/// A distribute node's `lane:` inputs are not members: a node whose only
+/// hand-drawn member is wired is the single-member case, one whose channels are
+/// wired is not.
+#[test]
+fn channel_lanes_are_not_members() {
+    let mut b = Builder::new("prod");
+    let us = b.server("us");
+    b.ip("_", &us, "198.51.100.1");
+    b.node("p0", pod(&us, 10000), pod_ports());
+    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), channel_ports("p0", true, 0));
+    b.connect("ud-chan:p0", "p0-destination");
+    b.node("exit", exit("10.0.0.5:8080"), exit_ports());
+    b.connect("exit-destination", "ud-lane:p0");
+    let problems = analyze(&b.build());
+    assert!(!warnings(&problems).contains(&ProblemKind::DistributeSingleMember), "{problems:?}");
 }

@@ -173,7 +173,7 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
     let ud = api
         .create_node(create(
             "fan",
-            pb::node_spec::Spec::UniversalDistribute(pb::UniversalDistributeConfig {
+            pb::node_spec::Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
                 mode: pb::LoadBalanceMode::RoundRobin.into(),
                 protocol: pb::RelayProtocol::RelayTcpRaw.into(),
             }),
@@ -182,7 +182,7 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
         .into_inner()
         .node
         .unwrap();
-    assert!(ud.ports.is_empty(), "a distributor starts without ports");
+    assert!(ud.ports.is_empty(), "a distribute node with no members starts without ports");
     let destination = pod.ports.iter().find(|p| p.key == "destination").unwrap();
     let edge = api
         .connect_ports(as_operator(pb::ConnectRequest {

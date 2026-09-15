@@ -21,7 +21,7 @@ use crate::services::converge::ensure_switch_safe;
 use crate::services::node::port_rows;
 use crate::services::rollout::DirtyNotifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
-use crate::services::universal::{self, UniversalPort};
+use crate::services::universal;
 use crate::utils::ids;
 use crate::utils::ids::record_key;
 use auth::entities::surreal::account::AccountRole;
@@ -244,9 +244,9 @@ impl Processor<ConnectUniversal> for EdgeService {
                 },
                 ConnectEnd::Port(port),
             ) => {
-                if !matches!(source.node.spec, NodeSpec::UniversalDistribute(_)) {
+                if !matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_)) {
                     return Err(OrchestrationError::Invalid(
-                        "only a universal distributor has channel outputs".into(),
+                        "only a load-balance distribute node has channel outputs".into(),
                     ));
                 }
                 let (port, owner) = port_in(&topology, port)?;
@@ -303,27 +303,27 @@ impl Processor<ConnectUniversal> for EdgeService {
                 let source_key = record_key(&source.node.id.0);
                 let target_key = record_key(&target.node.id.0);
                 let out_key = match &source.node.spec {
-                    NodeSpec::UniversalDistribute(_) => universal::bundle_out_key(&target_key),
+                    NodeSpec::LoadBalanceDistribute(_) => universal::bundle_out_key(&target_key),
                     NodeSpec::UniversalPod(_) => universal::BUNDLE_OUT.to_string(),
                     _ => {
                         return Err(OrchestrationError::Invalid(
-                            "only a distributor or a universal pod bundles out".into(),
+                            "only a distribute node or a universal pod bundles out".into(),
                         ));
                     }
                 };
                 if !matches!(
                     target.node.spec,
-                    NodeSpec::UniversalPod(_) | NodeSpec::UniversalAggregate(_)
+                    NodeSpec::UniversalPod(_) | NodeSpec::LoadBalanceAggregate(_)
                 ) {
                     return Err(OrchestrationError::Invalid(
-                        "only a universal pod or an aggregator takes bundles in".into(),
+                        "only a universal pod or an aggregate node takes bundles in".into(),
                     ));
                 }
-                if matches!(source.node.spec, NodeSpec::UniversalDistribute(_))
-                    && matches!(target.node.spec, NodeSpec::UniversalAggregate(_))
+                if matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_))
+                    && matches!(target.node.spec, NodeSpec::LoadBalanceAggregate(_))
                 {
                     return Err(OrchestrationError::Invalid(
-                        "a distributor bundles to universal pods; bundle those to the aggregator".into(),
+                        "a distribute node bundles to universal pods; bundle those to the aggregate node".into(),
                     ));
                 }
                 let in_key = universal::bundle_in_key(&source_key);
@@ -495,11 +495,7 @@ impl Processor<Disconnect> for EdgeService {
                         .into(),
                 ));
             }
-            universal_side |= owner.node.spec.is_universal()
-                || matches!(
-                    universal::parse_port_key(&port.key),
-                    Some(UniversalPort::Chan(_))
-                );
+            universal_side |= owner.node.spec.takes_bundles() && universal::is_on_demand(port);
         }
         let edits = vec![TopologyEdit::RetireEdge {
             edge: input.edge.clone(),

@@ -593,11 +593,11 @@ export function laneRoleToJSON(object: LaneRole): string {
 }
 
 /**
- * The handle groups of a universal node, for connects that create a port on
- * demand: `CHANNEL_OUT` on a distributor (one port per channel), `BUNDLE_IN` on
- * a universal pod or aggregator (one port per incoming bundle), `BUNDLE_OUT` on
- * a distributor (one port per outgoing bundle) or a universal pod (its single
- * fixed port).
+ * The handle groups of a bundle-capable node, for connects that create a port
+ * on demand: `CHANNEL_OUT` on a load-balance distribute node (one port per
+ * channel), `BUNDLE_IN` on a universal pod or a load-balance aggregate node
+ * (one port per incoming bundle), `BUNDLE_OUT` on a distribute node (one port
+ * per outgoing bundle) or a universal pod (its single fixed port).
  */
 export enum UniversalGroup {
   UNSPECIFIED = 0,
@@ -902,8 +902,14 @@ export interface ExitConfig {
   passProxyProtocol: ProxyProtocolVersion;
 }
 
+/**
+ * `protocol` is how the channels bundled out of this node are relayed to the
+ * universal pods they land on (unspecified = raw TCP); it has no effect on the
+ * node's hand-drawn members.
+ */
 export interface LoadBalanceDistributeConfig {
   mode: LoadBalanceMode;
+  protocol: RelayProtocol;
 }
 
 export interface LoadBalanceAggregateConfig {
@@ -921,26 +927,13 @@ export interface CanvasExportConfig {
 /**
  * The universal pod of a server: created with the server, one per server. It
  * takes bundles in and lands every channel they carry on a real pod of its own
- * (a "lane"), then hands the bundle on through `bundle_out`.
+ * (a "lane"), then hands the bundle on through `bundle_out`. Bundles start at a
+ * load-balance distribute node (one per entry pod connected to its channel
+ * handle) and end at a load-balance aggregate node, which grows one input per
+ * channel for an exit; both are ordinary load-balance nodes whose ports adapt.
  */
 export interface UniversalPodConfig {
   serverId: string;
-}
-
-/**
- * Fans every channel connected to it over every universal pod it is bundled
- * to, with one strategy and one relay protocol for all of them.
- */
-export interface UniversalDistributeConfig {
-  mode: LoadBalanceMode;
-  protocol: RelayProtocol;
-}
-
-/**
- * Exposes one output per channel the incoming bundles carry, to be connected to
- * an exit.
- */
-export interface UniversalAggregateConfig {
 }
 
 export interface NodeSpec {
@@ -953,8 +946,6 @@ export interface NodeSpec {
   canvasImport?: CanvasImportConfig | undefined;
   canvasExport?: CanvasExportConfig | undefined;
   universalPod?: UniversalPodConfig | undefined;
-  universalDistribute?: UniversalDistributeConfig | undefined;
-  universalAggregate?: UniversalAggregateConfig | undefined;
 }
 
 /**
@@ -2108,13 +2099,16 @@ export const ExitConfig: MessageFns<ExitConfig> = {
 };
 
 function createBaseLoadBalanceDistributeConfig(): LoadBalanceDistributeConfig {
-  return { mode: 0 };
+  return { mode: 0, protocol: 0 };
 }
 
 export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig> = {
   encode(message: LoadBalanceDistributeConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.mode !== 0) {
       writer.uint32(8).int32(message.mode);
+    }
+    if (message.protocol !== 0) {
+      writer.uint32(16).int32(message.protocol);
     }
     return writer;
   },
@@ -2134,6 +2128,14 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
           message.mode = reader.int32() as any;
           continue;
         }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.protocol = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2144,13 +2146,19 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
   },
 
   fromJSON(object: any): LoadBalanceDistributeConfig {
-    return { mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0 };
+    return {
+      mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0,
+      protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
+    };
   },
 
   toJSON(message: LoadBalanceDistributeConfig): unknown {
     const obj: any = {};
     if (message.mode !== 0) {
       obj.mode = loadBalanceModeToJSON(message.mode);
+    }
+    if (message.protocol !== 0) {
+      obj.protocol = relayProtocolToJSON(message.protocol);
     }
     return obj;
   },
@@ -2161,6 +2169,7 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
   fromPartial(object: DeepPartial<LoadBalanceDistributeConfig>): LoadBalanceDistributeConfig {
     const message = createBaseLoadBalanceDistributeConfig();
     message.mode = object.mode ?? 0;
+    message.protocol = object.protocol ?? 0;
     return message;
   },
 };
@@ -2412,125 +2421,6 @@ export const UniversalPodConfig: MessageFns<UniversalPodConfig> = {
   },
 };
 
-function createBaseUniversalDistributeConfig(): UniversalDistributeConfig {
-  return { mode: 0, protocol: 0 };
-}
-
-export const UniversalDistributeConfig: MessageFns<UniversalDistributeConfig> = {
-  encode(message: UniversalDistributeConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.mode !== 0) {
-      writer.uint32(8).int32(message.mode);
-    }
-    if (message.protocol !== 0) {
-      writer.uint32(16).int32(message.protocol);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UniversalDistributeConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUniversalDistributeConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.mode = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.protocol = reader.int32() as any;
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): UniversalDistributeConfig {
-    return {
-      mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0,
-      protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
-    };
-  },
-
-  toJSON(message: UniversalDistributeConfig): unknown {
-    const obj: any = {};
-    if (message.mode !== 0) {
-      obj.mode = loadBalanceModeToJSON(message.mode);
-    }
-    if (message.protocol !== 0) {
-      obj.protocol = relayProtocolToJSON(message.protocol);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<UniversalDistributeConfig>): UniversalDistributeConfig {
-    return UniversalDistributeConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<UniversalDistributeConfig>): UniversalDistributeConfig {
-    const message = createBaseUniversalDistributeConfig();
-    message.mode = object.mode ?? 0;
-    message.protocol = object.protocol ?? 0;
-    return message;
-  },
-};
-
-function createBaseUniversalAggregateConfig(): UniversalAggregateConfig {
-  return {};
-}
-
-export const UniversalAggregateConfig: MessageFns<UniversalAggregateConfig> = {
-  encode(_: UniversalAggregateConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UniversalAggregateConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUniversalAggregateConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): UniversalAggregateConfig {
-    return {};
-  },
-
-  toJSON(_: UniversalAggregateConfig): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<UniversalAggregateConfig>): UniversalAggregateConfig {
-    return UniversalAggregateConfig.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<UniversalAggregateConfig>): UniversalAggregateConfig {
-    const message = createBaseUniversalAggregateConfig();
-    return message;
-  },
-};
-
 function createBaseNodeSpec(): NodeSpec {
   return {
     pod: undefined,
@@ -2542,8 +2432,6 @@ function createBaseNodeSpec(): NodeSpec {
     canvasImport: undefined,
     canvasExport: undefined,
     universalPod: undefined,
-    universalDistribute: undefined,
-    universalAggregate: undefined,
   };
 }
 
@@ -2575,12 +2463,6 @@ export const NodeSpec: MessageFns<NodeSpec> = {
     }
     if (message.universalPod !== undefined) {
       UniversalPodConfig.encode(message.universalPod, writer.uint32(74).fork()).join();
-    }
-    if (message.universalDistribute !== undefined) {
-      UniversalDistributeConfig.encode(message.universalDistribute, writer.uint32(82).fork()).join();
-    }
-    if (message.universalAggregate !== undefined) {
-      UniversalAggregateConfig.encode(message.universalAggregate, writer.uint32(90).fork()).join();
     }
     return writer;
   },
@@ -2664,22 +2546,6 @@ export const NodeSpec: MessageFns<NodeSpec> = {
           message.universalPod = UniversalPodConfig.decode(reader, reader.uint32());
           continue;
         }
-        case 10: {
-          if (tag !== 82) {
-            break;
-          }
-
-          message.universalDistribute = UniversalDistributeConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 11: {
-          if (tag !== 90) {
-            break;
-          }
-
-          message.universalAggregate = UniversalAggregateConfig.decode(reader, reader.uint32());
-          continue;
-        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2720,16 +2586,6 @@ export const NodeSpec: MessageFns<NodeSpec> = {
         : isSet(object.universal_pod)
         ? UniversalPodConfig.fromJSON(object.universal_pod)
         : undefined,
-      universalDistribute: isSet(object.universalDistribute)
-        ? UniversalDistributeConfig.fromJSON(object.universalDistribute)
-        : isSet(object.universal_distribute)
-        ? UniversalDistributeConfig.fromJSON(object.universal_distribute)
-        : undefined,
-      universalAggregate: isSet(object.universalAggregate)
-        ? UniversalAggregateConfig.fromJSON(object.universalAggregate)
-        : isSet(object.universal_aggregate)
-        ? UniversalAggregateConfig.fromJSON(object.universal_aggregate)
-        : undefined,
     };
   },
 
@@ -2761,12 +2617,6 @@ export const NodeSpec: MessageFns<NodeSpec> = {
     }
     if (message.universalPod !== undefined) {
       obj.universalPod = UniversalPodConfig.toJSON(message.universalPod);
-    }
-    if (message.universalDistribute !== undefined) {
-      obj.universalDistribute = UniversalDistributeConfig.toJSON(message.universalDistribute);
-    }
-    if (message.universalAggregate !== undefined) {
-      obj.universalAggregate = UniversalAggregateConfig.toJSON(message.universalAggregate);
     }
     return obj;
   },
@@ -2801,12 +2651,6 @@ export const NodeSpec: MessageFns<NodeSpec> = {
       : undefined;
     message.universalPod = (object.universalPod !== undefined && object.universalPod !== null)
       ? UniversalPodConfig.fromPartial(object.universalPod)
-      : undefined;
-    message.universalDistribute = (object.universalDistribute !== undefined && object.universalDistribute !== null)
-      ? UniversalDistributeConfig.fromPartial(object.universalDistribute)
-      : undefined;
-    message.universalAggregate = (object.universalAggregate !== undefined && object.universalAggregate !== null)
-      ? UniversalAggregateConfig.fromPartial(object.universalAggregate)
       : undefined;
     return message;
   },
