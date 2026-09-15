@@ -308,15 +308,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Keepalive is load-bearing for the `Watch*` streams: a browser or
             // bridge that dies without closing its TCP connection would
             // otherwise hold a shared view open forever.
-            Server::builder()
+            let serving = Server::builder()
                 .http2_keepalive_interval(Some(Duration::from_secs(30)))
                 .http2_keepalive_timeout(Some(Duration::from_secs(20)))
                 .layer(AuthLayer::new(sessions, api_keys))
                 .add_service(AuthServer::new(auth))
                 .add_service(OrchestrationServer::new(orchestration))
-                .serve_with_shutdown(cli.dashboard_addr, shutdown())
-                .await?;
+                .serve_with_shutdown(cli.dashboard_addr, shutdown());
+            let lost = tokio::select! {
+                served = serving => {
+                    served?;
+                    false
+                }
+                _ = connection.listen_network_io_failure() => true,
+            };
             live_token.cancel();
+            if lost {
+                return Err(BROKER_LOST.into());
+            }
             // A panicking subscriber must not be absorbed: without it every open
             // dashboard silently stops updating, so the process exits non-zero.
             if let Err(error) = subscriber.await {
@@ -356,15 +365,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Keepalive is load-bearing: a worker that dies without closing its TCP
             // connection would otherwise keep renewing its session lease and lock
             // its replacement out of `Register`.
-            Server::builder()
+            let serving = Server::builder()
                 .http2_keepalive_interval(Some(lease.heartbeat))
                 .http2_keepalive_timeout(Some(lease.heartbeat))
                 .layer(AuthLayer::new(sessions, api_keys))
                 .layer(AgentLayer::new(agents))
                 .add_service(WorkerAgentServer::new(workers))
-                .serve_with_shutdown(cli.workers_addr, shutdown())
-                .await?;
+                .serve_with_shutdown(cli.workers_addr, shutdown());
+            let lost = tokio::select! {
+                served = serving => {
+                    served?;
+                    false
+                }
+                _ = connection.listen_network_io_failure() => true,
+            };
             token.cancel();
+            if lost {
+                return Err(BROKER_LOST.into());
+            }
             // A panicking poller must not be absorbed: without it no worker ever
             // learns of a new revision, so the process exits non-zero.
             if let Err(error) = poller.await {
@@ -394,16 +412,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bind_consumer::<TrimHealthHistorySignal, _>(&pool, &health).await?,
                 bind_consumer::<RenewCertificatesSignal, _>(&pool, &acme).await?,
             ];
-            // `amqprs` does not reconnect, and a dead consumer in a live process
-            // is silent: broker loss ends this mode so the supervisor restarts it.
             let lost = tokio::select! {
                 () = shutdown() => false,
                 _ = connection.listen_network_io_failure() => true,
             };
             if lost {
-                return Err("the AMQP connection was lost: restart once the broker \
-                            at AMQP_URI is reachable again"
-                    .into());
+                return Err(BROKER_LOST.into());
             }
             drop(channels);
             connection
@@ -422,6 +436,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+/// Why every mode ends on broker loss. `amqprs` does not reconnect: a dead
+/// connection in a live process is silent — a consumer stops consuming, and a
+/// publisher's every `canvas_dirty` fails until only the 30 s sweep moves
+/// rollouts along. Ending the mode lets the supervisor restart it against a
+/// reachable broker.
+const BROKER_LOST: &str =
+    "the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again";
 
 /// How often the scheduler asks every job whether it is due.
 ///
@@ -494,9 +516,7 @@ async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if lost {
-        return Err("the AMQP connection was lost: restart once the broker \
-                    at AMQP_URI is reachable again"
-            .into());
+        return Err(BROKER_LOST.into());
     }
     drop(pool);
     connection
