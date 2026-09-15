@@ -14,14 +14,18 @@ control plane. This guide only gets the binary onto a machine you can distribute
 
 Four processes, all from **one** image, plus the dashboard:
 
-| Component | Image / artifact | Run mode | Talks to |
-|---|---|---|---|
-| Operator API | `ghcr.io/haruki-nikaidou/guru-master` | `dashboard_grpc` | SurrealDB, RabbitMQ |
-| Worker API | `ghcr.io/haruki-nikaidou/guru-master` | `workers_grpc` | SurrealDB, RabbitMQ |
-| Periodic + derivation hooks | `ghcr.io/haruki-nikaidou/guru-master` | `consumer` | SurrealDB, RabbitMQ |
-| Scheduler | `ghcr.io/haruki-nikaidou/guru-master` | `cron` | RabbitMQ |
-| Dashboard | `ghcr.io/haruki-nikaidou/guru-frontend` | — | Operator API (gRPC) |
-| Worker | `guru-worker` binary from a GitHub release | — | Worker API (gRPC) |
+| Component | Run mode | Talks to |
+|---|---|---|
+| Operator API | `dashboard_grpc` | SurrealDB, RabbitMQ |
+| Worker API | `workers_grpc` | SurrealDB, RabbitMQ |
+| Periodic + derivation hooks | `consumer` | SurrealDB, RabbitMQ |
+| Scheduler | `cron` | RabbitMQ |
+| Dashboard | — | Operator API (gRPC) |
+
+:::note
+Because of the nature of a TCP reverse proxy server, deploying a worker inside a Docker container
+is bad practice. Therefore, we do not provide a Docker image for worker nodes.
+:::
 
 State lives in exactly two places: **SurrealDB** (canvases, servers, nodes, edges, accounts,
 config views) and **RabbitMQ** (one durable queue for "this canvas changed" hints, plus one per

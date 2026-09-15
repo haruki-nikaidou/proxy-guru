@@ -13,14 +13,18 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 
 四个进程，全部来自**同一个**镜像，再加上控制台：
 
-| 组件 | 镜像 / 产物 | 运行模式 | 通信对象 |
-|---|---|---|---|
-| 运维 API | `ghcr.io/haruki-nikaidou/guru-master` | `dashboard_grpc` | SurrealDB、RabbitMQ |
-| Worker API | `ghcr.io/haruki-nikaidou/guru-master` | `workers_grpc` | SurrealDB、RabbitMQ |
-| 周期任务 + 派生钩子 | `ghcr.io/haruki-nikaidou/guru-master` | `consumer` | SurrealDB、RabbitMQ |
-| 调度器 | `ghcr.io/haruki-nikaidou/guru-master` | `cron` | RabbitMQ |
-| 控制台 | `ghcr.io/haruki-nikaidou/guru-frontend` | — | 运维 API（gRPC） |
-| Worker | 来自 GitHub release 的 `guru-worker` 二进制文件 | — | Worker API（gRPC） |
+| 组件 | 运行模式 | 通信对象 |
+|---|---|---|
+| 运维 API | `dashboard_grpc` | SurrealDB、RabbitMQ |
+| Worker API | `workers_grpc` | SurrealDB、RabbitMQ |
+| 周期任务 + 派生钩子 | `consumer` | SurrealDB、RabbitMQ |
+| 调度器 | `cron` | RabbitMQ |
+| 控制台 | — | 运维 API（gRPC） |
+
+:::note
+由于 TCP 反向代理服务器的特性，将 Worker 部署在 Docker 容器内并不是良好实践。
+因此，我们不提供 Worker 节点的 Docker 镜像。
+:::
 
 状态只存在两个地方：**SurrealDB**（画布、服务器、节点、边、账号、配置视图）和 **RabbitMQ**
 （一个持久队列承载"这个画布变了"的提示，外加每个周期任务一个队列）。容器文件系统上不保存任何东西，

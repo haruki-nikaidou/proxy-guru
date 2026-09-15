@@ -14,14 +14,18 @@ description: GHCR のイメージからコントロールプレーンを動か�
 
 **1 つ**のイメージから動く 4 つのプロセスと、ダッシュボードです:
 
-| コンポーネント | イメージ / 成果物 | 実行モード | 通信相手 |
-|---|---|---|---|
-| オペレーター API | `ghcr.io/haruki-nikaidou/guru-master` | `dashboard_grpc` | SurrealDB、RabbitMQ |
-| ワーカー API | `ghcr.io/haruki-nikaidou/guru-master` | `workers_grpc` | SurrealDB、RabbitMQ |
-| 定期ジョブ + 導出フック | `ghcr.io/haruki-nikaidou/guru-master` | `consumer` | SurrealDB、RabbitMQ |
-| スケジューラー | `ghcr.io/haruki-nikaidou/guru-master` | `cron` | RabbitMQ |
-| ダッシュボード | `ghcr.io/haruki-nikaidou/guru-frontend` | — | オペレーター API（gRPC） |
-| ワーカー | GitHub リリースの `guru-worker` バイナリ | — | ワーカー API（gRPC） |
+| コンポーネント | 実行モード | 通信相手 |
+|---|---|---|
+| オペレーター API | `dashboard_grpc` | SurrealDB、RabbitMQ |
+| ワーカー API | `workers_grpc` | SurrealDB、RabbitMQ |
+| 定期ジョブ + 導出フック | `consumer` | SurrealDB、RabbitMQ |
+| スケジューラー | `cron` | RabbitMQ |
+| ダッシュボード | — | オペレーター API（gRPC） |
+
+:::note
+TCP リバースプロキシサーバーの性質上、ワーカーを Docker コンテナ内にデプロイするのは適切ではありません。
+そのため、ワーカーノード向けの Docker イメージは提供していません。
+:::
 
 状態が存在する場所はちょうど 2 か所です: **SurrealDB**（キャンバス、サーバー、ノード、エッジ、アカウント、
 設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、定期ジョブごとに
