@@ -396,7 +396,11 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> Tes
 
 /// Moves osaka's pod to another port, which is how a worker comes to run two
 /// listeners of one pod: the new one, and the old one tokyo still dials.
-async fn move_osaka_hop(w: &World, f: &Fixture, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+async fn move_osaka_hop(
+    w: &World,
+    f: &Fixture,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
     w.nodes
         .process(ReplaceNodeSpec {
             actor: operator(),
@@ -454,9 +458,11 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     // The worker acks each forwarding by its tag, through the same service the
     // real worker reaches.
     let row =
-        w.db.process(FindServerById { id: f.osaka.clone() })
-            .await?
-            .unwrap();
+        w.db.process(FindServerById {
+            id: f.osaka.clone(),
+        })
+        .await?
+        .unwrap();
     let snapshot =
         w.db.process(TakeInFlight {
             server: f.osaka.clone(),
@@ -498,7 +504,10 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     ack_current(&w, &f.tokyo).await?;
     w.derive(&f.canvas).await?;
     let settled = Config::from_toml_str(&w.view(&f.osaka).await?.desired.unwrap().toml)?;
-    assert_eq!(tags_by_port(&settled), vec![("osaka-hop".to_string(), 9444)]);
+    assert_eq!(
+        tags_by_port(&settled),
+        vec![("osaka-hop".to_string(), 9444)]
+    );
     Ok(())
 }
 
