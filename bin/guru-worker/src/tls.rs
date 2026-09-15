@@ -1,5 +1,5 @@
 use crate::pipe::AsyncRw;
-use guru_worker_config::TlsHostConfig;
+use guru_worker_config::{KeepAlive, TlsHostConfig};
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslFiletype, SslMethod};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -71,8 +71,12 @@ pub async fn connect_tls(
     Ok(s)
 }
 
-/// Builds a quinn server config from a cert chain + key on disk.
-pub fn quic_server_config(c: &TlsHostConfig) -> Result<quinn::ServerConfig, crate::BoxError> {
+/// Builds a quinn server config from a cert chain + key on disk, pinging and timing
+/// out idle connections per `keepalive`.
+pub fn quic_server_config(
+    c: &TlsHostConfig,
+    keepalive: &KeepAlive,
+) -> Result<quinn::ServerConfig, crate::BoxError> {
     use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer};
     let chain: Vec<CertificateDer<'static>> = {
         let f = std::fs::File::open(&c.full_chain)?;
@@ -84,7 +88,9 @@ pub fn quic_server_config(c: &TlsHostConfig) -> Result<quinn::ServerConfig, crat
         let mut r = std::io::BufReader::new(f);
         rustls_pemfile::private_key(&mut r)?.ok_or("no private key in key file")?
     };
-    Ok(quinn::ServerConfig::with_single_cert(chain, key)?)
+    let mut config = quinn::ServerConfig::with_single_cert(chain, key)?;
+    config.transport_config(crate::keepalive::quic_transport(keepalive));
+    Ok(config)
 }
 
 /// Reads every certificate of a PEM bundle into a rustls root store.
@@ -101,35 +107,51 @@ fn root_store_from_pem(ca: &Path) -> Result<quinn::rustls::RootCertStore, crate:
     Ok(roots)
 }
 
-fn quic_client_endpoint_with(
-    roots: quinn::rustls::RootCertStore,
-) -> Result<quinn::Endpoint, crate::BoxError> {
-    let client_cfg = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
-    let addr: std::net::SocketAddr = "[::]:0".parse()?;
-    let mut ep = quinn::Endpoint::client(addr)?;
-    ep.set_default_client_config(client_cfg);
-    Ok(ep)
+/// A QUIC dialer: one UDP socket and the trust it verifies peers with. The transport
+/// parameters are not part of it — they come from the config in force at each dial,
+/// so a reload changes them without rebinding the socket.
+#[derive(Clone)]
+pub struct QuicClient {
+    endpoint: quinn::Endpoint,
+    config: quinn::ClientConfig,
 }
 
-/// Shared quinn client endpoint for dialing relay hops over QUIC, verifying peers
-/// against `ca` (a PEM bundle) or, without one, the system roots. One endpoint per
-/// CA path.
-pub fn quic_client_endpoint(ca: Option<&Path>) -> Result<quinn::Endpoint, crate::BoxError> {
-    static SYSTEM: OnceLock<quinn::Endpoint> = OnceLock::new();
-    static BY_CA: LazyLock<Mutex<HashMap<PathBuf, quinn::Endpoint>>> =
-        LazyLock::new(Mutex::default);
+impl QuicClient {
+    fn new(roots: quinn::rustls::RootCertStore) -> Result<Self, crate::BoxError> {
+        let config = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
+        let addr: std::net::SocketAddr = "[::]:0".parse()?;
+        let endpoint = quinn::Endpoint::client(addr)?;
+        Ok(Self { endpoint, config })
+    }
+
+    /// Opens a connection to `addr` as `sni`, probing per `keepalive`.
+    pub fn connect(
+        &self,
+        addr: std::net::SocketAddr,
+        sni: &str,
+        keepalive: &KeepAlive,
+    ) -> Result<quinn::Connecting, quinn::ConnectError> {
+        let mut config = self.config.clone();
+        config.transport_config(crate::keepalive::quic_transport(keepalive));
+        self.endpoint.connect_with(config, addr, sni)
+    }
+}
+
+/// Shared QUIC dialer for relay hops, verifying peers against `ca` (a PEM bundle)
+/// or, without one, the system roots. One per CA path.
+pub fn quic_client(ca: Option<&Path>) -> Result<QuicClient, crate::BoxError> {
+    static SYSTEM: OnceLock<QuicClient> = OnceLock::new();
+    static BY_CA: LazyLock<Mutex<HashMap<PathBuf, QuicClient>>> = LazyLock::new(Mutex::default);
     let Some(ca) = ca else {
-        if let Some(e) = SYSTEM.get() {
-            return Ok(e.clone());
+        if let Some(c) = SYSTEM.get() {
+            return Ok(c.clone());
         }
         let mut roots = quinn::rustls::RootCertStore::empty();
         for cert in rustls_native_certs::load_native_certs().certs {
             let _ = roots.add(cert);
         }
-        let ep = quic_client_endpoint_with(roots)?;
-        return Ok(SYSTEM.get_or_init(|| ep).clone());
+        let client = QuicClient::new(roots)?;
+        return Ok(SYSTEM.get_or_init(|| client).clone());
     };
-    cached(&BY_CA, ca, || {
-        quic_client_endpoint_with(root_store_from_pem(ca)?)
-    })
+    cached(&BY_CA, ca, || QuicClient::new(root_store_from_pem(ca)?))
 }

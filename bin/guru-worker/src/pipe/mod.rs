@@ -317,8 +317,10 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
             destination,
             ipv6_resolve,
             send_pp,
+            keepalive,
         } => Ok(TargetStream::Exit(
-            exit::connect_exit(destination, *ipv6_resolve, *send_pp, client_addr).await?,
+            exit::connect_exit(destination, *ipv6_resolve, *send_pp, keepalive, client_addr)
+                .await?,
         )),
         Target::Relay {
             protocol,
@@ -326,6 +328,7 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
             ipv6_resolve,
             sni,
             relay_ca,
+            keepalive,
         } => Ok(TargetStream::Relay(
             relay::dial_relay(
                 *protocol,
@@ -333,6 +336,7 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
                 *ipv6_resolve,
                 sni.as_deref(),
                 relay_ca.as_deref(),
+                keepalive,
                 client_addr,
             )
             .await?,

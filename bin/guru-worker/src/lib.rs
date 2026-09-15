@@ -12,6 +12,7 @@ pub mod addresses;
 pub mod agent;
 pub mod certs;
 pub mod cli;
+pub mod keepalive;
 pub mod listener;
 pub mod pipe;
 pub mod prepared;

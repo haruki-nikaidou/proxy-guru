@@ -1,6 +1,6 @@
 use crate::BoxError;
 use crate::pipe::write_proxy_header;
-use guru_worker_config::{Ipv6Resolve, RelayProtocol, Remote, TcpProxyProtocol};
+use guru_worker_config::{Ipv6Resolve, KeepAlive, RelayProtocol, Remote, TcpProxyProtocol};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
@@ -63,27 +63,36 @@ impl tokio::io::AsyncWrite for RelayStream {
 
 /// Dials the next relay hop over the configured transport and writes the PROXY v2
 /// framing header carrying the true client address. TLS and QUIC peers are verified
-/// against `relay_ca` when given, else the system roots.
+/// against `relay_ca` when given, else the system roots; the hop probes for liveness
+/// per `keepalive`.
 pub async fn dial_relay(
     protocol: RelayProtocol,
     destination: &Remote,
     ipv6_resolve: Ipv6Resolve,
     sni: Option<&str>,
     relay_ca: Option<&Path>,
+    keepalive: &KeepAlive,
     client_addr: SocketAddr,
 ) -> Result<RelayStream, BoxError> {
     let addr = crate::resolver::resolve(destination, ipv6_resolve).await?;
+    let connect_tcp = || async {
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        if let Err(error) = crate::keepalive::apply_tcp(&tcp, keepalive) {
+            tracing::warn!(%addr, %error, "keepalive not set on relay socket");
+        }
+        Ok::<_, BoxError>(tcp)
+    };
     let mut out = match protocol {
-        RelayProtocol::Tcp => RelayStream::Tcp(tokio::net::TcpStream::connect(addr).await?),
+        RelayProtocol::Tcp => RelayStream::Tcp(connect_tcp().await?),
         RelayProtocol::TlsOverTcp => {
             let sni = sni.ok_or("relay tls dial requires sni")?;
-            let tcp = tokio::net::TcpStream::connect(addr).await?;
+            let tcp = connect_tcp().await?;
             RelayStream::Tls(crate::tls::connect_tls(sni, tcp, relay_ca).await?)
         }
         RelayProtocol::Quic => {
             let sni = sni.ok_or("relay quic dial requires sni")?;
-            let endpoint = crate::tls::quic_client_endpoint(relay_ca)?;
-            let conn = endpoint.connect(addr, sni)?.await?;
+            let client = crate::tls::quic_client(relay_ca)?;
+            let conn = client.connect(addr, sni, keepalive)?.await?;
             let (send, recv) = conn.open_bi().await?;
             RelayStream::Quic(tokio::io::join(recv, send))
         }
