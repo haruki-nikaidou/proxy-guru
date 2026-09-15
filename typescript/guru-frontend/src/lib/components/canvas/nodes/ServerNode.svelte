@@ -85,20 +85,24 @@ const channelOf = (podId: string) => data.channels[podId];
 	</p>
 
 	{#if universal}
+		{@const landed = [...new Map(universal.lanes.map(lane => [lane.channel.podId, lane.channel])).values()]}
 		<!-- The universal pod: bundles in on the left, the one bundle out on the
-		     right, and a dot per channel landing here. -->
+		     right, and a dot per channel (rule) landing here. A rule arriving by
+		     two paths lands twice, so the counts say both: channels and pods. -->
 		<div class="mt-2 border-t pt-1">
 			<p class="flex items-center gap-1 truncate px-3 text-xs font-medium">
 				{m.editor_universal_pod()}
-				{#each universal.lanes as lane (lane.nodeId)}
+				{#each landed as channel (channel.podId)}
 					<span
 						class="size-2 shrink-0 rounded-full"
-						style="background: {channelColor(lane.channel)}"
-						title={lane.channel.podName}
+						style="background: {channelColor(channel)}"
+						title={channel.podName}
 					></span>
 				{/each}
 				{#if universal.lanes.length > 0}
-					<span class="font-mono text-muted-foreground">{universal.lanes.length}</span>
+					<span class="truncate font-mono text-muted-foreground">
+						{m.editor_universal_summary({ channels: landed.length, lanes: universal.lanes.length })}
+					</span>
 				{/if}
 			</p>
 			<div class="grid grid-cols-2">

@@ -74,11 +74,12 @@ export type ExitNodeDto = NodeBase & {
 	passProxyProtocol: ProxyProtocolName;
 };
 /**
- * A load-balance node. Its hand-drawn ports (`member_*` / `destination`, or
- * `source` / `copy_*`, absent when `memberCount` is 0) sit next to the ports
- * the control plane creates on demand: a distribute node takes entry pods as
- * *channels* and bundles them out, an aggregate node takes bundles in and grows
- * one coloured input per channel for an exit.
+ * A load-balance node. The operator's rule is its **members**: named bundle
+ * ports, one per member, in the order the operator listed them — the bundles
+ * out of a distribute node, the bundles into an aggregate node. Everything
+ * else on the card is grown by the control plane: a distribute node takes
+ * entry pods as *channels* and collects upstream bundles on the left, an
+ * aggregate node grows one coloured input per channel for an exit.
  */
 export type LoadBalanceNodeDto = NodeBase & {
 	kind: 'load_balance';
@@ -87,9 +88,8 @@ export type LoadBalanceNodeDto = NodeBase & {
 	balanceMode: LoadBalanceModeName;
 	/** How a distribute node's channels are relayed to the universal pods. */
 	protocol: RelayProtocolName;
-	memberCount: number;
-	/** The hand-drawn ports only. */
-	manualPorts: CanvasPort[];
+	/** The declared members, in order, each with its bundle port. */
+	members: MemberDto[];
 	/**
 	 * The channels this node carries: drawn into a distribute node (`portId`
 	 * is its `chan:` output), or brought by bundles into an aggregate node
@@ -97,10 +97,23 @@ export type LoadBalanceNodeDto = NodeBase & {
 	 */
 	channels: (ChannelDto & { portId: string })[];
 	/**
-	 * One port per bundle drawn on this node (`bundle_out:` on a distribute
-	 * node, `bundle_in:` on an aggregate node), with the far node's name.
+	 * A distribute node's `bundle_in:` ports, one per upstream bundle
+	 * collected on it, with the far node's name; always empty on an aggregate
+	 * node, which takes bundles on its members.
 	 */
-	bundlePorts: BundlePortDto[];
+	bundlesIn: BundlePortDto[];
+};
+/**
+ * One member as the operator declared it. `slot` is the stable number behind
+ * the port key (`member_<slot>`): renaming or reordering keeps the bundle drawn
+ * on the port. `peerName` is the far end of that bundle, or `null` while the
+ * member is unwired.
+ */
+export type MemberDto = {
+	slot: number;
+	name: string;
+	port: CanvasPort;
+	peerName: string | null;
 };
 /** A bundle port and what is on the other end of its bundle. */
 export type BundlePortDto = CanvasPort & { peerName: string };
@@ -120,8 +133,12 @@ export type CanvasExportNodeDto = NodeBase & {
 	portKind: ExportPortKindName;
 	exportAs: CanvasExportAsName;
 };
-/** The handle groups a bundle-capable node offers next to its one-edge ports. */
-export type UniversalGroupName = 'channel_out' | 'bundle_in' | 'bundle_out';
+/**
+ * The handle groups a bundle-capable node offers next to its one-edge ports:
+ * the ports the control plane creates on connect. Bundles leave through ports
+ * that exist already (a member, a universal pod's `bundle out`).
+ */
+export type UniversalGroupName = 'channel_out' | 'bundle_in';
 /**
  * One channel: an entry pod connected to a distribute node. `ordinal` is
  * the position of its `chan:` port, handed out once per canvas tree and never

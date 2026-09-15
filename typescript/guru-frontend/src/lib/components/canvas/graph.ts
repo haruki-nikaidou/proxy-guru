@@ -67,7 +67,7 @@ export function parseGroupHandle(
 	if (!handle.startsWith('u:')) return null;
 	const separator = handle.lastIndexOf(':');
 	const group = handle.slice(separator + 1);
-	if (group !== 'channel_out' && group !== 'bundle_in' && group !== 'bundle_out') return null;
+	if (group !== 'channel_out' && group !== 'bundle_in') return null;
 	return { flowId: handle.slice(2, separator), group };
 }
 
@@ -168,9 +168,9 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 
 /**
  * Port id → endpoint, plus one "add" entry per handle group of a
- * bundle-capable node under its synthetic id. Every existing port — a bundle
- * port, a `chan:` port, a hand-drawn port — is a one-edge endpoint of its own;
- * only the hidden `lane:` ports are left out.
+ * bundle-capable node under its synthetic id. Every existing port — a member,
+ * a collected bundle, a `chan:` port, a universal pod's `bundle out` — is a
+ * one-edge endpoint of its own; only the hidden `lane:` ports are left out.
  */
 export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> {
 	const index = new Map<string, PortIndexEntry>();
@@ -200,14 +200,11 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 	}
 	for (const node of graph.nodes) {
 		const owner = flowNodeId('node', node.id);
-		if (node.kind === 'load_balance') {
-			// Both take bundles in; a distribute node also starts channels and
-			// bundles out.
+		if (node.kind === 'load_balance' && node.mode === 'distribute') {
+			// A distribute node collects upstream bundles and starts channels;
+			// its members and an aggregate node's members are ordinary ports.
 			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
-			if (node.mode === 'distribute') {
-				index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
-				index.set(groupHandleId(owner, 'bundle_out'), add(owner, 'bundle_out', 'bundle'));
-			}
+			index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
 		}
 		for (const p of node.ports) port(owner, p);
 	}
@@ -458,7 +455,9 @@ export function connectedPortIds(graph: CanvasGraph, flowEdges: Edge[]): Set<str
  * output → input, and still be free — a second edge on either endpoint is what
  * the backend reports as `PortOversubscribed`. An "add" handle takes any number
  * of edges, a distribute node's channel handle only lands on a pod's free
- * `destination`, and bundles only land on an "add" handle.
+ * `destination`, and a bundle leaves through a port (a member, a universal
+ * pod's `bundle out`) and lands on a `+ bundle` handle or an aggregate node's
+ * free member.
  */
 export function canConnect(
 	connection: Edge | Connection,
@@ -480,10 +479,9 @@ export function canConnect(
 		// hop within one server is a warning, not an error.
 		if (target.group || !target.flowNodeId.startsWith('server:')) return false;
 	}
-	// A bundle is drawn from an "add" handle to an "add" handle, or out of a
-	// universal pod's fixed port into an "add" handle; existing bundle ports
-	// are wired already.
-	if (source.kind === 'bundle' && !target.group) return false;
+	// A bundle never starts at an "add" handle: it leaves through a member or
+	// a universal pod's `bundle out`.
+	if (source.kind === 'bundle' && source.group) return false;
 	const used = connectedPortIds(graph, flowEdges);
 	const sourceFree = source.group ? true : !used.has(sourceHandle);
 	const targetFree = target.group ? true : !used.has(targetHandle);
@@ -492,9 +490,8 @@ export function canConnect(
 
 /**
  * The label of a port row. An import port carries the name of the export node
- * it mirrors; only the two shared keys are translated, and the load-balance
- * keys (`member_0`, `copy_0`, `source`) are shown verbatim because they are the
- * identifiers the control plane derives them as.
+ * it mirrors; only the two shared keys are translated, anything else is shown
+ * verbatim.
  */
 export function portLabel(port: CanvasPort): string {
 	if (port.label !== null) return port.label;

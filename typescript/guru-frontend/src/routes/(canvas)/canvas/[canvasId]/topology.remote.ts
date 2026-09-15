@@ -33,6 +33,7 @@ import type {
 	ExportPortKindName,
 	Ipv6ResolveName,
 	LaneDto,
+	MemberDto,
 	LoadBalanceModeName,
 	PodDto,
 	PortDirectionName,
@@ -78,13 +79,21 @@ const portSchema = v.pipe(
 	v.minValue(1, 'port_out_of_range'),
 	v.maxValue(65535, 'port_out_of_range')
 );
-/** 0 means no hand-drawn ports (a node used through bundles only); else 2-256. */
-const memberCountSchema = v.pipe(
-	v.number(),
-	v.integer(),
-	v.minValue(0, 'member_count_out_of_range'),
-	v.maxValue(256, 'member_count_out_of_range'),
-	v.check(value => value !== 1, 'member_count_out_of_range')
+/**
+ * The operator's member list of a load-balance node: 1 to 256, each with a
+ * trimmed name (unique, at most 64 characters) and a slot unique in the list.
+ * Mirrors `members_ok` in the control plane.
+ */
+const memberSchema = v.object({
+	slot: v.pipe(v.number(), v.integer(), v.minValue(1, 'members_invalid')),
+	name: v.pipe(v.string(), v.trim(), v.minLength(1, 'members_invalid'), v.maxLength(64, 'members_invalid'))
+});
+const membersSchema = v.pipe(
+	v.array(memberSchema),
+	v.minLength(1, 'members_invalid'),
+	v.maxLength(256, 'members_invalid'),
+	v.check(list => new Set(list.map(m => m.name)).size === list.length, 'members_invalid'),
+	v.check(list => new Set(list.map(m => m.slot)).size === list.length, 'members_invalid')
 );
 /** An optional IP literal: empty means unset. */
 const optionalIpSchema = v.optional(
@@ -329,25 +338,26 @@ const CHANNEL_COLORS = 12;
 const channelOf = (key: string): string | null =>
 	key.startsWith('chan:') ? key.slice('chan:'.length) : null;
 
-/** The far node id a `bundle_in:<id>` / `bundle_out:<id>` port names, or `null`. */
+/** The far node id a `bundle_in:<id>` port names, or `null`. */
 const bundlePeerOf = (key: string): string | null =>
-	key.startsWith('bundle_in:')
-		? key.slice('bundle_in:'.length)
-		: key.startsWith('bundle_out:')
-			? key.slice('bundle_out:'.length)
-			: null;
+	key.startsWith('bundle_in:') ? key.slice('bundle_in:'.length) : null;
+
+/** The key of a member's bundle port. */
+const memberKey = (slot: number): string => `member_${slot}`;
 
 /**
  * A standalone node, or `null` for a pod / an unsupported spec. `exportNames`
  * maps the export node ids of an import target to their names, which is what
  * the mirrored ports are keyed by; `channels` resolves the `chan:` ports of a
- * universal node.
+ * universal node; `peerName` names a node (a universal pod by its server) and
+ * `peerOfPort` finds the node on the far end of the edge on a port.
  */
 function toStandalone(
 	node: ProtoNode,
 	exportNames: ReadonlyMap<string, string>,
 	channels: ReadonlyMap<string, ChannelDto>,
-	peerName: (nodeId: string) => string
+	peerName: (nodeId: string) => string,
+	peerOfPort: (portId: string) => string | null
 ): StandaloneNode | null {
 	const spec = node.spec;
 	const base = {
@@ -391,10 +401,6 @@ function toStandalone(
 			passProxyProtocol: toProxy(spec.exit.passProxyProtocol)
 		};
 	}
-	// The on-demand ports of a load-balance node are the control plane's
-	// (channels, bundles); only the rest are the operator's hand-drawn layout.
-	const onDemand = (port: CanvasPort) =>
-		port.kind === 'bundle' || port.key.startsWith('chan:') || port.key.startsWith('lane:');
 	const channelsOf = () =>
 		base.ports
 			.flatMap(port => {
@@ -403,10 +409,19 @@ function toStandalone(
 				return channel ? [{ ...channel, portId: port.id }] : [];
 			})
 			.sort((a, b) => a.ordinal - b.ordinal);
-	// Bundle ports all sit at position 0: order them by the far node's name.
-	const bundlePorts = (): BundlePortDto[] =>
+	// The members in the order declared, each with its port (a lane laid out
+	// thin has none declared and is never drawn) and the far end of its bundle.
+	const membersOf = (declared: { slot: number; name: string }[]): MemberDto[] =>
+		declared.flatMap(member => {
+			const port = base.ports.find(p => p.key === memberKey(member.slot));
+			if (!port) return [];
+			const peer = peerOfPort(port.id);
+			return [{ slot: member.slot, name: member.name, port, peerName: peer === null ? null : peerName(peer) }];
+		});
+	// Collected bundles all sit at position 0: order them by the far node's name.
+	const bundlesIn = (): BundlePortDto[] =>
 		base.ports
-			.filter(port => port.kind === 'bundle')
+			.filter(port => port.key.startsWith('bundle_in:'))
 			.map(port => ({ ...port, peerName: peerName(bundlePeerOf(port.key) ?? '') }))
 			.sort((a, b) => a.peerName.localeCompare(b.peerName));
 	if (spec?.loadBalanceDistribute) {
@@ -416,10 +431,9 @@ function toStandalone(
 			mode: 'distribute',
 			balanceMode: toBalanceMode(spec.loadBalanceDistribute.mode),
 			protocol: toRelayProtocol(spec.loadBalanceDistribute.protocol),
-			memberCount: base.ports.filter(port => port.key.startsWith('member_')).length,
-			manualPorts: base.ports.filter(port => !onDemand(port)),
+			members: membersOf(spec.loadBalanceDistribute.members),
 			channels: channelsOf(),
-			bundlePorts: bundlePorts()
+			bundlesIn: bundlesIn()
 		};
 	}
 	if (spec?.loadBalanceAggregate) {
@@ -429,10 +443,9 @@ function toStandalone(
 			mode: 'aggregate',
 			balanceMode: 'round_robin',
 			protocol: 'tcp_raw',
-			memberCount: base.ports.filter(port => port.key.startsWith('copy_')).length,
-			manualPorts: base.ports.filter(port => !onDemand(port)),
+			members: membersOf(spec.loadBalanceAggregate.members),
 			channels: channelsOf(),
-			bundlePorts: bundlePorts()
+			bundlesIn: []
 		};
 	}
 	if (spec?.canvasImport) {
@@ -568,6 +581,15 @@ export const getCanvasGraph = query(
 			const server = source?.spec?.universalPod?.serverId;
 			return (server ? serverNames.get(server) : undefined) ?? source?.name ?? nodeId;
 		};
+		// The node on the far end of the edge on a port, for a member's bundle.
+		const ownerOfPort = new Map<string, string>();
+		for (const node of detail.nodes) for (const port of node.ports) ownerOfPort.set(port.id, node.id);
+		const peerOfPort = (portId: string): string | null => {
+			const edge = detail.edges.find(e => e.sourcePortId === portId || e.targetPortId === portId);
+			if (!edge) return null;
+			const far = edge.sourcePortId === portId ? edge.targetPortId : edge.sourcePortId;
+			return ownerOfPort.get(far) ?? null;
+		};
 
 		const podsByServer = new Map<string, PodDto[]>();
 		const universalByServer = new Map<string, UniversalPodDto>();
@@ -615,7 +637,8 @@ export const getCanvasGraph = query(
 				node,
 				(target === undefined ? undefined : exportNames.get(target)) ?? NO_LABELS,
 				channels,
-				sourceName
+				sourceName,
+				peerOfPort
 			);
 			if (standalone) nodes.push(standalone);
 		}
@@ -885,16 +908,24 @@ const standaloneKindSchema = v.picklist([
 	'load_balance_aggregate'
 ] as const);
 
+/**
+ * A new load-balance node starts with two members named `1` and `2`: the
+ * operator renames them in the inspector and draws a bundle on each.
+ */
+const DEFAULT_MEMBERS = [
+	{ slot: 1, name: '1' },
+	{ slot: 2, name: '2' }
+];
+
 export const createStandaloneNode = command(
 	v.object({
 		canvasId: idSchema,
 		kind: standaloneKindSchema,
 		name: nameSchema,
 		x: coordSchema,
-		y: coordSchema,
-		memberCount: v.optional(memberCountSchema, 2)
+		y: coordSchema
 	}),
-	async ({ canvasId, kind, name, x, y, memberCount }) => {
+	async ({ canvasId, kind, name, x, y }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		// A half-drawn chain is deliberately storable (see `services/topology.rs`):
 		// an exit with no destination yet is a warning in the problems panel, not a
@@ -916,16 +947,15 @@ export const createStandaloneNode = command(
 							? {
 									loadBalanceDistribute: {
 										mode: LoadBalanceMode.ROUND_ROBIN,
-										protocol: RelayProtocol.RELAY_TCP_RAW
+										protocol: RelayProtocol.RELAY_TCP_RAW,
+										members: DEFAULT_MEMBERS
 									}
 								}
-							: { loadBalanceAggregate: {} };
-		const itemCount =
-			kind === 'load_balance_distribute' || kind === 'load_balance_aggregate' ? memberCount : 0;
+							: { loadBalanceAggregate: { members: DEFAULT_MEMBERS } };
 
 		await callGrpc(() =>
 			orchestrationClient().createNode(
-				{ canvasId, name, comment: '', spec, position: { x, y }, itemCount },
+				{ canvasId, name, comment: '', spec, position: { x, y }, itemCount: 0 },
 				{ metadata }
 			)
 		);
@@ -1342,7 +1372,9 @@ export const replaceExitSpec = command(
  * A distribute node's mode and protocol apply to every channel at once. A
  * protocol change re-rolls the ports of every landing pod its channels reach,
  * since a listener cannot change protocol in place; the control plane does that
- * in the same write. The on-demand ports survive a member-count change.
+ * in the same write. The members are the operator's rule: a member keeps its
+ * bundle as long as its slot stays in the list, whatever its name or place;
+ * dropping a wired member is refused (`Conflict`) until its bundle is cut.
  */
 export const replaceLoadBalanceSpec = command(
 	v.object({
@@ -1351,9 +1383,9 @@ export const replaceLoadBalanceSpec = command(
 		mode: v.picklist(['distribute', 'aggregate'] as const),
 		balanceMode: balanceModeSchema,
 		protocol: v.optional(relayProtocolSchema, 'tcp_raw'),
-		memberCount: memberCountSchema
+		members: membersSchema
 	}),
-	async ({ canvasId, nodeId, mode, balanceMode, protocol, memberCount }) => {
+	async ({ canvasId, nodeId, mode, balanceMode, protocol, members }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		// The spec kind cannot change, so `mode` only picks which config to resend.
 		await callGrpc(() =>
@@ -1365,11 +1397,12 @@ export const replaceLoadBalanceSpec = command(
 							? {
 									loadBalanceDistribute: {
 										mode: fromBalanceMode(balanceMode),
-										protocol: fromRelayProtocol(protocol)
+										protocol: fromRelayProtocol(protocol),
+										members
 									}
 								}
-							: { loadBalanceAggregate: {} },
-					itemCount: memberCount
+							: { loadBalanceAggregate: { members } },
+					itemCount: 0
 				},
 				{ metadata }
 			)
@@ -1430,23 +1463,21 @@ export const deleteNode = command(
 	}
 );
 
-const universalGroupSchema = v.picklist(['channel_out', 'bundle_in', 'bundle_out'] as const);
+const universalGroupSchema = v.picklist(['channel_out', 'bundle_in'] as const);
 /** One end of a connect: a port id, or a universal node's handle group. */
 const connectEndSchema = v.union([
 	v.object({ portId: idSchema }),
 	v.object({ nodeId: idSchema, group: universalGroupSchema })
 ]);
 const fromGroup = (value: UniversalGroupName): UniversalGroup =>
-	value === 'channel_out'
-		? UniversalGroup.CHANNEL_OUT
-		: value === 'bundle_in'
-			? UniversalGroup.BUNDLE_IN
-			: UniversalGroup.BUNDLE_OUT;
+	value === 'channel_out' ? UniversalGroup.CHANNEL_OUT : UniversalGroup.BUNDLE_IN;
 
 /**
- * Connects two ports, or a universal node's handle group to a port / another
- * group: the port behind a group is created by the control plane in the same
- * write as the edge and the lanes it calls for.
+ * Connects two ports, or a universal node's handle group to a port: the port
+ * behind a group is created by the control plane in the same write as the
+ * edge and the lanes it calls for. A bundle leaves through a port that exists
+ * (a member, a universal pod's `bundle out`) and lands on a `+ bundle` handle
+ * or on an aggregate node's member.
  */
 export const connectNodePorts = command(
 	v.object({ canvasId: idSchema, output: connectEndSchema, input: connectEndSchema }),

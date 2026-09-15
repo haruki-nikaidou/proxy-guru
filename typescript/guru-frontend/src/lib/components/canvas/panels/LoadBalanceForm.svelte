@@ -1,4 +1,6 @@
 <script lang="ts">
+import PlusIcon from '@lucide/svelte/icons/plus';
+import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import { untrack } from 'svelte';
 import { toast } from 'svelte-sonner';
 import { replaceLoadBalanceSpec, updateNodeText } from '#lib/components/canvas/commands.js';
@@ -52,9 +54,13 @@ let name = $state('');
 let comment = $state('');
 let balanceMode = $state<LoadBalanceModeName>('round_robin');
 let protocol = $state<RelayProtocolName>('tcp_raw');
-// `Input` renders a dynamic `type`, so Svelte never coerces: number fields are
-// strings here and are converted exactly once, at the call.
-let memberCount = $state('2');
+/**
+ * The member list as edited: the operator's rule. A slot is the stable number
+ * behind a member's bundle port, so renaming keeps the bundle; a new member
+ * takes the next free slot; a removed member takes its port with it, which
+ * the control plane refuses while a bundle is still drawn on it.
+ */
+let members = $state<{ slot: number; name: string }[]>([]);
 let pending = $state(false);
 
 let seededFor = $state('');
@@ -67,23 +73,42 @@ $effect(() => {
 		comment = snapshot.comment;
 		balanceMode = snapshot.balanceMode;
 		protocol = snapshot.protocol;
-		memberCount = String(snapshot.memberCount);
+		members = snapshot.members.map(member => ({ slot: member.slot, name: member.name }));
 	});
 });
+
+/** The far end of a member's bundle as stored, or nothing while unwired. */
+const peerOf = (slot: number): string | null =>
+	node.members.find(member => member.slot === slot)?.peerName ?? null;
+
+function addMember() {
+	const next = members.reduce((max, member) => Math.max(max, member.slot), 0) + 1;
+	members = [...members, { slot: next, name: String(next) }];
+}
+
+function removeMember(slot: number) {
+	members = members.filter(member => member.slot !== slot);
+}
+
+const valid = $derived(
+	members.length > 0 &&
+		members.every(member => member.name.trim() !== '') &&
+		new Set(members.map(member => member.name.trim())).size === members.length
+);
 
 async function save() {
 	pending = true;
 	try {
 		await updateNodeText({ canvasId, nodeId: node.id, name, comment });
-		// Shrinking is refused by the control plane while a removed port still
-		// carries an edge; that `Conflict` text surfaces in the toast below.
+		// Dropping a wired member is refused by the control plane; that
+		// `Conflict` text surfaces in the toast below.
 		await replaceLoadBalanceSpec({
 			canvasId,
 			nodeId: node.id,
 			mode: node.mode,
 			balanceMode,
 			protocol,
-			memberCount: Number(memberCount)
+			members: members.map(member => ({ slot: member.slot, name: member.name.trim() }))
 		});
 		toast.success(m.editor_saved());
 	} catch (err) {
@@ -157,22 +182,50 @@ const exitOf = (portId: string | undefined): string | null => {
 			<Field.FieldDescription>{m.editor_universal_protocol_hint()}</Field.FieldDescription>
 		</Field.Field>
 	{/if}
-
-	<Field.Field>
-		<Field.FieldLabel for="lb-members">{m.editor_member_count()}</Field.FieldLabel>
-		<Input
-			id="lb-members"
-			type="number"
-			min={0}
-			max={256}
-			bind:value={memberCount}
-			disabled={!editable}
-		/>
-		<Field.FieldDescription>{m.editor_member_count_hint()}</Field.FieldDescription>
-	</Field.Field>
 </Field.FieldGroup>
 
-<Button class="mt-6 w-full" disabled={!editable || pending} onclick={save}>
+<h3 class="mt-6 text-sm font-medium">{m.editor_members()} · {members.length}</h3>
+<p class="mt-1 text-xs text-muted-foreground">
+	{node.mode === 'distribute' ? m.editor_members_hint_distribute() : m.editor_members_hint_aggregate()}
+</p>
+<ul class="mt-2 grid gap-2">
+	{#each members as member, i (member.slot)}
+		{@const peer = peerOf(member.slot)}
+		<li class="flex items-center gap-2">
+			<Input
+				id="lb-member-{member.slot}"
+				bind:value={members[i].name}
+				disabled={!editable}
+				placeholder={m.editor_member_name()}
+				aria-label={m.editor_member_name()}
+			/>
+			<span class="w-24 shrink-0 truncate text-xs text-muted-foreground" title={peer ?? ''}>
+				{peer ?? m.editor_member_unwired()}
+			</span>
+			<Button
+				size="sm"
+				variant="ghost"
+				disabled={!editable || pending || members.length === 1}
+				onclick={() => removeMember(member.slot)}
+				aria-label={m.common_delete()}
+			>
+				<Trash2Icon />
+			</Button>
+		</li>
+	{/each}
+</ul>
+<Button
+	class="mt-2"
+	size="sm"
+	variant="outline"
+	disabled={!editable || pending || members.length >= 256}
+	onclick={addMember}
+>
+	<PlusIcon />
+	{m.editor_member_add()}
+</Button>
+
+<Button class="mt-6 w-full" disabled={!editable || pending || !valid} onclick={save}>
 	{#if pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>

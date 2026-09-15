@@ -41,8 +41,8 @@ export function issueMessage(code: string): string {
 			return m.issue_node_comment_too_long();
 		case 'port_out_of_range':
 			return m.issue_port_out_of_range();
-		case 'member_count_out_of_range':
-			return m.issue_member_count_out_of_range();
+		case 'members_invalid':
+			return m.issue_members_invalid();
 		case 'ip_invalid':
 			return m.issue_ip_invalid();
 		case 'log_level_required':
