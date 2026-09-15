@@ -126,6 +126,7 @@ Top level:
 |---|---|---|
 | `ipv6_resolve` | `"tolerated"` | `required`, `preferred`, `tolerated`, `forbidden` — family policy when a destination is a domain name |
 | `log.level` | `"info"` | A `tracing` `EnvFilter` directive — `info`, `debug`, or something targeted like `guru_worker=debug,warn`. Read **once at startup**, so a reload does not change it |
+| `[keepalive]` | see below | Liveness probing on every data-plane connection |
 | `[[forwarding]]` | `[]` | One listener each; a file with none is valid and does nothing |
 
 In standalone mode `log.level` is what configures the process log: `--log-level`/`GURU_LOG_LEVEL`
@@ -134,6 +135,33 @@ applies to agent mode only.
 `ipv6_resolve` is global and captured into every compiled target: `required`/`forbidden` make the
 other family a resolution failure, `preferred`/`tolerated` pick a winner when both resolve and fall
 back otherwise.
+
+### `[keepalive]`
+
+TCP cannot tell a quiet peer from one that vanished: a client that drops off the network without a
+FIN or RST (a phone losing signal, a NAT entry expiring, a host powering off) leaves its connection
+open on the worker forever, together with the whole pipe behind it. The worker therefore enables
+`SO_KEEPALIVE` on every TCP socket it accepts or dials, so the kernel probes an idle connection and
+fails it after a run of unanswered probes. A QUIC relay hop has the opposite need: without pings the
+QUIC connection under a quiet stream times out, cutting a long connection that merely had nothing to
+say. All values are whole seconds (or a count) and must be at least 1.
+
+| Key | Default | Value |
+|---|---|---|
+| `tcp_idle_secs` | `60` | Idle time before the first probe (`TCP_KEEPIDLE`) |
+| `tcp_interval_secs` | `10` | Time between probes once probing has started (`TCP_KEEPINTVL`) |
+| `tcp_retries` | `3` | Unanswered probes after which the connection is failed (`TCP_KEEPCNT`) |
+| `quic_ping_secs` | `15` | Ping cadence on an idle QUIC relay connection, both ends |
+| `quic_idle_secs` | `60` | Time without any packet after which a QUIC relay connection is lost; must exceed `quic_ping_secs` |
+
+None of this is an idle limit: a peer that answers the probes keeps its connection for as long as
+it likes. Probes only start once a connection has been silent for the idle time, and each is a
+single empty segment answered by the peer's kernel — every client speaks it, and the traffic also
+refreshes NAT entries on the way.
+
+The section is written out only when it differs from the defaults, and `guru-master` sends the
+defaults: workers built before the section existed reject unknown keys, so an operator who tunes a
+standalone file must run a worker that knows it.
 
 ### `[[forwarding]]`
 

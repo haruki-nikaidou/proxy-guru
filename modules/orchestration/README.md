@@ -222,6 +222,12 @@ rotates the key, which kills the previous session's stream — that is how a mas
 learns a worker restarted. Only servers whose derived TOML actually changed get a
 new revision, so unrelated servers never restart their listeners.
 
+The derived config carries the worker's `[keepalive]` defaults, and the TOML omits
+the section when it equals them: every struct of `guru_worker_config` rejects
+unknown keys, so a master must not send a section to workers built before it
+existed. Tuning those values is a standalone-file affair until the dashboard
+grows a setting for them.
+
 A revision is acknowledged **per pod**: the worker commits every forwarding it
 could prepare and bind, keeps the previous listener of the ones it could not,
 and lists each pod's outcome in `AckConfig`. `services::agent` then stores

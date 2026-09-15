@@ -108,12 +108,35 @@ Worker 实际运行的内容。
 |---|---|---|
 | `ipv6_resolve` | `"tolerated"` | `required`、`preferred`、`tolerated`、`forbidden` —— 目的地为域名时的地址族策略 |
 | `log.level` | `"info"` | 一条 `tracing` 的 `EnvFilter` 指令 —— `info`、`debug`，或更有针对性的写法如 `guru_worker=debug,warn`。**只在启动时读取一次**，因此重新加载不会改变它 |
+| `[keepalive]` | 见下文 | 数据面每条连接的存活探测 |
 | `[[forwarding]]` | `[]` | 每一项对应一个监听器；不含任何条目的文件也是合法的，只是什么都不做 |
 
 独立模式下，进程日志由 `log.level` 配置：`--log-level`/`GURU_LOG_LEVEL` 只适用于 agent 模式。
 
 `ipv6_resolve` 是全局设置，并会被固化进每个编译后的目标中：`required`/`forbidden` 会把另一个地址族
 视为解析失败，`preferred`/`tolerated` 在两个地址族都能解析时选出优先者，否则回退到另一个。
+
+### `[keepalive]`
+
+TCP 分不清"对端安静"和"对端消失"：客户端没有发 FIN 或 RST 就从网络上掉了（手机断网、NAT 表项过期、
+机器掉电），它的连接就会在 Worker 上永远挂着，连带后面整条管道一起。因此 Worker 会在每个 accept 到的和
+拨出去的 TCP socket 上开启 `SO_KEEPALIVE`，由内核探测空闲连接，连续几次探测无应答后判定失败。QUIC
+中继跳的需求正相反：不发 ping 的话，安静的流底下的 QUIC 连接会空闲超时，把一条只是暂时没话说的长连接切断。
+所有值都是整秒（或次数），且至少为 1。
+
+| 键 | 默认值 | 取值 |
+|---|---|---|
+| `tcp_idle_secs` | `60` | 空闲多久后开始第一次探测（`TCP_KEEPIDLE`） |
+| `tcp_interval_secs` | `10` | 开始探测后，两次探测之间的间隔（`TCP_KEEPINTVL`） |
+| `tcp_retries` | `3` | 连续几次探测无应答后判定连接失败（`TCP_KEEPCNT`） |
+| `quic_ping_secs` | `15` | 空闲 QUIC 中继连接上的 ping 周期，两端都发 |
+| `quic_idle_secs` | `60` | 多久收不到任何包就判定 QUIC 中继连接丢失；必须大于 `quic_ping_secs` |
+
+这不是空闲上限：只要对端回应探测，连接想开多久就开多久。探测只在连接静默满空闲时长后才开始，每次是一个
+空的 TCP 段，由对端内核自动应答——所有客户端都支持，顺带还能刷新沿途的 NAT 表项。
+
+该段只有在与默认值不同时才会写出，而 `guru-master` 下发的就是默认值：早于该段存在的 Worker 会拒绝未知
+键，所以在独立模式文件里调整了它的运维人员必须运行认识这一段的 Worker。
 
 ### `[[forwarding]]`
 
