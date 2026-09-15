@@ -1,0 +1,204 @@
+---
+title: 配置数据库 Schema
+description: 使用 surrealkit 应用并维护 SurrealDB Schema —— 记账表、可审查的发布、部署前后的扩张/收缩顺序，以及模块配置的初始化数据。
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Schema 不由控制平面应用。它是仓库中一组声明式的 `.surql` 文件，由
+[surrealkit](https://github.com/surrealdb/surrealkit) 应用 —— 在第一个 master 启动之前应用一次，
+之后每次会改动 Schema 的升级都要再应用一次。两篇部署指南
+（[Docker](/zh-cn/guides/deploy-with-docker/)、[原生部署](/zh-cn/guides/deploy-natively/)）都指向本页，
+后续每一次 Schema 变更同样如此。
+
+仓库中都有什么：
+
+| 路径 | 内容 |
+|---|---|
+| `database/setup.surql` | surrealkit 自身需要的两张记账表：`__entity` 与 `__rollout` |
+| `database/schema/{auth,base,orchestration}.surql` | 每个模块一个文件 —— 表、字段、索引、函数 |
+| `database/seed/seed.surql` | 可选的初始化数据 |
+| `database/rollouts/*.toml` | 生成的发布清单（每次变更一个） |
+| `database/snapshots/*.json` | 生成的 catalog/schema 快照，下一次 `plan` 会与之做差异比较 |
+
+前置条件：已安装 `surrealkit`，以及一个可访问的 SurrealDB ≥ 3.2 并持有 root 凭据 —— 两者都来自
+[前置条件](/zh-cn/guides/prerequisites/)。
+
+## 1. 让 surrealkit 指向正确的数据库
+
+所有命令都在仓库根目录执行：surrealkit 按相对于工作目录的方式解析 `./database`（`--folder` 可以覆盖它）。
+
+:::caution[始终显式传入连接参数]
+surrealkit 的解析优先级是 **CLI 参数 > 环境变量 > `.env`**，而工作目录下的 `.env` 会被在该目录启动的每个
+进程继承。如果这台机器上同时存放着另一套环境的凭据，那么一个被遗漏的参数，就是"本地"命令最终改写生产库的
+原因。本仓库的 `surrealkit.toml` 特意不设置任何连接默认值。
+:::
+
+把连接参数包进一个 shell 函数里，这样参数能保持简短，密码里无论包含什么字符都不会出问题 ——
+`SK="… --pass $pw"` 这样的字符串变量会在空格处被重新分词：
+
+<Tabs syncKey="deployment">
+<TabItem label="原生部署">
+
+仓库检出目录自带的 `.env` 保存着连接信息（`SURREALDB_HOST`、`SURREALDB_USER`、
+`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`），直接 source 它：
+
+```sh
+cd /path/to/proxy-guru
+set -a; . ./.env; set +a
+
+sk() {
+  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
+    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" "$@"
+}
+```
+
+</TabItem>
+<TabItem label="镜像部署">
+
+部署用的 `.env` 与 Compose 文件放在一起，而不在仓库检出目录中，并且把 root 凭据命名为
+`SURREAL_ROOT_USER`/`SURREAL_ROOT_PASSWORD`，配合 `GURU_NS`/`GURU_DB`。Schema 命令是在检出目录里执行的，
+所以请手动传入密码，而不要去 source 另一个目录下的文件：
+
+```sh
+cd /path/to/proxy-guru
+read -rs SURREAL_ROOT_PASSWORD    # paste it; not echoed
+export SURREAL_ROOT_PASSWORD
+
+sk() {
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
+}
+```
+
+</TabItem>
+</Tabs>
+
+如果数据库在远端主机上只监听 loopback，请先建立隧道：
+`ssh -N -L 8000:127.0.0.1:8000 guru-host`。
+
+## 2. 应用 Schema
+
+<Steps>
+
+1. **记账表。** 每个数据库只需一次，且必须在其他操作之前：
+
+   ```sh
+   sk setup
+   ```
+
+2. **Plan。** `plan` 会把 Schema 文件与线上数据库做差异比较，并写出一份可审查的清单；`lint` 在不触碰数据库
+   的情况下校验它。应用之前请先读一遍清单。
+
+   ```sh
+   sk rollout plan --name initial_schema
+   # Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
+   # Updated ./database/snapshots/catalog_snapshot.json
+
+   sk rollout lint 20260913083052__initial_schema
+   ```
+
+3. **扩张。** `start` 只应用非破坏性的那一半 —— 新增的表、字段、索引、函数。在旧版本控制平面仍在提供服务时
+   运行它也是安全的：
+
+   ```sh
+   sk rollout start 20260913083052__initial_schema
+   # Rollout ... is ready to complete.
+   ```
+
+4. **收缩。** `complete` 会删除新代码不再使用的对象，所以它绝不能在对应的二进制文件上线之前运行。首次安装时
+   没有需要保活的旧版本，因此它可以紧接着执行：
+
+   ```sh
+   sk rollout complete 20260913083052__initial_schema
+   ```
+
+5. **确认。**
+
+   ```sh
+   sk status
+   # __rollout:20260913083052__initial_schema [completed] initial_schema
+   ```
+
+</Steps>
+
+## 3. 初始化模块配置
+
+由运维人员调优的设置 —— 健康阈值与保留期、默认的 ACME 目录、续期窗口、各个周期任务的运行频率 ——
+都存放在数据库里，每个键对应一行 `app_config`，而不是放在环境变量中。Schema 就绪后用 `manage-tool`
+写入一次默认值 —— 它由同一个检出目录构建（`cargo build --release -p manage-tool`）。它的数据库参数与
+`guru-master` 同名，同样会从环境变量读取 `SURREALDB_*`，所以除非你刚刚 source 过正确的文件，否则请显式传入：
+
+<Tabs syncKey="deployment">
+<TabItem label="原生部署">
+
+```sh
+(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
+# seeded auth
+# seeded orchestration
+```
+
+</TabItem>
+<TabItem label="镜像部署">
+
+```sh
+./target/release/manage-tool \
+  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
+  --namespace guru --database guru \
+  config seed
+```
+
+</TabItem>
+</Tabs>
+
+它是幂等的，绝不会覆盖你已经改过的值，所以每次 Schema 变更后都可以重新运行。`config list`、
+`config get <key>` 和 `config set <key> <json>` 用于查看和修改这些值；master 只在启动时读取一次，
+因此改动需要重启，而不是重新部署。参见
+[配置 → 模块配置](/zh-cn/reference/configuration#模块配置)。
+
+跳过初始化是安全的 —— 未初始化的安装会使用默认值 —— 但如果某个已存储的文档与它的类型不匹配，master 启动
+会失败并指出对应的键，这是故意的设计：静默回退到默认值可能会把 ACME 从 staging 切到生产目录。
+
+## 4. 后续的 Schema 变更
+
+一次升级就是同样的四条命令，只是把部署夹在两个半程之间 —— 这正是拆分的全部意义：
+
+<Steps>
+
+1. `sk rollout plan --name <change>`，然后读清单。
+
+2. `sk rollout start <target>` —— 扩张。运行中的 master 继续正常工作：它们用到的东西还没有被删除。
+
+3. 部署与新 Schema 匹配的二进制文件（提升镜像标签，或重新构建并重启 unit），然后做验证。
+
+4. `sk rollout complete <target>` —— 收缩。只有到这一步，新代码丢弃的那些对象才会真正消失。
+
+</Steps>
+
+如果第 3 步或第 4 步出了问题，`sk rollout rollback <target>` 会回退这次发布，同时把镜像标签/二进制文件
+退回上一个版本。中途被杀掉的发布会让 `__rollout.status` 停在 `running_*`；在规划任何新变更之前，先用
+`sk rollout repair <target>` 修复元数据。
+
+| 命令 | 适用场景 |
+|---|---|
+| `sk rollout baseline` | 针对已经带有 Schema 的数据库执行第一次发布 —— 采纳当前状态，而不是从空库开始做差异比较 |
+| `sk rollout rollback <target>` | 回退一次进行中的发布 |
+| `sk rollout repair <target>` | `start`/`complete` 中途被杀掉，`__rollout.status` 卡在 `running_*`；只调和元数据 |
+| `sk status` | 数据库认为已经应用了什么 |
+
+:::caution[`surrealkit sync` 只适用于一次性数据库]
+`sync` 会立即调和并清除已删除的对象 —— 没有清单、没有审查环节、没有回滚。它在
+[本地开发](/zh-cn/guides/local-development/)中是合适的工具，而对任何你在意其数据的库来说都是错误的选择。
+:::
+
+## 5. 保管清单文件
+
+`database/rollouts/*.toml` 和 `database/snapshots/*.json` 是下一次 `plan` 得知线上数据库已有内容的依据，
+所以它们必须保留 —— 但它们**不会**被提交。`.gitignore` 特意排除了这两个目录：它们是按环境区分的状态，由
+`rollout plan` 针对某一个特定数据库生成，而来自另一套环境的清单比没有清单更糟。
+
+因此：把它们保存在执行 Schema 命令的那台机器上，并与部署用的 `.env` 一起备份。如果有多名运维人员维护同一个
+数据库，请像共享凭据那样共享它们 —— 由一台主机或一个密钥存储来负责 Schema 工作流 —— 而不是通过仓库。
+
+丢失它们不会丢失数据库，但下一次 `plan` 会从一个空的 catalog 开始做差异比较；这时请改用
+`sk rollout baseline` 重新采纳线上状态。

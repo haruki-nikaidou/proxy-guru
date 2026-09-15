@@ -1,0 +1,441 @@
+---
+title: 前提条件
+description: コントロールプレーンをデプロイする前に、依存コンポーネントをすべて用意します — SurrealDB、RabbitMQ、Docker、ビルドツールチェーン、surrealkit、Bun、そして証明書付きのホスト名。
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+2 つのデプロイガイド — [Docker でデプロイ](/ja/guides/deploy-with-docker/) と
+[ネイティブにデプロイ](/ja/guides/deploy-natively/) — はどちらもこのページから始まります。ここでは外部の
+依存コンポーネントとオペレーター用ツールを準備します。この後に読むデプロイガイドは、コントロールプレーンを
+それらに接続するだけです。
+
+それぞれの方式が実際に必要とするもの:
+
+| | Docker でデプロイ | ネイティブにデプロイ |
+|---|---|---|
+| SurrealDB ≥ 3.2 | 必要 | 必要 |
+| RabbitMQ 3.13/4.x | 必要 | 必要 |
+| Docker Engine + Compose | 必要（すべてイメージから実行） | 必要（データストアのみ） |
+| `surrealkit` | 必要 | 必要 |
+| Rust ツールチェーン + `protoc` | 必要 — `manage-tool` はイメージとして公開されていません | 必要 — すべてのバイナリをビルドします |
+| C ツールチェーン、`make`、`cmake` | 必要 — `manage-tool` は証明書関連のクレート群（aws-lc 上の `instant-acme`/`rcgen`）を取り込み、同梱の C ソースのビルドにコンパイラーと cmake が必要です | 必要 — 理由は同じです |
+| `perl` | 不要 | 必要 — `guru-worker` は同梱の OpenSSL をビルドし、その構成は perl スクリプトが行います |
+| Bun | 不要 | 必要（ダッシュボードのビルドと実行） |
+| ホスト名 + TLS 証明書 | 必要 | 必要 |
+| Redis | 不要 | 不要 |
+
+Redis はモジュールの雛形に登場しますが、現時点でこれに接続するバイナリはありません。用意する必要はありません。
+
+## 1. Docker Engine と Compose
+
+SurrealDB と RabbitMQ はどちらの方式でもコンテナとして動くため、まずエンジンと Compose *プラグイン*
+（`docker compose`。旧来の `docker-compose` スクリプトではありません。ただし Arch ではそれが*パッケージ名*です）を
+インストールします。ディストリビューションを一度選べば、このページのすべてのタブが連動します。
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+[docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/) より:
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+競合するディストリビューション側のパッケージは先に削除してください: `docker.io`、`docker-compose`、`docker-doc`、
+`docker-buildx`、`podman-docker`、`containerd`、`runc`。ここではパッケージが起動時の自動実行を有効にします。
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+[docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/) より。リポジトリの
+パスとスイートの式はどちらも Debian のものとは異なります。Ubuntu 派生ディストリビューションは
+`VERSION_CODENAME` に自身のコードネームを入れるため、Ubuntu 側を優先させる必要があります:
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+競合するディストリビューション側のパッケージは先に削除してください: `docker.io`、`docker-compose`、
+`docker-compose-v2`、`docker-doc`、`docker-buildx`、`podman-docker`、`containerd`、`runc`。ここでは
+パッケージが起動時の自動実行を有効にします。
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+Fedora の場合（[ドキュメント](https://docs.docker.com/engine/install/fedora/)）:
+
+```sh
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+RHEL の場合（[ドキュメント](https://docs.docker.com/engine/install/rhel/)）はリポジトリの追加に古い形式の
+サブコマンドを使います。この 2 つは互換ではありません:
+
+```sh
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+Docker は Arch 向けパッケージを公開していないため、[ArchWiki のページ](https://wiki.archlinux.org/title/Docker)が
+ディストリビューション側の参照先になります。ここでの `docker-compose` は Compose v2 プラグインです:
+
+```sh
+sudo pacman -S --needed docker docker-compose
+sudo systemctl enable --now docker.service
+```
+
+</TabItem>
+</Tabs>
+
+エンジンが動作することを確認します。Compose の実行はオペレーターの操作として扱ってください。つまり
+`sudo docker compose …`（ガイドで使う方法）か、自分のアカウントを `docker` グループに追加する方法です。後者は
+ホスト上で root 相当の権限になるため、サービスアカウントには決して付与しないでください:
+
+```sh
+sudo docker run --rm hello-world
+```
+
+## 2. ホストのパッケージ
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+```sh
+sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+```sh
+sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
+```
+
+`base-devel` には `gcc`、`make`、`pkgconf`、`perl` が既に含まれています。
+
+</TabItem>
+</Tabs>
+
+いずれも飾りではなく、このワークスペースが実際に依存しているものです:
+
+| パッケージ | 必要な理由 |
+|---|---|
+| `protoc`（`protobuf-compiler`、Arch では `protobuf`） | `lib/rpguru_sdk` のビルドスクリプトが `tonic-prost-build` で `proto/` をコンパイルし、その内部で `protoc` を呼び出します。`manage-tool` を含むすべてのバイナリがこのクレートに依存するため、`protoc` がないとビルドが失敗します。`PATH` にない場合は `PROTOC=/path/to/protoc` を設定してください。 |
+| C コンパイラー、`make` | どちらの方式でも `manage-tool` をビルドし、これは `orchestration` モジュール経由で証明書関連のクレート群に到達します。そのうちいくつか（`aws-lc-sys`、`ring`、`zstd-sys`）は同梱の C ソースをコンパイルします。 |
+| `cmake` | `aws-lc-sys` は同梱ソースを cmake でビルドするため、`manage-tool` をビルドする環境では必ず必要です。 |
+| `perl` | `guru-worker` は `vendored` フィーチャーで OpenSSL をリンクします。OpenSSL は同梱のソースツリーからコンパイルされ、その `Configure` は perl スクリプトです。ネイティブデプロイのみで必要です。 |
+| `pkgconf` / `pkg-config` | 上記の `*-sys` クレート群のビルド依存です。 |
+| `openssl` | デプロイガイドでは `openssl rand -hex 32` でパスワードや鍵を生成します。 |
+| `unzip` | Linux 上の Bun インストーラーが必要とします。 |
+| `nginx` | ダッシュボードの TLS を終端し、ネイティブガイドではワーカー API の TLS も終端します。最近のビルドであれば `http_ssl_module` と `http_v2_module` を備えており、これが `grpc_pass`（nginx 1.13.10 以降）の要件です。 |
+
+`libssl-dev`/`openssl-devel` や `libprotobuf` の開発パッケージは不要です。Rust のビルドがそれらに必要とする分は、
+すべて同梱されています。
+
+## 3. Rust、surrealkit、Bun
+
+ここまでの作業には root が必要でした。このセクションの作業はすべて、**チェックアウトを所有する**アカウントに
+属します。そしてそのアカウントはデプロイ方式によって異なります:
+
+<Tabs syncKey="deployment">
+<TabItem label="ネイティブデプロイ">
+
+コントロールプレーン、ダッシュボード、およびビルドしたものはすべて 1 つの非特権サービスユーザーとして動作します。
+そのためユーザーを先に作成し、*そのユーザーの*シェルからツールチェーンをインストールしてください。そうしないと
+自分のホームディレクトリに入ってしまい、systemd から見つけられません:
+
+```sh
+sudo useradd --create-home --shell /bin/bash guru
+sudo -iu guru                 # the rest of this section runs as guru
+```
+
+ネイティブガイドでは全体を通して `guru` と `/home/guru` を使います（ユニットの `User=`/`Group=` と Bun の
+パスも同様）。別の名前を使う場合は一貫して置き換えてください。このユーザーを `docker` グループに追加しては
+**いけません**。このグループは root 相当であり、Docker を呼び出すユニットは存在しないため、Compose の実行は
+オペレーターの操作のままにします。
+
+</TabItem>
+<TabItem label="イメージデプロイ">
+
+チェックアウトから常駐するものは何もありません。`manage-tool` をビルドし、スキーマファイルを置いておくだけなので、
+自分のオペレーターアカウントが適切です。Bun はまったく必要ありません。
+
+</TabItem>
+</Tabs>
+
+<Steps>
+
+1. **Rust** は [rustup](https://rustup.rs/) で導入します。ワークスペースは `rust-toolchain.toml` で
+   ツールチェーン（チャンネル `1.98`）を固定しており、最初の `cargo` 実行時に rustup がその固定版を
+   インストールします。ディストリビューションの `rust` パッケージで代替しないでください。古いコンパイラーでは
+   edition 2024 をビルドできません。
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   . "$HOME/.cargo/env"
+   ```
+
+2. **surrealkit** は
+   [データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)で使うスキーマツールです:
+
+   ```sh
+   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
+   surrealkit --version              # the guides were written against 0.7.0
+   ```
+
+3. **チェックアウト。** どちらのガイドでも必要です。`database/` 以下のスキーマファイル、Compose ファイル、
+   `manage-tool` はいずれもリポジトリから取得するもので、イメージとして配布されているものはありません。
+
+   ```sh
+   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```
+
+4. **Bun** はネイティブデプロイのみで、ダッシュボードのビルドと実行に使います。Node はどこでも使いません。
+   SvelteKit のビルド後処理は `Promise.withResolvers` を必要とし、Node 20 にはこれがありません。
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   インストーラーはバージョン指定（`bash -s "bun-v1.3.3"`）を受け付けるので、公開版ダッシュボードのビルドに
+   使われている `oven/bun:1.3` イメージと揃えられます。Arch には `bun` パッケージもありますが、インストールに
+   root が必要で、バイナリがサービスアカウントのホーム外に置かれます。
+
+</Steps>
+
+## 4. SurrealDB と RabbitMQ
+
+### コントロールプレーンが求める条件
+
+| | 要件 |
+|---|---|
+| SurrealDB | **3.2 以降。** 3.0 系の古いバイナリはワークスペースがリンクしているクライアントと互換性がなく、同一トランザクション内で先に書き込まれた行を読む ASSERT を正しく扱えません。その結果、実際には存在しないはずの "table does not exist" やトランザクション中断のエラーとして現れます。 |
+| | **root 認証情報。** `guru-master` は `Root { username, password }` でサインインしてからネームスペースとデータベースを選択します。ネームスペースやデータベースにスコープされたユーザーではこれができません。 |
+| | **永続ストレージ。** バックアップ対象のボリューム上に `rocksdb:/data/guru.db` を置きます。これはシステム内で唯一、失うと復元できない状態です。 |
+| RabbitMQ | 3.13/4.x のサーバーであれば何でも構いません。コントロールプレーンは起動時に自身の exchange と永続キューを宣言するため、事前に作成しておくものはありません。デフォルト vhost のユーザーが 1 つあれば十分です。 |
+| | URI の書式: `amqp://user:password@host:5672/` で、**末尾のスラッシュ**がデフォルト vhost を選択します。`/%2f` 形式はパーサーに拒否されます。 |
+| | ブローカーは**4 つのマスターモードすべてで必須**です。定期処理はメッセージそのものであり、ブローカーが停止している間は古いキャンバスのスイープも、応答のないサーバーを `Offline` にする処理も、証明書の更新も行われません。最適化ではなく依存コンポーネントとして扱ってください。 |
+
+マネージドの SurrealDB や既存のブローカーでも、上記の要件を満たしていれば問題ありません。このセクションの残りは
+セルフホストの手順です。
+
+### 認証情報
+
+パスワードは**URL セーフ**な形式で生成してください。ブローカーのパスワードは `AMQP_URI` に埋め込まれ、そこでは
+`@`、`:`、`/`、`%` が URI の意味を変えてしまいます:
+
+```sh
+openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+```
+
+16 進文字列であれば、クォートやパーセントエンコーディングの問題は一切起きません。どうしても記号を使いたい場合は、
+`AMQP_URI` 内でパーセントエンコードしてください（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）。
+SurrealDB のパスワードは argv の値として渡されるため、クォートだけで済みます。
+
+生成した値は、データストアが読み込むファイルにこの時点で書き留めておきます。各デプロイガイドは後で、同じ
+ファイルに独自の変数（マスターキー、リッスンアドレス、イメージタグ）を追記します:
+
+<Tabs syncKey="deployment">
+<TabItem label="ネイティブデプロイ">
+
+```sh
+# /path/to/proxy-guru/.env   (chmod 600; gitignored)
+SURREALDB_HOST=ws://127.0.0.1:8000
+SURREALDB_USER=root
+SURREALDB_PASSWORD=<first hex string>
+SURREALDB_NAMESPACE=guru
+SURREALDB_NAME=guru
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+```
+
+このファイルはチェックアウトの `docker-compose.yml` の隣にあるため、Compose は `${…}` をここから補完します。
+また systemd は後で `EnvironmentFile=` から同じファイルをそのまま読み込みますが、systemd は `${…}` を
+**展開しません**。そのため `AMQP_URI` は完全な形で書き出しています。
+
+</TabItem>
+<TabItem label="イメージデプロイ">
+
+```sh
+# /srv/guru/.env   (chmod 600)
+SURREAL_ROOT_USER=root
+SURREAL_ROOT_PASSWORD=<first hex string>
+
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+
+GURU_NS=guru
+GURU_DB=guru
+```
+
+先に `/srv/guru` を作成してください（`sudo mkdir -p /srv/guru`）。以下の Compose ファイルはこの `.env` の
+隣に置き、イメージガイドではここに `MASTER_VERSION`、`FRONTEND_VERSION`、`GURU_MASTER_KEY` を追記します。
+
+</TabItem>
+</Tabs>
+
+### 起動する
+
+<Tabs>
+<TabItem label="ネイティブデプロイ">
+
+リポジトリにはまさにこの用途の `docker-compose.yml` が同梱されています。SurrealDB は `./data/db` 以下の
+RocksDB、RabbitMQ は `./data/mq` 以下（どちらも gitignore 済み）、いずれもループバックのみで公開し、認証情報は
+チェックアウトの `.env` から読み込みます。
+
+```sh
+cd /path/to/proxy-guru
+sudo docker compose up -d
+sudo docker compose ps        # wait for rabbitmq to report healthy
+```
+
+</TabItem>
+<TabItem label="イメージデプロイ">
+
+デプロイ用ディレクトリ（イメージガイドでは `/srv/guru`）を作成し、認証情報を持つ `.env` の隣にある Compose
+ファイルに 2 つのデータストアを記述します:
+
+```yaml
+# /srv/guru/docker-compose.yml
+name: guru
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    restart: unless-stopped
+    command:
+      - start
+      - --user
+      - ${SURREAL_ROOT_USER}
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD}
+      - rocksdb:/data/guru.db
+    user: root
+    volumes:
+      - surreal-data:/data
+    # Loopback only: the operator machine reaches it through an SSH tunnel.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  surreal-data:
+  rabbit-data:
+```
+
+```sh
+cd /srv/guru
+sudo docker compose up -d surrealdb rabbitmq
+```
+
+マスターは後でイメージガイドの中で同じファイルに追加します。データストアが先に存在していなければならないのは、
+どのマスターを起動する前にもスキーマが適用済みである必要があるからです。
+
+</TabItem>
+</Tabs>
+
+どちらの構成でも重要な点が 2 つあります。`surrealdb/surrealdb` イメージは非特権ユーザーで動作し、root 所有の
+ボリュームやバインドマウントには書き込めないため、`user: root` が必要です。RabbitMQ はデータディレクトリを
+ノード名 `rabbit@<hostname>` に基づいて命名するため、チェックアウトの Compose ファイルは `hostname:` を
+固定しています。これがないと、コンテナを作り直すたびに空のブローカーで起動してしまいます。
+
+consumer がバインドするキューは自動的に作成されます。編集用の `guru_orchestration_canvas_dirty` に加え、
+5 つの定期ジョブ用に `guru_orchestration_derive_stale_canvases`、`guru_orchestration_sweep_liveness`、
+`guru_orchestration_trim_health_history`、`guru_orchestration_renew_certificates`、
+`guru_orchestration_rotate_relay_certificates` が作成されます。
+
+## 5. ホスト名と証明書
+
+ホストを指す DNS 名 1 つと、それに対する TLS 証明書（`certbot`、自前の CA、何でも構いません）が必要です。
+どちらのガイドもその名前でダッシュボードを終端し、ネイティブガイドでは同じ名前でワーカー API も終端します。
+
+:::danger[HTTPS は必須です]
+ダッシュボードのセッション Cookie（`guru_session`）は `Secure` 付きで発行されるため、`localhost` 以外では
+ブラウザーが平文 HTTP 上でこれを破棄します。またアプリはリクエストごとに自身のオリジンを再構成し、ブラウザーの
+`Origin` が一致しないログイン POST を拒否します。そのためプロキシは `X-Forwarded-Proto` と
+`X-Forwarded-Host` を転送する必要があります。
+:::
+
+:::caution[ホスト名を Cloudflare のプロキシ経由にしないこと]
+Cloudflare のプロキシは、データが 100 秒流れないストリーミングレスポンスを切断します。`WatchConfig` は
+リビジョンの間は無音なので、オレンジクラウド越しではすべてのワーカーが数分おきに再接続することになります。
+レコードは DNS のみ（DNS-only）にしてください。自前の nginx への TLS だけで、API キーの通信経路は十分に
+保護されます。
+:::
+
+## 6. 次のステップ
+
+データストアは起動しましたが、まだ空です。マスターを起動する前にスキーマを適用してください。同じ手順が
+インストール環境の生涯にわたってスキーマを維持し続けるため、独立した記事になっています:
+**[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)**。
+
+その後は [Docker でデプロイ](/ja/guides/deploy-with-docker/) か
+[ネイティブにデプロイ](/ja/guides/deploy-natively/) に進んでください。

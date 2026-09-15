@@ -1,0 +1,76 @@
+---
+title: アーキテクチャ
+description: クレートの役割、Processor 抽象、そしてすべてのモジュールが従うレイヤールール。
+---
+
+## クレート
+
+| クレート | 役割 |
+|---|---|
+| `bin/guru-master` | コントロールプレーン。1 つのバイナリに 4 つのモード（`--mode`）: `dashboard_grpc`（オペレーター API）、`workers_grpc`（ワーカー API + config view ポーラー）、`consumer`（AMQP フック — 導出フックとすべての定期ジョブ）、`cron`（クロック: 実行時刻を迎えた定期ジョブごとに実行シグナルを 1 件発行）。 |
+| `bin/guru-worker` | データプレーン。リスナーを終端しトラフィックを転送します。TOML ファイルから単独で動作する（`SIGHUP` で再読み込み）か、エージェントモードで master から設定をストリーミング受信します。 |
+| `bin/manage-tool` | 管理 CLI: `create-admin` によるブートストラップ、`orchestration export-config`。 |
+| `lib/guru_worker_config` | 両プレーンで共有されるワーカー設定モデル。 |
+| `lib/rpguru_sdk` | `proto/` から生成された gRPC/protobuf 型（Rust）。 |
+| `lib/newtype_record_id` | 型付き SurrealDB レコード ID 用の `table_record!` マクロ。 |
+| `modules/auth` | アカウント、セッション、API キー、RBAC。 |
+| `modules/orchestration` | キャンバス、サーバー、ノード、エッジ。トポロジー検証、設定導出、ワーカーへのロールアウト。 |
+| `modules/notify` | 通知モジュール — `base` から雛形を作成しただけで、まだ未実装です。 |
+| `modules/base` | 共通基盤と、すべてのモジュールが踏襲するレイアウト。 |
+
+## すべては Processor
+
+`kanau::processor::Processor` は **状態 + 非同期関数** です:
+
+```text
+Processor = State + async fn(Input) -> Result<Output, Error>
+```
+
+`Processor` は自身の依存関係を保持する `Clone` 可能な構造体で、操作ごとに 1 回 `Processor<Input>` を実装します。データベースクエリ、ビジネス操作、キューコンシューマーはいずれも入力構造体 1 つと `Processor` 実装 1 つとしてモデル化されます。覚えるべき並行した抽象は存在しません。
+
+## モジュールの構造
+
+すべてのモジュールクレートは `modules/base` を踏襲します:
+
+```text
+src/
+├── lib.rs        # declares the modules below; sets crate-wide lints
+├── config.rs     # typed configuration (one `app_config` row, JSON document)
+├── utils/        # small, dependency-light helpers
+├── entities/     # persistence layer
+│   ├── surreal/  # SurrealDB row types + SurrealProcessor queries
+│   └── redis/    # Redis key/value types (rkyv-encoded)
+├── services/     # business logic (stateful Processors)
+├── events/       # AMQP payloads + routing
+├── hooks/        # background reactors (event consumers, periodic-signal consumers, loggers)
+└── rpc/          # gRPC service implementations (transport edge)
+```
+
+| 書こうとしているもの | 置き場所 |
+|---|---|
+| SurrealDB クエリ、またはテーブル行の型 | `entities/surreal` |
+| Redis にキャッシュされる値、または一時トークン | `entities/redis` |
+| クエリとルールを組み合わせたユースケース | `services` |
+| 他のモジュールが反応するメッセージ | `events` |
+| イベントへの反応 / 定期ジョブ / 監査ログ | `hooks` |
+| gRPC エンドポイントの実装 | `rpc` |
+| オペレーターが変更できる型付き設定 | `config` |
+| ランタイム依存のない純粋なヘルパー | `utils` |
+
+## レイヤールール
+
+- **依存の向き:** `rpc → services → entities/events/config`。機能モジュールは `base` に依存してよいですが、`base` が機能モジュールに依存してはならず、モジュール同士が互いの内部に手を伸ばしてもいけません。モジュール間の通信は gRPC か AMQP イベント経由です。
+- **`entities/surreal`:** テーブルまたは集約ごとに 1 サブモジュール。行構造体は `SurrealValue` を derive し、レコード ID は `table_record!(NameId, "table")` でラップします。クエリごとに `wakuwaku::surreal::SurrealProcessor` 上の `Processor` 実装を 1 つ用意し、`Error = surrealdb::Error` とします。クエリは実行時に検証されるため、`mem://` に対する結合テストでカバーします。
+- **`services`:** 依存関係を保持する `Clone` 構造体。操作ごとに `Processor` 実装を 1 つ持ち、ドメイン型を返します — protobuf 型は返しません。
+- **`events`:** ペイロードに加えて `AmqpRouting`（`EXCHANGE`、`EXCHANGE_TYPE`、`ROUTING_KEY`）と `AmqpMessageSend`。モジュール間で唯一認められた非同期チャネルであり、定期処理もこのチャネルを通ります。実行時刻を迎えたジョブは `sweep_liveness` のような実行シグナルであって、呼び出しではありません。
+- **`hooks`:** AMQP コンシューマーは永続的な `QUEUE` 名を持つ `AmqpMessageProcessor<E>` を実装します。定期ジョブもその 1 つです。`cron` は実行時刻になるとシグナルを発行し、フックは作業を始める前にその実行を要求します（`orchestration_job_run` 行 1 件の compare-and-set）。そのため配信が重複してもよく、コンシューマーを多重化しても同じパスが 2 回走ることはありません。スケジューラーはデータベース接続を開かず、設定も読みません。*何が* 起こるかを決めるものはすべてコンシューマー側にあります。この帰結として、ブローカーは 4 つのモードすべてで必須です。RabbitMQ が停止している間は、導出スイープも liveness スイープも証明書更新も、復旧するまで実行されません。
+- **`rpc`:** 薄いアダプター — リクエストをデコードし、サービスを呼び、レスポンスをエンコードするだけ。ビジネスロジックは持ちません。
+- **エラー:** サービス/フックの境界では `wakuwaku::Error`、`entities/surreal` の内部では `surrealdb::Error` を使い、サービス層で `?` によって変換します。
+- **Lint:** クレートレベルで `deny(clippy::unwrap_used)`、`expect_used`、`panic`。リクエストパス上で panic させません。
+- **トレーシング:** `#[tracing::instrument(skip_all, err)]` に明示的なスパン `name` を付けます — entities は `Query:<Input>`（または `Query-Transaction:<Input>`）、services は `Service:<Input>`、フックのプロセッサーは `Hook:<Input>`。gRPC ハンドラーには不要です。トレイトメソッド名がそのままスパンのラベルになります。
+
+## SurrealDB に関する注意
+
+- `type::record(tb, id)` を使ってください。古い `type::thing` は 3.x で削除されました。
+- `token` という名前の変数をバインドしてはいけません — 予約語です。
+- 後続のフィールドアサーションが読み取る行は、そのアサーションを引き起こす `CREATE` の *後* に書き込んでください。サーバーのバージョンによっては、トランザクション内の `UPDATE` が `record::exists()` から見えません。

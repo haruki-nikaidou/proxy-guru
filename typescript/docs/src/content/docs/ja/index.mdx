@@ -1,0 +1,62 @@
+---
+title: Proxy Guru
+description: マネージド TCP/TLS プロキシファブリック — キャンバス上でトポロジーを設計し、サーバーごとに1つの設定を配信します。
+template: splash
+hero:
+  layout: centered
+  image:
+    alt: Proxy Guru コントロールタワー
+    file: ../../../assets/logo.svg
+  tagline: |
+    オペレーターはキャンバス上でトポロジーを設計し、コントロールプレーンがそこからサーバーごとに1つの設定を導出します。
+    データプレーンのワーカーは、新しいリビジョンを自動的に取得します。
+  actions:
+    - text: イントロダクションを読む
+      link: /ja/guides/introduction/
+      icon: right-arrow
+    - text: ローカルで実行する
+      link: /ja/guides/local-development/
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## 2つのプレーン、1つのモデル
+
+<CardGrid>
+	<Card title="コントロールプレーン" icon="setting">
+		`guru-master` は、オペレーター API、ワーカー API、設定を導出して定期ジョブを実行する AMQP フック、
+		そしてそれらをスケジュールするクロックを提供します — 1つのバイナリ、4つのモード。
+	</Card>
+	<Card title="データプレーン" icon="rocket">
+		`guru-worker` はリスナーを終端してトラフィックを転送します。ローカルの TOML ファイルから、
+		あるいはマスターから設定をストリーミングして動作します。
+	</Card>
+	<Card title="収束型ロールアウト" icon="approve-check">
+		すべてのサーバーが `desired`、`in_flight`、`applied` のスナップショットを保持するため、
+		ロールアウトの途中でリビジョンがトラフィックを落とすことはありません。
+	</Card>
+	<Card title="すべては Processor" icon="puzzle">
+		状態と非同期関数だけです。各クエリ、オペレーション、コンシューマーは、1つの `Processor` 実装を持つ
+		入力構造体として表現されます。
+	</Card>
+</CardGrid>
+
+## 次に読むもの
+
+<CardGrid>
+	<Card title="ガイド" icon="open-book">
+		[イントロダクション](/ja/guides/introduction/) ·
+		[ローカル開発](/ja/guides/local-development/) ·
+		[前提条件](/ja/guides/prerequisites/) ·
+		[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/) ·
+		[Docker でデプロイ](/ja/guides/deploy-with-docker/) ·
+		[ネイティブにデプロイ](/ja/guides/deploy-natively/)
+	</Card>
+	<Card title="リファレンス" icon="list-format">
+		[アーキテクチャ](/ja/reference/architecture/) ·
+		[ロールアウトモデル](/ja/reference/rollout/) ·
+		[設定](/ja/reference/configuration/) ·
+		[ワークスペース構成](/ja/reference/workspace-layout/)
+	</Card>
+</CardGrid>

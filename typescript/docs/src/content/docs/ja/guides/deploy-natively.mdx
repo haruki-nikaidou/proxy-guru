@@ -1,0 +1,335 @@
+---
+title: ネイティブにデプロイ
+description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB と RabbitMQ は Docker のまま維持し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、すべてをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行し、Docker で動かすのは 2 つのデータストアだけです。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、間にイメージは入りません。
+
+さらに、イメージ版のガイドが扱っていない点も説明します。それは、ワーカー API を**ダッシュボードと同じ公開ホスト名上の TLS** の背後に置くことです。これにより、インターネット上のどこにいるワーカーでも VPN なしで `--master https://guru.example.com` で到達できます。
+
+以下に出てくる `guru.example.com` は自分のホスト名に、`/path/to/proxy-guru` は自分のチェックアウトのパスに読み替えてください。それ以外にホスト固有の箇所はありません。
+
+## 1. 構成
+
+| コンポーネント | 実行方法 | リスニング先 |
+|---|---|---|
+| SurrealDB 3.2 | Docker Compose（チェックアウト内の `docker-compose.yml`） | `127.0.0.1:8000` |
+| RabbitMQ 4 | Docker Compose | `127.0.0.1:5672` |
+| `guru-master` ×4 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
+| ダッシュボード | systemd `guru-frontend` | `127.0.0.1:3100` |
+| nginx | 既存の nginx、server ブロック 1 つ | `:443` |
+
+nginx 以外はすべてループバックにバインドします。公開される面は TLS の server ブロックだけで、そこが `/` でダッシュボードを配信し、`/guru.orchestration.agent.WorkerAgent/` への gRPC を `:50052` へ転送します。
+
+## 2. 前提条件
+
+まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。Docker Engine と Compose、ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、SurrealDB と RabbitMQ、そして証明書付きのホスト名が必要です。このデプロイ形態ではそのすべてが必要になります。ネイティブビルドは、vendored OpenSSL と aws-lc をコンパイルする唯一の構成であり、ダッシュボードを Bun から実行する唯一の構成でもあります。
+
+チェックアウトから実行することによる 2 つの帰結は、始める前に改めて確認しておく価値があります。
+
+### デプロイ用ユーザー
+
+前提条件のページでは（ツールチェーンの節の *ネイティブデプロイ* タブで）非特権の `guru` ユーザーを作成し、rustup、surrealkit、Bun、チェックアウトをそのユーザーとしてインストールします。セクション 5〜6 のユニットがそのユーザーとして動くからです。バイナリ、`.env`、`data/`、surrealkit のマニフェストはいずれも、そのユーザーが所有するチェックアウトの中にあります。これは、これらのユニットで `DynamicUser=`/`ProtectHome=` を使えない理由でもあります。
+
+そのため本ガイドにはシェルが 2 つ登場し、各コマンドがどちらに属するかを毎回明示します。ビルド、スキーマ、`manage-tool`、ダッシュボードのビルドは **`guru`**、Docker、systemd、nginx は**自分の sudo 可能なアカウント**です。`guru` はあえて `docker` グループに入れず、sudo も必要としません。
+
+### 各コンポーネントのリスニング先
+
+データストアは、チェックアウトの `docker-compose.yml`（前提条件のセクション 4）によってすでにループバック上で起動しています。セクション 7 で唯一の nginx server ブロックを追加するまで、外部に公開されるものはありません。
+
+## 3. ビルド
+
+```sh
+cd /path/to/proxy-guru
+cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
+```
+
+初回ビルドでは vendored OpenSSL と aws-lc をコンパイルします。`perl`、`make`、`cmake` が前提条件なのはこのためです。`manage-tool` は後述の設定セクションで必要になるので、先に進む前にビルドしておいてください。
+
+## 4. 設定
+
+### シークレットファイル
+
+[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報（`SURREALDB_*`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`）を含む `/path/to/proxy-guru/.env` はすでに作成済みです。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
+
+<Steps>
+
+1. マスターキーを生成します。これはすべての DNS プロバイダートークン、ACME アカウントキー、証明書の秘密鍵を保存時に暗号化するもので、これを失うと復元する手段はありません。
+
+   ```sh
+   ./target/release/manage-tool generate-master-key   # needs no database
+   ```
+
+2. 既存の `.env` に次の行を追記します。
+
+   ```sh
+   # /path/to/proxy-guru/.env  (append)
+   GURU_MASTER_KEY=<manage-tool generate-master-key>
+   GURU_DASHBOARD_GRPC_ADDR=127.0.0.1:50051
+   GURU_WORKERS_GRPC_ADDR=127.0.0.1:50052
+   GURU_LOG_LEVEL=info
+   ```
+
+3. 権限を絞ります: `chmod 600 .env`。
+
+</Steps>
+
+`GURU_WORKERS_GRPC_ADDR` をループバックにしているのは意図的です。平文のワーカー API に到達してよいのは nginx だけです。`GURU_MASTER_KEY` も意図的に環境変数専用で、フラグは用意されていません。argv はプロセス一覧から見えてしまうからです。
+
+### データベーススキーマのセットアップ
+
+データストアは（前提条件のとおり）起動していますが中身は空で、空のデータベースに対してマスターは起動できません。ここでスキーマを適用し、モジュール設定のシードを投入します。手順は **[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)** に従い、`guru` として、チェックアウト内で、すでに持っている認証情報を使って実行します。
+
+```sh
+cd /path/to/proxy-guru
+set -a; . ./.env; set +a       # the credentials you wrote above
+
+sk() {
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREALDB_PASSWORD" "$@"
+}
+sk setup                                            # once per database
+sk rollout plan --name initial_schema               # then lint / start / complete
+```
+
+ここだけ、あの記事とは扱いが変わる点が 1 つあります。以後のスキーマ変更では、`complete` はセクション 5〜6 で再ビルドしたマスターが稼働し、動作確認できるまで待ちます。`database/` 以下に書き出されるマニフェストとスナップショットはこのホストに残ります（環境ごとの状態として gitignore されています）。`.env` と一緒にバックアップしてください。
+
+最後に、同じ記事にある設定のシード投入を実行します。
+
+```sh
+(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
+# seeded auth
+# seeded orchestration
+```
+
+### 内部 CA と最初の管理者
+
+セルフサービスのサインアップはありません。最初のアカウントはデータベースに対して直接作成され、まだ管理者が存在しないためあえて RBAC をバイパスします。TLS または QUIC のリレーリンクを使う場合は、Pod が導出できるようになる前に内部 CA も必要です。
+
+```sh
+(set -a; . ./.env; set +a; ./target/release/manage-tool orchestration init-ca)
+(set -a; . ./.env; set +a; ./target/release/manage-tool create-admin \
+    --email admin@example.com --password '<strong password>')
+# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+```
+
+`init-ca` は `GURU_MASTER_KEY` を必要とし（`.env` が供給します）、CA 証明書を出力し、TLS/QUIC リレーを含むすべてのキャンバスを再導出対象としてマークし、2 回目の実行は拒否します。
+
+## 5. systemd 上のマスター
+
+テンプレートユニット 1 つ、モードごとにインスタンス 1 つで、バイナリをチェックアウトからそのまま実行し、リポジトリの `.env` を読み込みます。どちらのユニットも[デプロイ用ユーザー](#デプロイ用ユーザー)の `guru` ユーザーとして動き、このユーザーがチェックアウトを所有しています。ここで `DynamicUser=`/`ProtectHome=` を使わないのもそのためです。それらはサービスが必要とするバイナリ、`.env`、データディレクトリを隠してしまいます。
+
+```ini
+# /etc/systemd/system/guru-master@.service
+[Unit]
+Description=guru-master (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+# Never rate-limit Restart=always: the datastores may come up later than we do.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=guru
+Group=guru
+WorkingDirectory=/path/to/proxy-guru
+EnvironmentFile=/path/to/proxy-guru/.env
+Environment=GURU_WORKER_MODE=%i
+ExecStart=/path/to/proxy-guru/target/release/guru-master
+Restart=always
+RestartSec=3s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+ユニットのインストールと起動はオペレーターの作業です。このブロックは**自分の sudo 可能なアカウント**から実行してください。
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc \
+                            guru-master@consumer guru-master@cron
+journalctl -u 'guru-master@*' -n 20
+```
+
+`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。
+
+コード変更後の再デプロイはシェル 2 つでの作業です。`guru` としてビルドし、オペレーターとして再起動します。
+
+```sh
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && \
+  cargo build --release --locked -p guru-master -p manage-tool -p guru-worker'
+sudo systemctl restart 'guru-master@*'
+```
+
+## 6. systemd 上のダッシュボード
+
+`guru` として Bun でビルドします。すべてのサブプロセスで Bun を強制するのは、SvelteKit のビルド後処理が `Promise.withResolvers` を必要とし、Node 20 にはそれがないためです。adapter-node の出力も Bun で実行します。
+
+```sh
+bun install --frozen-lockfile --filter guru-frontend
+cd typescript/guru-frontend && NODE_ENV=production bun --bun run build
+```
+
+```ini
+# /etc/systemd/system/guru-frontend.service
+[Unit]
+Description=guru dashboard (SvelteKit adapter-node)
+After=network-online.target guru-master@dashboard_grpc.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=guru
+Group=guru
+WorkingDirectory=/path/to/proxy-guru/typescript/guru-frontend
+# No EnvironmentFile: the dashboard must not inherit the database credentials.
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3100
+Environment=GURU_GRPC_URL=127.0.0.1:50051
+Environment=PROTOCOL_HEADER=x-forwarded-proto
+Environment=HOST_HEADER=x-forwarded-host
+Environment=ADDRESS_HEADER=x-forwarded-for
+ExecStart=/home/guru/.bun/bin/bun build/index.js
+Restart=always
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+続いて、再びオペレーターとして実行します。
+
+```sh
+sudo systemctl enable --now guru-frontend
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/   # 303 → /auth
+```
+
+`ExecStart` は*そのユーザーの* Bun の絶対パス（`sudo -iu guru command -v bun`）でなければなりません。systemd は `PATH` の探索を行いません。フロントエンドを変更したら、再ビルドして `sudo systemctl restart guru-frontend` を実行してください。
+
+## 7. nginx: ダッシュボードとワーカー API を 1 つのホスト名に載せる
+
+gRPC にはパスプレフィックスという概念がありません。すべての呼び出しは `POST /<package>.<Service>/<Method>` であり、ワーカーのサービスは `guru.orchestration.agent.WorkerAgent` です。そのため nginx は、このプレフィックスでルーティングすることで、1 つの server ブロックをダッシュボードとワーカー API で共有できます。最長プレフィックスが優先されるので、gRPC の location がダッシュボード側に吸い込まれることはありません。
+
+`grpc_pass` には `http_v2_module` 付きの nginx 1.13.10 以上が必要で、TLS には `http_ssl_module` が必要です。セクション 2 で導入する Debian/Ubuntu、Fedora、Arch のパッケージはどちらも有効にしてビルドされています。もう 1 つだけ必要なのは、WebSocket のアップグレード用の `http` レベルの `map` です。
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+```
+
+server ブロックは次のとおりです。証明書はそのホスト名用にすでに用意してあるものを使います。
+
+```nginx
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
+    server_name guru.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
+
+    # ---- worker agent API: TLS terminated here, plaintext h2c to the master.
+    location ^~ /guru.orchestration.agent.WorkerAgent/ {
+        grpc_pass grpc://127.0.0.1:50052;
+        grpc_connect_timeout 5s;
+        # WatchConfig is a server stream that may be silent for hours; ReportHealth a
+        # client stream carrying one message per 15 s. The grpc_* defaults are 60 s.
+        grpc_read_timeout 7d;
+        grpc_send_timeout 7d;
+        grpc_socket_keepalive on;
+        # ReportHealth is one request body that grows for the life of the session;
+        # nginx counts it cumulatively, so any limit would eventually 413 the stream.
+        client_max_body_size 0;
+        # Gap allowed between two ReportHealth frames (4 missed reports). With nginx
+        # in the path this is what bounds dead-worker detection.
+        client_body_timeout 60s;
+        grpc_set_header x-api-key     $http_x_api_key;
+        grpc_set_header x-refresh-key $http_x_refresh_key;
+        grpc_set_header X-Real-IP     $remote_addr;
+    }
+
+    # ---- dashboard. `^~` keeps any regex locations in the same block (static
+    # asset caching rules, PHP handlers) from capturing /_app/immutable/*.
+    location ^~ / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Host  $http_host;   # $host drops the port
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_cache off;          # in case a global proxy_cache is configured
+        proxy_buffering off;      # SvelteKit streams responses
+        proxy_redirect off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+nginx も root の領域です。セクション 7 全体をオペレーターのアカウントから実行します。
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+このうち 3 つの設定については、それぞれ一言説明しておきます。
+
+- **`grpc_read_timeout 7d`**。デフォルトの 60 秒では、nginx が毎分 `WatchConfig` を終了させ、ワーカーが再登録し、リフレッシュキーが毎分ローテーションします。自ら招いた再登録の嵐です。
+- **`client_max_body_size 0`**。`ReportHealth` はクライアントストリーミング RPC です。1 つの HTTP/2 リクエストのボディが、セッションが続く間、レポート 1 件ごとに伸び続けます。nginx はボディの上限を累積で判定するため、上限を設けると数週間後にヘルスストリームがリセットされてしまいます。
+- **`client_body_timeout 60s`**。マスターは自身の接続上の HTTP/2 PING で死んだワーカーを検出します。間に nginx が入ると、その PING には nginx が応答するため、FIN を返さずに消えたワーカーは、nginx がヘルスボディをタイムアウトしたときに初めて気づかれます。つまり 20 秒ではなく 1 分程度になります。許容範囲であり、調整したい場合はこの定数が対象です。
+
+正しさのために必須なのは、ダッシュボードの location にある `Origin`／forwarded ヘッダーだけです（[ダッシュボードの注意](/ja/guides/deploy-with-docker/#9-ダッシュボードを動かす)を参照）。残りは長寿命ストリームを維持するための設定です。
+
+## 8. 動作確認
+
+次の順番で進めてください。それぞれが独立して、はっきり失敗します。ここに書かれているものはすべて、**新しいオペレーターのシェル**にそのままコピー＆ペーストできるようになっています。サービスアカウントに属するチェックは `sudo -iu guru` で包んであり、スキーマのチェックは `sk` 関数（定義したシェルの中にしか存在しません）に頼らず接続情報を明示的に書いています。
+
+```sh
+# 1. Datastores (operator: Docker)
+cd /path/to/proxy-guru && sudo docker compose ps     # surrealdb up, rabbitmq healthy
+
+# 2. Schema (guru: it owns the manifests under database/)
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREALDB_PASSWORD" status'
+#   → the rollout you applied, [completed]
+
+# 3. Control plane: one banner per mode, no restart loop
+journalctl -u 'guru-master@*' -n 20
+
+# 4. Dashboard behind nginx (303 to /auth)
+curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
+
+# 5. gRPC reaches the master through TLS: HTTP/2 200 with a grpc-status header
+curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
+  --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
+
+# 6. A worker with a bogus key must be rejected by the master, not by TLS or nginx
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
+  ./target/release/guru-worker --master https://guru.example.com \
+    --server probe --state-dir /tmp/gw'
+#   ERROR guru_worker::agent: agent session ended error=... "Missing identity"
+```
+
+その後、セクション 4 で作成したアカウントを使って `https://guru.example.com/` にログインします。ダッシュボード → オペレーター API → SurrealDB を端から端まで動かすチェックはこれだけです。他がすべて通るのにこれが `Forbidden` を返す場合は、セクション 7 の forwarded ヘッダーが間違っています。
+
+最後に、ダッシュボードでサーバーと API キーを作成し、`--master https://guru.example.com` で実際のワーカーを起動します。3 分以上そのまま観察してください。それが nginx の 60 秒のデフォルトを上書きできている証拠になります。そのうえでキャンバスの変更を反映させ、ログに `applied config revision` が出るのを確認します。
+
+`https://` 形式を使うには、エージェントに TLS サポートを含むチェックアウトからビルドしたワーカーが必要です（tonic の `tls-ring` + `tls-native-roots` を有効にした `bin/guru-worker`）。このワーカーはホストの `ca-certificates` に対して証明書を検証し、自身の HTTP/2 keepalive ping を送信します。プライベートネットワーク上での `http://host:50052` は従来どおり動作します。

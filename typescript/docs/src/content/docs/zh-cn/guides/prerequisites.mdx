@@ -1,0 +1,437 @@
+---
+title: 前置条件
+description: 在部署控制平面之前先准备好它依赖的一切——SurrealDB、RabbitMQ、Docker、构建工具链、surrealkit、Bun，以及一个带证书的主机名。
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+两篇部署指南——[使用 Docker 部署](/zh-cn/guides/deploy-with-docker/) 与
+[原生部署](/zh-cn/guides/deploy-natively/)——都从这里开始。本页负责准备外部依赖和运维工具；
+之后你所选择的部署指南只是把控制平面接到它们上面。
+
+两种部署方式各自的实际需求：
+
+| | 使用 Docker 部署 | 原生部署 |
+|---|---|---|
+| SurrealDB ≥ 3.2 | 需要 | 需要 |
+| RabbitMQ 3.13/4.x | 需要 | 需要 |
+| Docker Engine + Compose | 需要（所有组件都从镜像运行） | 需要（仅用于数据存储） |
+| `surrealkit` | 需要 | 需要 |
+| Rust 工具链 + `protoc` | 需要——`manage-tool` 没有发布成镜像 | 需要——它要构建全部二进制 |
+| C 工具链、`make`、`cmake` | 需要——`manage-tool` 会引入证书相关依赖栈（基于 aws-lc 的 `instant-acme`/`rcgen`），其内置的 C 源码需要编译器和 cmake | 需要，原因相同 |
+| `perl` | 不需要 | 需要——`guru-worker` 会编译内置的 OpenSSL，而它由一个 perl 脚本完成配置 |
+| Bun | 不需要 | 需要（构建并运行控制台） |
+| 主机名 + TLS 证书 | 需要 | 需要 |
+| Redis | 不需要 | 不需要 |
+
+Redis 出现在模块脚手架中，但目前没有任何二进制会连接它——不要为它准备实例。
+
+## 1. Docker Engine 与 Compose
+
+两种方式都以容器形式运行 SurrealDB 和 RabbitMQ，因此首先要安装引擎以及 Compose *插件*
+（`docker compose`，而不是旧版的 `docker-compose` 脚本——Arch 例外，那里的包名*就是*这个）。
+先选定你的发行版；本页所有标签页都会随之联动。
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+来自 [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/)：
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+请先移除会冲突的发行版软件包：`docker.io`、`docker-compose`、`docker-doc`、
+`docker-buildx`、`podman-docker`、`containerd`、`runc`。在该发行版上，软件包会自动把服务设为
+开机自启。
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+来自 [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/)。
+仓库路径和 suite 表达式都与 Debian 不同——Ubuntu 衍生发行版会在 `VERSION_CODENAME` 中报告
+自己的代号，所以这里必须让 Ubuntu 的取值优先：
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+请先移除会冲突的发行版软件包：`docker.io`、`docker-compose`、`docker-compose-v2`、
+`docker-doc`、`docker-buildx`、`podman-docker`、`containerd`、`runc`。在该发行版上，软件包会
+自动把服务设为开机自启。
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+在 Fedora 上（[文档](https://docs.docker.com/engine/install/fedora/)）：
+
+```sh
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+在 RHEL 上（[文档](https://docs.docker.com/engine/install/rhel/)）添加仓库要用较旧的子命令
+形式——两者并不能互换：
+
+```sh
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+Docker 没有发布 Arch 软件包；[ArchWiki 页面](https://wiki.archlinux.org/title/Docker)
+才是该发行版的参考。这里的 `docker-compose` 就是 Compose v2 插件：
+
+```sh
+sudo pacman -S --needed docker docker-compose
+sudo systemctl enable --now docker.service
+```
+
+</TabItem>
+</Tabs>
+
+确认引擎可用，并且把 Compose 保持为运维人员的操作——要么用 `sudo docker compose …`（指南中
+采用的方式），要么把你自己的账号加入 `docker` 组；后者在主机上等同于 root 权限，因此绝不应该
+授予服务账号：
+
+```sh
+sudo docker run --rm hello-world
+```
+
+## 2. 主机软件包
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+```sh
+sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+```sh
+sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
+```
+
+`base-devel` 已经包含 `gcc`、`make`、`pkgconf` 和 `perl`。
+
+</TabItem>
+</Tabs>
+
+这些软件包没有一个是装饰性的——每一个都是本工作区的真实依赖：
+
+| 软件包 | 为什么需要 |
+|---|---|
+| `protoc`（`protobuf-compiler`，Arch 上为 `protobuf`） | `lib/rpguru_sdk` 的构建脚本用 `tonic-prost-build` 编译 `proto/`，而它会调用 `protoc`。所有二进制都依赖该 crate，`manage-tool` 也不例外，因此缺少 `protoc` 会导致构建失败。如果你的 `protoc` 不在 `PATH` 中，请设置 `PROTOC=/path/to/protoc`。 |
+| C 编译器、`make` | 两种方式都要构建 `manage-tool`，它经由 `orchestration` 模块引入证书相关依赖栈；其中若干 crate（`aws-lc-sys`、`ring`、`zstd-sys`）会编译内置的 C 源码。 |
+| `cmake` | `aws-lc-sys` 用 cmake 构建其内置源码，因此凡是构建 `manage-tool` 的地方都需要它。 |
+| `perl` | `guru-worker` 以 `vendored` feature 链接 OpenSSL：OpenSSL 由内附的源码树编译而成，而它的 `Configure` 是一个 perl 脚本。仅原生部署需要。 |
+| `pkgconf` / `pkg-config` | 上述 `*-sys` crate 的构建依赖。 |
+| `openssl` | 部署指南使用 `openssl rand -hex 32` 生成密码和密钥。 |
+| `unzip` | Linux 上的 Bun 安装脚本需要它。 |
+| `nginx` | 为控制台终止 TLS，在原生部署指南中还为 Worker API 终止 TLS。任何当前版本的构建都带有 `http_ssl_module` 和 `http_v2_module`，这正是 `grpc_pass`（nginx ≥ 1.13.10）所需要的。 |
+
+不需要 `libssl-dev`/`openssl-devel`，也不需要 `libprotobuf` 的开发包：Rust 构建所需的那部分
+都由它自己内置。
+
+## 3. Rust、surrealkit 与 Bun
+
+上面的所有步骤都需要 root；本节的一切都属于将要**持有代码检出目录**的那个账号，而这个账号
+因部署方式而异：
+
+<Tabs syncKey="deployment">
+<TabItem label="原生部署">
+
+控制平面、控制台以及你构建出来的所有东西都以同一个无特权服务用户运行，所以现在就创建它，
+并从*它的* shell 中安装工具链——否则工具链会装进你自己的 home，systemd 将找不到它们：
+
+```sh
+sudo useradd --create-home --shell /bin/bash guru
+sudo -iu guru                 # the rest of this section runs as guru
+```
+
+原生部署指南全篇都使用 `guru` 和 `/home/guru`（包括 `User=`/`Group=` 以及各 unit 中的 Bun
+路径）；如果换成你自己的名字，请保持一致。**不要**把它加入 `docker` 组：该组等同于 root，
+而且没有任何 unit 会调用 Docker，因此 Compose 始终只是运维人员的操作。
+
+</TabItem>
+<TabItem label="镜像部署">
+
+检出目录里不会常驻运行任何东西——它只用来构建 `manage-tool` 并存放 schema 文件——所以放在你
+自己的运维账号下就是合适的。完全不需要 Bun。
+
+</TabItem>
+</Tabs>
+
+<Steps>
+
+1. **Rust**，通过 [rustup](https://rustup.rs/) 安装。工作区在 `rust-toolchain.toml` 中固定了
+   工具链版本（channel `1.98`），rustup 会在第一次执行 `cargo` 时安装这个固定版本。不要用
+   发行版自带的 `rust` 包替代：更旧的编译器无法构建 edition 2024。
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   . "$HOME/.cargo/env"
+   ```
+
+2. **surrealkit**，即 [配置数据库 Schema](/zh-cn/guides/setup-database-schema/) 所使用的
+   schema 工具：
+
+   ```sh
+   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
+   surrealkit --version              # the guides were written against 0.7.0
+   ```
+
+3. **代码检出。** 两篇指南都需要它：`database/` 下的 schema 文件、Compose 文件以及
+   `manage-tool` 全都来自仓库，而它们都没有以镜像形式发布。
+
+   ```sh
+   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```
+
+4. **Bun**——仅原生部署需要，用于构建和运行控制台。项目任何地方都不使用 Node；
+   SvelteKit 的构建后处理步骤需要 `Promise.withResolvers`，而 Node 20 没有它。
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   安装脚本支持指定版本（`bash -s "bun-v1.3.3"`），以便与构建已发布控制台镜像所用的
+   `oven/bun:1.3` 保持一致。Arch 也提供 `bun` 软件包，但安装它需要 root，而且会把二进制
+   放在服务账号 home 之外。
+
+</Steps>
+
+## 4. SurrealDB 与 RabbitMQ
+
+### 控制平面对它们的要求
+
+| | 要求 |
+|---|---|
+| SurrealDB | **3.2 或更高版本。** 更旧的 3.0 版本二进制与本工作区链接的客户端不兼容，并且会错误处理那些读取同一事务中先前写入行的断言，表现为莫名其妙的 "table does not exist" 或事务被取消的错误。 |
+| | **Root 凭据。** `guru-master` 以 `Root { username, password }` 登录，然后再选择命名空间和数据库；namespace 级或 database 级的用户做不到这一点。 |
+| | **持久化存储。** 把 `rocksdb:/data/guru.db` 放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。 |
+| RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。 |
+| | URI 形式：`amqp://user:password@host:5672/`，其中**结尾的斜杠**表示选择默认 vhost。`/%2f` 这种写法会被解析器拒绝。 |
+| | 在**全部四种 master 模式中消息代理都是必需的**。周期性工作本身*就是*消息：它停机期间，没有任何过期画布被清扫，没有任何静默的服务器被标记为 `Offline`，也没有任何证书会被续期。请把它当作依赖，而不是可选的优化。 |
+
+只要满足上表的要求，用托管版 SurrealDB 或现有的消息代理都没问题；本节余下内容是自托管路径。
+
+### 凭据
+
+生成的密码要**对 URL 安全**——消息代理的密码会被插入 `AMQP_URI`，其中 `@`、`:`、`/` 和 `%`
+会改变 URI 的含义：
+
+```sh
+openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+```
+
+十六进制字符串可以规避所有引号和百分号编码的问题。如果你坚持要用标点符号，请在 `AMQP_URI`
+中对其做百分号编码（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）；SurrealDB 的密码
+是作为 argv 值传入的，只需要注意引号。
+
+现在就把它们记录到数据存储将要读取的那个文件里。之后每篇部署指南都会向同一个文件追加各自的
+变量（主密钥、监听地址、镜像标签）：
+
+<Tabs syncKey="deployment">
+<TabItem label="原生部署">
+
+```sh
+# /path/to/proxy-guru/.env   (chmod 600; gitignored)
+SURREALDB_HOST=ws://127.0.0.1:8000
+SURREALDB_USER=root
+SURREALDB_PASSWORD=<first hex string>
+SURREALDB_NAMESPACE=guru
+SURREALDB_NAME=guru
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+```
+
+Compose 会从该文件插值 `${…}`，因为它就放在检出目录的 `docker-compose.yml` 旁边；
+而 systemd 之后会通过 `EnvironmentFile=` 逐字读取同一个文件——systemd **不会**展开
+`${…}`，这正是 `AMQP_URI` 要完整写出来的原因。
+
+</TabItem>
+<TabItem label="镜像部署">
+
+```sh
+# /srv/guru/.env   (chmod 600)
+SURREAL_ROOT_USER=root
+SURREAL_ROOT_PASSWORD=<first hex string>
+
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+
+GURU_NS=guru
+GURU_DB=guru
+```
+
+请先创建 `/srv/guru`（`sudo mkdir -p /srv/guru`）；下面的 Compose 文件就放在这个 `.env`
+旁边，镜像部署指南之后还会向它追加 `MASTER_VERSION`、`FRONTEND_VERSION` 和
+`GURU_MASTER_KEY`。
+
+</TabItem>
+</Tabs>
+
+### 启动它们
+
+<Tabs>
+<TabItem label="原生部署">
+
+仓库为此专门提供了一个 `docker-compose.yml`：SurrealDB 以 RocksDB 存储在 `./data/db`，
+RabbitMQ 存储在 `./data/mq`（两者均已 gitignore），都只发布在回环地址上，并且都从检出目录的
+`.env` 读取凭据。
+
+```sh
+cd /path/to/proxy-guru
+sudo docker compose up -d
+sudo docker compose ps        # wait for rabbitmq to report healthy
+```
+
+</TabItem>
+<TabItem label="镜像部署">
+
+创建部署目录（镜像部署指南中为 `/srv/guru`），把两个数据存储写进它的 Compose 文件，
+与保存其凭据的 `.env` 放在一起：
+
+```yaml
+# /srv/guru/docker-compose.yml
+name: guru
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    restart: unless-stopped
+    command:
+      - start
+      - --user
+      - ${SURREAL_ROOT_USER}
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD}
+      - rocksdb:/data/guru.db
+    user: root
+    volumes:
+      - surreal-data:/data
+    # Loopback only: the operator machine reaches it through an SSH tunnel.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  surreal-data:
+  rabbit-data:
+```
+
+```sh
+cd /srv/guru
+sudo docker compose up -d surrealdb rabbitmq
+```
+
+各个 master 会在之后的镜像部署指南中加入同一个文件——数据存储必须先存在，因为在任何 master
+启动之前 schema 就得先就位。
+
+</TabItem>
+</Tabs>
+
+无论采用哪种形态，有两个细节是关键的。`surrealdb/surrealdb` 镜像以一个无特权用户运行，
+它无法写入 root 所有的卷或绑定挂载，因此需要 `user: root`。RabbitMQ 会以自己的节点名
+`rabbit@<hostname>` 来命名数据目录，所以检出目录的 Compose 文件固定了 `hostname:`；
+否则每次重新创建容器都会得到一个空的消息代理。
+
+consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orchestration_canvas_dirty`，
+以及对应五个周期任务的 `guru_orchestration_derive_stale_canvases`、
+`guru_orchestration_sweep_liveness`、`guru_orchestration_trim_health_history`、
+`guru_orchestration_renew_certificates` 和
+`guru_orchestration_rotate_relay_certificates`。
+
+## 5. 主机名与证书
+
+一个指向该主机的 DNS 名称，以及为它签发的 TLS 证书（`certbot`、你自己的 CA，都可以）。
+两篇指南都在它上面终止控制台的 TLS；原生部署指南还会在同一个名称上终止 Worker API 的 TLS。
+
+:::danger[HTTPS 不是可选项]
+控制台的会话 Cookie（`guru_session`）带有 `Secure` 标记，因此除 `localhost` 之外，浏览器
+在纯 HTTP 下都会丢弃它。应用还会按请求重建自身的 origin，并拒绝浏览器 `Origin` 不匹配的
+登录 POST，这就是反向代理必须转发 `X-Forwarded-Proto` 和 `X-Forwarded-Host` 的原因。
+:::
+
+:::caution[不要让该主机名走 Cloudflare 代理]
+Cloudflare 的代理会在 100 秒没有数据后关闭流式响应。`WatchConfig` 在两个修订版本之间是静默的，
+所以在橙色云朵后面，每个 Worker 都会每隔几分钟重连一次。请把该记录设为 DNS-only；
+到你自己 nginx 的 TLS 已经足以保护传输中的 API key。
+:::
+
+## 6. 下一步
+
+数据存储已经运行，但还是空的。在启动任何 master 之前先应用 schema——这部分单独成篇，
+因为同一套流程会在此后整个安装生命周期里维护 schema：
+**[配置数据库 Schema](/zh-cn/guides/setup-database-schema/)**。
+
+然后继续阅读 [使用 Docker 部署](/zh-cn/guides/deploy-with-docker/) 或
+[原生部署](/zh-cn/guides/deploy-natively/)。

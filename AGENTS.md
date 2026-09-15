@@ -235,6 +235,24 @@ site is portable and served from the root. When a target is chosen, set `site`
 under a subpath, `base` — then prefix the root-relative links in
 `src/content/docs/` with it, since Starlight does not rewrite Markdown links.
 
+Translations use Starlight's own i18n. English is the default locale and is
+served from the root (`defaultLocale: 'root'`), so English pages stay at
+`src/content/docs/<path>`; every other locale mirrors that tree under its own
+directory — `src/content/docs/ja/<path>` and `src/content/docs/zh-cn/<path>` —
+with the same file names. Adding a locale means: register it in `locales` in
+`astro.config.mjs`, add its label to every sidebar `translations` map (keyed by
+the locale's `lang`, e.g. `zh-CN`), add it to the `navLinkTranslations` helper
+used by the theme's `navLinks` (those items must be declared by `slug`, since
+`starlight-theme-black` ignores `translations` when an item carries a literal
+`label`), and translate the pages. Starlight ships the UI strings for `ja` and
+`zh-CN`, so `src/content/i18n/` only needs a file when a UI string is
+overridden — and those files are named after the locale's `lang`
+(`zh-CN.json`), not after the content directory (`zh-cn/`).
+Inside a translated page, prefix every root-relative link with the locale
+segment (`/ja/guides/...`) and point in-page anchors at the *translated*
+heading's slug — Starlight's slugger keeps CJK, so `## モジュール設定` is
+reachable at `#モジュール設定`.
+
 Document behaviour here, not in new top-level Markdown files — `README.md` stays
 a short overview and this file stays the code-organisation contract.
 

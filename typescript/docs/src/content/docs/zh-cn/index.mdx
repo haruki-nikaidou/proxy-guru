@@ -1,0 +1,62 @@
+---
+title: Proxy Guru
+description: 托管式 TCP/TLS 代理网络 —— 在画布上设计拓扑，为每台服务器生成一份配置。
+template: splash
+hero:
+  layout: centered
+  image:
+    alt: Proxy Guru 控制塔
+    file: ../../../assets/logo.svg
+  tagline: |
+    运维人员在画布上设计拓扑，控制平面据此为每台服务器推导出一份配置，
+    数据平面的 Worker 则自动获取每个新的修订版本。
+  actions:
+    - text: 阅读简介
+      link: /zh-cn/guides/introduction/
+      icon: right-arrow
+    - text: 在本地运行
+      link: /zh-cn/guides/local-development/
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## 两个平面，一套模型
+
+<CardGrid>
+	<Card title="控制平面" icon="setting">
+		`guru-master` 提供运维 API、Worker API、用于推导配置并运行所有周期任务的 AMQP 钩子，
+		以及负责调度它们的时钟 —— 一个二进制文件，四种模式。
+	</Card>
+	<Card title="数据平面" icon="rocket">
+		`guru-worker` 负责终结监听器并转发流量，配置既可以来自本地 TOML 文件，
+		也可以从 master 流式下发。
+	</Card>
+	<Card title="收敛式发布" icon="approve-check">
+		每台服务器都保存 `desired`、`in_flight` 和 `applied` 三份快照，因此任何修订版本都不会在
+		发布过程中丢弃流量。
+	</Card>
+	<Card title="一切皆 Processor" icon="puzzle">
+		状态加上一个异步函数。每个查询、操作和消费者都是一个输入结构体，配一个
+		`Processor` 实现。
+	</Card>
+</CardGrid>
+
+## 下一步去哪里
+
+<CardGrid>
+	<Card title="指南" icon="open-book">
+		[简介](/zh-cn/guides/introduction/) ·
+		[本地开发](/zh-cn/guides/local-development/) ·
+		[前置条件](/zh-cn/guides/prerequisites/) ·
+		[配置数据库 Schema](/zh-cn/guides/setup-database-schema/) ·
+		[使用 Docker 部署](/zh-cn/guides/deploy-with-docker/) ·
+		[原生部署](/zh-cn/guides/deploy-natively/)
+	</Card>
+	<Card title="参考" icon="list-format">
+		[架构](/zh-cn/reference/architecture/) ·
+		[发布模型](/zh-cn/reference/rollout/) ·
+		[配置](/zh-cn/reference/configuration/) ·
+		[工作区布局](/zh-cn/reference/workspace-layout/)
+	</Card>
+</CardGrid>
