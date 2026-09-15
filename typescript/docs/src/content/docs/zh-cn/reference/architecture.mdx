@@ -3,6 +3,8 @@ title: 架构
 description: 各 crate 的职责、Processor 抽象，以及每个模块都遵循的分层规则。
 ---
 
+import { FileTree } from '@astrojs/starlight/components';
+
 ## Crate 一览
 
 | Crate | 职责 |
@@ -34,19 +36,21 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 
 每个模块 crate 都与 `modules/base` 保持一致：
 
-```text
-src/
-├── lib.rs        # 声明下面各个模块；设置 crate 级别的 lint
-├── config.rs     # 带类型的配置（对应一行 `app_config`，JSON 文档）
-├── utils/        # 小巧、几乎无依赖的辅助函数
-├── entities/     # 持久化层
-│   ├── surreal/  # SurrealDB 行类型 + SurrealProcessor 查询
-│   └── redis/    # Redis 键值类型（rkyv 编码）
-├── services/     # 业务逻辑（有状态的 Processor）
-├── events/       # AMQP 消息载荷 + 路由
-├── hooks/        # 后台反应器（事件消费者、周期信号消费者、日志记录器）
-└── rpc/          # gRPC 服务实现（传输边界）
-```
+<FileTree>
+
+- src/
+  - lib.rs 声明下面各个模块；设置 crate 级别的 lint
+  - config.rs 带类型的配置（对应一行 `app_config`，JSON 文档）
+  - utils/ 小巧、几乎无依赖的辅助函数
+  - entities/ 持久化层
+    - surreal/ SurrealDB 行类型 + `SurrealProcessor` 查询
+    - redis/ Redis 键值类型（rkyv 编码）
+  - services/ 业务逻辑（有状态的 Processor）
+  - events/ AMQP 消息载荷 + 路由
+  - hooks/ 后台反应器（事件消费者、周期信号消费者、日志记录器）
+  - rpc/ gRPC 服务实现（传输边界）
+
+</FileTree>
 
 | 你正在写…… | 就放到…… |
 |---|---|

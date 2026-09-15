@@ -3,6 +3,8 @@ title: Architecture
 description: Crate roles, the Processor abstraction, and the layer rules every module follows.
 ---
 
+import { FileTree } from '@astrojs/starlight/components';
+
 ## Crates
 
 | Crate | Role |
@@ -34,19 +36,21 @@ input struct plus one `Processor` impl — there is no parallel abstraction to l
 
 Every module crate mirrors `modules/base`:
 
-```text
-src/
-├── lib.rs        # declares the modules below; sets crate-wide lints
-├── config.rs     # typed configuration (one `app_config` row, JSON document)
-├── utils/        # small, dependency-light helpers
-├── entities/     # persistence layer
-│   ├── surreal/  # SurrealDB row types + SurrealProcessor queries
-│   └── redis/    # Redis key/value types (rkyv-encoded)
-├── services/     # business logic (stateful Processors)
-├── events/       # AMQP payloads + routing
-├── hooks/        # background reactors (event consumers, periodic-signal consumers, loggers)
-└── rpc/          # gRPC service implementations (transport edge)
-```
+<FileTree>
+
+- src/
+  - lib.rs declares the modules below; sets crate-wide lints
+  - config.rs typed configuration (one `app_config` row, JSON document)
+  - utils/ small, dependency-light helpers
+  - entities/ persistence layer
+    - surreal/ SurrealDB row types + `SurrealProcessor` queries
+    - redis/ Redis key/value types (rkyv-encoded)
+  - services/ business logic (stateful Processors)
+  - events/ AMQP payloads + routing
+  - hooks/ background reactors (event consumers, periodic-signal consumers, loggers)
+  - rpc/ gRPC service implementations (transport edge)
+
+</FileTree>
 
 | You are writing… | Put it in… |
 |---|---|
