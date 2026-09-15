@@ -302,6 +302,11 @@ message Server {
   string agent_arch = 14;
   // The systemd instance the install command creates: `guru-worker@<unit>`.
   string agent_unit = 15;
+  // A pending self-update: the version the operator asked the worker to move
+  // to. Empty once the worker registers as that version, or after a failure.
+  string agent_update_requested = 16;
+  // Why the last self-update failed, as the worker reported it.
+  string agent_update_error = 17;
   // When the server's own agent key was issued; empty when it has none.
   string agent_key_issued_at = 18;
 }
@@ -451,6 +456,16 @@ message GetAgentReleaseReply {
   string arch = 3;
   string published_at = 4;
   bool base_url_configured = 5;
+}
+// Asks the server's worker to move to the published release: it picks the
+// request up at its next poll, downloads and verifies the binary, swaps it in
+// and restarts. `agent_update_requested` clears once the worker registers as
+// that version, or with `agent_update_error` set when the attempt failed.
+message RequestAgentUpdateRequest {
+  string server_id = 1;
+}
+message RequestAgentUpdateReply {
+  Server server = 1;
 }
 message DeleteServerRequest {
   string server_id = 1;
@@ -729,6 +744,7 @@ service Orchestration {
   rpc ForgetServerApplied(ForgetServerAppliedRequest) returns (ForgetServerAppliedReply);
   rpc IssueServerAgentInstall(IssueServerAgentInstallRequest) returns (IssueServerAgentInstallReply);
   rpc GetAgentRelease(GetAgentReleaseRequest) returns (GetAgentReleaseReply);
+  rpc RequestAgentUpdate(RequestAgentUpdateRequest) returns (RequestAgentUpdateReply);
   rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
   rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
   rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);

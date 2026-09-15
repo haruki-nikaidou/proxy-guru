@@ -1064,6 +1064,13 @@ export interface Server {
   agentArch: string;
   /** The systemd instance the install command creates: `guru-worker@<unit>`. */
   agentUnit: string;
+  /**
+   * A pending self-update: the version the operator asked the worker to move
+   * to. Empty once the worker registers as that version, or after a failure.
+   */
+  agentUpdateRequested: string;
+  /** Why the last self-update failed, as the worker reported it. */
+  agentUpdateError: string;
   /** When the server's own agent key was issued; empty when it has none. */
   agentKeyIssuedAt: string;
 }
@@ -1248,6 +1255,20 @@ export interface GetAgentReleaseReply {
   arch: string;
   publishedAt: string;
   baseUrlConfigured: boolean;
+}
+
+/**
+ * Asks the server's worker to move to the published release: it picks the
+ * request up at its next poll, downloads and verifies the binary, swaps it in
+ * and restarts. `agent_update_requested` clears once the worker registers as
+ * that version, or with `agent_update_error` set when the attempt failed.
+ */
+export interface RequestAgentUpdateRequest {
+  serverId: string;
+}
+
+export interface RequestAgentUpdateReply {
+  server: Server | undefined;
 }
 
 export interface DeleteServerRequest {
@@ -3766,6 +3787,8 @@ function createBaseServer(): Server {
     agentVersion: "",
     agentArch: "",
     agentUnit: "",
+    agentUpdateRequested: "",
+    agentUpdateError: "",
     agentKeyIssuedAt: "",
   };
 }
@@ -3813,6 +3836,12 @@ export const Server: MessageFns<Server> = {
     }
     if (message.agentUnit !== "") {
       writer.uint32(122).string(message.agentUnit);
+    }
+    if (message.agentUpdateRequested !== "") {
+      writer.uint32(130).string(message.agentUpdateRequested);
+    }
+    if (message.agentUpdateError !== "") {
+      writer.uint32(138).string(message.agentUpdateError);
     }
     if (message.agentKeyIssuedAt !== "") {
       writer.uint32(146).string(message.agentKeyIssuedAt);
@@ -3939,6 +3968,22 @@ export const Server: MessageFns<Server> = {
           message.agentUnit = reader.string();
           continue;
         }
+        case 16: {
+          if (tag !== 130) {
+            break;
+          }
+
+          message.agentUpdateRequested = reader.string();
+          continue;
+        }
+        case 17: {
+          if (tag !== 138) {
+            break;
+          }
+
+          message.agentUpdateError = reader.string();
+          continue;
+        }
         case 18: {
           if (tag !== 146) {
             break;
@@ -4004,6 +4049,16 @@ export const Server: MessageFns<Server> = {
         : isSet(object.agent_unit)
         ? globalThis.String(object.agent_unit)
         : "",
+      agentUpdateRequested: isSet(object.agentUpdateRequested)
+        ? globalThis.String(object.agentUpdateRequested)
+        : isSet(object.agent_update_requested)
+        ? globalThis.String(object.agent_update_requested)
+        : "",
+      agentUpdateError: isSet(object.agentUpdateError)
+        ? globalThis.String(object.agentUpdateError)
+        : isSet(object.agent_update_error)
+        ? globalThis.String(object.agent_update_error)
+        : "",
       agentKeyIssuedAt: isSet(object.agentKeyIssuedAt)
         ? globalThis.String(object.agentKeyIssuedAt)
         : isSet(object.agent_key_issued_at)
@@ -4056,6 +4111,12 @@ export const Server: MessageFns<Server> = {
     if (message.agentUnit !== "") {
       obj.agentUnit = message.agentUnit;
     }
+    if (message.agentUpdateRequested !== "") {
+      obj.agentUpdateRequested = message.agentUpdateRequested;
+    }
+    if (message.agentUpdateError !== "") {
+      obj.agentUpdateError = message.agentUpdateError;
+    }
     if (message.agentKeyIssuedAt !== "") {
       obj.agentKeyIssuedAt = message.agentKeyIssuedAt;
     }
@@ -4085,6 +4146,8 @@ export const Server: MessageFns<Server> = {
     message.agentVersion = object.agentVersion ?? "";
     message.agentArch = object.agentArch ?? "";
     message.agentUnit = object.agentUnit ?? "";
+    message.agentUpdateRequested = object.agentUpdateRequested ?? "";
+    message.agentUpdateError = object.agentUpdateError ?? "";
     message.agentKeyIssuedAt = object.agentKeyIssuedAt ?? "";
     return message;
   },
@@ -6621,6 +6684,130 @@ export const GetAgentReleaseReply: MessageFns<GetAgentReleaseReply> = {
     message.arch = object.arch ?? "";
     message.publishedAt = object.publishedAt ?? "";
     message.baseUrlConfigured = object.baseUrlConfigured ?? false;
+    return message;
+  },
+};
+
+function createBaseRequestAgentUpdateRequest(): RequestAgentUpdateRequest {
+  return { serverId: "" };
+}
+
+export const RequestAgentUpdateRequest: MessageFns<RequestAgentUpdateRequest> = {
+  encode(message: RequestAgentUpdateRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestAgentUpdateRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestAgentUpdateRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RequestAgentUpdateRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+    };
+  },
+
+  toJSON(message: RequestAgentUpdateRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RequestAgentUpdateRequest>): RequestAgentUpdateRequest {
+    return RequestAgentUpdateRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RequestAgentUpdateRequest>): RequestAgentUpdateRequest {
+    const message = createBaseRequestAgentUpdateRequest();
+    message.serverId = object.serverId ?? "";
+    return message;
+  },
+};
+
+function createBaseRequestAgentUpdateReply(): RequestAgentUpdateReply {
+  return { server: undefined };
+}
+
+export const RequestAgentUpdateReply: MessageFns<RequestAgentUpdateReply> = {
+  encode(message: RequestAgentUpdateReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.server !== undefined) {
+      Server.encode(message.server, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestAgentUpdateReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestAgentUpdateReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.server = Server.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RequestAgentUpdateReply {
+    return { server: isSet(object.server) ? Server.fromJSON(object.server) : undefined };
+  },
+
+  toJSON(message: RequestAgentUpdateReply): unknown {
+    const obj: any = {};
+    if (message.server !== undefined) {
+      obj.server = Server.toJSON(message.server);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RequestAgentUpdateReply>): RequestAgentUpdateReply {
+    return RequestAgentUpdateReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RequestAgentUpdateReply>): RequestAgentUpdateReply {
+    const message = createBaseRequestAgentUpdateReply();
+    message.server = (object.server !== undefined && object.server !== null)
+      ? Server.fromPartial(object.server)
+      : undefined;
     return message;
   },
 };
@@ -11141,6 +11328,14 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    requestAgentUpdate: {
+      name: "RequestAgentUpdate",
+      requestType: RequestAgentUpdateRequest as typeof RequestAgentUpdateRequest,
+      requestStream: false,
+      responseType: RequestAgentUpdateReply as typeof RequestAgentUpdateReply,
+      responseStream: false,
+      options: {},
+    },
     listServerHealthHistory: {
       name: "ListServerHealthHistory",
       requestType: ListServerHealthHistoryRequest as typeof ListServerHealthHistoryRequest,
@@ -11315,6 +11510,10 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: GetAgentReleaseRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<GetAgentReleaseReply>>;
+  requestAgentUpdate(
+    request: RequestAgentUpdateRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<RequestAgentUpdateReply>>;
   listServerHealthHistory(
     request: ListServerHealthHistoryRequest,
     context: CallContext & CallContextExt,
@@ -11444,6 +11643,10 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<GetAgentReleaseRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<GetAgentReleaseReply>;
+  requestAgentUpdate(
+    request: DeepPartial<RequestAgentUpdateRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<RequestAgentUpdateReply>;
   listServerHealthHistory(
     request: DeepPartial<ListServerHealthHistoryRequest>,
     options?: CallOptions & CallOptionsExt,

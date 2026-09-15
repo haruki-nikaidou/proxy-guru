@@ -65,6 +65,13 @@ pub struct ServerEntity {
     /// The systemd instance the install command creates: `guru-worker@<unit>`.
     #[surreal(default)]
     pub agent_unit: Option<String>,
+    /// A pending self-update: the version the operator asked the worker to move
+    /// to. Cleared once the worker registers as that version, or on failure.
+    #[surreal(default)]
+    pub agent_update_requested: Option<String>,
+    /// Why the last self-update failed, as the worker reported it.
+    #[surreal(default)]
+    pub agent_update_error: Option<String>,
     /// SHA-256 of the server's own agent key, which authenticates `Register` in
     /// place of an operator API key. Only the digest is ever stored.
     #[surreal(default)]
@@ -305,6 +312,60 @@ impl Processor<SetServerAgentKey> for SurrealProcessor {
             .await?;
         resp.take::<Option<ServerEntity>>(0)?
             .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
+    }
+}
+
+/// Marks the published release as what this server's worker should move to.
+#[derive(Debug)]
+pub struct SetAgentUpdateRequested {
+    pub id: ServerId,
+    pub version: String,
+}
+
+impl Processor<SetAgentUpdateRequested> for SurrealProcessor {
+    type Output = ServerEntity;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:SetAgentUpdateRequested", skip_all, err, fields(id = ?input.id))]
+    async fn process(&self, input: SetAgentUpdateRequested) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "UPDATE $id SET agent_update_requested = $version, agent_update_error = NONE
+                 RETURN AFTER",
+            )
+            .bind(("id", input.id))
+            .bind(("version", input.version))
+            .await?;
+        resp.take::<Option<ServerEntity>>(0)?
+            .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
+    }
+}
+
+/// Settles a pending self-update from what the worker reports: an error ends
+/// the request and is kept for the dashboard, a registration as the requested
+/// version ends it cleanly, anything else leaves the row alone.
+#[derive(Debug)]
+pub struct SettleAgentUpdate {
+    pub id: ServerId,
+    /// The version the worker registered as, when it reported one.
+    pub reported_version: Option<String>,
+    /// Why the last attempt failed, when the worker reported that.
+    pub error: Option<String>,
+}
+
+impl Processor<SettleAgentUpdate> for SurrealProcessor {
+    type Output = ();
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query-Transaction:SettleAgentUpdate", skip_all, err, fields(id = ?input.id))]
+    async fn process(&self, input: SettleAgentUpdate) -> Result<Self::Output, Self::Error> {
+        self.db()
+            .query(include_str!("../../../sql/server/settle_agent_update.surql"))
+            .bind(("id", input.id))
+            .bind(("reported", input.reported_version))
+            .bind(("error", input.error))
+            .await?
+            .check()?;
+        Ok(())
     }
 }
 

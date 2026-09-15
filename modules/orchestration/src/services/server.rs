@@ -16,7 +16,8 @@ use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasByI
 use crate::entities::surreal::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
 use crate::entities::surreal::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, SetServerAgentKey, UpdateServerSettings,
+    ServerEntity, ServerId, ServerIpv6Resolve, SetAgentUpdateRequested, SetServerAgentKey,
+    UpdateServerSettings,
 };
 use crate::entities::surreal::topology::LoadCanvasTopology;
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
@@ -406,6 +407,75 @@ fn render_install_command(
     }
     lines.push("             sh".to_string());
     lines.join("\n")
+}
+
+/// Asks the server's worker to move to the published release. The worker
+/// picks the request up at its next poll; what happens then is settled by
+/// what it registers as afterwards (see `PollAgentUpdate`).
+pub struct RequestAgentUpdate {
+    pub actor: Identity,
+    pub server: ServerId,
+}
+
+impl Processor<RequestAgentUpdate> for ServerService {
+    type Output = ServerEntity;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:RequestAgentUpdate", skip_all, err)]
+    async fn process(&self, input: RequestAgentUpdate) -> Result<Self::Output, Self::Error> {
+        input.actor.ensure(Permission::EditWorkspace)?;
+        let release = self
+            .db
+            .process(FindAgentRelease)
+            .await?
+            .ok_or_else(|| {
+                OrchestrationError::Invalid(
+                    "no worker release is published: run `manage-tool agent publish`".into(),
+                )
+            })?;
+        if self.config.agent_download_base().is_none() {
+            return Err(OrchestrationError::Invalid(
+                "agent_public_base_url is not configured on the orchestration config".into(),
+            ));
+        }
+        let server = self
+            .db
+            .process(FindServerById {
+                id: input.server.clone(),
+            })
+            .await?
+            .ok_or(OrchestrationError::NotFound)?;
+        let Some(running) = server.agent_version.as_deref() else {
+            return Err(OrchestrationError::Invalid(
+                "the worker has not reported a version yet; install or restart it first".into(),
+            ));
+        };
+        if running == release.version {
+            return Err(OrchestrationError::Invalid(format!(
+                "the worker already runs {running}"
+            )));
+        }
+        if let Some(arch) = server.agent_arch.as_deref()
+            && arch != release.arch
+        {
+            return Err(OrchestrationError::Invalid(format!(
+                "the worker runs on {arch} but the published binary is for {}",
+                release.arch
+            )));
+        }
+        tracing::info!(
+            server = %record_key(&server.id.0),
+            from = running,
+            to = %release.version,
+            "update requested"
+        );
+        Ok(self
+            .db
+            .process(SetAgentUpdateRequested {
+                id: server.id.clone(),
+                version: release.version,
+            })
+            .await?)
+    }
 }
 
 /// The published worker release, and whether an install command can be

@@ -216,6 +216,7 @@ async fn register(
             reported: None,
             agent_version: None,
             agent_arch: None,
+            last_update_error: None,
         })
         .await?;
     let row = server_row(w, server).await;

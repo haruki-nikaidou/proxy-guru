@@ -286,6 +286,8 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         agent_version: server.agent_version.clone().unwrap_or_default(),
         agent_arch: server.agent_arch.clone().unwrap_or_default(),
         agent_unit: server.agent_unit.clone().unwrap_or_default(),
+        agent_update_requested: server.agent_update_requested.clone().unwrap_or_default(),
+        agent_update_error: server.agent_update_error.clone().unwrap_or_default(),
         agent_key_issued_at: server
             .agent_key_issued_at
             .map(|t| t.to_rfc3339())
@@ -1014,6 +1016,24 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 .map(|r| r.published_at.to_rfc3339())
                 .unwrap_or_default(),
             base_url_configured: info.base_url_configured,
+        }))
+    }
+
+    async fn request_agent_update(
+        &self,
+        request: Request<pb::RequestAgentUpdateRequest>,
+    ) -> Result<Response<pb::RequestAgentUpdateReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let server = self
+            .servers
+            .process(server::RequestAgentUpdate {
+                actor,
+                server: ids::server_id(&input.server_id),
+            })
+            .await?;
+        Ok(Response::new(pb::RequestAgentUpdateReply {
+            server: Some(server_to_proto(&server)),
         }))
     }
 

@@ -8,7 +8,7 @@ use crate::entities::surreal::server::{
 use crate::entities::surreal::view::TakeInFlight;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
 use crate::services::agent::{
-    AckConfig, AgentService, PodResult, RegisterCredential, RegisterWorker,
+    AckConfig, AgentService, PodResult, PollAgentUpdate, RegisterCredential, RegisterWorker,
 };
 use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
@@ -192,6 +192,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 reported: input.reported_addresses.map(reported_from_proto),
                 agent_version: non_empty(input.agent_version),
                 agent_arch: non_empty(input.agent_arch),
+                last_update_error: non_empty(input.last_update_error),
             })
             .await?;
         Ok(Response::new(pb::RegisterReply {
@@ -200,6 +201,8 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 self.health.config.health_report_interval_secs,
             )
             .unwrap_or(u32::MAX),
+            agent_update_poll_secs: u32::try_from(self.health.config.agent_update_poll_secs)
+                .unwrap_or(u32::MAX),
         }))
     }
 
@@ -328,6 +331,28 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
             })
             .await?;
         Ok(Response::new(pb::AckConfigReply {}))
+    }
+
+    async fn poll_agent_update(
+        &self,
+        request: Request<pb::PollAgentUpdateRequest>,
+    ) -> Result<Response<pb::PollAgentUpdateReply>, Status> {
+        let agent = agent_from_request(&request)?;
+        let input = request.into_inner();
+        let update = self
+            .agents
+            .process(PollAgentUpdate {
+                agent,
+                last_error: non_empty(input.last_error),
+            })
+            .await?;
+        Ok(Response::new(pb::PollAgentUpdateReply {
+            update: update.map(|update| pb::AgentUpdate {
+                version: update.version,
+                url: update.url,
+                sha256: update.sha256,
+            }),
+        }))
     }
 
     /// Records every report as it arrives; the stream ending, however it ends,

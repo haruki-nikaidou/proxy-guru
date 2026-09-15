@@ -240,6 +240,7 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
             hub: Default::default(),
             lease: Default::default(),
             notifier: Default::default(),
+            config: config.clone(),
         },
         rollout: RolloutService {
             db: db.clone(),

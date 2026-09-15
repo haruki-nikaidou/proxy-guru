@@ -74,6 +74,8 @@ pub struct OrchestrationConfig {
     /// served from (`manage-tool agent publish` writes them; nginx serves the
     /// directory). Leading slash, no trailing one.
     pub agent_download_path: String,
+    /// How often a live worker asks whether an update was requested for it.
+    pub agent_update_poll_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -97,6 +99,7 @@ impl Default for OrchestrationConfig {
             trust_proxy_address_headers: true,
             agent_public_base_url: String::new(),
             agent_download_path: "/agent".to_string(),
+            agent_update_poll_secs: 60,
         }
     }
 }
@@ -119,6 +122,10 @@ impl OrchestrationConfig {
         } else {
             format!("{base}/{path}")
         })
+    }
+
+    pub fn agent_update_poll(&self) -> Duration {
+        Duration::from_secs(self.agent_update_poll_secs)
     }
 
     pub fn health_report_interval(&self) -> Duration {

@@ -4,13 +4,15 @@
 //! digest. Every registration rotates the key and bumps the generation, so a worker
 //! restart is visible to the master and the previous session's streams die.
 
+use crate::config::OrchestrationConfig;
+use crate::entities::surreal::agent_release::FindAgentRelease;
 use crate::entities::surreal::health::{
     InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus, ServerHealthStatus,
     SetServerHealthStatus,
 };
 use crate::entities::surreal::server::{
     FindServerByAgentKeyDigest, FindServerById, FindServerByRefreshKeyDigest,
-    RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId,
+    RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId, SettleAgentUpdate,
 };
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
@@ -41,6 +43,7 @@ pub struct AgentService {
     pub hub: WatchHub,
     pub lease: SessionLease,
     pub notifier: DirtyNotifier,
+    pub config: OrchestrationConfig,
 }
 
 /// What a worker presented to `Register`: an operator API key the auth
@@ -62,6 +65,9 @@ pub struct RegisterWorker {
     /// The worker's build, when it reports one.
     pub agent_version: Option<String>,
     pub agent_arch: Option<String>,
+    /// Why the last self-update on the host failed, when the worker found the
+    /// start guard's record of it.
+    pub last_update_error: Option<String>,
 }
 
 impl Processor<RegisterWorker> for AgentService {
@@ -91,7 +97,7 @@ impl Processor<RegisterWorker> for AgentService {
                 running_revision: input.running_revision,
                 observed: input.observed.map(|a| a.to_string()),
                 reported: input.reported,
-                agent_version: input.agent_version,
+                agent_version: input.agent_version.clone(),
                 agent_arch: input.agent_arch,
             })
             .await?
@@ -100,6 +106,25 @@ impl Processor<RegisterWorker> for AgentService {
                     "another worker session is live for this server".into(),
                 )
             })?;
+
+        // What the worker registered as decides a pending update: the requested
+        // version means it landed, a guard rollback means it did not.
+        if let Some(error) = &input.last_update_error {
+            tracing::warn!(
+                server = %record_key(&server.id.0),
+                error,
+                "worker reported a rolled-back self-update"
+            );
+        }
+        if input.agent_version.is_some() || input.last_update_error.is_some() {
+            self.db
+                .process(SettleAgentUpdate {
+                    id: server.id.clone(),
+                    reported_version: input.agent_version,
+                    error: input.last_update_error,
+                })
+                .await?;
+        }
 
         self.hub
             .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
@@ -153,6 +178,100 @@ impl AgentService {
                 }
             }
         }
+    }
+}
+
+/// The published binary a worker should move to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentUpdate {
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+/// A worker asking whether an update was requested for it, and reporting how
+/// the previous attempt went.
+pub struct PollAgentUpdate {
+    pub agent: AgentIdentity,
+    pub last_error: Option<String>,
+}
+
+impl Processor<PollAgentUpdate> for AgentService {
+    /// The update to install, or nothing to do.
+    type Output = Option<AgentUpdate>;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:PollAgentUpdate", skip_all, err)]
+    async fn process(&self, input: PollAgentUpdate) -> Result<Self::Output, Self::Error> {
+        let server = self
+            .db
+            .process(FindServerById {
+                id: input.agent.server.clone(),
+            })
+            .await?
+            .ok_or(OrchestrationError::NotFound)?;
+        if server.refresh_key_generation != input.agent.generation {
+            return Err(OrchestrationError::PermissionDenied);
+        }
+        let key = record_key(&server.id.0);
+        // A failure ends the request; the operator reads why and asks again.
+        if let Some(error) = input.last_error {
+            tracing::warn!(server = %key, %error, "worker reported a failed self-update");
+            self.db
+                .process(SettleAgentUpdate {
+                    id: server.id,
+                    reported_version: None,
+                    error: Some(error),
+                })
+                .await?;
+            return Ok(None);
+        }
+        let Some(requested) = server.agent_update_requested.clone() else {
+            return Ok(None);
+        };
+        if server.agent_version.as_deref() == Some(requested.as_str()) {
+            self.db
+                .process(SettleAgentUpdate {
+                    id: server.id,
+                    reported_version: Some(requested),
+                    error: None,
+                })
+                .await?;
+            return Ok(None);
+        }
+        // The request names the release that was published when it was made;
+        // a publish since then withdrew what the worker would have fetched.
+        let release = self.db.process(FindAgentRelease).await?;
+        let base = self.config.agent_download_base();
+        let error = match (&release, &base) {
+            (Some(release), Some(base)) if release.version == requested => {
+                tracing::info!(
+                    server = %key,
+                    from = ?server.agent_version,
+                    to = %release.version,
+                    "offering an update"
+                );
+                return Ok(Some(AgentUpdate {
+                    url: format!("{base}/{}/guru-worker", release.version),
+                    version: release.version.clone(),
+                    sha256: release.sha256.clone(),
+                }));
+            }
+            (None, _) => "the published release was withdrawn before the worker fetched it".to_string(),
+            (_, None) => "agent_public_base_url is no longer configured".to_string(),
+            (Some(release), _) => format!(
+                "the published release changed to {} before the worker fetched {requested}",
+                release.version
+            ),
+        };
+        tracing::warn!(server = %key, %error, "dropping an update request");
+        self.db
+            .process(SettleAgentUpdate {
+                id: server.id,
+                reported_version: None,
+                error: Some(error),
+            })
+            .await?;
+        Ok(None)
     }
 }
 

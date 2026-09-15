@@ -455,6 +455,7 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 reported: None,
                 agent_version: None,
                 agent_arch: None,
+                last_update_error: None,
             })
             .await?;
     }

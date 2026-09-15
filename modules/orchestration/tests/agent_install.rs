@@ -8,16 +8,23 @@ mod common;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::surreal::agent_release::PublishAgentRelease;
-use orchestration::entities::surreal::server::ServerId;
+use orchestration::entities::surreal::server::{
+    FindServerById, ReleaseServerWatchSession, ServerId,
+};
 use orchestration::services::OrchestrationError;
-use orchestration::services::agent::{RegisterCredential, RegisterWorker};
-use orchestration::services::server::{GetAgentRelease, IssueServerAgentInstall};
+use orchestration::services::agent::{
+    AgentIdentity, AgentUpdate, PollAgentUpdate, RegisterCredential, RegisterWorker,
+};
+use orchestration::services::server::{
+    GetAgentRelease, IssueServerAgentInstall, RequestAgentUpdate,
+};
 use orchestration::utils::ids::record_key;
 
 /// A world whose config knows the public origin, with one published release.
 async fn published_world() -> Result<World, Box<dyn std::error::Error>> {
     let mut w = world().await?;
     w.servers.config.agent_public_base_url = "https://guru.test".to_string();
+    w.agents.config.agent_public_base_url = "https://guru.test".to_string();
     w.db.process(PublishAgentRelease {
         version: "0.2.0-beta".to_string(),
         sha256: "c".repeat(64),
@@ -37,6 +44,7 @@ fn register(credential: RegisterCredential, server: &ServerId) -> RegisterWorker
         reported: None,
         agent_version: None,
         agent_arch: None,
+        last_update_error: None,
     }
 }
 
@@ -213,6 +221,196 @@ async fn issuing_needs_an_origin_a_release_and_a_key_manager() -> TestResult {
             })
             .await
             .is_err()
+    );
+    Ok(())
+}
+
+/// Registers the worker of `server` as `version`, releasing the lease a
+/// previous registration holds first.
+async fn register_as(
+    w: &World,
+    server: &ServerId,
+    version: &str,
+    last_update_error: Option<&str>,
+) -> Result<AgentIdentity, Box<dyn std::error::Error>> {
+    if let Some(row) = w.db.process(FindServerById { id: server.clone() }).await? {
+        w.db.process(ReleaseServerWatchSession {
+            server: server.clone(),
+            generation: row.refresh_key_generation,
+            epoch: row.watch_epoch,
+        })
+        .await?;
+    }
+    w.agents
+        .process(RegisterWorker {
+            credential: RegisterCredential::Operator(machine()),
+            server_id: server.clone(),
+            running_revision: 0,
+            observed: None,
+            reported: None,
+            agent_version: Some(version.to_string()),
+            agent_arch: Some("x86_64".to_string()),
+            last_update_error: last_update_error.map(str::to_owned),
+        })
+        .await?;
+    let row = w
+        .db
+        .process(FindServerById { id: server.clone() })
+        .await?
+        .expect("registered");
+    Ok(AgentIdentity {
+        server: server.clone(),
+        generation: row.refresh_key_generation,
+    })
+}
+
+#[tokio::test]
+async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_reports() -> TestResult {
+    let w = published_world().await?;
+    let c = canvas(&w.db, "prod").await?;
+    let a = server(&w.db, &c, "edge").await?;
+    let row = |w: &World| {
+        let id = a.id.clone();
+        let db = w.db.clone();
+        async move { db.process(FindServerById { id }).await.map(|r| r.expect("row")) }
+    };
+
+    // Nothing to offer before the operator asks, and nothing to ask for a
+    // worker that never reported a version.
+    let err = w
+        .servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await
+        .expect_err("no version yet");
+    assert!(matches!(err, OrchestrationError::Invalid(_)), "{err}");
+    let agent = register_as(&w, &a.id, "0.1.0", None).await?;
+    assert_eq!(
+        w.agents
+            .process(PollAgentUpdate {
+                agent: agent.clone(),
+                last_error: None,
+            })
+            .await?,
+        None
+    );
+
+    // Requested: the poll hands out the published binary under the master's origin.
+    let updated = w
+        .servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await?;
+    assert_eq!(updated.agent_update_requested.as_deref(), Some("0.2.0-beta"));
+    let offered = w
+        .agents
+        .process(PollAgentUpdate {
+            agent: agent.clone(),
+            last_error: None,
+        })
+        .await?;
+    assert_eq!(
+        offered,
+        Some(AgentUpdate {
+            version: "0.2.0-beta".to_string(),
+            url: "https://guru.test/agent/0.2.0-beta/guru-worker".to_string(),
+            sha256: "c".repeat(64),
+        })
+    );
+
+    // A failure the worker reports ends the request and keeps the reason.
+    assert_eq!(
+        w.agents
+            .process(PollAgentUpdate {
+                agent: agent.clone(),
+                last_error: Some("checksum mismatch".to_string()),
+            })
+            .await?,
+        None
+    );
+    let r = row(&w).await?;
+    assert_eq!(r.agent_update_requested, None);
+    assert_eq!(r.agent_update_error.as_deref(), Some("checksum mismatch"));
+
+    // Asked again and the worker comes back as the new version: settled cleanly.
+    w.servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await?;
+    register_as(&w, &a.id, "0.2.0-beta", None).await?;
+    let r = row(&w).await?;
+    assert_eq!(r.agent_version.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(r.agent_update_requested, None);
+    assert_eq!(r.agent_update_error, None);
+    // … and there is nothing further to move to.
+    let err = w
+        .servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await
+        .expect_err("already on the published release");
+    assert!(matches!(err, OrchestrationError::Invalid(_)), "{err}");
+
+    // A rollback the start guard performed arrives with the next registration.
+    w.db.process(PublishAgentRelease {
+        version: "0.3.0".to_string(),
+        sha256: "d".repeat(64),
+        arch: "x86_64".to_string(),
+        now: chrono::Utc::now(),
+    })
+    .await?;
+    w.servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await?;
+    register_as(&w, &a.id, "0.2.0-beta", Some("0.3.0: did not come up in 3 starts")).await?;
+    let r = row(&w).await?;
+    assert_eq!(r.agent_update_requested, None);
+    assert_eq!(
+        r.agent_update_error.as_deref(),
+        Some("0.3.0: did not come up in 3 starts")
+    );
+
+    // A request outlived by a newer publish is dropped with a reason, not served.
+    w.servers
+        .process(RequestAgentUpdate {
+            actor: operator(),
+            server: a.id.clone(),
+        })
+        .await?;
+    w.db.process(PublishAgentRelease {
+        version: "0.4.0".to_string(),
+        sha256: "e".repeat(64),
+        arch: "x86_64".to_string(),
+        now: chrono::Utc::now(),
+    })
+    .await?;
+    let agent = register_as(&w, &a.id, "0.2.0-beta", None).await?;
+    assert_eq!(
+        w.agents
+            .process(PollAgentUpdate {
+                agent,
+                last_error: None,
+            })
+            .await?,
+        None
+    );
+    let r = row(&w).await?;
+    assert_eq!(r.agent_update_requested, None);
+    assert!(
+        r.agent_update_error.as_deref().is_some_and(|e| e.contains("0.4.0")),
+        "{:?}",
+        r.agent_update_error
     );
     Ok(())
 }

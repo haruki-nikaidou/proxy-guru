@@ -286,6 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hub: hub.clone(),
                 lease,
                 notifier,
+                config: config.clone(),
             };
             let token = CancellationToken::new();
             let poller = tokio::spawn(watch::run_poller(

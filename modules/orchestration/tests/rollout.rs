@@ -42,6 +42,7 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 reported: None,
                 agent_version: None,
                 agent_arch: None,
+                last_update_error: None,
             })
             .await?;
     }
@@ -540,6 +541,7 @@ async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
             reported: None,
             agent_version: None,
             agent_arch: None,
+            last_update_error: None,
         })
         .await
         .expect_err("human sessions may not register workers");

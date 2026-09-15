@@ -128,6 +128,8 @@ async fn session(
         reported_addresses: Some(discovered.to_proto()),
         agent_version: VERSION.to_owned(),
         agent_arch: std::env::consts::ARCH.to_owned(),
+        // Filled in once the worker can self-update; nothing to report yet.
+        last_update_error: String::new(),
     });
     register
         .metadata_mut()

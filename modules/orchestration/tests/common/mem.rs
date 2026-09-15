@@ -238,6 +238,8 @@ impl Builder {
             agent_version: None,
             agent_arch: None,
             agent_unit: None,
+            agent_update_requested: None,
+            agent_update_error: None,
             agent_key_digest: None,
             agent_key_issued_at: None,
         });

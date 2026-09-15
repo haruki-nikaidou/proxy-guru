@@ -43,8 +43,9 @@ use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::orchestration_agent::worker_agent_client::WorkerAgentClient;
 use rpguru_sdk::orchestration_agent::worker_agent_server::{WorkerAgent, WorkerAgentServer};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport, PodStatus,
-    RegisterReply, RegisterRequest, ReportHealthReply, WatchConfigRequest,
+    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport,
+    PodStatus, PollAgentUpdateReply, PollAgentUpdateRequest, RegisterReply, RegisterRequest,
+    ReportHealthReply, WatchConfigRequest,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -174,6 +175,7 @@ async fn serve(
         hub: hub.clone(),
         lease,
         notifier: DirtyNotifier::default(),
+        config: OrchestrationConfig::default(),
     };
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let config = OrchestrationConfig::default();
@@ -867,7 +869,17 @@ impl WorkerAgent for FakeMaster {
         Ok(Response::new(RegisterReply {
             refresh_key: "fake".to_string(),
             health_report_interval_secs: 0,
+            agent_update_poll_secs: 0,
         }))
+    }
+
+    /// Never offers an update: the worker's update path needs an installed
+    /// tree, which these tests do not lay out.
+    async fn poll_agent_update(
+        &self,
+        _: Request<PollAgentUpdateRequest>,
+    ) -> Result<Response<PollAgentUpdateReply>, Status> {
+        Ok(Response::new(PollAgentUpdateReply { update: None }))
     }
 
     type WatchConfigStream = ReceiverStream<Result<ConfigRevision, Status>>;
