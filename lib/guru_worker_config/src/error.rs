@@ -10,6 +10,8 @@ pub enum ConfigError {
     RemotePort(String),
     #[error("duplicate listener {addr} ({tag})")]
     DuplicateListener { addr: SocketAddr, tag: String },
+    #[error("duplicate forwarding tag {0}")]
+    DuplicateTag(String),
     #[error("forwarding {0} relay to tls/quic requires `sni`")]
     MissingSni(String),
     #[error("forwarding {0} has an empty load-balance group")]

@@ -308,16 +308,21 @@ impl Config {
         }
     }
 
-    /// Both the per-entry rules and the one cross-entry rule: no two forwardings
-    /// may claim the same socket.
+    /// Both the per-entry rules and the two cross-entry rules: no two forwardings
+    /// may claim the same socket, and no two may share a tag — the tag is how a
+    /// worker tells its listeners apart and how it reports on each of them.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let mut seen = HashSet::new();
+        let mut tags = HashSet::new();
         for f in &self.forwardings {
             if !seen.insert(f.listen_key()) {
                 return Err(ConfigError::DuplicateListener {
                     addr: f.listen,
                     tag: f.tag.clone(),
                 });
+            }
+            if !tags.insert(f.tag.as_str()) {
+                return Err(ConfigError::DuplicateTag(f.tag.clone()));
             }
             f.validate()?;
         }
@@ -404,6 +409,38 @@ mod tests {
     #[test]
     fn remote_rejects_missing_port() {
         assert!(Remote::parse("no-port").is_err());
+    }
+
+    #[test]
+    fn two_forwardings_may_not_share_a_tag() {
+        let text = r#"
+ipv6_resolve = "tolerated"
+
+[log]
+level = "info"
+
+[[forwarding]]
+tag = "alpha"
+listen = "[::]:443"
+listen_as = "raw"
+
+[forwarding.to]
+type = "exit"
+destination = "10.0.0.5:8080"
+
+[[forwarding]]
+tag = "alpha"
+listen = "[::]:8443"
+listen_as = "raw"
+
+[forwarding.to]
+type = "exit"
+destination = "10.0.0.5:8080"
+"#;
+        match Config::from_toml_str(text) {
+            Err(ConfigError::DuplicateTag(tag)) => assert_eq!(tag, "alpha"),
+            other => panic!("expected a duplicate tag, got {other:?}"),
+        }
     }
 
     #[test]
