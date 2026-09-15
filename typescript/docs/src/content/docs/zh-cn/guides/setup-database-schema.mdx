@@ -126,8 +126,10 @@ sk() {
 
 由运维人员调优的设置 —— 健康阈值与保留期、默认的 ACME 目录、续期窗口、各个周期任务的运行频率 ——
 都存放在数据库里，每个键对应一行 `app_config`，而不是放在环境变量中。Schema 就绪后用 `manage-tool`
-写入一次默认值 —— 它由同一个检出目录构建（`cargo build --release -p manage-tool`）。它的数据库参数与
-`guru-master` 同名，同样会从环境变量读取 `SURREALDB_*`，所以除非你刚刚 source 过正确的文件，否则请显式传入：
+写入一次默认值 —— 它由同一个检出目录构建（`cargo build --release -p manage-tool`），也可以直接从某个
+`master-v*` release 下载它的二进制（`manage-tool-<version>-x86_64-unknown-linux-gnu`），两者等价。它的
+数据库参数与 `guru-master` 同名，同样会从环境变量读取 `SURREALDB_*`，所以除非你刚刚 source 过正确的
+文件，否则请显式传入：
 
 <Tabs syncKey="deployment">
 <TabItem label="原生部署">

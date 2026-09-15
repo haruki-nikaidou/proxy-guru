@@ -1,7 +1,8 @@
 name: Release Worker
 
 # The data plane ships as a raw binary, not an image: `worker-v0.1.0`,
-# `worker-v0.1.0-alpha`, ... Only linux/x86_64 is published.
+# `worker-v0.1.0-alpha`, ... Only linux/x86_64 is published, once against glibc
+# and once statically against musl (Alpine and friends).
 on:
   push:
     tags:
@@ -14,16 +15,69 @@ concurrency:
   group: release-worker-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  TARGET: x86_64-unknown-linux-gnu
-
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      # One target failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+    env:
+      TARGET: ${{ matrix.target }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install build dependencies
+        # protobuf-compiler: `lib/rpguru_sdk`'s build script compiles `proto/`
+        # with tonic-prost-build, which shells out to `protoc`.
+        # musl-tools: `musl-gcc`, needed to link the musl target and to build
+        # the vendored OpenSSL `guru-worker` statically links.
+        run: |
+          set -euo pipefail
+          packages=(protobuf-compiler)
+          if [[ "$TARGET" == *-musl ]]; then
+            packages+=(musl-tools)
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+      - name: Install Rust toolchain
+        # `rustup show` materialises the channel pinned in rust-toolchain.toml.
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustup target add "$TARGET"
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-worker-${{ matrix.target }}
+
+      - name: Build guru-worker
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == *-musl ]]; then
+            export CC_x86_64_unknown_linux_musl=musl-gcc
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          fi
+          cargo build --release --locked -p guru-worker --target "$TARGET"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: guru-worker-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/guru-worker
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
       - name: Resolve version from tag
         id: version
         run: |
@@ -38,37 +92,23 @@ jobs:
             echo "prerelease=true" >>"$GITHUB_OUTPUT"
           fi
 
-      - name: Install protobuf compiler
-        # `lib/rpguru_sdk`'s build script compiles `proto/` with
-        # tonic-prost-build, which shells out to `protoc`.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler
-
-      - name: Install Rust toolchain
-        # `rustup show` materialises the channel pinned in rust-toolchain.toml.
-        run: |
-          set -euo pipefail
-          rustup show active-toolchain
-          rustup target add "$TARGET"
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      - name: Download binaries
+        uses: actions/download-artifact@v4
         with:
-          key: release-worker-${{ env.TARGET }}
+          pattern: guru-worker-*
+          path: artifacts
 
-      - name: Build guru-worker
-        run: cargo build --release --locked -p guru-worker --target "$TARGET"
-
-      - name: Package binary
-        id: package
+      - name: Package binaries
         run: |
           set -euo pipefail
-          name="guru-worker-${{ steps.version.outputs.version }}-${TARGET}"
+          version="${{ steps.version.outputs.version }}"
           mkdir -p dist
-          cp "target/${TARGET}/release/guru-worker" "dist/${name}"
-          chmod +x "dist/${name}"
-          echo "name=${name}" >>"$GITHUB_OUTPUT"
+          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            name="guru-worker-${version}-${target}"
+            cp "artifacts/guru-worker-${target}/guru-worker" "dist/${name}"
+            chmod +x "dist/${name}"
+          done
+          ls -l dist
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -77,4 +117,6 @@ jobs:
           prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: dist/${{ steps.package.outputs.name }}
+          files: |
+            dist/guru-worker-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu
+            dist/guru-worker-${{ steps.version.outputs.version }}-x86_64-unknown-linux-musl

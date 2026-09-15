@@ -18,8 +18,8 @@ What each method actually needs:
 | RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
 | Docker Engine + Compose      | yes (runs the published application images; optional for the datastores)                                                                  | no                                                                         |
 | `surrealkit`                 | yes                                                                                                                                       | yes                                                                        |
-| Rust toolchain + `protoc`    | yes — `manage-tool` is not published as an image                                                                                          | yes — it builds every binary                                               |
-| C toolchain, `make`, `cmake` | yes — `manage-tool` pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason                                                           |
+| Rust toolchain + `protoc`    | only if you build `manage-tool` yourself — it is also attached to every `master-v*` release                                                | yes — it builds every binary                                               |
+| C toolchain, `make`, `cmake` | same — only if you build `manage-tool`, which pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason                                                           |
 | `perl`                       | no                                                                                                                                        | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
 | Bun                          | no                                                                                                                                        | yes (builds and runs the dashboard)                                        |
 | Hostname + TLS certificate   | yes                                                                                                                                       | yes                                                                        |
@@ -167,7 +167,7 @@ None of these are decoration — each is a real dependency of this workspace:
 | Package                                            | Needed because                                                                                                                                                                                                                                                       |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `protoc` (`protobuf-compiler`, on Arch `protobuf`) | `lib/rpguru_sdk`'s build script compiles `proto/` with `tonic-prost-build`, which shells out to `protoc`. Every binary depends on that crate, `manage-tool` included, so a missing `protoc` fails the build. Set `PROTOC=/path/to/protoc` if yours is not on `PATH`. |
-| C compiler, `make`                                 | Both methods build `manage-tool`, which reaches the certificate stack through the `orchestration` module; several of its crates (`aws-lc-sys`, `ring`, `zstd-sys`) compile vendored C sources.                                                                       |
+| C compiler, `make`                                 | Needed wherever `manage-tool` is built (not if you download it): it reaches the certificate stack through the `orchestration` module, and several of its crates (`aws-lc-sys`, `ring`, `zstd-sys`) compile vendored C sources.                                       |
 | `cmake`                                            | `aws-lc-sys` builds its vendored sources with cmake, so it is needed wherever `manage-tool` is built.                                                                                                                                                                |
 | `perl`                                             | `guru-worker` links OpenSSL with the `vendored` feature: OpenSSL is compiled from the bundled source tree, and its `Configure` is a perl script. Native deployment only.                                                                                             |
 | `pkgconf` / `pkg-config`                           | Build-dependency of the `*-sys` crates above.                                                                                                                                                                                                                        |
@@ -198,8 +198,9 @@ or other host-administration privileges, even if you choose containers for the d
 </TabItem>
 <TabItem label="Image deployment">
 
-Nothing runs from the checkout permanently — it only builds `manage-tool` and holds the schema
-files — so your own operator account is the right place. Bun is not needed at all.
+Nothing runs from the checkout permanently — it holds the schema files, and builds `manage-tool`
+only if you would rather not download it from a `master-v*` release — so your own operator account
+is the right place. Bun is not needed at all.
 
 </TabItem>
 </Tabs>
@@ -224,9 +225,11 @@ files — so your own operator account is the right place. Bun is not needed at 
    surrealkit --version
    ```
 
-3. **The checkout.** Both guides need the schema files under `database/` and `manage-tool`. The image
-   guide also uses its Compose file; native deployment only uses that file if you choose the
-   optional container path. None of these are shipped in an application image.
+3. **The checkout.** Both guides need the schema files under `database/`, and those ship in no image
+   and no release, so the clone is required. `manage-tool` is the flexible part: build it here, or
+   download it from a `master-v*` GitHub release, which carries it next to the `guru-master` binary
+   (`x86_64-unknown-linux-gnu`). The image guide also uses the Compose file; native deployment only
+   uses that file if you choose the optional container path.
 
    ```sh wrap frame="none"
    git clone \

@@ -53,14 +53,14 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 ## 2. 前置条件
 
 先完成 **[前置条件](/zh-cn/guides/prerequisites/)**，再来看本指南。对于镜像部署，你需要那一页中的：
-Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（`database/` 下的 Schema 文件和 `manage-tool`
-CLI 并不以镜像形式发布）、用于构建 `manage-tool` 的 Rust 工具链和 `protobuf-compiler`、`surrealkit`、
-`openssl`、一个带 TLS 证书的 DNS 名称 —— 以及 SurrealDB 和 RabbitMQ 本身，那一页会用
-`/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
+Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（`database/` 下的 Schema 文件不以镜像形式
+发布）、`surrealkit`、`openssl`、一个带 TLS 证书的 DNS 名称 —— 以及 SurrealDB 和 RabbitMQ 本身，那一页
+会用 `/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
 
-Bun 是这里唯一可以跳过的东西 —— 控制台以镜像形式发布。而 C 工具链和 `cmake` 是必需的：`manage-tool`
-会引入证书相关的依赖栈，其 crate 需要编译内置的 C 源码。`perl` 只在构建 `guru-worker` 的地方才需要，
-而那不是这里。
+`manage-tool` CLI 同样不在镜像里，但它不必自己构建：它和 `guru-master` 一样，会作为原始二进制文件随每个
+`master-v*` release 发布（第 10 节）。因此 Rust 工具链、`protobuf-compiler`、C 工具链和 `cmake` 只有在你
+**选择自行构建**它时才需要 —— `manage-tool` 会引入证书相关的依赖栈，其 crate 需要编译内置的 C 源码。
+Bun 在这里可以跳过 —— 控制台以镜像形式发布。`perl` 只在构建 `guru-worker` 的地方才需要，而那不是这里。
 
 ## 3. 选定版本
 
@@ -68,9 +68,9 @@ Bun 是这里唯一可以跳过的东西 —— 控制台以镜像形式发布�
 
 | Git tag | 发布产物 |
 |---|---|
-| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]` |
+| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]`，外加一个携带 `guru-master` 与 `manage-tool` 原始二进制文件（均为 `x86_64-unknown-linux-gnu`）的 GitHub release |
 | `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:v0.1.0[-alpha]` |
-| `worker-v0.1.0[-alpha]` | 携带 `linux/x86_64` 原始 `guru-worker` 二进制文件的 GitHub release |
+| `worker-v0.1.0[-alpha]` | 携带两个 `linux/x86_64` 原始 `guru-worker` 二进制文件的 GitHub release：一个链接 glibc，一个静态链接 musl |
 
 `latest` 只会随正式的 `vX.Y.Z` 移动，绝不会指向预发布版本。无论如何都请在 Compose 文件里
 **固定一个明确的标签**：`latest` 让你无从得知正在运行的是哪个修订版本，而 master 与 Schema 是一起演进的。
@@ -151,7 +151,8 @@ Schema 匹配的 master 版本**之后**。首次安装时两个半程可以背�
 
 master key 只生成一次，并与数据库凭据一起保管 —— 它在静态存储层面加密每一个 DNS provider token 和证书
 私钥，没有它就无法恢复这些数据。三种需要读取密钥的模式都必须有它；`cron` 从不读取，而下面的锚点只是把
-同一份环境变量交给全部四个服务。`manage-tool` 由你的检出目录构建（见第 8 节）；这个子命令不需要数据库：
+同一份环境变量交给全部四个服务。`manage-tool` 可以从某个 `master-v*` release 下载（第 10 节），也可以
+从你的检出目录构建（第 8 节）；这个子命令不需要数据库：
 
 ```sh
 ./target/release/manage-tool generate-master-key
@@ -283,7 +284,8 @@ master-cron-1       | INFO guru_master: scheduling periodic execution signals sc
 ## 8. 创建第一个管理员
 
 这里没有自助注册：第一个账号是用 `manage-tool` 直接对着数据库创建的，它故意绕过了 RBAC，
-因为此时还不存在任何管理员。它不以镜像形式发布，所以请从你的检出目录构建：
+因为此时还不存在任何管理员。它不在镜像里，所以请从某个 `master-v*` release 下载它（第 10 节），
+或者从你的检出目录构建：
 
 ```sh
 cd ~/proxy-guru
@@ -406,14 +408,65 @@ server {
 现在打开 `https://guru.example.com/`，它会重定向到 `/auth`，用第 8 节创建的账号登录。
 你应该会看到画布列表，侧边栏里显示你的邮箱。
 
-## 10. 从 GitHub release 获取 worker 二进制文件
+## 10. 从 GitHub release 获取 master 二进制文件
+
+除了 GHCR 镜像之外，`master-v*` tag 还会发布一个名为 `guru-master <version>` 的 GitHub release，
+其中携带两个原始二进制文件 —— 控制平面本身，以及管理 CLI：
+
+| 产物 | 是什么 |
+|---|---|
+| `guru-master-<version>-x86_64-unknown-linux-gnu` | 与镜像里同一个控制平面二进制，供不走 Docker 的部署使用 |
+| `manage-tool-<version>-x86_64-unknown-linux-gnu` | 管理 CLI：`generate-master-key`、`create-admin`、`config`、`orchestration` |
+
+`<version>` 是 tag 去掉 `master-` 前缀后的部分 —— 所以 tag `master-v0.3.0` 发布的是
+`guru-master-v0.3.0-x86_64-unknown-linux-gnu` 和 `manage-tool-v0.3.0-x86_64-unknown-linux-gnu`。
+两个产物都只有 `x86_64-unknown-linux-gnu` 一种形态：它们链接 glibc，与 `distroless/cc` 镜像的 ABI 一致。
+
+:::caution[只有在工作流之后推送的 tag 才有产物]
+*Release Master* 工作流比最早的 master tag 更晚出现：在它之前的 `master-v*` tag（撰写本文时是
+`master-v0.0.1-alpha`、`master-v0.1.0-alpha`、`master-v0.2.0-beta`）只有镜像，没有 release 产物。
+如果你固定的那个 tag 没有产物，请改用更新的 tag，或者从检出目录构建 `manage-tool`（第 8 节）；
+有没有产物可以用下一节的 `jq` 片段确认，只要把 `startswith("worker-")` 换成 `startswith("master-")`。
+:::
+
+```sh
+VERSION=v0.3.0                       # 要挑一个确实列出了产物的 release
+gh release download "master-${VERSION}" \
+  --repo haruki-nikaidou/proxy-guru \
+  --pattern "manage-tool-*-x86_64-unknown-linux-gnu" \
+  --output manage-tool
+chmod +x manage-tool
+./manage-tool --help
+```
+
+:::note[下载来的 `manage-tool` 与自行构建的那一个完全等价]
+本页中每一条 `./target/release/manage-tool …` 命令都可以原样换成下载来的二进制（例如 `./manage-tool …`）：
+参数、环境变量和输出都一样。请让它的版本与你正在运行的 master 标签一致 —— CLI 与 master 共用同一套
+Schema 与配置类型。
+:::
+
+即使二进制都靠下载，那份检出也仍然需要：`database/` 下的 Schema 文件和 `surrealkit` 只能从仓库获得
+（第 6 节）。
+
+## 11. 从 GitHub release 获取 worker 二进制文件
 
 数据平面以原始二进制文件而不是镜像的形式发布，并且只发布 `linux/x86_64`。每个 `worker-<version>`
-release 携带一个产物 `guru-worker-<version>-x86_64-unknown-linux-gnu`，其中 `<version>` 是 tag 去掉
-`worker-` 前缀后的部分 —— 所以 tag `worker-v0.1.0` 发布的是
-`guru-worker-v0.1.0-x86_64-unknown-linux-gnu`。
+release 携带两个产物，其中 `<version>` 是 tag 去掉 `worker-` 前缀后的部分：
 
-请挑一个确实列出了该产物的 release，在围绕它写任何脚本之前先检查一下：
+| 产物 | 适用的主机 |
+|---|---|
+| `guru-worker-<version>-x86_64-unknown-linux-gnu` | 使用 glibc 的发行版（Debian/Ubuntu/RHEL）；动态链接宿主的 glibc |
+| `guru-worker-<version>-x86_64-unknown-linux-musl` | Alpine 以及任何其他 musl 发行版；静态链接 musl libc（static-pie），运行时不依赖宿主上的 libc |
+
+所以 tag `worker-v0.1.0` 发布的是 `guru-worker-v0.1.0-x86_64-unknown-linux-gnu` 和
+`guru-worker-v0.1.0-x86_64-unknown-linux-musl`。
+
+怎么选：目标主机用 glibc 就取 `-gnu`，用 musl（Alpine 及其同类）就取 `-musl`。musl 那一份把 musl libc 静态
+链接进了可执行文件，运行时不需要宿主安装任何 libc —— 在一个连 glibc 都没有装的 `alpine:3` 容器里也能直接
+跑起来，所以它在两类主机上都能用；如果你不确定，或者想用同一个产物覆盖混合机群，就选它。手上拿到的是
+哪一个，`ldd` 会告诉你：`-gnu` 会列出 `libc.so.6`，`-musl` 会回答 `not a dynamic executable`。
+
+请挑一个确实列出了这些产物的 release，在围绕它写任何脚本之前先检查一下：
 
 ```sh
 curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
@@ -425,25 +478,31 @@ curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
 如果某个 `worker-v*` tag 的 release 没有列出任何产物，说明它是在发布工作流存在之前打的（撰写本文时，
 `worker-v0.0.1-alpha` 正处于这种状态：`assets: []`）。这样的 tag 没有任何可下载的东西 ——
 请改用更新的 release，或者推送一个新的 `worker-v*` tag，让 *Release Worker* 工作流构建并附加二进制文件。
+同样地，只列出一个 `-gnu` 产物的 release 早于 musl 构建被加入发布工作流；musl 那一份只能从更新的 tag 获得。
 :::
 
-使用 GitHub CLI：
+使用 GitHub CLI。请用一个 `TARGET` 变量把产物钉死：一个同时匹配两者的 `--pattern` 会把它们一起下载，
+于是 `--output` 会变得没有意义。
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-gnu        # Alpine/musl 主机：x86_64-unknown-linux-musl
 gh release download "worker-${VERSION}" \
   --repo haruki-nikaidou/proxy-guru \
-  --pattern 'guru-worker-*-x86_64-unknown-linux-gnu' \
+  --pattern "guru-worker-*-${TARGET}" \
   --output guru-worker
 ```
 
-或者用纯 `curl` —— 通过 API 解析产物地址，这样你就不用把 URL 写死：
+或者用纯 `curl` —— 通过 API 解析产物地址，这样你就不用把 URL 写死。这里按产物名完整相等来选，
+而不是用后缀匹配，因为这样无论 release 里有多少个目标，命中的都只会是一个：
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-musl       # glibc 主机：x86_64-unknown-linux-gnu
 url=$(curl -fsSL \
   "https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases/tags/worker-${VERSION}" \
-  | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-gnu")) | .browser_download_url')
+  | jq -r --arg name "guru-worker-${VERSION}-${TARGET}" \
+      '.assets[] | select(.name == $name) | .browser_download_url')
 curl -fsSL "$url" -o guru-worker
 ```
 
@@ -455,17 +514,18 @@ chmod +x guru-worker
 ```
 
 请把这些二进制文件按版本存放在你自己的产物库中（内部 HTTP 服务器、apt/OCI registry，或你的配置管理系统）。
-既没有 `latest` 别名，也没有发布校验和文件，所以请把版本号 —— 最好还有你自己算的 `sha256sum` ——
-与你分发的副本一起记录下来。
+既没有 `latest` 别名，也没有发布校验和文件，所以请把版本号和目标三元组 —— 最好还有你自己算的
+`sha256sum` —— 与你分发的副本一起记录下来。
 
-这个二进制文件链接的是 glibc（`x86_64-unknown-linux-gnu`），在 GitHub runner 的 Debian 基础环境上构建。
-它可以在当前的 Debian/Ubuntu/RHEL 上运行；它无法在 Alpine 或任何其他 musl 发行版上运行。
+两个产物都在 GitHub runner（`ubuntu-latest`）上构建，功能完全相同，差别只在 libc：`-gnu` 那一份链接
+宿主的 glibc，因此需要一台 glibc 足够新的主机（当前的 Debian/Ubuntu/RHEL 都可以）；`-musl` 那一份把 libc
+静态链接进了自身，运行时不依赖宿主的任何共享库，因此发行版是什么都无所谓。
 
 在这套控制平面上安装并注册一个 worker 节点是另一篇文档的内容；以上全部内容止于"二进制文件已可获取、
 可分发"。如果某个节点要在完全没有控制平面的情况下运行，那是另一篇指南：
 [独立 Worker 部署](/zh-cn/guides/independent-worker/)。
 
-## 11. 验证部署
+## 12. 验证部署
 
 按顺序逐项完成 —— 每一项都会独立地、显式地失败：
 
@@ -492,7 +552,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
 如果第 1–5 步都通过，而第 6 步以 `Forbidden` 失败，请重读第 9 节里的代理警告。
 
-## 12. 升级、备份、回滚
+## 13. 升级、备份、回滚
 
 **升级。** 先 Schema，再代码，收缩放在最后：
 
@@ -522,7 +582,7 @@ docker compose exec -T surrealdb /surreal export \
 字符串（`info`、`warn`、`guru_master=debug,orchestration=debug`，……）。用你惯用的 Docker 日志驱动
 把它送出去。
 
-## 13. 故障排查
+## 14. 故障排查
 
 | 症状 | 原因 |
 |---|---|

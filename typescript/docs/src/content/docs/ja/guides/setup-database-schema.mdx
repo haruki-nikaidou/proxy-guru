@@ -130,10 +130,12 @@ sk() {
 
 オペレーターが調整する設定値 — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、更新ウィンドウ、
 各定期ジョブの実行間隔 — は環境変数ではなくデータベースに、キーごとに 1 行の `app_config` レコードとして
-格納されます。スキーマを適用したら、同じチェックアウトからビルドした `manage-tool`
-（`cargo build --release -p manage-tool`）でデフォルト値を一度書き込みます。データベース関連のフラグは
-`guru-master`と同じ名前で、同様に環境変数から `SURREALDB_*` を読むため、適切なファイルを読み込んだ直後でない
-場合は明示的に渡してください:
+格納されます。スキーマを適用したら、`manage-tool` でデフォルト値を一度書き込みます。この CLI は同じ
+チェックアウトからビルドする（`cargo build --release -p manage-tool`）か、`master-v*` タグの GitHub
+リリースが公開しているバイナリ `manage-tool-<version>-x86_64-unknown-linux-gnu` をダウンロードして
+使います。どちらでも中身は同じなので、以下の `./target/release/manage-tool` は自分が置いたパスに
+読み替えて構いません。データベース関連のフラグは `guru-master`と同じ名前で、同様に環境変数から
+`SURREALDB_*` を読むため、適切なファイルを読み込んだ直後でない場合は明示的に渡してください:
 
 <Tabs syncKey="deployment">
 <TabItem label="ネイティブデプロイ">

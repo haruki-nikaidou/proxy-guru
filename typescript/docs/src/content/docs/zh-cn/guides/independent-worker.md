@@ -34,10 +34,11 @@ unit。
 
 ## 2. 前置条件
 
-- 一台使用 glibc 的 Linux `x86_64` 主机（较新的 Debian/Ubuntu/RHEL）。发布的二进制是
-  `x86_64-unknown-linux-gnu`，无法在 Alpine 或任何其他 musl 发行版上运行。
-- `guru-worker` 二进制，来自某个 `worker-v*` GitHub release —— 如何定位资产以及需要核对什么，参见
-  [使用 Docker 部署 §10](/zh-cn/guides/deploy-with-docker/#10-从-github-release-获取-worker-二进制文件)。那篇文章中控制平面相关的内容在这里都不需要。
+- 一台 Linux `x86_64` 主机。每个 release 提供两个二进制：使用 glibc 的发行版（较新的
+  Debian/Ubuntu/RHEL）用 `x86_64-unknown-linux-gnu`，Alpine 以及任何其他 musl 发行版用把 musl libc
+  静态链接进来的 `x86_64-unknown-linux-musl`（运行时不依赖宿主上的 libc）。
+- `guru-worker` 二进制，来自某个 `worker-v*` GitHub release —— 如何定位资产、该挑哪一个以及需要核对什么，参见
+  [使用 Docker 部署 §11](/zh-cn/guides/deploy-with-docker/#11-从-github-release-获取-worker-二进制文件)。那篇文章中控制平面相关的内容在这里都不需要。
 - 对任何 TLS 或 QUIC 监听器：一份 PEM 格式的私钥和完整证书链，且**必须已经存在于主机上**。Worker
   只会从配置里的路径读取它们；两种模式下它都不会申请或生成证书。
 

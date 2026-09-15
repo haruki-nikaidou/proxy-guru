@@ -1,6 +1,6 @@
 ---
 title: Docker でデプロイ
-description: GHCR のイメージからコントロールプレーンを動かし、surrealkit でスキーマを適用し、SurrealDB と RabbitMQ を用意して、GitHub リリースからワーカーバイナリを配布する手順。
+description: GHCR のイメージからコントロールプレーンを動かし、surrealkit でスキーマを適用し、SurrealDB と RabbitMQ を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
 ---
 
 このガイドは、何も入っていないマシンから動作するダッシュボードまで、シングルホストの本番デプロイを通しで
@@ -59,14 +59,17 @@ master の両モードは平文の HTTP/2 で待ち受け、ダッシュボー�
 
 このガイドの前に **[前提条件](/ja/guides/prerequisites/)** を済ませてください。イメージデプロイの場合、
 そのページから必要なのは: Docker Engine と Compose プラグイン、オペレーターマシン上のこのリポジトリの
-チェックアウト（`database/` 配下のスキーマファイルと `manage-tool` CLI はイメージとして配布されていません）、
-`manage-tool` をビルドするための Rust ツールチェーンと `protobuf-compiler`、`surrealkit`、`openssl`、
-TLS 証明書を持つ DNS 名 — そして SurrealDB と RabbitMQ 自体で、これらは同ページが
+チェックアウト（`database/` 配下のスキーマファイルはイメージとして配布されていません）、`surrealkit`、
+`openssl`、TLS 証明書を持つ DNS 名 — そして SurrealDB と RabbitMQ 自体で、これらは同ページが
 `/srv/guru/docker-compose.yml` から `/srv/guru/.env` の認証情報とともに起動します。
 
-ここで省略できるのは Bun だけです — ダッシュボードはイメージとして配布されます。C ツールチェーンと `cmake` は
-必要です: `manage-tool` は証明書関連のスタックを取り込み、そのクレートがベンダリングされた C ソースを
-コンパイルします。`perl` が必要なのは `guru-worker` をビルドする場所だけで、ここではありません。
+`manage-tool` CLI もイメージには含まれていませんが、**ビルドは必須ではありません**: `master-v*` タグは
+GHCR のイメージに加えて、`guru-master` と `manage-tool` のバイナリを含む GitHub リリースも公開します
+（セクション 10）。ダウンロードしたバイナリを使うなら、Rust ツールチェーン、`protobuf-compiler`、
+C ツールチェーン、`cmake` はどれも不要です。これらが要るのは自分でビルドする場合だけで、`manage-tool` が
+証明書関連のスタックを取り込み、そのクレートがベンダリングされた C ソースをコンパイルするためです。
+どちらにしても Bun は不要で（ダッシュボードはイメージとして配布されます）、`perl` が必要なのは
+`guru-worker` をビルドする場所だけで、ここではありません。
 
 ## 3. バージョンを選ぶ
 
@@ -74,9 +77,9 @@ TLS 証明書を持つ DNS 名 — そして SurrealDB と RabbitMQ 自体で、
 
 | git タグ | 公開されるもの |
 |---|---|
-| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]` |
+| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]` と、`guru-master` / `manage-tool` のバイナリ（`x86_64-unknown-linux-gnu`）を含む GitHub リリース |
 | `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:v0.1.0[-alpha]` |
-| `worker-v0.1.0[-alpha]` | `linux/x86_64` 向けの生の `guru-worker` バイナリを含む GitHub リリース |
+| `worker-v0.1.0[-alpha]` | `linux/x86_64` 向けの生の `guru-worker` バイナリ 2 種（glibc 版と静的 musl 版）を含む GitHub リリース |
 
 `latest` が動くのは最終版の `vX.Y.Z` のときだけで、プレリリースでは動きません。それでも Compose ファイルでは
 **明示的なタグを固定してください**: `latest` ではどのリビジョンが動いているかを示す手段がなく、master と
@@ -162,8 +165,8 @@ sk setup                             # then rollout plan / lint / start / comple
 master キーは一度生成し、データベースの認証情報と一緒に保管してください — これはすべての DNS プロバイダー
 トークンと証明書の鍵を保存時に暗号化するもので、これがなければ復元する方法はありません。シークレットを読む
 3 つのモードではこれが必要です。`cron` は決して読みませんが、以下のアンカーは単純に同じ環境変数を 4 つすべてに
-渡します。`manage-tool` はチェックアウトからビルドします（手順 8 参照）。このサブコマンドはデータベースを
-必要としません:
+渡します。`manage-tool` は `master-v*` リリースからダウンロードするか、チェックアウトからビルドします
+（手順 8 と手順 10 を参照）。このサブコマンドはデータベースを必要としません:
 
 ```sh
 ./target/release/manage-tool generate-master-key
@@ -302,8 +305,8 @@ master-cron-1       | INFO guru_master: scheduling periodic execution signals sc
 ## 8. 最初の管理者を作る
 
 セルフサービスのサインアップはありません: 最初のアカウントは `manage-tool` でデータベースに対して直接作成し、
-これはまだ管理者が存在しないため意図的に RBAC をバイパスします。イメージとして公開されていないので、
-チェックアウトからビルドしてください:
+これはまだ管理者が存在しないため意図的に RBAC をバイパスします。この CLI はイメージとして公開されていないので、
+`master-v*` リリースからダウンロードする（セクション 10）か、チェックアウトからビルドしてください:
 
 ```sh
 cd ~/proxy-guru
@@ -318,6 +321,9 @@ cargo build --release -p manage-tool
 
 データベース関連の 5 つのフラグはすべて明示的に渡してください — これらも環境変数から `SURREALDB_*` を読むため、
 紛れ込んだ `.env` がコマンドの向き先を黙って変えてしまいます。
+
+ダウンロードしたバイナリを使う場合は、このガイドに出てくる `./target/release/manage-tool` を自分が置いた
+パス（例: `./manage-tool`）に読み替えてください。フラグもサブコマンドも同じです。
 
 ### モジュール設定のシードを投入する
 
@@ -429,12 +435,68 @@ server {
 あとは `https://guru.example.com/` を開くと `/auth` にリダイレクトされるので、セクション 8 のアカウントで
 サインインしてください。サイドバーにメールアドレスが表示された状態で、キャンバス一覧に到達するはずです。
 
-## 10. GitHub リリースからワーカーバイナリを取得する
+## 10. GitHub リリースから master と `manage-tool` を取得する
+
+`master-v*` タグは、GHCR のイメージ*に加えて*、`guru-master <version>` という名前の GitHub リリースも
+公開します。`<version>` はタグから `master-` 接頭辞を除いたもので（`master-v0.3.0` なら `v0.3.0`）、
+`vX.Y.Z` でないタグはプレリリースとして公開されます。アセットは 2 つで、どちらも
+`x86_64-unknown-linux-gnu` だけです — 両方とも glibc にリンクしており、これは `distroless/cc` イメージと
+同じ ABI です:
+
+| アセット | 中身 |
+|---|---|
+| `guru-master-v0.3.0-x86_64-unknown-linux-gnu` | コントロールプレーン本体。Docker を使わずに動かす場合に使います |
+| `manage-tool-v0.3.0-x86_64-unknown-linux-gnu` | 管理 CLI。イメージデプロイで必要になるのはこちらだけです |
+
+:::caution[ワークフローより前のタグにはアセットがありません]
+*Release Master* ワークフローは最初の master タグより後にできました。それより前の `master-v*` タグ
+（執筆時点では `master-v0.0.1-alpha`、`master-v0.1.0-alpha`、`master-v0.2.0-beta`）にはイメージはあっても
+リリースアセットはありません。固定したタグにアセットがない場合は、より新しいタグを使うか、`manage-tool` を
+チェックアウトからビルドしてください（手順 8）。アセットの有無は次のセクションの `jq` スニペット
+（`startswith("master-")` に変えるだけ）で確認できます。
+:::
+
+アセットが実際に付いているリリース（できればセクション 3 で固定した `MASTER_VERSION` と同じタグ）から
+`manage-tool` を取ってくれば、Rust のツールチェーンを一切入れずに手順 7 と手順 8 を進められます:
+
+```sh
+VERSION=v0.3.0                       # アセットが列挙されているリリースを選ぶこと
+gh release download "master-${VERSION}" \
+  --repo haruki-nikaidou/proxy-guru \
+  --pattern "manage-tool-${VERSION}-x86_64-unknown-linux-gnu" \
+  --output manage-tool
+chmod +x manage-tool
+./manage-tool --help
+```
+
+`gh` を使わない場合は、次のセクションの `curl` + `jq` の手順がそのまま使えます。タグを
+`master-${VERSION}` に、アセット名を `manage-tool-${VERSION}-x86_64-unknown-linux-gnu` に変えるだけです。
+
+ダウンロードした `manage-tool` は、チェックアウトでビルドした `./target/release/manage-tool` と完全に
+交換可能です。このガイドのコマンドはすべて後者の形で書いていますが、自分が置いたバイナリのパスに
+読み替えて構いません。フラグ、サブコマンド、挙動はまったく同じです。
+
+:::note[チェックアウトはそれでも必要です]
+リリースに含まれるのはバイナリだけです。`database/` 配下のスキーマファイルと、それを適用する
+`surrealkit` の実行（セクション 6）はチェックアウトからしか行えません。`manage-tool` をダウンロードして
+省けるのは Rust のビルドツールチェーンであって、チェックアウトそのものではありません。
+:::
+
+## 11. GitHub リリースからワーカーバイナリを取得する
 
 データプレーンはイメージではなく生のバイナリとして配布され、公開されているのは `linux/x86_64` のみです。
-各 `worker-<version>` リリースは `guru-worker-<version>-x86_64-unknown-linux-gnu` というアセットを 1 つ
-持ち、`<version>` はタグから `worker-` 接頭辞を除いたものです — つまりタグ `worker-v0.1.0` は
-`guru-worker-v0.1.0-x86_64-unknown-linux-gnu` を公開します。
+各 `worker-<version>` リリースはアセットを 2 つ持ち、`<version>` はタグから `worker-` 接頭辞を除いた
+ものです — つまりタグ `worker-v0.1.0` は次の 2 つを公開します:
+
+| アセット | リンク方法 | 配る先 |
+|---|---|---|
+| `guru-worker-v0.1.0-x86_64-unknown-linux-gnu` | glibc への動的リンク | 現行の Debian/Ubuntu/RHEL など glibc のディストリビューション |
+| `guru-worker-v0.1.0-x86_64-unknown-linux-musl` | musl libc を静的リンク（static-pie） | Alpine やその他の musl ディストリビューション。libc がインストールされていないホストでもそのまま動きます |
+
+選ぶ基準はノードの libc だけです。glibc のホストには `gnu` を、Alpine のような musl のホストには `musl` を
+配ってください。判断がつかないときは `musl` が安全側です — musl libc をバイナリに取り込んだ静的バイナリなので
+実行時に libc を必要とせず、glibc のホストでも動きます。その代わり musl 版は glibc の NSS モジュールを使わない
+ため、`nsswitch.conf` で独自の名前解決を組んでいる glibc ホストでは `gnu` を選んでください。
 
 そのアセットが実際に列挙されているリリースを選び、スクリプトを組む前に確認してください:
 
@@ -448,26 +510,31 @@ curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
 リリースにアセットが列挙されていない `worker-v*` タグは、リリースワークフローが存在する前に付けられた
 ものです（執筆時点では `worker-v0.0.1-alpha` がまさにその状態で、`assets: []` です）。そのようなタグから
 ダウンロードできるものはありません — より新しいリリースを使うか、新しい `worker-v*` タグを push して
-*Release Worker* ワークフローにバイナリをビルド・添付させてください。
+*Release Worker* ワークフローにバイナリをビルド・添付させてください。musl ビルドが追加される前のリリースには
+`x86_64-unknown-linux-gnu` しか無いので、上のコマンドはアセット名も一緒に確認しています。
 :::
 
-GitHub CLI を使う場合:
+GitHub CLI を使う場合 — どちらのアセットが欲しいかは `TARGET` で明示します:
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-gnu      # Alpine/musl のノードでは x86_64-unknown-linux-musl
 gh release download "worker-${VERSION}" \
   --repo haruki-nikaidou/proxy-guru \
-  --pattern 'guru-worker-*-x86_64-unknown-linux-gnu' \
+  --pattern "guru-worker-${VERSION}-${TARGET}" \
   --output guru-worker
 ```
 
-あるいは素の `curl` で — URL をハードコードしないよう、API 経由でアセットを解決します:
+あるいは素の `curl` で — URL をハードコードしないよう、API 経由でアセットを解決します。ここでも名前を
+完全一致で選び、2 つのうちどちらが降ってくるかが曖昧にならないようにします:
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-gnu      # Alpine/musl のノードでは x86_64-unknown-linux-musl
 url=$(curl -fsSL \
   "https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases/tags/worker-${VERSION}" \
-  | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-gnu")) | .browser_download_url')
+  | jq -r --arg name "guru-worker-${VERSION}-${TARGET}" \
+      '.assets[] | select(.name == $name) | .browser_download_url')
 curl -fsSL "$url" -o guru-worker
 ```
 
@@ -478,20 +545,20 @@ chmod +x guru-worker
 ./guru-worker --help
 ```
 
-バイナリは自分の成果物ストア（社内 HTTP サーバー、apt/OCI レジストリ、構成管理システム）にバージョンをキーとして
-保管してください。`latest` エイリアスも公開されたチェックサムファイルもないので、配布するコピーと一緒に
-バージョン — できれば自分で取った `sha256sum` も — を記録しておきましょう。
+バイナリは自分の成果物ストア（社内 HTTP サーバー、apt/OCI レジストリ、構成管理システム）にバージョンと
+ターゲットをキーとして保管してください。`latest` エイリアスも公開されたチェックサムファイルもないので、
+配布するコピーと一緒にバージョンとターゲット — できれば自分で取った `sha256sum` も — を記録しておきましょう。
 
-このバイナリは glibc リンク（`x86_64-unknown-linux-gnu`）で、GitHub ランナーの Debian ベース上でビルド
-されています。現行の Debian/Ubuntu/RHEL で動作します。Alpine やその他の musl ディストリビューションでは
-動きません。
+取り違えていないかは、配る前にファイル自身に聞けます。`file guru-worker` は `gnu` 版を
+`dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2` と報告し、`musl` 版は
+`static-pie linked` — インタープリターを持たず、ホストにインストールされた libc を必要としません。
 
 このコントロールプレーンに対してワーカーノードをインストールし登録する手順は別途扱います。ここまでの内容は
 「バイナリが利用可能で配布できる」状態で終わりです。コントロールプレーンをまったく使わずに動かすべきノードに
 ついては別のガイドを参照してください:
 [独立ワーカーのデプロイ](/ja/guides/independent-worker/)。
 
-## 11. デプロイを検証する
+## 12. デプロイを検証する
 
 以下を順に実施してください — どれも個別に、はっきりと失敗します:
 
@@ -519,7 +586,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 手順 1〜5 が通るのに手順 6 が `Forbidden` で失敗する場合は、セクション 9 のプロキシに関する警告を読み直して
 ください。
 
-## 12. アップグレード、バックアップ、ロールバック
+## 13. アップグレード、バックアップ、ロールバック
 
 **アップグレード。** スキーマを先に、コードを次に、contract を最後に:
 
@@ -550,7 +617,7 @@ docker compose exec -T surrealdb /surreal export \
 （`info`、`warn`、`guru_master=debug,orchestration=debug` など）を受け取ります。いつも使っている Docker の
 ログドライバーで収集してください。
 
-## 13. トラブルシューティング
+## 14. トラブルシューティング
 
 | 症状 | 原因 |
 |---|---|

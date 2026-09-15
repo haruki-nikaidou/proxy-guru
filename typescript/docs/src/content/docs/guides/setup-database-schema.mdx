@@ -132,9 +132,10 @@ If the database only listens on loopback on a remote host, tunnel to it first:
 Operator-tunable settings — health thresholds and retention, the default ACME directory, the
 renewal window, how often each periodic job runs — live in the database, one `app_config` row per
 key, not in the environment. Write the defaults once the schema is in place, with `manage-tool` —
-built from the same checkout (`cargo build --release -p manage-tool`). Its database flags have the
-same names as `guru-master`'s, and they also read `SURREALDB_*` from the environment, so pass them
-explicitly unless you have just sourced the right file:
+built from the same checkout (`cargo build --release -p manage-tool`), or downloaded from a
+`master-v*` release, which attaches it as `manage-tool-<version>-x86_64-unknown-linux-gnu`. Its
+database flags have the same names as `guru-master`'s, and they also read `SURREALDB_*` from the
+environment, so pass them explicitly unless you have just sourced the right file:
 
 <Tabs syncKey="deployment">
 <TabItem label="Native deployment">

@@ -27,8 +27,8 @@ description: guru-worker を TOML ファイルだけでスタンドアロン実�
 
 ## 2. 前提条件
 
-- glibc を使う Linux `x86_64` ホスト（最近の Debian/Ubuntu/RHEL）。公開バイナリは `x86_64-unknown-linux-gnu` であり、Alpine やその他の musl ディストリビューションでは動作しません。
-- `worker-v*` の GitHub リリースから取得した `guru-worker` バイナリ。アセットの特定方法と確認事項は [Docker でデプロイ §10](/ja/guides/deploy-with-docker/#10-github-リリースからワーカーバイナリを取得する) を参照してください。そのページのコントロールプレーンに関する内容は、ここでは一切必要ありません。
+- Linux `x86_64` のホスト。公開バイナリは 2 種類あり、glibc のディストリビューション（最近の Debian/Ubuntu/RHEL）では `x86_64-unknown-linux-gnu` を、Alpine やその他の musl ディストリビューションでは musl libc を静的リンク（static-pie）した `x86_64-unknown-linux-musl` を使います。後者は実行時に libc を必要としないため、libc がインストールされていないホストでもそのまま動きます。
+- `worker-v*` の GitHub リリースから取得した `guru-worker` バイナリ。どちらのアセットを選ぶか、その特定方法と確認事項は [Docker でデプロイ §11](/ja/guides/deploy-with-docker/#11-github-リリースからワーカーバイナリを取得する) を参照してください。そのページのコントロールプレーンに関する内容は、ここでは一切必要ありません。
 - TLS または QUIC のリスナーを使う場合は、PEM 形式の秘密鍵とフルチェーン証明書が**あらかじめホスト上にあること**。ワーカーは設定に書かれたパスからそれらを読み込むだけで、どちらのモードでも証明書を取得・生成することはありません。
 
 Docker、SurrealDB、RabbitMQ、ダッシュボード、API キー、そして自分のアップストリーム以外へのネットワーク到達性は、いずれも**不要**です。

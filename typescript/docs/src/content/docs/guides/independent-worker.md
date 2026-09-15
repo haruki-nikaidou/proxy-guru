@@ -38,11 +38,14 @@ The config format is `lib/guru_worker_config`, shared by both planes — see
 
 ## 2. Prerequisites
 
-- A Linux `x86_64` host with glibc (current Debian/Ubuntu/RHEL). The published binary is
-  `x86_64-unknown-linux-gnu` and will not run on Alpine or any other musl distribution.
+- A Linux `x86_64` host. Both libc flavours are published, so the distribution does not matter: a
+  glibc host (current Debian/Ubuntu/RHEL) takes the `x86_64-unknown-linux-gnu` asset, and a musl
+  host — Alpine or anything else built on musl — takes the `x86_64-unknown-linux-musl` one, which
+  links musl libc into the binary and so needs no libc installed on the host.
 - The `guru-worker` binary, from a `worker-v*` GitHub release — see
-  [Deploy with Docker §10](/guides/deploy-with-docker/#10-get-the-worker-binary-from-a-github-release) for how to
-  resolve the asset and what to check. Nothing on that page's control plane is needed here.
+  [Deploy with Docker §11](/guides/deploy-with-docker/#11-get-the-worker-binary-from-a-github-release)
+  for how to resolve the right asset and what to check. Nothing on that page's control plane is
+  needed here.
 - For any TLS or QUIC listener: a PEM private key and full-chain certificate **already on the
   host**. The worker reads them from the paths in the config; it never fetches or generates
   certificates in either mode.

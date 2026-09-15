@@ -18,12 +18,18 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | RabbitMQ 3.13/4.x | 必要 | 必要 |
 | Docker Engine + Compose | 必要（公開済みアプリケーションイメージの実行に使用。データストアへの使用は任意） | 不要 |
 | `surrealkit` | 必要 | 必要 |
-| Rust ツールチェーン + `protoc` | 必要 — `manage-tool` はイメージとして公開されていません | 必要 — すべてのバイナリをビルドします |
-| C ツールチェーン、`make`、`cmake` | 必要 — `manage-tool` は証明書関連のクレート群（aws-lc 上の `instant-acme`/`rcgen`）を取り込み、同梱の C ソースのビルドにコンパイラーと cmake が必要です | 必要 — 理由は同じです |
+| Rust ツールチェーン + `protoc` | `manage-tool` を自分でビルドする場合のみ必要 — バイナリは `master-v*` リリースからダウンロードできます | 必要 — すべてのバイナリをビルドします |
+| C ツールチェーン、`make`、`cmake` | 同上 — `manage-tool` は証明書関連のクレート群（aws-lc 上の `instant-acme`/`rcgen`）を取り込み、同梱の C ソースのビルドにコンパイラーと cmake が必要です | 必要 — 理由は同じです |
 | `perl` | 不要 | 必要 — `guru-worker` は同梱の OpenSSL をビルドし、その構成は perl スクリプトが行います |
 | Bun | 不要 | 必要（ダッシュボードのビルドと実行） |
 | ホスト名 + TLS 証明書 | 必要 | 必要 |
 | Redis | 不要 | 不要 |
+
+イメージデプロイの Rust 行が「場合のみ」なのは、`master-v*` タグが GHCR のイメージに加えて
+`guru-master` と `manage-tool` のバイナリ（`x86_64-unknown-linux-gnu`）を GitHub リリースとしても公開する
+ようになったからです。それをダウンロードして使うなら、ビルド用のツールチェーンは一切必要ありません。
+ただし `database/` 配下のスキーマファイルはリリースに含まれないため、チェックアウトと `surrealkit` は
+どちらの方式でも必要です。
 
 Redis はモジュールの雛形に登場しますが、現時点でこれに接続するバイナリはありません。用意する必要はありません。
 
@@ -167,7 +173,7 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 | パッケージ | 必要な理由 |
 |---|---|
 | `protoc`（`protobuf-compiler`、Arch では `protobuf`） | `lib/rpguru_sdk` のビルドスクリプトが `tonic-prost-build` で `proto/` をコンパイルし、その内部で `protoc` を呼び出します。`manage-tool` を含むすべてのバイナリがこのクレートに依存するため、`protoc` がないとビルドが失敗します。`PATH` にない場合は `PROTOC=/path/to/protoc` を設定してください。 |
-| C コンパイラー、`make` | どちらの方式でも `manage-tool` をビルドし、これは `orchestration` モジュール経由で証明書関連のクレート群に到達します。そのうちいくつか（`aws-lc-sys`、`ring`、`zstd-sys`）は同梱の C ソースをコンパイルします。 |
+| C コンパイラー、`make` | `manage-tool` をビルドする場合に必要です。これは `orchestration` モジュール経由で証明書関連のクレート群に到達し、そのうちいくつか（`aws-lc-sys`、`ring`、`zstd-sys`）は同梱の C ソースをコンパイルします。 |
 | `cmake` | `aws-lc-sys` は同梱ソースを cmake でビルドするため、`manage-tool` をビルドする環境では必ず必要です。 |
 | `perl` | `guru-worker` は `vendored` フィーチャーで OpenSSL をリンクします。OpenSSL は同梱のソースツリーからコンパイルされ、その `Configure` は perl スクリプトです。ネイティブデプロイのみで必要です。 |
 | `pkgconf` / `pkg-config` | 上記の `*-sys` クレート群のビルド依存です。 |
@@ -198,8 +204,9 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 </TabItem>
 <TabItem label="イメージデプロイ">
 
-チェックアウトから常駐するものは何もありません。`manage-tool` をビルドし、スキーマファイルを置いておくだけなので、
-自分のオペレーターアカウントが適切です。Bun はまったく必要ありません。
+チェックアウトから常駐するものは何もありません。スキーマファイルを置き、必要なら `manage-tool` を
+ビルドするだけなので、自分のオペレーターアカウントが適切です（`manage-tool` は `master-v*` リリースから
+ダウンロードすることもでき、その場合 Rust すら要りません）。Bun はまったく必要ありません。
 
 </TabItem>
 </Tabs>
@@ -209,7 +216,8 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 1. **Rust** は [rustup](https://rustup.rs/) で導入します。ワークスペースは `rust-toolchain.toml` で
    ツールチェーン（チャンネル `1.98`）を固定しており、最初の `cargo` 実行時に rustup がその固定版を
    インストールします。ディストリビューションの `rust` パッケージで代替しないでください。古いコンパイラーでは
-   edition 2024 をビルドできません。
+   edition 2024 をビルドできません。イメージデプロイで `manage-tool` をリリースからダウンロードするなら、
+   この手順は省けます。
 
    ```sh wrap frame="none"
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -226,9 +234,10 @@ systemd から見つけられるサービスユーザーのホームに配置さ
    surrealkit --version
    ```
 
-3. **チェックアウト。** どちらのガイドでも `database/` 以下のスキーマファイルと `manage-tool` が必要です。
-   イメージガイドでは Compose ファイルも使います。ネイティブデプロイでこのファイルを使うのは、任意の
-   コンテナ構成を選んだ場合だけです。これらはアプリケーションイメージには含まれていません。
+3. **チェックアウト。** どちらのガイドでも `database/` 以下のスキーマファイルが必要で、ネイティブデプロイでは
+   ここからすべてのバイナリをビルドします。イメージガイドでは Compose ファイルも使います。ネイティブデプロイで
+   このファイルを使うのは、任意のコンテナ構成を選んだ場合だけです。スキーマファイルはアプリケーションイメージ
+   にも GitHub リリースにも含まれていません。
 
    ```sh wrap frame="none"
    git clone \

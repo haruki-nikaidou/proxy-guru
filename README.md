@@ -53,9 +53,9 @@ only for a final `vX.Y.Z`.
 
 | Tag | Publishes |
 |---|---|
-| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:<version>` (`distroless/cc-debian13:nonroot`) |
+| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:<version>` (`distroless/cc-debian13:nonroot`) — plus a GitHub release with the raw `linux/x86_64` glibc `guru-master` and `manage-tool` binaries |
 | `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:<version>` (`distroless/nodejs24-debian13:nonroot`) |
-| `worker-v0.1.0[-alpha]` | GitHub release with the raw `linux/x86_64` `guru-worker` binary |
+| `worker-v0.1.0[-alpha]` | GitHub release with the raw `linux/x86_64` `guru-worker` binary, glibc (`-gnu`) and static musl (`-musl`) |
 
 Both build from the repository root — the frontend needs the whole Bun workspace
 for the `app-protobuf` package:

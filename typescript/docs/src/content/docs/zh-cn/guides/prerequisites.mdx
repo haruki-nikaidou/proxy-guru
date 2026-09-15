@@ -17,8 +17,8 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | RabbitMQ 3.13/4.x | 需要 | 需要 |
 | Docker Engine + Compose | 需要（用于运行已发布的应用镜像；数据存储是否使用它可自行选择） | 不需要 |
 | `surrealkit` | 需要 | 需要 |
-| Rust 工具链 + `protoc` | 需要——`manage-tool` 没有发布成镜像 | 需要——它要构建全部二进制 |
-| C 工具链、`make`、`cmake` | 需要——`manage-tool` 会引入证书相关依赖栈（基于 aws-lc 的 `instant-acme`/`rcgen`），其内置的 C 源码需要编译器和 cmake | 需要，原因相同 |
+| Rust 工具链 + `protoc` | 仅在你选择自行构建 `manage-tool` 时需要——它也可以从 `master-v*` release 下载 | 需要——它要构建全部二进制 |
+| C 工具链、`make`、`cmake` | 同上：仅在自行构建 `manage-tool` 时需要（它会引入证书相关依赖栈——基于 aws-lc 的 `instant-acme`/`rcgen`，其内置的 C 源码需要编译器和 cmake） | 需要，原因相同 |
 | `perl` | 不需要 | 需要——`guru-worker` 会编译内置的 OpenSSL，而它由一个 perl 脚本完成配置 |
 | Bun | 不需要 | 需要（构建并运行控制台） |
 | 主机名 + TLS 证书 | 需要 | 需要 |
@@ -165,7 +165,7 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 | 软件包 | 为什么需要 |
 |---|---|
 | `protoc`（`protobuf-compiler`，Arch 上为 `protobuf`） | `lib/rpguru_sdk` 的构建脚本用 `tonic-prost-build` 编译 `proto/`，而它会调用 `protoc`。所有二进制都依赖该 crate，`manage-tool` 也不例外，因此缺少 `protoc` 会导致构建失败。如果你的 `protoc` 不在 `PATH` 中，请设置 `PROTOC=/path/to/protoc`。 |
-| C 编译器、`make` | 两种方式都要构建 `manage-tool`，它经由 `orchestration` 模块引入证书相关依赖栈；其中若干 crate（`aws-lc-sys`、`ring`、`zstd-sys`）会编译内置的 C 源码。 |
+| C 编译器、`make` | 构建 `manage-tool` 需要，它经由 `orchestration` 模块引入证书相关依赖栈；其中若干 crate（`aws-lc-sys`、`ring`、`zstd-sys`）会编译内置的 C 源码。原生部署必定要构建它；镜像部署只有在不从 `master-v*` release 下载它时才需要。 |
 | `cmake` | `aws-lc-sys` 用 cmake 构建其内置源码，因此凡是构建 `manage-tool` 的地方都需要它。 |
 | `perl` | `guru-worker` 以 `vendored` feature 链接 OpenSSL：OpenSSL 由内附的源码树编译而成，而它的 `Configure` 是一个 perl 脚本。仅原生部署需要。 |
 | `pkgconf` / `pkg-config` | 上述 `*-sys` crate 的构建依赖。 |
@@ -196,8 +196,9 @@ Docker 或其他主机管理权限。
 </TabItem>
 <TabItem label="镜像部署">
 
-检出目录里不会常驻运行任何东西——它只用来构建 `manage-tool` 并存放 schema 文件——所以放在你
-自己的运维账号下就是合适的。完全不需要 Bun。
+检出目录里不会常驻运行任何东西——它存放 `surrealkit` 要用的 schema 文件，并且可以用来构建
+`manage-tool`（也可以改为从某个 `master-v*` release 下载那个二进制）——所以放在你自己的运维账号下
+就是合适的。完全不需要 Bun。
 
 </TabItem>
 </Tabs>
@@ -221,8 +222,9 @@ Docker 或其他主机管理权限。
    surrealkit --version
    ```
 
-3. **代码检出。** 两篇指南都需要 `database/` 下的 schema 文件和 `manage-tool`。镜像部署指南还会
-   使用 Compose 文件；原生部署只有在选择可选的容器方案时才使用它。这些内容都不包含在应用镜像中。
+3. **代码检出。** 两篇指南都需要 `database/` 下的 schema 文件：它们不包含在应用镜像中，也不随
+   release 发布。`manage-tool` 可以从这里构建，也可以从某个 `master-v*` release 下载。镜像部署指南还会
+   使用 Compose 文件；原生部署只有在选择可选的容器方案时才使用它。
 
    ```sh wrap frame="none"
    git clone \

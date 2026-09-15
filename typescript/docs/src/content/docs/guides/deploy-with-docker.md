@@ -59,14 +59,18 @@ crosses the public internet.
 
 Work through **[Prerequisites](/guides/prerequisites/)** before this guide. For an image deployment
 you need, from that page: Docker Engine and the Compose plugin, a checkout of this repository on an
-operator machine (the schema files under `database/` and the `manage-tool` CLI are not shipped as
-images), a Rust toolchain plus `protobuf-compiler` to build `manage-tool`, `surrealkit`, `openssl`,
-a DNS name with a TLS certificate — and SurrealDB and RabbitMQ themselves, which that page brings
-up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
+operator machine (the schema files under `database/` are not shipped anywhere else), `surrealkit`,
+`openssl`, a DNS name with a TLS certificate — and SurrealDB and RabbitMQ themselves, which that
+page brings up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
 
-Bun is the one thing you can skip here — the dashboard ships as an image. The C toolchain and
-`cmake` you do need: `manage-tool` pulls in the certificate stack, whose crates compile vendored C
-sources. `perl` is only needed where `guru-worker` is built, which is not here.
+`guru-master` and `manage-tool` are published as plain binaries too: every `master-v*` tag attaches
+them to a GitHub release next to the image (section 10), so a Rust toolchain, `protobuf-compiler`,
+a C toolchain and `cmake` are only needed **if you choose to build them** — `manage-tool` pulls in
+the certificate stack, whose crates compile vendored C sources. The checkout itself is still
+required either way, for the `database/` schema files that `surrealkit` applies.
+
+Bun is the one thing you can skip here — the dashboard ships as an image. `perl` is only needed
+where `guru-worker` is built, which is not here.
 
 ## 3. Pick versions
 
@@ -74,13 +78,18 @@ Publishing happens on tag pushes only; the image tag is the git tag minus its co
 
 | Git tag | Publishes |
 |---|---|
-| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]` |
+| `master-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-master:v0.1.0[-alpha]`, **and** a GitHub release carrying the `guru-master` and `manage-tool` binaries (`x86_64-unknown-linux-gnu`) |
 | `frontend-v0.1.0[-alpha]` | `ghcr.io/haruki-nikaidou/guru-frontend:v0.1.0[-alpha]` |
-| `worker-v0.1.0[-alpha]` | GitHub release carrying the raw `linux/x86_64` `guru-worker` binary |
+| `worker-v0.1.0[-alpha]` | GitHub release carrying two raw `linux/x86_64` `guru-worker` binaries: one glibc-linked (`x86_64-unknown-linux-gnu`) and one static musl (`x86_64-unknown-linux-musl`) |
 
 `latest` moves only for a final `vX.Y.Z`, never for a pre-release. **Pin an explicit tag** in your
 Compose file anyway: `latest` gives you no way to say which revision is running, and the master and
 the schema move together.
+
+Release assets repeat that same `<version>` in their file names. The `master-v*` release is
+published *in addition to* the image and holds the master binary plus the `manage-tool` CLI, glibc
+and `x86_64` only (section 10); the `worker-v*` release holds both a glibc and a static musl
+`x86_64` worker binary (section 11).
 
 Both images are public, so no `docker login ghcr.io` is needed to pull.
 
@@ -163,8 +172,8 @@ directory, the renewal window, how often each periodic job runs — lives in the
 Generate the master key once and keep it with the database credentials — it encrypts every DNS
 provider token and certificate key at rest, and there is no way to recover them without it. The
 three modes that read a secret need it; `cron` never does, and the anchor below simply hands the
-same environment to all four. `manage-tool` is built from your checkout (see step 8); this
-subcommand needs no database:
+same environment to all four. `manage-tool` is either built from your checkout or downloaded from a
+`master-v*` release (steps 8 and 10); this subcommand needs no database:
 
 ```sh
 ./target/release/manage-tool generate-master-key
@@ -302,8 +311,8 @@ problem shows up before the connection is declared lost.
 ## 8. Create the first administrator
 
 There is no self-service signup: the first account is created directly against the database with
-`manage-tool`, which deliberately bypasses RBAC because no admin exists yet. It is not published as
-an image, so build it from your checkout:
+`manage-tool`, which deliberately bypasses RBAC because no admin exists yet. It is not part of any
+image, so either build it from your checkout or download it from a `master-v*` release (section 10):
 
 ```sh
 cd ~/proxy-guru
@@ -433,14 +442,64 @@ Also useful: `ADDRESS_HEADER=x-forwarded-for` if you want real client IPs, and `
 Now open `https://guru.example.com/`, which redirects to `/auth`, and sign in with the account from
 section 8. You should land on the canvas list with your email in the sidebar.
 
-## 10. Get the worker binary from a GitHub release
+## 10. Get the master binaries from a GitHub release
+
+The control plane runs from the image, but the master side is published as raw binaries as well.
+Alongside the GHCR image, a `master-v*` tag publishes a GitHub release named `guru-master <version>`
+with two assets, where `<version>` is the tag minus its `master-` prefix — so tag `master-v0.3.0`
+publishes:
+
+| Asset | What it is |
+|---|---|
+| `guru-master-v0.3.0-x86_64-unknown-linux-gnu` | the master binary the image runs, for a native deployment |
+| `manage-tool-v0.3.0-x86_64-unknown-linux-gnu` | the operator CLI used in sections 7 and 8 |
+
+Both are `x86_64-unknown-linux-gnu` only — glibc, the same ABI as the `distroless/cc` image the
+master ships in — so a current Debian/Ubuntu/RHEL runs them as they are. There is no musl build on
+the master side.
+
+:::caution[Only tags pushed after the workflow existed]
+The *Release Master* workflow is newer than the first master tags: every `master-v*` tag before it
+(`master-v0.0.1-alpha`, `master-v0.1.0-alpha`, `master-v0.2.0-beta` at the time of writing) has an
+image but no release assets. Check the release before you script around it — the `jq` snippet in
+section 11 lists assets per tag, and `startswith("master-")` there works just as well — and use a
+newer tag, or build `manage-tool` from your checkout (section 8), if the one you pinned has none.
+:::
+
+```sh
+VERSION=v0.3.0                       # a release that actually lists the assets
+gh release download "master-${VERSION}" \
+  --repo haruki-nikaidou/proxy-guru \
+  --pattern 'manage-tool-*-x86_64-unknown-linux-gnu' \
+  --output manage-tool
+chmod +x manage-tool
+./manage-tool --help
+```
+
+A downloaded `manage-tool` is interchangeable with `./target/release/manage-tool` in every command
+on this page: same flags, same subcommands, only the path differs.
+
+What a release cannot give you is the schema: the files under `database/` and the `surrealkit`
+rollout they feed (section 6) still come from a checkout.
+
+## 11. Get the worker binary from a GitHub release
 
 The data plane ships as a raw binary, not an image, and only `linux/x86_64` is published. Each
-`worker-<version>` release carries one asset, `guru-worker-<version>-x86_64-unknown-linux-gnu`,
-where `<version>` is the tag minus its `worker-` prefix — so tag `worker-v0.1.0` publishes
-`guru-worker-v0.1.0-x86_64-unknown-linux-gnu`.
+`worker-<version>` release carries **two** assets, where `<version>` is the tag minus its `worker-`
+prefix — so tag `worker-v0.1.0` publishes:
 
-Pick a release that actually lists that asset, and check before you script anything around it:
+| Asset | Links against | Use it on |
+|---|---|---|
+| `guru-worker-v0.1.0-x86_64-unknown-linux-gnu` | glibc, dynamically | a glibc host: current Debian/Ubuntu/RHEL |
+| `guru-worker-v0.1.0-x86_64-unknown-linux-musl` | musl, statically — static-pie | Alpine and any other musl distribution |
+
+The musl asset is a static position-independent executable: musl libc is linked into the binary, so
+it has no runtime libc dependency and needs none installed on the host. That is why it runs on a
+bare Alpine — or in an image with nothing else in it — where the gnu build would die on a missing
+`ld-linux-x86-64.so`. Pick `-gnu` on a glibc host and `-musl` on a musl host; if you distribute one
+binary to a mixed fleet, the musl build is the safe default.
+
+Pick a release that actually lists those assets, and check before you script anything around it:
 
 ```sh
 curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
@@ -452,26 +511,30 @@ curl -fsSL https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases \
 A `worker-v*` tag whose release lists no assets was tagged before the release workflow existed (as
 of writing, `worker-v0.0.1-alpha` is in exactly that state: `assets: []`). There is nothing to
 download from such a tag — use a newer release, or push a fresh `worker-v*` tag so the *Release
-Worker* workflow builds and attaches the binary.
+Worker* workflow builds and attaches both binaries.
 :::
 
-With the GitHub CLI:
+With the GitHub CLI. Set `TARGET` once — each pattern below ends with the full triple, so it selects
+exactly one asset:
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-musl     # or x86_64-unknown-linux-gnu on a glibc host
 gh release download "worker-${VERSION}" \
   --repo haruki-nikaidou/proxy-guru \
-  --pattern 'guru-worker-*-x86_64-unknown-linux-gnu' \
+  --pattern "guru-worker-*-${TARGET}" \
   --output guru-worker
 ```
 
-Or with plain `curl` — resolve the asset through the API so you never hard-code a URL:
+Or with plain `curl` — resolve the asset through the API so you never hard-code a URL, and match on
+the same `TARGET`:
 
 ```sh
 VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-musl     # or x86_64-unknown-linux-gnu on a glibc host
 url=$(curl -fsSL \
   "https://api.github.com/repos/haruki-nikaidou/proxy-guru/releases/tags/worker-${VERSION}" \
-  | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-gnu")) | .browser_download_url')
+  | jq -r --arg t "$TARGET" '.assets[] | select(.name | endswith($t)) | .browser_download_url')
 curl -fsSL "$url" -o guru-worker
 ```
 
@@ -487,15 +550,16 @@ Keep the binaries in your own artifact store (an internal HTTP server, an apt/OC
 config-management system) keyed by version. There is no `latest` alias and no published checksum
 file, so record the version — and ideally your own `sha256sum` — alongside the copy you distribute.
 
-The binary is glibc-linked (`x86_64-unknown-linux-gnu`), built on the GitHub runner's Debian base.
-It runs on a current Debian/Ubuntu/RHEL; it will not run on Alpine or any other musl distribution.
+The gnu asset is dynamically linked against the glibc of the GitHub runner (`ubuntu-latest`), so a
+long-lived distribution can be too old to load it — which is the one case where the musl asset is
+the better answer even on a glibc host.
 
 Installing and registering a worker node against this control plane is covered separately;
 everything above stops at "the binary is available and distributable". A node that should run
 without a control plane at all is a different guide:
 [Independent Worker Deployment](/guides/independent-worker/).
 
-## 11. Verify the deployment
+## 12. Verify the deployment
 
 Work through these in order — each one fails loudly and independently:
 
@@ -522,7 +586,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
 If step 6 fails with `Forbidden` while steps 1–5 pass, re-read the proxy warning in section 9.
 
-## 12. Upgrades, backups, rollback
+## 13. Upgrades, backups, rollback
 
 **Upgrading.** Schema first, code second, contraction last:
 
@@ -553,7 +617,7 @@ happens while it is not.
 `EnvFilter` string (`info`, `warn`, `guru_master=debug,orchestration=debug`, …). Ship it with your
 usual Docker log driver.
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Cause |
 |---|---|

@@ -1,0 +1,91 @@
+name: Release Master
+
+# The control plane ships as an image (see build-master.yml), but the same
+# `master-v*` tag also publishes raw binaries for operators who run the master
+# and its admin CLI outside Docker: `guru-master` and `manage-tool`. Only
+# `x86_64-unknown-linux-gnu` is published — both binaries link glibc (the
+# `distroless/cc` image is the same ABI) and `manage-tool` is expected to run
+# next to the master.
+on:
+  push:
+    tags:
+      - "master-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-master-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#master-}"
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+          # Anything that is not `vX.Y.Z` (i.e. `-alpha`, `-rc.1`, ...) is a
+          # GitHub pre-release.
+          if [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Install protobuf compiler
+        # `lib/rpguru_sdk`'s build script compiles `proto/` with
+        # tonic-prost-build, which shells out to `protoc`.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Install Rust toolchain
+        # `rustup show` materialises the channel pinned in rust-toolchain.toml.
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustup target add "$TARGET"
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-master-${{ env.TARGET }}
+
+      - name: Build guru-master and manage-tool
+        run: |
+          cargo build --release --locked \
+            -p guru-master -p manage-tool \
+            --target "$TARGET"
+
+      - name: Package binaries
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p dist
+          for bin in guru-master manage-tool; do
+            name="${bin}-${version}-${TARGET}"
+            cp "target/${TARGET}/release/${bin}" "dist/${name}"
+            chmod +x "dist/${name}"
+          done
+          ls -l dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: guru-master ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/guru-master-${{ steps.version.outputs.version }}-${{ env.TARGET }}
+            dist/manage-tool-${{ steps.version.outputs.version }}-${{ env.TARGET }}
