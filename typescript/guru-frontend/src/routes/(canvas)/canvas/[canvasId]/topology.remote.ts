@@ -24,6 +24,8 @@ import * as v from 'valibot';
 import type { CanvasOption } from '#lib/dto/canvas.js';
 import type {
 	AddressSourceName,
+	AgentInstallDto,
+	AgentReleaseDto,
 	BundlePortDto,
 	CanvasExportAsName,
 	CanvasGraph,
@@ -109,6 +111,11 @@ const extraAddressesSchema = v.optional(
 	[]
 );
 const logLevelSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'log_level_required'));
+/** `guru-worker@<unit>`: what the control plane accepts, or empty for none. */
+const agentUnitSchema = v.optional(
+	v.pipe(v.string(), v.trim(), v.regex(/^(?:[a-z0-9][a-z0-9-]{0,31})?$/, 'agent_unit_invalid')),
+	''
+);
 const proxySchema = v.picklist(['none', 'v1', 'v2'] as const);
 const relayProtocolSchema = v.picklist(['tcp_raw', 'tcp_tls', 'quic'] as const);
 const balanceModeSchema = v.picklist(['round_robin', 'random', 'ip_hash', 'fallback'] as const);
@@ -513,6 +520,12 @@ const toServer = (
 	lastSeenAt: server.lastSeenAt,
 	healthStatus: toServerHealth(server.healthStatus),
 	addresses: toAddresses(server.addresses),
+	agentVersion: server.agentVersion,
+	agentArch: server.agentArch,
+	agentUnit: server.agentUnit,
+	agentUpdateRequested: server.agentUpdateRequested,
+	agentUpdateError: server.agentUpdateError,
+	agentKeyIssuedAt: server.agentKeyIssuedAt,
 	pods,
 	universal
 });
@@ -736,7 +749,8 @@ export const updateServerNode = command(
 		logLevel: logLevelSchema,
 		overrideV4: optionalIpSchema,
 		overrideV6: optionalIpSchema,
-		extraAddresses: extraAddressesSchema
+		extraAddresses: extraAddressesSchema,
+		agentUnit: agentUnitSchema
 	}),
 	async ({
 		canvasId,
@@ -748,7 +762,8 @@ export const updateServerNode = command(
 		logLevel,
 		overrideV4,
 		overrideV6,
-		extraAddresses
+		extraAddresses,
+		agentUnit
 	}) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
@@ -762,7 +777,8 @@ export const updateServerNode = command(
 					logLevel,
 					overrideV4,
 					overrideV6,
-					extraAddresses
+					extraAddresses,
+					agentUnit
 				},
 				{ metadata }
 			)
@@ -771,6 +787,35 @@ export const updateServerNode = command(
 		return { ok: true as const };
 	}
 );
+
+/**
+ * Issues the server's agent key and renders the install command carrying it.
+ * The key is in the reply exactly once; issuing again replaces it.
+ */
+export const issueServerAgentInstall = command(
+	v.object({ canvasId: idSchema, serverId: idSchema, unit: agentUnitSchema }),
+	async ({ canvasId, serverId, unit }): Promise<AgentInstallDto> => {
+		const metadata = sessionMetadata(requireSessionId());
+		const reply = await callGrpc(() =>
+			orchestrationClient().issueServerAgentInstall({ serverId, unit }, { metadata })
+		);
+		await getCanvasGraph({ canvasId }).refresh();
+		return { command: reply.command, unit: reply.unit, version: reply.version };
+	}
+);
+
+/** The published worker release, which the panel offers to servers running another one. */
+export const getAgentRelease = query(async (): Promise<AgentReleaseDto> => {
+	const metadata = sessionMetadata(requireSessionId());
+	const reply = await callGrpc(() => orchestrationClient().getAgentRelease({}, { metadata }));
+	return {
+		version: reply.version,
+		sha256: reply.sha256,
+		arch: reply.arch,
+		publishedAt: reply.publishedAt,
+		baseUrlConfigured: reply.baseUrlConfigured
+	};
+});
 
 /** Deliberately does not refresh: the dragged position already matches locally. */
 export const moveServerNode = command(
