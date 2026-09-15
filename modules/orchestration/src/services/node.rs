@@ -13,8 +13,8 @@ use crate::entities::surreal::certificate::ListCertificatesBySnis;
 use crate::entities::surreal::dns::FindDnsProviderById;
 use crate::entities::surreal::node::{
     CanvasExportAs, CreateNodeRow, DeleteNodeRow, FindNodeById, FindNodeWithPorts, ImportSync,
-    NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PENDING_EXPORT_KEY, UpdateNodeMetaRow,
-    UpdateNodeSpecRow,
+    LoadBalanceMember, MEMBER_PREFIX, NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts,
+    PENDING_EXPORT_KEY, UpdateNodeMetaRow, UpdateNodeSpecRow,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
@@ -171,6 +171,16 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
             PortDirection::Output,
             0,
         )],
+        // The operator's members are bundle ports; a lane (no members declared)
+        // is laid out thin from its count.
+        NodeSpec::LoadBalanceDistribute(cfg) if !cfg.members.is_empty() => {
+            ensure_no_count(item_count)?;
+            member_ports(&cfg.members, PortDirection::Output)
+        }
+        NodeSpec::LoadBalanceAggregate(cfg) if !cfg.members.is_empty() => {
+            ensure_no_count(item_count)?;
+            member_ports(&cfg.members, PortDirection::Input)
+        }
         NodeSpec::LoadBalanceDistribute(_) => {
             let count = load_balance_count(item_count)?;
             if count == 0 {
@@ -179,7 +189,7 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
             let mut ports: Vec<NewPort> = (0..count)
                 .map(|i| {
                     port(
-                        &format!("member_{i}"),
+                        &format!("{MEMBER_PREFIX}{i}"),
                         PortKind::DeriveDestination,
                         PortDirection::Input,
                         i,
@@ -240,6 +250,93 @@ pub fn port_layout(spec: &NodeSpec, item_count: u32) -> Result<Vec<NewPort>, Orc
 /// above any realistic fan-out (a load balancer spreading over 256 exits) while
 /// staying cheap to build and validate.
 pub const MAX_LOAD_BALANCE_MEMBERS: u32 = 256;
+
+/// The longest name a member may have.
+pub const MAX_MEMBER_NAME: usize = 64;
+
+/// One bundle port per declared member, keyed by slot and placed in the order
+/// given (see [`members_ok`] for what a list must satisfy).
+fn member_ports(members: &[LoadBalanceMember], direction: PortDirection) -> Vec<NewPort> {
+    members
+        .iter()
+        .enumerate()
+        .map(|(i, member)| NewPort {
+            kind: PortKind::Bundle,
+            direction,
+            key: member.port_key(),
+            position: i64::try_from(i).unwrap_or(i64::MAX),
+        })
+        .collect()
+}
+
+/// A node whose members are declared has no counted ports next to them.
+fn ensure_no_count(item_count: u32) -> Result<(), OrchestrationError> {
+    if item_count != 0 {
+        return Err(OrchestrationError::Invalid(
+            "a load balance node with members takes no item count".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The operator's member list must be usable as a rule: 1 to 256 members, each
+/// with a name (trimmed, at most 64 characters) and a slot unique in the list.
+pub fn members_ok(members: &[LoadBalanceMember]) -> Result<(), OrchestrationError> {
+    if members.is_empty() {
+        return Err(OrchestrationError::Invalid(
+            "a load balance node needs at least one member".into(),
+        ));
+    }
+    if members.len() > MAX_LOAD_BALANCE_MEMBERS as usize {
+        return Err(OrchestrationError::Invalid(format!(
+            "load balance nodes take at most {MAX_LOAD_BALANCE_MEMBERS} members, got {}",
+            members.len()
+        )));
+    }
+    let mut slots = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    for member in members {
+        let name = member.name.trim();
+        if name.is_empty() {
+            return Err(OrchestrationError::Invalid(
+                "every member needs a name".into(),
+            ));
+        }
+        if name.chars().count() > MAX_MEMBER_NAME {
+            return Err(OrchestrationError::Invalid(format!(
+                "member name '{name}' is longer than {MAX_MEMBER_NAME} characters"
+            )));
+        }
+        if !names.insert(name) {
+            return Err(OrchestrationError::Invalid(format!(
+                "member name '{name}' is used twice"
+            )));
+        }
+        if !slots.insert(member.slot) {
+            return Err(OrchestrationError::Invalid(format!(
+                "member slot {} is used twice",
+                member.slot
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// An operator's load-balance node declares its members in the spec: the list
+/// must be valid, and the counted layout is for lanes only.
+fn ensure_operator_members(spec: &NodeSpec, item_count: u32) -> Result<(), OrchestrationError> {
+    match spec {
+        NodeSpec::LoadBalanceDistribute(cfg) => {
+            members_ok(&cfg.members)?;
+            ensure_no_count(item_count)
+        }
+        NodeSpec::LoadBalanceAggregate(cfg) => {
+            members_ok(&cfg.members)?;
+            ensure_no_count(item_count)
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Zero members means no hand-drawn ports at all: a node used through bundles
 /// and channels only (see `services::universal`).
@@ -406,6 +503,7 @@ impl Processor<CreateNode> for NodeService {
             ));
         }
         let mut input = input;
+        ensure_operator_members(&input.spec, input.item_count)?;
         ensure_tls_valid(&self.db, &mut input.spec).await?;
         let mut topology = self
             .db
@@ -533,9 +631,12 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         }
         ensure_lane_edit_allowed(&old, &input.spec)?;
         let mut input = input;
+        ensure_operator_members(&input.spec, input.item_count)?;
         ensure_tls_valid(&self.db, &mut input.spec).await?;
-        // A load-balance node's on-demand ports (channels, bundles) are the
-        // control plane's: the hand-drawn layout is replaced, they are kept.
+        // A load-balance node's on-demand ports (channels, bundles in) are the
+        // control plane's: the member layout is replaced, they are kept. A
+        // member keeps its port (and the bundle on it) as long as its slot
+        // stays in the list, whatever its name or place.
         let mut ports = port_layout(&input.spec, input.item_count)?;
         if input.spec.takes_bundles() {
             ports.extend(

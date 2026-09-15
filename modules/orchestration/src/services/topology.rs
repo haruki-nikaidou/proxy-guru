@@ -517,6 +517,8 @@ fn check_imports(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
 
 fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<TopologyProblem>) {
     let mut usage: HashMap<String, (usize, PortId)> = HashMap::new();
+    // Bundle edges by (source node, target node): a pair is bundled once.
+    let mut bundled: HashMap<(String, String), Vec<&EdgeConnectionEntity>> = HashMap::new();
     for edge in &topology.edges {
         let edge_key = record_key(&edge.id.0);
         for endpoint in [&edge.source, &edge.target] {
@@ -563,17 +565,24 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
                 .with_ports(vec![edge.source.clone(), edge.target.clone()]),
             );
         }
-        if source.kind == PortKind::Bundle
-            && let Some(message) = bundle_edge_problem(source, source_node, target, target_node)
-        {
-            out.push(
-                TopologyProblem::error(
-                    ProblemKind::BundleEdgeInvalid,
-                    format!("edge {edge_key} {message}"),
-                )
-                .with_edges(vec![edge.id.clone()])
-                .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
-            );
+        if source.kind == PortKind::Bundle {
+            if let Some(message) = bundle_edge_problem(source, source_node, target, target_node) {
+                out.push(
+                    TopologyProblem::error(
+                        ProblemKind::BundleEdgeInvalid,
+                        format!("edge {edge_key} {message}"),
+                    )
+                    .with_edges(vec![edge.id.clone()])
+                    .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
+                );
+            }
+            bundled
+                .entry((
+                    record_key(&source_node.node.id.0),
+                    record_key(&target_node.node.id.0),
+                ))
+                .or_default()
+                .push(edge);
         }
         if matches!(
             source_node.node.spec,
@@ -619,6 +628,32 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
         }
     }
 
+    let mut twice: Vec<_> = bundled
+        .into_iter()
+        .filter(|(_, edges)| edges.len() > 1)
+        .collect();
+    twice.sort_by(|a, b| a.0.cmp(&b.0));
+    for ((source, target), edges) in twice {
+        let name = |key: &str| {
+            index
+                .nodes
+                .get(key)
+                .map(|n| n.node.name.clone())
+                .unwrap_or_default()
+        };
+        out.push(
+            TopologyProblem::error(
+                ProblemKind::BundleEdgeInvalid,
+                format!(
+                    "{} is bundled to {} more than once; one member per far node",
+                    name(&source),
+                    name(&target)
+                ),
+            )
+            .with_edges(edges.iter().map(|e| e.id.clone()).collect()),
+        );
+    }
+
     let mut oversubscribed: Vec<_> = usage
         .into_iter()
         .filter(|(_, (count, _))| *count > 1)
@@ -642,8 +677,9 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
 
 /// Why a bundle edge is not one of the allowed shapes — a distribute node or a
 /// universal pod bundling to a universal pod or a distribute node, or a
-/// universal pod bundling to an aggregate node — on ports named after each
-/// other; `None` when it is.
+/// universal pod bundling to an aggregate node — leaving through a member or a
+/// universal pod's `bundle_out` and arriving on the `bundle_in:` port named
+/// after the source, or on an aggregate node's member; `None` when it is.
 fn bundle_edge_problem(
     source: &PortEntity,
     source_node: &NodeWithPorts,
@@ -651,7 +687,6 @@ fn bundle_edge_problem(
     target_node: &NodeWithPorts,
 ) -> Option<String> {
     let source_key = record_key(&source_node.node.id.0);
-    let target_key = record_key(&target_node.node.id.0);
     let pair_ok = matches!(
         (&source_node.node.spec, &target_node.node.spec),
         (
@@ -663,20 +698,49 @@ fn bundle_edge_problem(
         return Some("bundles nodes that cannot be bundled".to_string());
     }
     let source_ok = match universal::parse_port_key(&source.key) {
-        Some(UniversalPort::BundleOut(Some(named))) => named == target_key,
-        Some(UniversalPort::BundleOut(None)) => {
-            matches!(source_node.node.spec, NodeSpec::UniversalPod(_))
+        Some(UniversalPort::BundleOut) => matches!(source_node.node.spec, NodeSpec::UniversalPod(_)),
+        None => {
+            matches!(source_node.node.spec, NodeSpec::LoadBalanceDistribute(_))
+                && universal::is_member_port(source)
         }
         _ => false,
     };
-    let target_ok = matches!(
-        universal::parse_port_key(&target.key),
-        Some(UniversalPort::BundleIn(named)) if named == source_key
-    );
+    let target_ok = match universal::parse_port_key(&target.key) {
+        Some(UniversalPort::BundleIn(named)) => {
+            named == source_key
+                && matches!(
+                    target_node.node.spec,
+                    NodeSpec::UniversalPod(_) | NodeSpec::LoadBalanceDistribute(_)
+                )
+        }
+        None => {
+            matches!(target_node.node.spec, NodeSpec::LoadBalanceAggregate(_))
+                && universal::is_member_port(target)
+        }
+        _ => false,
+    };
     if !source_ok || !target_ok {
-        return Some("joins bundle ports not named after each other".to_string());
+        return Some("joins ports that do not carry a bundle between these nodes".to_string());
     }
     None
+}
+
+/// Whether the hand-drawn ports of a load-balance node are exactly its declared
+/// members: one bundle port per member, keyed by slot, in the order listed.
+fn members_shape_ok(
+    members: &[crate::entities::surreal::node::LoadBalanceMember],
+    ports: &[&PortEntity],
+    direction: PortDirection,
+) -> bool {
+    ports.len() == members.len()
+        && members.iter().enumerate().all(|(i, member)| {
+            ports.iter().any(|p| {
+                p.key == member.port_key()
+                    && p.kind == PortKind::Bundle
+                    && p.direction == direction
+                    && usize::try_from(p.position).is_ok_and(|pos| pos == i)
+            })
+        })
 }
 
 /// `(kind, direction, multiplicity)` a spec's hand-drawn ports must match.
@@ -746,13 +810,19 @@ fn manual_shape_ok(
     ok
 }
 
-/// The hand-drawn input ports of a node, in position order: a load-balance
-/// node's `member_*` / `source`, never its on-demand `lane:` ports.
+/// The hand-drawn input ports a node is derived through, in position order: a
+/// lane's `member_*` / `source`, never an on-demand `lane:` port and never a
+/// member that carries a bundle (an operator's node is derived through its
+/// lanes, not itself).
 pub(crate) fn manual_inputs(node: &NodeWithPorts) -> Vec<&PortEntity> {
     let mut ports: Vec<&PortEntity> = node
         .ports
         .iter()
-        .filter(|p| p.direction == PortDirection::Input && !universal::is_on_demand(p))
+        .filter(|p| {
+            p.direction == PortDirection::Input
+                && p.kind != PortKind::Bundle
+                && !universal::is_on_demand(p)
+        })
         .collect();
     ports.sort_by_key(|p| p.position);
     ports
@@ -790,8 +860,16 @@ fn check_port_shapes(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                     .filter(|p| !universal::is_on_demand(p))
                     .collect();
                 universal::universal_port_shape_ok(node)
-                    && expected_ports(spec)
-                        .is_none_or(|expected| manual_shape_ok(spec, &manual, &expected))
+                    && match spec {
+                        NodeSpec::LoadBalanceDistribute(cfg) if !cfg.members.is_empty() => {
+                            members_shape_ok(&cfg.members, &manual, PortDirection::Output)
+                        }
+                        NodeSpec::LoadBalanceAggregate(cfg) if !cfg.members.is_empty() => {
+                            members_shape_ok(&cfg.members, &manual, PortDirection::Input)
+                        }
+                        _ => expected_ports(spec)
+                            .is_none_or(|expected| manual_shape_ok(spec, &manual, &expected)),
+                    }
             }
             spec => {
                 let Some(expected) = expected_ports(spec) else {
@@ -1197,11 +1275,20 @@ fn check_warnings(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                     );
                 }
             }
-            NodeSpec::LoadBalanceDistribute(_) => {
-                let connected = manual_inputs(node)
-                    .into_iter()
-                    .filter(|p| index.edge_on(p).is_some())
-                    .count();
+            NodeSpec::LoadBalanceDistribute(cfg) => {
+                // An operator's node balances over its wired members; a lane
+                // over its thin inputs.
+                let connected = if cfg.members.is_empty() {
+                    manual_inputs(node)
+                        .into_iter()
+                        .filter(|p| index.edge_on(p).is_some())
+                        .count()
+                } else {
+                    node.ports
+                        .iter()
+                        .filter(|p| universal::is_member_port(p) && index.edge_on(p).is_some())
+                        .count()
+                };
                 if connected == 1 {
                     out.push(
                         TopologyProblem::warning(

@@ -430,14 +430,30 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
     let web_in = create(&w, &canvas, "web-in", entry_spec()).await?;
     let api = create(&w, &canvas, "api", pod_spec_on(&ip, 8443)).await?;
     let api_in = create(&w, &canvas, "api-in", entry_spec()).await?;
-    let agg = create_with(
-        &w,
-        &canvas,
-        "agg",
-        NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {}),
-        2,
-    )
-    .await?;
+    // A thin aggregate, laid out the way the expansion lays out its lanes (an
+    // operator's aggregate node takes bundles on named members instead).
+    let thin = |key: &str, direction, position| orchestration::entities::surreal::node::NewPort {
+        kind: orchestration::entities::surreal::port::PortKind::DeriveDestination,
+        direction,
+        key: key.to_string(),
+        position,
+    };
+    let agg = w
+        .db
+        .process(orchestration::entities::surreal::node::CreateNodeRow {
+            canvas: canvas.clone(),
+            name: "agg".to_string(),
+            comment: String::new(),
+            spec: NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
+            position: pos0(),
+            ports: vec![
+                thin("source", orchestration::entities::surreal::port::PortDirection::Input, 0),
+                thin("copy_0", orchestration::entities::surreal::port::PortDirection::Output, 1),
+                thin("copy_1", orchestration::entities::surreal::port::PortDirection::Output, 2),
+            ],
+            import_sync: None,
+        })
+        .await?;
     let exit = create(&w, &canvas, "shared-out", exit_spec("10.0.0.5:8080")).await?;
     connect(&w, port_of(&web, "listen"), port_of(&web_in, "listen")).await?;
     connect(&w, port_of(&api, "listen"), port_of(&api_in, "listen")).await?;

@@ -113,6 +113,36 @@ pub fn aggregate_ports(copies: i64) -> Vec<PortSpec> {
     ports
 }
 
+/// The operator's members of a load-balance node: slots 1.., named as given.
+pub fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::LoadBalanceMember> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+            slot: u32::try_from(i + 1).unwrap(),
+            name: (*name).to_string(),
+        })
+        .collect()
+}
+
+/// The bundle ports of a distribute node's declared members (see [`members`]).
+pub fn distribute_member_ports(names: &[&str]) -> Vec<PortSpec> {
+    members(names)
+        .iter()
+        .enumerate()
+        .map(|(i, m)| spec(&m.port_key(), PortKind::Bundle, PortDirection::Output, i as i64))
+        .collect()
+}
+
+/// The bundle ports of an aggregate node's declared members.
+pub fn aggregate_member_ports(names: &[&str]) -> Vec<PortSpec> {
+    members(names)
+        .iter()
+        .enumerate()
+        .map(|(i, m)| spec(&m.port_key(), PortKind::Bundle, PortDirection::Input, i as i64))
+        .collect()
+}
+
 /// The single port of an export node inside its canvas.
 pub fn export_ports(kind: PortKind, direction: CanvasExportAs) -> Vec<PortSpec> {
     vec![spec("export", kind, export_port_direction(direction), 0)]

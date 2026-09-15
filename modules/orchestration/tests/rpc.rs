@@ -176,13 +176,19 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
             pb::node_spec::Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
                 mode: pb::LoadBalanceMode::RoundRobin.into(),
                 protocol: pb::RelayProtocol::RelayTcpRaw.into(),
+                members: vec![pb::LoadBalanceMember {
+                    slot: 1,
+                    name: "hk-1".to_string(),
+                }],
             }),
         ))
         .await?
         .into_inner()
         .node
         .unwrap();
-    assert!(ud.ports.is_empty(), "a distribute node with no members starts without ports");
+    assert_eq!(ud.ports.len(), 1, "one bundle port per member: {:?}", ud.ports);
+    assert_eq!(ud.ports[0].key, "member_1");
+    assert_eq!(ud.ports[0].kind, i32::from(pb::PortKind::Bundle));
     let destination = pod.ports.iter().find(|p| p.key == "destination").unwrap();
     let edge = api
         .connect_ports(as_operator(pb::ConnectRequest {

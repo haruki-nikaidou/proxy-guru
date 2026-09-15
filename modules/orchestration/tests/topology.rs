@@ -121,6 +121,7 @@ fn a_node_cannot_connect_to_itself() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -508,6 +509,7 @@ fn ip_hash_needs_the_client_address() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -535,6 +537,7 @@ fn ip_hash_needs_the_client_address() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -556,7 +559,7 @@ fn ip_hash_behind_an_aggregate_is_still_reachable() {
     b.node("entry", entry(None), entry_ports());
     b.node(
         "agg",
-        NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {}),
+        NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
         aggregate_ports(2),
     );
     b.node(
@@ -564,6 +567,7 @@ fn ip_hash_behind_an_aggregate_is_still_reachable() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::IpHash,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -627,6 +631,7 @@ fn a_single_member_load_balancer_is_a_warning() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -684,12 +689,28 @@ fn channel_ports(pod: &str, out_first: bool, ordinal: i64) -> Vec<(String, PortK
     ]
 }
 
+/// A distribute node laid out like a lane: no declared members.
 fn ud(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
-    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol })
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol, members: Vec::new() })
+}
+
+/// An operator's distribute node: the named members are its bundle outputs.
+fn ud_with(mode: LoadBalanceMode, protocol: RelayProtocol, names: &[&str]) -> NodeSpec {
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
+        mode,
+        protocol,
+        members: members(names),
+    })
 }
 
 fn ua() -> NodeSpec {
-    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
+    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default())
+}
+
+fn ua_with(names: &[&str]) -> NodeSpec {
+    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {
+        members: members(names),
+    })
 }
 
 fn up(server: &ServerId) -> NodeSpec {
@@ -710,8 +731,8 @@ fn expanded_builder() -> Builder {
     b.node("entry", entry(None), entry_ports());
     b.connect("p0-listen", "entry-listen");
     let mut ud_ports = channel_ports("p0", true, 0);
-    ud_ports.push(bundle_port(&universal::bundle_out_key("hk-up"), PortDirection::Output));
-    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), ud_ports);
+    ud_ports.extend(distribute_member_ports(&["hk"]));
+    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["hk"]), ud_ports);
     b.connect("ud-chan:p0", "p0-destination");
     b.node(
         "hk-up",
@@ -721,7 +742,7 @@ fn expanded_builder() -> Builder {
             bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
         ],
     );
-    b.connect("ud-bundle_out:hk-up", "hk-up-bundle_in:ud");
+    b.connect("ud-member_1", "hk-up-bundle_in:ud");
     // The lanes.
     let landing = Lane::new(&ids::node_id("hk-up"), &ids::node_id("p0"), LaneRole::Landing, Some(&ids::node_id("ud")), None);
     b.node("landing", pod(&hk, 45000), pod_ports());
@@ -742,7 +763,12 @@ fn a_matching_expansion_is_not_stale_and_derives_through_the_channel() {
     let topology = expanded_builder().build();
     let problems = analyze(&topology);
     assert!(errors(&problems).is_empty(), "{problems:?}");
-    assert_eq!(warnings(&problems), [ProblemKind::ChannelNoExit], "{problems:?}");
+    // One member wired: the single-member warning, next to the missing exit.
+    assert_eq!(
+        warnings(&problems),
+        [ProblemKind::DistributeSingleMember, ProblemKind::ChannelNoExit],
+        "{problems:?}"
+    );
     assert!(!universal::is_stale(&topology));
 
     let derived = orchestration::services::derive::derive_server_config(
@@ -801,21 +827,28 @@ fn bundles_may_enter_a_distribute_node() {
         up(&hk),
         vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)],
     );
-    b.node(
-        "ud2",
-        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
-        vec![
-            bundle_port(&universal::bundle_in_key("hk-up"), PortDirection::Input),
-            bundle_port(&universal::bundle_out_key("ud3"), PortDirection::Output),
-        ],
-    );
-    b.node(
-        "ud3",
-        ud(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw),
-        vec![bundle_port(&universal::bundle_in_key("ud2"), PortDirection::Input)],
-    );
+    let mut ud2_ports = vec![bundle_port(&universal::bundle_in_key("hk-up"), PortDirection::Input)];
+    ud2_ports.extend(distribute_member_ports(&["next"]));
+    b.node("ud2", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["next"]), ud2_ports);
+    let mut ud3_ports = vec![bundle_port(&universal::bundle_in_key("ud2"), PortDirection::Input)];
+    ud3_ports.extend(distribute_member_ports(&["x"]));
+    b.node("ud3", ud_with(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw, &["x"]), ud3_ports);
     b.connect("hk-up-bundle_out", "ud2-bundle_in:hk-up");
-    b.connect("ud2-bundle_out:ud3", "ud3-bundle_in:ud2");
+    b.connect("ud2-member_1", "ud3-bundle_in:ud2");
+    let problems = analyze(&b.build());
+    assert!(!errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+}
+
+/// A universal pod's `bundle_out` lands on an aggregate node's member: a plain
+/// bundle edge between two ports the operator has.
+#[test]
+fn a_bundle_lands_on_an_aggregate_member() {
+    let mut b = Builder::new("prod");
+    let hk = b.server("hk");
+    b.node("hk-up", up(&hk), vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)]);
+    b.node("ua", ua_with(&["hk", "spare"]), aggregate_member_ports(&["hk", "spare"]));
+    b.connect("hk-up-bundle_out", "ua-member_1");
     let problems = analyze(&b.build());
     assert!(!errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
     assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
@@ -823,41 +856,42 @@ fn bundles_may_enter_a_distribute_node() {
 
 #[test]
 fn bundles_only_join_the_allowed_pairs_on_matching_keys() {
-    // A distributor bundled straight into an aggregator.
+    // A distributor's member straight into an aggregator's member.
     let mut b = Builder::new("prod");
-    b.node(
-        "ud",
-        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
-        vec![bundle_port(&universal::bundle_out_key("ua"), PortDirection::Output)],
-    );
-    b.node(
-        "ua",
-        ua(),
-        vec![bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input)],
-    );
-    b.connect("ud-bundle_out:ua", "ua-bundle_in:ud");
+    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]), distribute_member_ports(&["a"]));
+    b.node("ua", ua_with(&["a"]), aggregate_member_ports(&["a"]));
+    b.connect("ud-member_1", "ua-member_1");
     let problems = analyze(&b.build());
     assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
 
-    // The right pair, but the ports are not named after each other.
+    // The right pair, but the collecting port is named after another node.
     let mut b = Builder::new("prod");
     let hk = b.server("hk");
-    b.node(
-        "ud",
-        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
-        vec![bundle_port(&universal::bundle_out_key("other"), PortDirection::Output)],
-    );
+    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]), distribute_member_ports(&["a"]));
     b.node(
         "hk-up",
         up(&hk),
         vec![
-            bundle_port(&universal::bundle_in_key("ud"), PortDirection::Input),
+            bundle_port(&universal::bundle_in_key("other"), PortDirection::Input),
             bundle_port(universal::BUNDLE_OUT, PortDirection::Output),
         ],
     );
-    b.connect("ud-bundle_out:other", "hk-up-bundle_in:ud");
+    b.connect("ud-member_1", "hk-up-bundle_in:other");
     let problems = analyze(&b.build());
     assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+
+    // A universal pod into a distribute node's member (members are outputs).
+    let mut b = Builder::new("prod");
+    let hk = b.server("hk");
+    b.node("hk-up", up(&hk), vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)]);
+    b.node(
+        "ud",
+        ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]),
+        vec![("member_1".to_string(), PortKind::Bundle, PortDirection::Input, 0)],
+    );
+    b.connect("hk-up-bundle_out", "ud-member_1");
+    let problems = analyze(&b.build());
+    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
 }
 
 #[test]
@@ -938,6 +972,22 @@ fn universal_ports_must_have_their_kind_shape() {
     );
     let problems = analyze(&b.build());
     assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+
+    // Declared members must be there, one bundle port each, in order.
+    let mut b = Builder::new("prod");
+    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a", "b"]), distribute_member_ports(&["a"]));
+    let mut swapped = distribute_member_ports(&["a", "b"]);
+    swapped.swap(0, 1);
+    swapped[0].3 = 0;
+    swapped[1].3 = 1;
+    b.node("ud2", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a", "b"]), swapped);
+    b.node("ua", ua_with(&["a"]), aggregate_member_ports(&["a"]));
+    let problems = analyze(&b.build());
+    let shape_errors = problems
+        .iter()
+        .filter(|p| p.kind == ProblemKind::PortShapeInvalid)
+        .count();
+    assert_eq!(shape_errors, 2, "{problems:?}");
 }
 
 /// A distribute node's `lane:` inputs are not members: a node whose only

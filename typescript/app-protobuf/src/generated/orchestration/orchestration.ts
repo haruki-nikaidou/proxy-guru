@@ -390,7 +390,6 @@ export enum ProblemKind {
   CHANNEL_NO_EXIT = 25,
   CHANNEL_NO_TRANSIT = 26,
   LANES_STALE = 27,
-  CHANNEL_DUPLICATE_PATH = 28,
   UNRECOGNIZED = -1,
 }
 
@@ -474,9 +473,6 @@ export function problemKindFromJSON(object: any): ProblemKind {
     case 27:
     case "LANES_STALE":
       return ProblemKind.LANES_STALE;
-    case 28:
-    case "CHANNEL_DUPLICATE_PATH":
-      return ProblemKind.CHANNEL_DUPLICATE_PATH;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -538,8 +534,6 @@ export function problemKindToJSON(object: ProblemKind): string {
       return "CHANNEL_NO_TRANSIT";
     case ProblemKind.LANES_STALE:
       return "LANES_STALE";
-    case ProblemKind.CHANNEL_DUPLICATE_PATH:
-      return "CHANNEL_DUPLICATE_PATH";
     case ProblemKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -600,16 +594,17 @@ export function laneRoleToJSON(object: LaneRole): string {
 
 /**
  * The handle groups of a bundle-capable node, for connects that create a port
- * on demand: `CHANNEL_OUT` on a load-balance distribute node (one port per
- * channel), `BUNDLE_IN` on a universal pod or a load-balance aggregate node
- * (one port per incoming bundle), `BUNDLE_OUT` on a distribute node (one port
- * per outgoing bundle) or a universal pod (its single fixed port).
+ * on demand: `CHANNEL_OUT` on a load-balance distribute node or a universal pod
+ * (one port per channel), `BUNDLE_IN` on a universal pod or a load-balance
+ * distribute node (one port per incoming bundle). Bundles leave through ports
+ * that already exist (a distribute node's members, a universal pod's
+ * `bundle_out`) and enter an aggregate node through its members, so those
+ * ends are given by port id.
  */
 export enum UniversalGroup {
   UNSPECIFIED = 0,
   CHANNEL_OUT = 1,
   BUNDLE_IN = 2,
-  BUNDLE_OUT = 3,
   UNRECOGNIZED = -1,
 }
 
@@ -624,9 +619,6 @@ export function universalGroupFromJSON(object: any): UniversalGroup {
     case 2:
     case "BUNDLE_IN":
       return UniversalGroup.BUNDLE_IN;
-    case 3:
-    case "BUNDLE_OUT":
-      return UniversalGroup.BUNDLE_OUT;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -642,8 +634,6 @@ export function universalGroupToJSON(object: UniversalGroup): string {
       return "CHANNEL_OUT";
     case UniversalGroup.BUNDLE_IN:
       return "BUNDLE_IN";
-    case UniversalGroup.BUNDLE_OUT:
-      return "BUNDLE_OUT";
     case UniversalGroup.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -909,16 +899,30 @@ export interface ExitConfig {
 }
 
 /**
- * `protocol` is how the channels bundled out of this node are relayed to the
- * universal pods they land on (unspecified = raw TCP); it has no effect on the
- * node's hand-drawn members.
+ * One member of a load-balance node, as the operator declares it: `slot` is the
+ * member's stable number (its port is `member_<slot>`, so renaming keeps the
+ * bundle drawn on it), `name` is what the operator calls it.
+ */
+export interface LoadBalanceMember {
+  slot: number;
+  name: string;
+}
+
+/**
+ * The operator's rule: `members` are the bundles this node splits into, one
+ * port each, in the order given (1 to 256, unique names and slots).
+ * `protocol` is how the channels bundled out are relayed to the universal
+ * pods they land on (unspecified = raw TCP).
  */
 export interface LoadBalanceDistributeConfig {
   mode: LoadBalanceMode;
   protocol: RelayProtocol;
+  members: LoadBalanceMember[];
 }
 
+/** `members` are the bundles this node joins, one port each (1 to 256). */
 export interface LoadBalanceAggregateConfig {
+  members: LoadBalanceMember[];
 }
 
 export interface CanvasImportConfig {
@@ -1213,7 +1217,13 @@ export interface CreateNodeRequest {
   name: string;
   comment: string;
   spec: NodeSpec | undefined;
-  position: CanvasUiPosition | undefined;
+  position:
+    | CanvasUiPosition
+    | undefined;
+  /**
+   * Reserved for specs with a hand-drawn member count; load-balance nodes
+   * declare their members in the spec and take 0 here.
+   */
   itemCount: number;
 }
 
@@ -2104,8 +2114,84 @@ export const ExitConfig: MessageFns<ExitConfig> = {
   },
 };
 
+function createBaseLoadBalanceMember(): LoadBalanceMember {
+  return { slot: 0, name: "" };
+}
+
+export const LoadBalanceMember: MessageFns<LoadBalanceMember> = {
+  encode(message: LoadBalanceMember, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0) {
+      writer.uint32(8).uint32(message.slot);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): LoadBalanceMember {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseLoadBalanceMember();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): LoadBalanceMember {
+    return {
+      slot: isSet(object.slot) ? globalThis.Number(object.slot) : 0,
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+    };
+  },
+
+  toJSON(message: LoadBalanceMember): unknown {
+    const obj: any = {};
+    if (message.slot !== 0) {
+      obj.slot = Math.round(message.slot);
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<LoadBalanceMember>): LoadBalanceMember {
+    return LoadBalanceMember.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<LoadBalanceMember>): LoadBalanceMember {
+    const message = createBaseLoadBalanceMember();
+    message.slot = object.slot ?? 0;
+    message.name = object.name ?? "";
+    return message;
+  },
+};
+
 function createBaseLoadBalanceDistributeConfig(): LoadBalanceDistributeConfig {
-  return { mode: 0, protocol: 0 };
+  return { mode: 0, protocol: 0, members: [] };
 }
 
 export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig> = {
@@ -2115,6 +2201,9 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
     }
     if (message.protocol !== 0) {
       writer.uint32(16).int32(message.protocol);
+    }
+    for (const v of message.members) {
+      LoadBalanceMember.encode(v!, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -2142,6 +2231,14 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
           message.protocol = reader.int32() as any;
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.members.push(LoadBalanceMember.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2155,6 +2252,9 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
     return {
       mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0,
       protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
+      members: globalThis.Array.isArray(object?.members)
+        ? object.members.map((e: any) => LoadBalanceMember.fromJSON(e))
+        : [],
     };
   },
 
@@ -2166,6 +2266,9 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
     if (message.protocol !== 0) {
       obj.protocol = relayProtocolToJSON(message.protocol);
     }
+    if (message.members?.length) {
+      obj.members = message.members.map((e) => LoadBalanceMember.toJSON(e));
+    }
     return obj;
   },
 
@@ -2176,16 +2279,20 @@ export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig
     const message = createBaseLoadBalanceDistributeConfig();
     message.mode = object.mode ?? 0;
     message.protocol = object.protocol ?? 0;
+    message.members = object.members?.map((e) => LoadBalanceMember.fromPartial(e)) || [];
     return message;
   },
 };
 
 function createBaseLoadBalanceAggregateConfig(): LoadBalanceAggregateConfig {
-  return {};
+  return { members: [] };
 }
 
 export const LoadBalanceAggregateConfig: MessageFns<LoadBalanceAggregateConfig> = {
-  encode(_: LoadBalanceAggregateConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+  encode(message: LoadBalanceAggregateConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.members) {
+      LoadBalanceMember.encode(v!, writer.uint32(10).fork()).join();
+    }
     return writer;
   },
 
@@ -2196,6 +2303,14 @@ export const LoadBalanceAggregateConfig: MessageFns<LoadBalanceAggregateConfig> 
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.members.push(LoadBalanceMember.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2205,20 +2320,28 @@ export const LoadBalanceAggregateConfig: MessageFns<LoadBalanceAggregateConfig> 
     return message;
   },
 
-  fromJSON(_: any): LoadBalanceAggregateConfig {
-    return {};
+  fromJSON(object: any): LoadBalanceAggregateConfig {
+    return {
+      members: globalThis.Array.isArray(object?.members)
+        ? object.members.map((e: any) => LoadBalanceMember.fromJSON(e))
+        : [],
+    };
   },
 
-  toJSON(_: LoadBalanceAggregateConfig): unknown {
+  toJSON(message: LoadBalanceAggregateConfig): unknown {
     const obj: any = {};
+    if (message.members?.length) {
+      obj.members = message.members.map((e) => LoadBalanceMember.toJSON(e));
+    }
     return obj;
   },
 
   create(base?: DeepPartial<LoadBalanceAggregateConfig>): LoadBalanceAggregateConfig {
     return LoadBalanceAggregateConfig.fromPartial(base ?? {});
   },
-  fromPartial(_: DeepPartial<LoadBalanceAggregateConfig>): LoadBalanceAggregateConfig {
+  fromPartial(object: DeepPartial<LoadBalanceAggregateConfig>): LoadBalanceAggregateConfig {
     const message = createBaseLoadBalanceAggregateConfig();
+    message.members = object.members?.map((e) => LoadBalanceMember.fromPartial(e)) || [];
     return message;
   },
 };

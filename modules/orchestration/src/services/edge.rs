@@ -67,7 +67,8 @@ fn port_in<'a>(
 }
 
 /// Edges on the generated side of the graph are not the operator's to draw or
-/// cut; bundle ports are only reached through handles.
+/// cut; a bundle port only ever joins another bundle port (see
+/// [`ConnectUniversal`]), never a thin one.
 fn ensure_operator_port(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), OrchestrationError> {
     if universal::is_managed_port(port, &owner.node) {
         return Err(OrchestrationError::Conflict(
@@ -76,7 +77,30 @@ fn ensure_operator_port(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), 
     }
     if port.kind == PortKind::Bundle {
         return Err(OrchestrationError::Invalid(
-            "bundle ports are connected through the node's bundle handle".into(),
+            "a bundle port joins a bundle port or a bundle handle only".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The port a bundle leaves from: a distribute node's member or a universal
+/// pod's fixed `bundle_out`.
+fn ensure_bundle_source(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), OrchestrationError> {
+    if universal::is_managed_port(port, &owner.node) {
+        return Err(OrchestrationError::Conflict(
+            "port is managed by a universal node; edit that node instead".into(),
+        ));
+    }
+    let ok = port.direction == PortDirection::Output
+        && match &owner.node.spec {
+            NodeSpec::LoadBalanceDistribute(_) => universal::is_member_port(port),
+            NodeSpec::UniversalPod(_) => port.key == universal::BUNDLE_OUT,
+            _ => false,
+        };
+    if !ok {
+        return Err(OrchestrationError::Invalid(
+            "a bundle leaves through a distribute node's member or a universal pod's bundle output"
+                .into(),
         ));
     }
     Ok(())
@@ -101,6 +125,19 @@ impl Processor<Connect> for EdgeService {
                 canvas: canvas.clone(),
             })
             .await?;
+        // A bundle drawn port to port (a universal pod into an aggregate node's
+        // member) regenerates lanes like any bundle: it is the universal path.
+        let (out_port, _) = port_in(&topology, &input.output_port)?;
+        let (in_port, _) = port_in(&topology, &input.input_port)?;
+        if out_port.kind == PortKind::Bundle && in_port.kind == PortKind::Bundle {
+            return self
+                .process(ConnectUniversal {
+                    actor: input.actor,
+                    output: ConnectEnd::Port(input.output_port),
+                    input: ConnectEnd::Port(input.input_port),
+                })
+                .await;
+        }
         for port in [&input.output_port, &input.input_port] {
             let (port, owner) = port_in(&topology, port)?;
             ensure_operator_port(port, owner)?;
@@ -134,15 +171,16 @@ impl Processor<Connect> for EdgeService {
     }
 }
 
-/// The handle groups a connect may name on a universal node.
+/// The handle groups a connect may name on a universal node: the ports that
+/// are created by the connect itself. Bundles leave through ports that exist
+/// already (a distribute node's members, a universal pod's `bundle_out`) and
+/// enter an aggregate node through its members, so those ends are ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniversalGroup {
-    /// A distributor's channel outputs.
+    /// A distributor's or universal pod's channel outputs.
     ChannelOut,
-    /// A universal pod's or aggregator's incoming bundles.
+    /// A universal pod's or distributor's incoming bundles.
     BundleIn,
-    /// A distributor's outgoing bundles, or a universal pod's single one.
-    BundleOut,
 }
 
 /// One end of a [`ConnectUniversal`].
@@ -182,9 +220,10 @@ impl ConnectEnd {
     }
 }
 
-/// A connect where at least one end is a universal node's handle. The port
-/// behind the handle is created in the same write as the edge and the lanes
-/// the new edge calls for.
+/// A connect that changes the expansion: a channel or a bundle. The port behind
+/// a handle is created in the same write as the edge and the lanes the new
+/// edge calls for; a bundle drawn between two existing ports (a universal pod
+/// into an aggregate node's member) only regenerates the lanes.
 pub struct ConnectUniversal {
     pub actor: Identity,
     pub output: ConnectEnd,
@@ -217,6 +256,23 @@ fn has_edge(topology: &CanvasTopology, port: &PortEntity) -> bool {
         .edges
         .iter()
         .any(|e| record_key(&e.source.0) == key || record_key(&e.target.0) == key)
+}
+
+/// A bundle port carries one bundle.
+fn ensure_bundle_free(
+    topology: &CanvasTopology,
+    port: &PortEntity,
+    owner: &NodeWithPorts,
+) -> Result<(), OrchestrationError> {
+    if has_edge(topology, port) {
+        return Err(OrchestrationError::Conflict(match &owner.node.spec {
+            NodeSpec::UniversalPod(_) => {
+                "a universal pod bundles out to one place; disconnect it first".into()
+            }
+            _ => "this member is already bundled; disconnect it first".into(),
+        }));
+    }
+    Ok(())
 }
 
 impl Processor<ConnectUniversal> for EdgeService {
@@ -292,64 +348,32 @@ impl Processor<ConnectUniversal> for EdgeService {
                     },
                 )
             }
-            // A bundle between two universal nodes.
+            // A bundle collected where it arrives: a universal pod or a
+            // distribute node grows a `bundle_in:` port for it.
             (
-                ConnectEnd::Handle {
-                    group: UniversalGroup::BundleOut,
-                    ..
-                },
+                ConnectEnd::Port(out_port),
                 ConnectEnd::Handle {
                     group: UniversalGroup::BundleIn,
                     ..
                 },
             ) => {
+                let (out_port, owner) = port_in(&topology, out_port)?;
+                ensure_bundle_source(out_port, owner)?;
+                if !matches!(
+                    target.node.spec,
+                    NodeSpec::UniversalPod(_) | NodeSpec::LoadBalanceDistribute(_)
+                ) {
+                    return Err(OrchestrationError::Invalid(
+                        "a universal pod or a distribute node collects bundles; an aggregate node takes them on its members".into(),
+                    ));
+                }
+                ensure_bundle_free(&topology, out_port, owner)?;
                 let source_key = record_key(&source.node.id.0);
-                let target_key = record_key(&target.node.id.0);
-                let out_key = match &source.node.spec {
-                    NodeSpec::LoadBalanceDistribute(_) => universal::bundle_out_key(&target_key),
-                    NodeSpec::UniversalPod(_) => universal::BUNDLE_OUT.to_string(),
-                    _ => {
-                        return Err(OrchestrationError::Invalid(
-                            "only a distribute node or a universal pod bundles out".into(),
-                        ));
-                    }
-                };
-                if !target.node.spec.takes_bundles() {
-                    return Err(OrchestrationError::Invalid(
-                        "only a universal pod, a distribute node or an aggregate node takes bundles in".into(),
-                    ));
-                }
-                if matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_))
-                    && matches!(target.node.spec, NodeSpec::LoadBalanceAggregate(_))
-                {
-                    return Err(OrchestrationError::Invalid(
-                        "a distribute node bundles to universal pods; bundle those to the aggregate node".into(),
-                    ));
-                }
                 let in_key = universal::bundle_in_key(&source_key);
-                if let Some(existing) = source.ports.iter().find(|p| p.key == out_key)
-                    && has_edge(&topology, existing)
-                {
-                    return Err(OrchestrationError::Conflict(match &source.node.spec {
-                        NodeSpec::UniversalPod(_) => {
-                            "a universal pod bundles out to one place; disconnect it first".into()
-                        }
-                        _ => "these nodes are already bundled".into(),
-                    }));
-                }
                 if target.ports.iter().any(|p| p.key == in_key) {
                     return Err(OrchestrationError::Conflict(
-                        "these nodes are already bundled".into(),
+                        "these nodes are already bundled; one member per far node".into(),
                     ));
-                }
-                let mut out_ports = as_new_ports(&source.ports);
-                if !out_ports.iter().any(|p| p.key == out_key) {
-                    out_ports.push(NewPort {
-                        kind: PortKind::Bundle,
-                        direction: PortDirection::Output,
-                        key: out_key.clone(),
-                        position: 0,
-                    });
                 }
                 let mut in_ports = as_new_ports(&target.ports);
                 in_ports.push(NewPort {
@@ -361,8 +385,8 @@ impl Processor<ConnectUniversal> for EdgeService {
                 (
                     Resolved {
                         node: source,
-                        ports: out_ports,
-                        key: out_key,
+                        ports: as_new_ports(&source.ports),
+                        key: out_port.key.clone(),
                     },
                     Resolved {
                         node: target,
@@ -371,9 +395,63 @@ impl Processor<ConnectUniversal> for EdgeService {
                     },
                 )
             }
+            // A bundle into an aggregate node's member: both ports exist.
+            (ConnectEnd::Port(out_port), ConnectEnd::Port(in_port)) => {
+                let (out_port, owner) = port_in(&topology, out_port)?;
+                ensure_bundle_source(out_port, owner)?;
+                let (in_port, taker) = port_in(&topology, in_port)?;
+                if !matches!(taker.node.spec, NodeSpec::LoadBalanceAggregate(_))
+                    || !universal::is_member_port(in_port)
+                    || in_port.direction != PortDirection::Input
+                {
+                    return Err(OrchestrationError::Invalid(
+                        "a bundle drawn onto a port lands on an aggregate node's member; universal pods and distribute nodes take bundles on their bundle handle".into(),
+                    ));
+                }
+                if matches!(source.node.spec, NodeSpec::LoadBalanceDistribute(_)) {
+                    return Err(OrchestrationError::Invalid(
+                        "a distribute node bundles to universal pods; bundle those to the aggregate node".into(),
+                    ));
+                }
+                ensure_bundle_free(&topology, out_port, owner)?;
+                if has_edge(&topology, in_port) {
+                    return Err(OrchestrationError::Conflict(
+                        "this member already takes a bundle; disconnect it first".into(),
+                    ));
+                }
+                let source_key = record_key(&source.node.id.0);
+                let already = topology.edges.iter().any(|e| {
+                    let from_source = source
+                        .ports
+                        .iter()
+                        .any(|p| record_key(&p.id.0) == record_key(&e.source.0));
+                    let into_target = taker
+                        .ports
+                        .iter()
+                        .any(|p| record_key(&p.id.0) == record_key(&e.target.0));
+                    from_source && into_target
+                });
+                if already {
+                    return Err(OrchestrationError::Conflict(format!(
+                        "{source_key} is already bundled to this node; one member per far node"
+                    )));
+                }
+                (
+                    Resolved {
+                        node: source,
+                        ports: as_new_ports(&source.ports),
+                        key: out_port.key.clone(),
+                    },
+                    Resolved {
+                        node: taker,
+                        ports: as_new_ports(&taker.ports),
+                        key: in_port.key.clone(),
+                    },
+                )
+            }
             _ => {
                 return Err(OrchestrationError::Invalid(
-                    "a universal handle connects a channel output to a pod, or a bundle output to a bundle input"
+                    "a connect joins a channel handle to a pod, or a bundle port to a bundle handle or an aggregate member"
                         .into(),
                 ));
             }
@@ -495,7 +573,8 @@ impl Processor<Disconnect> for EdgeService {
                         .into(),
                 ));
             }
-            universal_side |= owner.node.spec.takes_bundles() && universal::is_on_demand(port);
+            universal_side |= owner.node.spec.takes_bundles()
+                && (universal::is_on_demand(port) || port.kind == PortKind::Bundle);
         }
         let edits = vec![TopologyEdit::RetireEdge {
             edge: input.edge.clone(),

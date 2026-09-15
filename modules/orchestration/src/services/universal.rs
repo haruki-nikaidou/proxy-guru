@@ -13,9 +13,11 @@
 //! - a **load-balance aggregate** node exposes one `chan:<pod>` input per
 //!   channel its bundles carry, to be fed by an exit.
 //!
-//! The load-balance nodes keep their hand-drawn ports (`member_*` /
-//! `destination`, `source` / `copy_*`) next to the on-demand ones; the two
-//! never mix — a hand-drawn rule is derived through the hand-drawn ports only.
+//! The rule is the operator's: a distribute node declares its members (named,
+//! one bundle port each) and so does an aggregate node; what follows from the
+//! members — the bundles collected on the far side, the channels a bundle
+//! carries, the lanes — is generated. Lanes are load-balance nodes too, laid
+//! out thin (`member_*` / `destination`, `source` / `copy_*`) from a count.
 //!
 //! None of this is a new traffic model. The universal nodes are *expanded* into
 //! ordinary pod, relay and load-balance nodes — the **lanes**, tagged with
@@ -42,7 +44,8 @@ use crate::entities::surreal::canvas::CanvasUiPosition;
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::node::{
     Lane, LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode,
-    NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig, RelayProtocol,
+    MEMBER_PREFIX, NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig,
+    RelayProtocol,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::ServerId;
@@ -66,7 +69,6 @@ use wakuwaku::surreal::SurrealProcessor;
 pub const CHAN_PREFIX: &str = "chan:";
 pub const LANE_PREFIX: &str = "lane:";
 pub const BUNDLE_IN_PREFIX: &str = "bundle_in:";
-pub const BUNDLE_OUT_PREFIX: &str = "bundle_out:";
 /// The single, fixed outgoing bundle port of a universal pod.
 pub const BUNDLE_OUT: &str = "bundle_out";
 
@@ -86,9 +88,6 @@ pub fn lane_key(pod: &str) -> String {
 pub fn bundle_in_key(source: &str) -> String {
     format!("{BUNDLE_IN_PREFIX}{source}")
 }
-pub fn bundle_out_key(target: &str) -> String {
-    format!("{BUNDLE_OUT_PREFIX}{target}")
-}
 
 /// A universal node's port, decoded from its key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,14 +96,15 @@ pub enum UniversalPort<'a> {
     Chan(&'a str),
     /// The hidden side of a channel, where generated edges attach.
     Lane(&'a str),
+    /// A bundle arriving from the named node (universal pods, distribute nodes).
     BundleIn(&'a str),
-    /// `Some(target)` on a distributor, `None` for a universal pod's fixed port.
-    BundleOut(Option<&'a str>),
+    /// A universal pod's fixed outgoing bundle.
+    BundleOut,
 }
 
 pub fn parse_port_key(key: &str) -> Option<UniversalPort<'_>> {
     if key == BUNDLE_OUT {
-        return Some(UniversalPort::BundleOut(None));
+        return Some(UniversalPort::BundleOut);
     }
     if let Some(rest) = key.strip_prefix(CHAN_PREFIX) {
         return Some(UniversalPort::Chan(rest));
@@ -115,10 +115,20 @@ pub fn parse_port_key(key: &str) -> Option<UniversalPort<'_>> {
     if let Some(rest) = key.strip_prefix(BUNDLE_IN_PREFIX) {
         return Some(UniversalPort::BundleIn(rest));
     }
-    if let Some(rest) = key.strip_prefix(BUNDLE_OUT_PREFIX) {
-        return Some(UniversalPort::BundleOut(Some(rest)));
-    }
     None
+}
+
+/// Whether a port is a declared member of an operator's load-balance node: a
+/// bundle port keyed `member_<slot>`. Members are the operator's rule, so they
+/// are hand-drawn ports that happen to carry bundles.
+pub fn is_member_port(port: &PortEntity) -> bool {
+    port.kind == PortKind::Bundle && port.key.starts_with(MEMBER_PREFIX)
+}
+
+/// The bundle ports an operator connects by id: a member, or a universal pod's
+/// fixed `bundle_out`. The `bundle_in:` ports are created by the connect itself.
+pub fn is_operator_bundle_port(port: &PortEntity) -> bool {
+    is_member_port(port) || matches!(parse_port_key(&port.key), Some(UniversalPort::BundleOut))
 }
 
 /// The hidden twin of a channel port (`chan:x` ⇄ `lane:x`), if `key` is one.
@@ -159,9 +169,11 @@ pub fn next_ordinal(topology: &CanvasTopology) -> i64 {
 
 /// Whether a bundle-capable node's on-demand ports have the shape its kind
 /// allows: only the known keys, each with the right kind and direction,
-/// `chan:`/`lane:` in pairs, and exactly one fixed `bundle_out` on a universal
-/// pod. A load-balance node's hand-drawn ports are skipped here (the checker
-/// counts them separately); a universal pod has none.
+/// `chan:`/`lane:` in pairs, `bundle_in:` only where bundles are collected
+/// automatically (universal pods, distribute nodes), and exactly one fixed
+/// `bundle_out` on a universal pod. A load-balance node's hand-drawn ports
+/// (its members) are skipped here, the checker counts them separately; a
+/// universal pod has none.
 pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
     use PortDirection::{Input, Output};
     use PortKind::{Bundle, DeriveDestination};
@@ -184,9 +196,6 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
                 lanes.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Input)
             }
-            (NodeSpec::LoadBalanceDistribute(_), UniversalPort::BundleOut(Some(_))) => {
-                (port.kind, port.direction) == (Bundle, Output)
-            }
             (NodeSpec::LoadBalanceDistribute(_), UniversalPort::BundleIn(_)) => {
                 (port.kind, port.direction) == (Bundle, Input)
             }
@@ -201,12 +210,9 @@ pub fn universal_port_shape_ok(node: &NodeWithPorts) -> bool {
                 lanes.insert(pod);
                 (port.kind, port.direction) == (DeriveDestination, Input)
             }
-            (NodeSpec::UniversalPod(_), UniversalPort::BundleOut(None)) => {
+            (NodeSpec::UniversalPod(_), UniversalPort::BundleOut) => {
                 fixed_out = fixed_out.saturating_add(1);
                 (port.kind, port.direction) == (Bundle, Output)
-            }
-            (NodeSpec::LoadBalanceAggregate(_), UniversalPort::BundleIn(_)) => {
-                (port.kind, port.direction) == (Bundle, Input)
             }
             (NodeSpec::LoadBalanceAggregate(_), UniversalPort::Chan(pod)) => {
                 chans.insert(pod);
@@ -360,7 +366,9 @@ const MAX_FANOUT_DEPTH: usize = 64;
 struct Expansion<'a> {
     index: Index<'a>,
     universal: BTreeMap<String, &'a NodeWithPorts>,
-    outs: BTreeMap<String, BTreeSet<String>>,
+    /// Bundle targets of each node, in the order of the ports they leave from
+    /// (a distribute node's members, as the operator listed them).
+    outs: BTreeMap<String, Vec<String>>,
     channels: BTreeMap<String, Channel<'a>>,
     desired: Desired,
 }
@@ -516,8 +524,11 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             universal.insert(record_key(&node.node.id.0), node);
         }
     }
-    let mut outs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut ins: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // `outs` follows the order of the source ports (a distribute node's members
+    // as listed by the operator), `ins` the order of the target ports (an
+    // aggregate node's members); ties by node key.
+    let mut out_edges: BTreeMap<String, BTreeSet<(i64, String)>> = BTreeMap::new();
+    let mut in_edges: BTreeMap<String, BTreeSet<(i64, String)>> = BTreeMap::new();
     for edge in &topology.edges {
         let (Some((source, source_node)), Some((target, target_node))) =
             (index.port(&edge.source), index.port(&edge.target))
@@ -532,9 +543,28 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         }
         let s = record_key(&source_node.node.id.0);
         let t = record_key(&target_node.node.id.0);
-        outs.entry(s.clone()).or_default().insert(t.clone());
-        ins.entry(t).or_default().insert(s);
+        out_edges
+            .entry(s.clone())
+            .or_default()
+            .insert((source.position, t.clone()));
+        in_edges.entry(t).or_default().insert((target.position, s));
     }
+    let ordered = |edges: BTreeMap<String, BTreeSet<(i64, String)>>| -> BTreeMap<String, Vec<String>> {
+        edges
+            .into_iter()
+            .map(|(k, set)| {
+                let mut seen = BTreeSet::new();
+                let list = set
+                    .into_iter()
+                    .map(|(_, far)| far)
+                    .filter(|far| seen.insert(far.clone()))
+                    .collect();
+                (k, list)
+            })
+            .collect()
+    };
+    let outs = ordered(out_edges);
+    let ins = ordered(in_edges);
 
     // Channels: a `chan:` port of a distribute node or a universal pod whose
     // edge lands on that pod's `destination`. Anything else on such a port is
@@ -581,7 +611,10 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     }
 
     // On-demand ports follow the edges alone, whatever the lanes end up being;
-    // a load-balance node's hand-drawn ports are carried over untouched.
+    // a load-balance node's members are carried over untouched. Bundles are
+    // collected automatically where they arrive at a universal pod or a
+    // distribute node (`bundle_in:<source>`); an aggregate node takes them on
+    // its members, which the operator draws.
     for (key, node) in &universal {
         let mut ports: Vec<NewPort> = node
             .ports
@@ -624,44 +657,33 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                 }
             }
         }
-        for source in ins.get(key).into_iter().flatten() {
-            ports.push(port(
-                bundle_in_key(source),
-                PortKind::Bundle,
-                PortDirection::Input,
-                0,
-            ));
-        }
-        match &node.node.spec {
-            NodeSpec::LoadBalanceDistribute(_) => {
-                for target in outs.get(key).into_iter().flatten() {
-                    ports.push(port(
-                        bundle_out_key(target),
-                        PortKind::Bundle,
-                        PortDirection::Output,
-                        0,
-                    ));
-                }
-            }
-            NodeSpec::UniversalPod(_) => {
+        if starts_channels {
+            for source in ins.get(key).into_iter().flatten() {
                 ports.push(port(
-                    BUNDLE_OUT.to_string(),
+                    bundle_in_key(source),
                     PortKind::Bundle,
-                    PortDirection::Output,
+                    PortDirection::Input,
                     0,
                 ));
             }
-            // An aggregate node's channel ports are added below, once carried
-            // sets are known.
-            _ => {}
         }
+        if matches!(node.node.spec, NodeSpec::UniversalPod(_)) {
+            ports.push(port(
+                BUNDLE_OUT.to_string(),
+                PortKind::Bundle,
+                PortDirection::Output,
+                0,
+            ));
+        }
+        // An aggregate node's channel ports are added below, once carried
+        // sets are known.
         desired.ports.insert(key.clone(), ports);
     }
 
     // Topological order over the bundle graph (Kahn); what is left is a cycle.
     let mut indegree: BTreeMap<&str, usize> = universal
         .keys()
-        .map(|k| (k.as_str(), ins.get(k).map(BTreeSet::len).unwrap_or(0)))
+        .map(|k| (k.as_str(), ins.get(k).map(Vec::len).unwrap_or(0)))
         .collect();
     let mut ready: Vec<&str> = indegree
         .iter()
@@ -975,6 +997,7 @@ fn lane_spec(shape: &LaneShape, port: u16, keep: Option<&PodConfig>) -> (NodeSpe
             NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
                 mode: *mode,
                 protocol: RelayProtocol::TcpRaw,
+                members: Vec::new(),
             }),
             *members,
         ),
@@ -996,7 +1019,7 @@ fn lane_spec(shape: &LaneShape, port: u16, keep: Option<&PodConfig>) -> (NodeSpe
             0,
         ),
         LaneShape::Aggregate { copies } => (
-            NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {}),
+            NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
             *copies,
         ),
     }

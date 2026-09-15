@@ -176,6 +176,7 @@ fn load_balance_members_follow_port_position() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::Fallback,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(3),
     );
@@ -221,7 +222,7 @@ fn an_aggregate_feeds_the_same_subtree_to_two_pods() {
     b.node("entry_b", entry(None), entry_ports());
     b.node(
         "agg",
-        NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {}),
+        NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
         aggregate_ports(2),
     );
     b.node("exit", exit("10.0.0.5:8080"), exit_ports());
@@ -662,6 +663,7 @@ fn an_empty_load_balance_group_invalidates_only_its_pod() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::RoundRobin,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(2),
     );
@@ -732,6 +734,7 @@ fn a_destination_through_an_import_node_derives_like_the_flat_graph() {
         NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
             mode: LoadBalanceMode::Fallback,
             protocol: RelayProtocol::TcpRaw,
+            members: Vec::new(),
         }),
         distribute_ports(3),
     );

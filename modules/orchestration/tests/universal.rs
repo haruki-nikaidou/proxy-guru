@@ -15,7 +15,7 @@ use orchestration::entities::surreal::node::{
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeId, NodeSpec, NodeWithPorts, PodConfig,
     RelayProtocol,
 };
-use orchestration::entities::surreal::port::PortId;
+use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
 use orchestration::entities::surreal::view::{AckServerConfig, ListenProtocol, TakeInFlight};
@@ -133,14 +133,49 @@ async fn connect_universal(
         .await
 }
 
+/// A bundle from the next free member of `from` (or a universal pod's
+/// `bundle_out`) to `to`: onto its bundle handle, or onto the next free member
+/// of an aggregate node.
 async fn bundle(w: &World, from: &NodeWithPorts, to: &NodeWithPorts) -> EdgeConnectionEntity {
-    connect_universal(
-        w,
-        handle(from, UniversalGroup::BundleOut),
-        handle(to, UniversalGroup::BundleIn),
-    )
-    .await
-    .unwrap_or_else(|e| panic!("bundle {} -> {}: {e}", from.node.name, to.node.name))
+    let from = reload(w, &from.node.id).await;
+    let to = reload(w, &to.node.id).await;
+    let topology = topology(w, &from.node.canvas).await;
+    let used = |port: &PortEntity| {
+        let key = record_key(&port.id.0);
+        topology
+            .edges
+            .iter()
+            .any(|e| record_key(&e.source.0) == key || record_key(&e.target.0) == key)
+    };
+    let mut outs: Vec<&PortEntity> = from
+        .ports
+        .iter()
+        .filter(|p| p.kind == PortKind::Bundle && p.direction == PortDirection::Output && !used(p))
+        .collect();
+    outs.sort_by_key(|p| p.position);
+    let out = outs
+        .first()
+        .unwrap_or_else(|| panic!("{} has no free bundle output", from.node.name));
+    let input = match &to.node.spec {
+        NodeSpec::LoadBalanceAggregate(_) => {
+            let mut ins: Vec<&PortEntity> = to
+                .ports
+                .iter()
+                .filter(|p| universal::is_member_port(p) && p.direction == PortDirection::Input && !used(p))
+                .collect();
+            ins.sort_by_key(|p| p.position);
+            ConnectEnd::Port(
+                ins.first()
+                    .unwrap_or_else(|| panic!("{} has no free member", to.node.name))
+                    .id
+                    .clone(),
+            )
+        }
+        _ => handle(&to, UniversalGroup::BundleIn),
+    };
+    connect_universal(w, ConnectEnd::Port(out.id.clone()), input)
+        .await
+        .unwrap_or_else(|e| panic!("bundle {} -> {}: {e}", from.node.name, to.node.name))
 }
 
 fn pod(server: &ServerId, port: u16) -> NodeSpec {
@@ -159,12 +194,38 @@ fn exit(destination: &str) -> NodeSpec {
     })
 }
 
+/// A distribute node with two members, as most pictures here fan out to two.
 fn distributor(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
-    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol })
+    distributor_with(mode, protocol, &["m1", "m2"])
+}
+
+fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::LoadBalanceMember> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+            slot: u32::try_from(i + 1).unwrap(),
+            name: (*name).to_string(),
+        })
+        .collect()
+}
+
+fn distributor_with(mode: LoadBalanceMode, protocol: RelayProtocol, names: &[&str]) -> NodeSpec {
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
+        mode,
+        protocol,
+        members: members(names),
+    })
 }
 
 fn aggregator() -> NodeSpec {
-    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
+    aggregator_with(&["m1", "m2"])
+}
+
+fn aggregator_with(names: &[&str]) -> NodeSpec {
+    NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {
+        members: members(names),
+    })
 }
 
 async fn picture(w: &World) -> Picture {
@@ -309,9 +370,15 @@ async fn problems(w: &World, canvas: &CanvasId) -> Vec<(ProblemSeverity, Problem
 }
 
 async fn assert_clean(w: &World, canvas: &CanvasId) {
+    assert_clean_but(w, canvas, &[]).await;
+}
+
+/// A canvas with no problems beyond the address warning and `allowed`.
+async fn assert_clean_but(w: &World, canvas: &CanvasId, allowed: &[ProblemKind]) {
     let found = problems(w, canvas).await;
     assert!(
-        found.iter().all(|(s, k)| *s == ProblemSeverity::Warning && *k == ProblemKind::ServerNoAddress),
+        found.iter().all(|(s, k)| *s == ProblemSeverity::Warning
+            && (*k == ProblemKind::ServerNoAddress || allowed.contains(k))),
         "expected a clean canvas, got {found:?}"
     );
 }
@@ -380,11 +447,11 @@ async fn the_picture_expands_into_lanes() -> TestResult {
     assert_eq!(
         p.ud.ports.len(),
         6,
-        "chan/lane per channel plus one bundle_out per target: {:?}",
+        "chan/lane per channel plus the two members: {:?}",
         p.ud.ports.iter().map(|x| &x.key).collect::<Vec<_>>()
     );
     assert_eq!(p.up1.ports.len(), 2, "bundle_in plus fixed bundle_out");
-    assert_eq!(p.ua.ports.len(), 6, "two bundle_in, chan/lane per channel");
+    assert_eq!(p.ua.ports.len(), 6, "two members, chan/lane per channel");
 
     assert_clean(&w, &p.canvas).await;
     let topology = topology(&w, &p.canvas).await;
@@ -533,10 +600,10 @@ async fn disconnects_shrink_the_expansion() -> TestResult {
     let hk2 = record_key(&p.hk2.0);
     assert!(lanes_now.values().all(|n| !matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2)));
     let ud = reload(&w, &p.ud.node.id).await;
-    assert_eq!(ud.ports.len(), 5);
+    assert_eq!(ud.ports.len(), 6, "the member stays, unwired");
     let up2 = reload(&w, &p.up2.node.id).await;
     assert_eq!(up2.ports.len(), 1, "only the fixed bundle_out is left");
-    assert_clean(&w, &p.canvas).await;
+    assert_clean_but(&w, &p.canvas, &[ProblemKind::DistributeSingleMember]).await;
 
     let topology = self::topology(&w, &p.canvas).await;
     let chan0 = edges_touching(&topology, &p.p0)
@@ -552,7 +619,7 @@ async fn disconnects_shrink_the_expansion() -> TestResult {
     assert!(ua.ports.iter().all(|x| x.key != universal::chan_key(&p0)));
     let topology = self::topology(&w, &p.canvas).await;
     assert!(edges_touching(&topology, &p.e0).is_empty(), "exit-0 lost its edge with the channel");
-    assert_clean(&w, &p.canvas).await;
+    assert_clean_but(&w, &p.canvas, &[ProblemKind::DistributeSingleMember]).await;
     Ok(())
 }
 
@@ -660,22 +727,29 @@ async fn handle_connects_are_checked() -> TestResult {
         )
         .await,
     );
-    // The same bundle twice, and a universal pod bundling out twice.
-    invalid(connect_universal(&w, handle(&p.ud, UniversalGroup::BundleOut), handle(&p.up1, UniversalGroup::BundleIn)).await);
-    invalid(connect_universal(&w, handle(&p.up1, UniversalGroup::BundleOut), handle(&p.up2, UniversalGroup::BundleIn)).await);
-    // A distributor straight into an aggregator.
-    invalid(connect_universal(&w, handle(&p.ud, UniversalGroup::BundleOut), handle(&p.ua, UniversalGroup::BundleIn)).await);
-    // Bundle ports are not connected by id.
-    let out = port_of(&p.up1, universal::BUNDLE_OUT);
+    // A wired member again, and a universal pod bundling out twice.
+    let m1 = ConnectEnd::Port(port_of(&p.ud, "member_1"));
+    invalid(connect_universal(&w, m1.clone(), handle(&p.up2, UniversalGroup::BundleIn)).await);
+    let up1_out = ConnectEnd::Port(port_of(&p.up1, universal::BUNDLE_OUT));
+    invalid(connect_universal(&w, up1_out.clone(), handle(&p.up2, UniversalGroup::BundleIn)).await);
+    // A distributor straight into an aggregator, and onto a wired member.
+    let hk3 = create_server(&w, &p.canvas, "hk3", "203.0.113.3").await;
+    let up3 = universal_pod_of(&w, &p.canvas, &hk3).await;
+    let ua_m1 = ConnectEnd::Port(port_of(&p.ua, "member_1"));
+    invalid(connect_universal(&w, m1, ua_m1.clone()).await);
+    invalid(connect_universal(&w, ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)), ua_m1).await);
+    // A universal pod or a distribute node takes bundles on its handle only.
+    invalid(connect_universal(&w, ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)), ConnectEnd::Port(port_of(&p.up1, &universal::bundle_in_key(&record_key(&p.ud.node.id.0))))).await);
+    // A bundle port never joins a thin port.
     let err = w
         .edges
         .process(Connect {
             actor: operator(),
-            output_port: out,
-            input_port: port_of(&p.ua, &universal::bundle_in_key(&record_key(&p.up2.node.id.0))),
+            output_port: port_of(&up3, universal::BUNDLE_OUT),
+            input_port: port_of(&p.p0, "destination"),
         })
         .await
-        .expect_err("bundle ports go through handles");
+        .expect_err("bundle to thin");
     assert!(matches!(err, OrchestrationError::Invalid(_)), "{err}");
     Ok(())
 }
@@ -755,11 +829,17 @@ async fn universal_pods_chain() -> TestResult {
     let ua = reload(&w, &ua.node.id).await;
     assert!(ua.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0))));
     // A cycle is refused outright.
-    let err = connect_universal(&w, handle(&up2, UniversalGroup::BundleOut), handle(&up1, UniversalGroup::BundleIn))
-        .await
-        .expect_err("hk2 already bundles out");
+    let up2 = reload(&w, &up2.node.id).await;
+    let err = connect_universal(
+        &w,
+        ConnectEnd::Port(port_of(&up2, universal::BUNDLE_OUT)),
+        handle(&up1, UniversalGroup::BundleIn),
+    )
+    .await
+    .expect_err("hk2 already bundles out");
     assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
-    assert_clean(&w, &canvas).await;
+    // `fan` has one member wired: the single-member warning is expected.
+    assert_clean_but(&w, &canvas, &[ProblemKind::DistributeSingleMember]).await;
     Ok(())
 }
 
@@ -882,105 +962,137 @@ async fn the_picture_derives_the_flat_fabric() -> TestResult {
     Ok(())
 }
 
-// --- hand-drawn ports next to channels ------------------------------------------
+// --- members are the operator's rule ------------------------------------------
 
-/// A distribute node's hand-drawn members are a rule of their own: growing the
-/// node from 0 to 2 members keeps every channel lane and port, the hand-drawn
-/// rule derives through the members only, and shrinking back to 0 is refused
-/// while a member is wired and then drops only the hand-drawn ports.
+/// A distribute node's members are what the operator declares: renaming one
+/// keeps its port, its bundle and every lane; adding one adds an empty bundle
+/// port and changes nothing else; removing a wired one is refused; the counted
+/// layout and a bad list are refused outright. The aggregate node's members
+/// behave the same.
 #[tokio::test]
-async fn hand_drawn_members_coexist_with_channels() -> TestResult {
+async fn members_are_the_operators_rule() -> TestResult {
     let w = world().await?;
     let p = picture(&w).await;
     let before = lanes(&w, &p.canvas).await;
-    let replace = |count: u32| ReplaceNodeSpec {
+    let m1 = port_of(&p.ud, "member_1");
+    let replace = |names: Vec<(u32, &str)>| ReplaceNodeSpec {
         actor: operator(),
         node: p.ud.node.id.clone(),
-        spec: distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
-        item_count: count,
-    };
-    let grown = w.nodes.process(replace(2)).await?;
-    let keys: Vec<&str> = grown.ports.iter().map(|x| x.key.as_str()).collect();
-    for key in ["member_0", "member_1", "destination"] {
-        assert!(keys.contains(&key), "{keys:?}");
-    }
-    assert_eq!(grown.ports.len(), 6 + 3, "{keys:?}");
-    let after = lanes(&w, &p.canvas).await;
-    assert_eq!(ids_of(&before), ids_of(&after));
-    assert_eq!(landing_ports(&before), landing_ports(&after));
-
-    // A hand-drawn rule on the same node: a third pod fed by the node, two exits
-    // as members.
-    let p2 = create(&w, &p.canvas, "manual-10002", pod(&p.us, 10002)).await;
-    connect(&w, &port_of(&grown, "destination"), &port_of(&p2, "destination")).await;
-    let m0 = create(&w, &p.canvas, "manual-exit-0", exit("10.0.0.7:8080")).await;
-    let m1 = create(&w, &p.canvas, "manual-exit-1", exit("10.0.0.8:8080")).await;
-    connect(&w, &port_of(&m0, "destination"), &port_of(&grown, "member_0")).await;
-    connect(&w, &port_of(&m1, "destination"), &port_of(&grown, "member_1")).await;
-    let entry = create(
-        &w,
-        &p.canvas,
-        "manual-entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls: None,
+        spec: NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
+            mode: LoadBalanceMode::RoundRobin,
+            protocol: RelayProtocol::TcpRaw,
+            members: names
+                .into_iter()
+                .map(|(slot, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+                    slot,
+                    name: name.to_string(),
+                })
+                .collect(),
         }),
-    )
-    .await;
-    connect(&w, &port_of(&p2, "listen"), &port_of(&entry, "listen")).await;
-    assert_clean(&w, &p.canvas).await;
-    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+        item_count: 0,
+    };
 
-    settle(&w, &p.canvas, &[&p.us, &p.hk1, &p.hk2]).await?;
-    let us = w.view(&p.us).await?;
-    let applied = us.applied.as_ref().expect("us converged");
-    assert!(us.invalid_pods.is_empty(), "{:?}", us.invalid_pods);
-    let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
-    assert_eq!(config.forwardings.len(), 3, "{}", applied.toml);
-    let manual = config
-        .forwardings
-        .iter()
-        .find(|f| f.tag == "manual-10002")
-        .expect("the hand-drawn rule");
-    match &manual.to {
-        guru_worker_config::ForwardingTo::LoadBalance(group) => {
-            assert_eq!(group.members.len(), 2);
-            assert!(group.members.iter().all(|m| matches!(m, guru_worker_config::ForwardingTo::Exit { .. })));
-        }
-        other => panic!("hand-drawn rule should balance over its exits, got {other:?}"),
-    }
-    for f in config.forwardings.iter().filter(|f| f.tag != "manual-10002") {
-        assert!(
-            matches!(&f.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2
-                && g.members.iter().all(|m| matches!(m, guru_worker_config::ForwardingTo::Relay { .. }))),
-            "channels still relay over both transit servers: {}",
-            applied.toml
-        );
-    }
-
-    // Shrinking to 0 with wired members is refused; unwired, it drops only the
-    // hand-drawn ports.
-    let err = w.nodes.process(replace(0)).await.expect_err("members are wired");
-    assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
-    let topology = topology(&w, &p.canvas).await;
-    let grown = reload(&w, &grown.node.id).await;
-    for edge in edges_touching(&topology, &grown) {
-        let manual_ports: Vec<String> = grown
+    // Rename, and reorder: the ports keep their ids, the bundles stay, the
+    // lanes are untouched.
+    let renamed = w.nodes.process(replace(vec![(2, "hk2"), (1, "hk-114")])).await?;
+    assert_eq!(port_of(&renamed, "member_1"), m1);
+    let positions: Vec<(String, i64)> = {
+        let mut m: Vec<_> = renamed
             .ports
             .iter()
-            .filter(|x| !x.key.contains(':'))
-            .map(|x| record_key(&x.id.0))
+            .filter(|x| universal::is_member_port(x))
+            .map(|x| (x.key.clone(), x.position))
             .collect();
-        if manual_ports.contains(&record_key(&edge.source.0)) || manual_ports.contains(&record_key(&edge.target.0)) {
-            disconnect(&w, &edge).await?;
+        m.sort();
+        m
+    };
+    assert_eq!(positions, [("member_1".to_string(), 1), ("member_2".to_string(), 0)]);
+    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+    assert_eq!(landing_ports(&before), landing_ports(&lanes(&w, &p.canvas).await));
+    assert_clean(&w, &p.canvas).await;
+
+    // A third member: one more bundle port, nothing bundled yet.
+    let grown = w.nodes.process(replace(vec![(1, "hk-114"), (2, "hk2"), (3, "hk3")])).await?;
+    assert_eq!(grown.ports.len(), 7, "{:?}", grown.ports.iter().map(|x| &x.key).collect::<Vec<_>>());
+    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+    let hk3 = create_server(&w, &p.canvas, "hk3", "203.0.113.3").await;
+    let up3 = universal_pod_of(&w, &p.canvas, &hk3).await;
+    bundle(&w, &grown, &up3).await;
+    let lanes_now = lanes(&w, &p.canvas).await;
+    assert_eq!(count(&lanes_now, LaneRole::Landing), 6, "two channels on three servers");
+    for lane in lanes_now.values() {
+        if let NodeSpec::LoadBalanceDistribute(cfg) = &lane.node.spec {
+            assert_eq!(cfg.members.len(), 0, "lanes are laid out thin");
+            assert_eq!(lane.ports.iter().filter(|x| x.key.starts_with("member_")).count(), 3);
         }
     }
-    let shrunk = w.nodes.process(replace(0)).await?;
-    assert_eq!(shrunk.ports.len(), 6, "{:?}", shrunk.ports.iter().map(|x| &x.key).collect::<Vec<_>>());
+
+    // Removing a wired member is refused; the unwired one goes.
+    let err = w.nodes.process(replace(vec![(1, "hk-114"), (3, "hk3")])).await.expect_err("hk2 is wired");
+    assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
+    let topology_now = topology(&w, &p.canvas).await;
+    let up3 = reload(&w, &up3.node.id).await;
+    let to_hk3 = edges_touching(&topology_now, &up3).into_iter().next().expect("bundle to hk3");
+    disconnect(&w, &to_hk3).await?;
+    let shrunk = w.nodes.process(replace(vec![(1, "hk-114"), (2, "hk2")])).await?;
+    assert_eq!(shrunk.ports.len(), 6);
     assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+
+    // Bad lists and the counted layout are refused.
+    let invalid = |r: Result<NodeWithPorts, OrchestrationError>| {
+        let err = r.expect_err("refused");
+        assert!(matches!(err, OrchestrationError::Invalid(_)), "{err}");
+    };
+    invalid(w.nodes.process(replace(vec![])).await);
+    invalid(w.nodes.process(replace(vec![(1, "same"), (2, "same")])).await);
+    invalid(w.nodes.process(replace(vec![(1, "a"), (1, "b")])).await);
+    invalid(w.nodes.process(replace(vec![(1, "  ")])).await);
+    let mut counted = replace(vec![(1, "a"), (2, "b")]);
+    counted.item_count = 2;
+    invalid(w.nodes.process(counted).await);
+    invalid(
+        w.nodes
+            .process(CreateNode {
+                actor: operator(),
+                canvas: p.canvas.clone(),
+                name: "counted".to_string(),
+                comment: String::new(),
+                spec: distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+                position: pos0(),
+                item_count: 2,
+            })
+            .await,
+    );
+
+    // The aggregate node: renaming keeps the exits' channel ports and the
+    // bundles; a wired member cannot be dropped either.
+    let ua_before = reload(&w, &p.ua.node.id).await;
+    let ua = w
+        .nodes
+        .process(ReplaceNodeSpec {
+            actor: operator(),
+            node: p.ua.node.id.clone(),
+            spec: aggregator_with(&["hk-114", "hk2"]),
+            item_count: 0,
+        })
+        .await?;
+    assert_eq!(ua.ports.len(), ua_before.ports.len());
+    assert_eq!(port_of(&ua, "member_1"), port_of(&ua_before, "member_1"));
+    assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
+    let err = w
+        .nodes
+        .process(ReplaceNodeSpec {
+            actor: operator(),
+            node: p.ua.node.id.clone(),
+            spec: aggregator_with(&["hk-114"]),
+            item_count: 0,
+        })
+        .await
+        .expect_err("hk2's bundle lands on member 2");
+    assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
+    assert_clean(&w, &p.canvas).await;
     Ok(())
 }
-
 
 // --- thin lines into universal pods and multi-tier fan-out ---------------------
 
@@ -1172,7 +1284,7 @@ async fn nested_distribute_nodes_nest_strategies() -> TestResult {
     bundle(&w, &reload(&w, &inner_a.node.id).await, &ups[1]).await;
     bundle(&w, &reload(&w, &inner_b.node.id).await, &ups[2]).await;
     bundle(&w, &reload(&w, &inner_b.node.id).await, &ups[3]).await;
-    let ua = create(&w, &canvas, "join", aggregator()).await;
+    let ua = create(&w, &canvas, "join", aggregator_with(&["a", "b", "c", "d"])).await;
     for up in &ups {
         bundle(&w, &reload(&w, &up.node.id).await, &reload(&w, &ua.node.id).await).await;
     }

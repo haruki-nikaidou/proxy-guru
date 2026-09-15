@@ -12,7 +12,8 @@ use crate::entities::surreal::health::{
 };
 use crate::entities::surreal::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
-    LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode,
+    LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMember,
+    LoadBalanceMode,
     NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig,
     RelayProtocol, TlsConfig, UniversalPodConfig,
 };
@@ -358,6 +359,28 @@ fn lb_mode_from_proto(mode: i32) -> Result<LoadBalanceMode, Status> {
     }
 }
 
+fn members_to_proto(members: &[LoadBalanceMember]) -> Vec<pb::LoadBalanceMember> {
+    members
+        .iter()
+        .map(|m| pb::LoadBalanceMember {
+            slot: m.slot,
+            name: m.name.clone(),
+        })
+        .collect()
+}
+
+/// Names are trimmed here; the service checks the list (see
+/// `services::node::members_ok`).
+fn members_from_proto(members: Vec<pb::LoadBalanceMember>) -> Vec<LoadBalanceMember> {
+    members
+        .into_iter()
+        .map(|m| LoadBalanceMember {
+            slot: m.slot,
+            name: m.name.trim().to_string(),
+        })
+        .collect()
+}
+
 fn relay_protocol_to_proto(protocol: RelayProtocol) -> i32 {
     match protocol {
         RelayProtocol::TcpRaw => pb::RelayProtocol::RelayTcpRaw,
@@ -465,10 +488,13 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
             Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
                 mode: lb_mode_to_proto(cfg.mode),
                 protocol: relay_protocol_to_proto(cfg.protocol),
+                members: members_to_proto(&cfg.members),
             })
         }
-        NodeSpec::LoadBalanceAggregate(_) => {
-            Spec::LoadBalanceAggregate(pb::LoadBalanceAggregateConfig {})
+        NodeSpec::LoadBalanceAggregate(cfg) => {
+            Spec::LoadBalanceAggregate(pb::LoadBalanceAggregateConfig {
+                members: members_to_proto(&cfg.members),
+            })
         }
         NodeSpec::UniversalPod(cfg) => Spec::UniversalPod(pb::UniversalPodConfig {
             server_id: ids::record_key(&cfg.server.0),
@@ -562,10 +588,13 @@ fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
                     Ok(pb::RelayProtocol::Unspecified) => RelayProtocol::TcpRaw,
                     _ => relay_protocol_from_proto(cfg.protocol)?,
                 },
+                members: members_from_proto(cfg.members),
             })
         }
-        Spec::LoadBalanceAggregate(_) => {
-            NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {})
+        Spec::LoadBalanceAggregate(cfg) => {
+            NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {
+                members: members_from_proto(cfg.members),
+            })
         }
         Spec::UniversalPod(cfg) => {
             if cfg.server_id.is_empty() {
@@ -1084,7 +1113,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             let group = match pb::UniversalGroup::try_from(handle.group) {
                 Ok(pb::UniversalGroup::ChannelOut) => edge::UniversalGroup::ChannelOut,
                 Ok(pb::UniversalGroup::BundleIn) => edge::UniversalGroup::BundleIn,
-                Ok(pb::UniversalGroup::BundleOut) => edge::UniversalGroup::BundleOut,
                 Ok(pb::UniversalGroup::Unspecified) | Err(_) => {
                     return Err(Status::invalid_argument("handle: group is required"));
                 }

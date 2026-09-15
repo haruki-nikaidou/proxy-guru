@@ -94,15 +94,17 @@ enum LaneRole {
   LANE_AGGREGATE = 4;
 }
 // The handle groups of a bundle-capable node, for connects that create a port
-// on demand: `CHANNEL_OUT` on a load-balance distribute node (one port per
-// channel), `BUNDLE_IN` on a universal pod or a load-balance aggregate node
-// (one port per incoming bundle), `BUNDLE_OUT` on a distribute node (one port
-// per outgoing bundle) or a universal pod (its single fixed port).
+// on demand: `CHANNEL_OUT` on a load-balance distribute node or a universal pod
+// (one port per channel), `BUNDLE_IN` on a universal pod or a load-balance
+// distribute node (one port per incoming bundle). Bundles leave through ports
+// that already exist (a distribute node's members, a universal pod's
+// `bundle_out`) and enter an aggregate node through its members, so those
+// ends are given by port id.
 enum UniversalGroup {
   UNIVERSAL_GROUP_UNSPECIFIED = 0;
   CHANNEL_OUT = 1;
   BUNDLE_IN = 2;
-  BUNDLE_OUT = 3;
+  reserved 3; // BUNDLE_OUT: bundles now leave through member ports
 }
 enum ServerHealthStatus {
   SERVER_HEALTH_STATUS_UNSPECIFIED = 0;
@@ -160,14 +162,26 @@ message ExitConfig {
   string destination = 1;
   ProxyProtocolVersion pass_proxy_protocol = 2;
 }
-// `protocol` is how the channels bundled out of this node are relayed to the
-// universal pods they land on (unspecified = raw TCP); it has no effect on the
-// node's hand-drawn members.
+// One member of a load-balance node, as the operator declares it: `slot` is the
+// member's stable number (its port is `member_<slot>`, so renaming keeps the
+// bundle drawn on it), `name` is what the operator calls it.
+message LoadBalanceMember {
+  uint32 slot = 1;
+  string name = 2;
+}
+// The operator's rule: `members` are the bundles this node splits into, one
+// port each, in the order given (1 to 256, unique names and slots).
+// `protocol` is how the channels bundled out are relayed to the universal
+// pods they land on (unspecified = raw TCP).
 message LoadBalanceDistributeConfig {
   LoadBalanceMode mode = 1;
   RelayProtocol protocol = 2;
+  repeated LoadBalanceMember members = 3;
 }
-message LoadBalanceAggregateConfig {}
+// `members` are the bundles this node joins, one port each (1 to 256).
+message LoadBalanceAggregateConfig {
+  repeated LoadBalanceMember members = 1;
+}
 message CanvasImportConfig {
   string canvas_id = 1;
 }
@@ -416,6 +430,8 @@ message CreateNodeRequest {
   string comment = 3;
   NodeSpec spec = 4;
   CanvasUiPosition position = 5;
+  // Reserved for specs with a hand-drawn member count; load-balance nodes
+  // declare their members in the spec and take 0 here.
   uint32 item_count = 6;
 }
 message CreateNodeReply {
