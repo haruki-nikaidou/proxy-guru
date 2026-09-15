@@ -32,8 +32,8 @@ kind — you never invent port names.
 |---|---|---|
 | Blue circle | `listen` | A listener: this end accepts connections |
 | Olive circle | `destination` | A destination: this end dials onwards |
-| Circle in a channel colour | `destination` | The port belongs to one universal channel; the colour identifies the channel along its whole path |
-| Grey square | `bundle` | Not traffic — expansion metadata carrying every channel of a universal node to the next one |
+| Circle in a channel colour | `destination` | The port belongs to one channel; the colour identifies the channel along its whole path |
+| Grey square | `bundle` | Not traffic — expansion metadata carrying every channel of a node to the next one |
 
 Three rules cover every connection:
 
@@ -110,38 +110,55 @@ Both ends landing on the same server is a warning — you almost certainly meant
 
 ## Load balance (distribute)
 
-![A Distribute node card titled "Load balance (distr…", summary line "Round robin · Members: 2", handles member_0 and member_1 plus destination](/img/nodes/node-distribute.avif)
+![A Distribute node card titled "fan-out", summary line "Round robin · QUIC · Members: 0", a Channels handle with two coloured chips on the left and a square bundle out handle labelled 4 on the right](/img/nodes/node-distribute.avif)
 
-Fans one destination over several members.
+Fans one destination over several members — drawn by hand, or once for every **channel** bundled
+through it (see [Channels and bundles](#channels-and-bundles)). Both live on the same card.
 
 | Handle | Kind | Direction |
 |---|---|---|
 | `member_0` … `member_{n-1}` | destination (olive) | inputs |
 | `destination` | destination (olive) | output |
+| `Channels` | destination (olive), group | source — drag to the `destination` of an entry pod; each connected pod becomes one coloured channel |
+| `bundle out` | bundle (grey square), group | source — one edge per universal pod you bundle to |
 
 - **Balance mode** — `Round robin`, `Random`, `IP hash` or `Fallback`. `IP hash` requires a known
-  client IP, so it is an error under an Entry that receives no PROXY protocol.
-- **Members** — between 2 and 256. Unconnected members are skipped when the config is derived, not
-  an error; exactly one connected member is a warning. There are no weights — fan-out is per member
+  client IP, so it is an error under an Entry that receives no PROXY protocol. It applies to the
+  hand-drawn members and to every channel alike.
+- **Relay protocol** — how the channels are relayed to the universal pods this node bundles to
+  (`TCP (raw)`, `TCP (TLS)`, `QUIC`). It has no effect on hand-drawn members. Changing it gives
+  every landing pod a new port.
+- **Members** — 0, or between 2 and 256. `0` means no hand-drawn ports at all: a node used through
+  channels and bundles only. Unconnected members are skipped when the config is derived, not an
+  error; exactly one connected member is a warning. There are no weights — fan-out is per member
   port.
+
+A channel must start at a **pod's** destination handle; anything else is refused. The channel list
+under the handles shows one coloured chip per channel. Hand-drawn members and channels never mix:
+the hand-drawn rule is derived through `member_*` and `destination` only.
 
 Disconnect a member before reducing the count: an edge on a port that would disappear blocks the
 edit.
 
 ## Load balance (aggregate)
 
-![An Aggregate node card titled "Load balance (aggr…", summary line "Members: 2", a source handle plus copy_0 and copy_1](/img/nodes/node-aggregate.avif)
+![An Aggregate node card titled "join", summary line "Members: 0", a square bundle in handle labelled 4 on the left and two coloured channel inputs on the right](/img/nodes/node-aggregate.avif)
 
 The mirror of distribute: **one destination subtree reused by several consumers.** It contributes
-nothing of its own to the derived config — each copy resolves to whatever feeds `source`.
+nothing of its own to the derived config — each copy resolves to whatever feeds `source`. Bundled
+in, it grows **one input per channel** the bundles carry, each waiting for an exit.
 
 | Handle | Kind | Direction |
 |---|---|---|
 | `source` | destination (olive) | input |
 | `copy_0` … `copy_{n-1}` | destination (olive) | outputs |
+| `bundle in` | bundle (grey square), group | target — one edge per incoming bundle |
+| one per channel | destination, channel colour | input — connect an exit to each |
 
-**Members** (2–256) is the only setting; an aggregate has no balance mode, and the distribute ↔
-aggregate choice is fixed when the node is created.
+**Members** (0, or 2–256) is the only setting; an aggregate has no balance mode, and the
+distribute ↔ aggregate choice is fixed when the node is created. Its inspector lists each channel
+with the exit feeding it, or `no exit`; until a universal pod is bundled in, the card shows *No
+channels yet*.
 
 ## Server
 
@@ -190,59 +207,31 @@ and never disturbs the rest of the config.
 **Universal pod.** Created with the server, one per server, and neither creatable nor deletable by
 hand. It is where other servers' traffic lands without drawing a pod per rule: `bundle in` (grey
 square, many edges) accepts bundles, and the single `bundle out` (grey square, exactly one edge)
-hands the bundle on to the next universal pod or to an aggregator. Every channel a bundle carries
-gets a real **landing pod** here, listed in the server's inspector with an editable port.
+hands the bundle on to the next universal pod or to a load balance (aggregate) node. Every channel
+a bundle carries gets a real **landing pod** here, listed in the server's inspector with an editable
+port.
 
-## Universal distributor
+## Channels and bundles
 
-![A Universal distributor card, summary line "Round robin · TCP (raw)", a Channels handle on the left and a square bundle out handle on the right](/img/nodes/node-universal-distributor.avif)
+A **channel** is one rule — one entry pod — travelling from a load balance (distribute) node,
+through the universal pods of your transit servers, to a load balance (aggregate) node, with its
+own colour from end to end. A **bundle** is one thick grey line carrying every channel to the next
+hop; the edge label counts them. The picture for ten rules over four transit servers is ten entry
+pods into one distribute node, four bundles out of it, four bundles into one aggregate node, and
+ten coloured lines to ten exits.
 
-Fans every channel connected to it over every universal pod it is bundled to, with **one strategy and
-one relay protocol for all of them**.
-
-| Handle | Kind | Direction |
-|---|---|---|
-| `Channels` | destination (olive), group | source — drag to the `destination` of an entry pod; each connected pod becomes one coloured channel |
-| `bundle out` | bundle (grey square), group | source — one edge per universal pod you bundle to |
-
-- **Balance mode** and **Relay protocol** form the summary line. Changing the protocol gives every
-  landing pod a new port.
-- A channel must start at a **pod's** destination handle; anything else is refused. The channel list
-  under the handles shows one coloured chip per channel.
-
-## Universal aggregator
-
-![A Universal aggregator card with a square bundle in handle and the message "No channels yet: bundle a universal pod into this node."](/img/nodes/node-universal-aggregator.avif)
-
-The far end of the universal path: it exposes **one output per channel** the incoming bundles carry,
-each waiting for an exit.
-
-| Handle | Kind | Direction |
-|---|---|---|
-| `bundle in` | bundle (grey square), group | target — one edge per incoming bundle |
-| one per channel | destination, channel colour | input — connect an exit to each |
-
-The aggregator has no settings at all: its inspector is read-only and lists each channel with the
-exit feeding it, or `no exit`. Until a universal pod is bundled in, the card shows *No channels yet*.
-
-### Channels and bundles
-
-A **channel** is one rule — one entry pod — travelling the universal path with its own colour from
-end to end. A **bundle** is one thick grey line carrying every channel to the next hop; the edge
-label counts them.
-
-Bundles are pure canvas sugar. Before anything is derived, the three universal nodes are **expanded**
-into ordinary nodes ("lanes"): per channel and per target server, a landing pod, a relay speaking the
-distributor's protocol, a distribute lane when there is more than one target, and an aggregate lane
-where several landing pods of one channel meet. Nothing about a bundle exists on the wire, and
-derivation, convergence and health only ever see the expanded graph.
+Bundles are pure canvas sugar. Before anything is derived, they are **expanded** into ordinary nodes
+("lanes"): per channel and per target server, a landing pod, a relay speaking the distribute node's
+protocol, a distribute lane when there is more than one target, and an aggregate lane where several
+landing pods of one channel meet. Nothing about a bundle exists on the wire, and derivation,
+convergence and health only ever see the expanded graph.
 
 Lane nodes are managed: they cannot be retired or re-wired, and only a landing pod's port and
 addresses may be edited. A lane keeps its identity across edits, so it keeps its port, its row and
 its health history.
 
-Legal bundles are distributor → universal pod, universal pod → universal pod, and universal pod →
-aggregator. Distributor → aggregator is refused: bundle the distributor to your transit servers'
+Legal bundles are distribute → universal pod, universal pod → universal pod, and universal pod →
+aggregate. Distribute → aggregate is refused: bundle the distribute node to your transit servers'
 universal pods first. A bundle cycle is an error; a channel bundled to no server, or landing
 somewhere and going nowhere, is a warning.
 
@@ -302,4 +291,4 @@ that does not start at a pod, an invalid or cyclic bundle, and the four subcanva
 
 **Warnings** — an exit with no destination yet, a server with no address yet, a relay whose ends
 share a server, a distribute group with a single connected member, a channel with no transit or no
-exit, and stale lanes (the next universal edit regenerates them).
+exit, and stale lanes (the next edit of a bundled node regenerates them).
