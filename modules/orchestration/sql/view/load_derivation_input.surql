@@ -6,7 +6,7 @@
 BEGIN TRANSACTION;
 LET $root = fn::orchestration_root($canvas);
 LET $tree = fn::orchestration_tree($root, 0);
-SELECT generation, derived_generation FROM ONLY $root;
+SELECT generation, derived_generation, derived_view_seq FROM ONLY $root;
 SELECT * FROM orchestration_canvas WHERE id IN $tree;
 SELECT * FROM orchestration_server WHERE canvas IN $tree;
 SELECT * FROM orchestration_node WHERE canvas IN $tree;

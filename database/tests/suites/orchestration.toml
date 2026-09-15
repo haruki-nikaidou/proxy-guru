@@ -27,8 +27,9 @@ contains = [
     "DEFINE INDEX orchestration_server_config_view_server ON orchestration_server_config_view FIELDS server UNIQUE",
 ]
 
-# The derivation fence compares these two counters, so both must be integers that
-# start at 0 on a freshly created canvas.
+# The derivation fence compares these counters, so all must be integers that
+# start at 0 on a freshly created canvas. `derived_view_seq` is the tree's view
+# `seq` sum the last committed pass converged against.
 [[cases]]
 name = "canvas_generation_counters"
 kind = "schema_metadata"
@@ -36,6 +37,19 @@ sql = "INFO FOR TABLE orchestration_canvas;"
 contains = [
     "DEFINE FIELD generation ON orchestration_canvas TYPE int DEFAULT 0",
     "DEFINE FIELD derived_generation ON orchestration_canvas TYPE int DEFAULT 0",
+    "DEFINE FIELD derived_view_seq ON orchestration_canvas TYPE int DEFAULT 0",
+]
+
+# A worker's ack, registration and address report bump this counter on the
+# server's own view row instead of touching the canvas, so a fleet acknowledging
+# at once never contends on one row. It must start at 0 so `seq += 1` and the
+# tree-wide sum are defined on a fresh row.
+[[cases]]
+name = "config_view_carries_the_worker_fence_counter"
+kind = "schema_metadata"
+sql = "INFO FOR TABLE orchestration_server_config_view;"
+contains = [
+    "DEFINE FIELD seq ON orchestration_server_config_view TYPE int DEFAULT 0",
 ]
 
 # Stage-1 per-pod isolation: a pod that cannot be derived is recorded on its

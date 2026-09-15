@@ -453,7 +453,6 @@ impl Processor<DeleteServerRow> for SurrealProcessor {
 #[derive(Debug)]
 pub struct RegisterWorkerSession {
     pub server: ServerId,
-    pub canvas: CanvasId,
     pub digest: String,
     pub now: DateTime<Utc>,
     /// The lease deadline the new session gets.
@@ -482,7 +481,6 @@ impl Processor<RegisterWorkerSession> for SurrealProcessor {
                 "../../../sql/server/register_worker_session.surql"
             ))
             .bind(("server", input.server))
-            .bind(("canvas", input.canvas))
             .bind(("digest", input.digest))
             .bind(("now", input.now))
             .bind(("lease_until", input.lease_until))
@@ -497,18 +495,17 @@ impl Processor<RegisterWorkerSession> for SurrealProcessor {
 }
 
 /// Replaces a server's reported address set with what a live session just
-/// discovered. Fenced on the refresh-key generation, and a no-op (no canvas
-/// bump) when nothing changed.
+/// discovered. Fenced on the refresh-key generation, and a no-op (no view
+/// `seq` bump) when nothing changed.
 #[derive(Debug)]
 pub struct UpdateReportedAddresses {
     pub server: ServerId,
-    pub canvas: CanvasId,
     pub generation: i64,
     pub reported: ReportedAddresses,
 }
 
 impl Processor<UpdateReportedAddresses> for SurrealProcessor {
-    /// `true` when the stored set changed (and the canvas was touched).
+    /// `true` when the stored set changed (and the view's `seq` moved).
     type Output = bool;
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:UpdateReportedAddresses", skip_all, err, fields(server = ?input.server))]
@@ -520,7 +517,6 @@ impl Processor<UpdateReportedAddresses> for SurrealProcessor {
                 "../../../sql/server/update_reported_addresses.surql"
             ))
             .bind(("server", input.server))
-            .bind(("canvas", input.canvas))
             .bind(("generation", input.generation))
             .bind(("reported", input.reported))
             .await?;

@@ -14,7 +14,8 @@ use orchestration::entities::surreal::node::{
 };
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::view::{
-    AckServerConfig, ListenProtocol, ListenerCap, ServerConfigViewEntity, TakeInFlight,
+    AckServerConfig, ListStaleCanvases, ListenProtocol, ListenerCap, ServerConfigViewEntity,
+    TakeInFlight,
 };
 use orchestration::services::agent::{
     AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
@@ -65,7 +66,6 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     };
     w.db.process(AckServerConfig {
         server: server.clone(),
-        canvas: row.canvas,
         revision: snapshot.revision,
         error: None,
         applied: None,
@@ -84,13 +84,7 @@ async fn settle(w: &World, f: &Fixture) -> Result<(), Box<dyn std::error::Error>
         w.derive(&f.canvas).await?;
         ack_current(w, &f.tokyo).await?;
         ack_current(w, &f.osaka).await?;
-        let canvas =
-            w.db.process(FindCanvasById {
-                id: f.canvas.clone(),
-            })
-            .await?
-            .unwrap();
-        let mut caught_up = canvas.generation == canvas.derived_generation;
+        let mut caught_up = !w.db.process(ListStaleCanvases).await?.contains(&f.canvas);
         for server in [&f.tokyo, &f.osaka] {
             let view = w.view(server).await?;
             caught_up &= view.in_flight.is_none()

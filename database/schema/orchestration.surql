@@ -5,9 +5,18 @@
 -- exact file against an in-memory database. Nodes, ports and edges are edited in
 -- place; what a worker runs lives in `orchestration_server_config_view`, one row
 -- per server holding three immutable snapshots (`desired`, `in_flight`,
--- `applied`). Derivation is fenced by the canvas generation counter: every
--- mutating transaction bumps `generation`, and a derivation commits only while
--- `generation` still equals the value it read, stamping `derived_generation`.
+-- `applied`). Derivation is fenced by two counters. Every operator edit bumps
+-- the canvas `generation`; a worker never writes the canvas row at all — its
+-- ack, registration and address report bump `seq` on its own view row, and a
+-- derivation reads the tree's views and stamps their `seq` sum as
+-- `derived_view_seq`. A pass commits only while `generation` still equals the
+-- value it read, stamping `derived_generation`; a canvas is stale while either
+-- `generation > derived_generation` or the views' `seq` sum exceeds
+-- `derived_view_seq`. The sum only shrinks when a view row is deleted, and
+-- every operation that deletes one is an edit that bumps `generation`, so
+-- nothing a worker wrote is ever hidden by a shrinking sum. What this buys is
+-- that N workers acknowledging one revision in the same instant never contend
+-- on a shared row.
 --
 -- Canvases nest: a `canvas_import` node embeds another canvas as one node, and
 -- the unit of derivation is the whole tree. Only the *root* canvas of a tree
@@ -20,6 +29,8 @@ DEFINE FIELD name ON orchestration_canvas TYPE string;
 DEFINE FIELD description ON orchestration_canvas TYPE string;
 DEFINE FIELD generation ON orchestration_canvas TYPE int DEFAULT 0;
 DEFINE FIELD derived_generation ON orchestration_canvas TYPE int DEFAULT 0;
+-- The tree's view `seq` sum the last committed derivation converged against.
+DEFINE FIELD derived_view_seq ON orchestration_canvas TYPE int DEFAULT 0;
 
 DEFINE TABLE orchestration_server SCHEMAFULL;
 DEFINE FIELD canvas ON orchestration_server TYPE record<orchestration_canvas>;
@@ -229,6 +240,10 @@ DEFINE FIELD invalid_pods ON orchestration_server_config_view TYPE array<object>
 -- not be applied at all.
 DEFINE FIELD failed_pods ON orchestration_server_config_view TYPE array<object> FLEXIBLE DEFAULT [];
 DEFINE FIELD waiting_for ON orchestration_server_config_view TYPE array<record<orchestration_server>> DEFAULT [];
+-- Bumped by every worker-driven write to this row (ack, registration, address
+-- report): the worker's share of the derivation fence, so it never has to
+-- touch the canvas row.
+DEFINE FIELD seq ON orchestration_server_config_view TYPE int DEFAULT 0;
 DEFINE INDEX orchestration_server_config_view_server ON orchestration_server_config_view FIELDS server UNIQUE;
 
 -- Health history. One `server_health_record` per worker report (the byte and

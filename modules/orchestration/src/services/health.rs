@@ -201,7 +201,6 @@ impl Processor<RecordHealthReport> for HealthService {
                 self.db
                     .process(UpdateReportedAddresses {
                         server: server_id.clone(),
-                        canvas: server.canvas.clone(),
                         generation: input.agent.generation,
                         reported,
                     })

@@ -185,6 +185,12 @@ pub struct ServerConfigViewEntity {
     /// Servers whose `applied` config does not yet serve a listener this server's
     /// ideal config points at.
     pub waiting_for: Vec<ServerId>,
+    /// Bumped by every worker-driven write to this row (ack, registration,
+    /// address report). Derivation stamps the tree's sum of these on the canvas
+    /// as `derived_view_seq`, which is how a worker moves the fence without
+    /// ever writing the canvas row.
+    #[surreal(default)]
+    pub seq: i64,
 }
 
 #[derive(Debug)]
@@ -270,7 +276,6 @@ impl Processor<TakeInFlight> for SurrealProcessor {
 #[derive(Debug)]
 pub struct AckServerConfig {
     pub server: ServerId,
-    pub canvas: CanvasId,
     pub revision: i64,
     pub error: Option<String>,
     pub applied: Option<ConfigSnapshot>,
@@ -284,19 +289,18 @@ impl Processor<AckServerConfig> for SurrealProcessor {
     #[tracing::instrument(name = "Query-Transaction:AckServerConfig", skip_all, err)]
     async fn process(&self, input: AckServerConfig) -> Result<Self::Output, Self::Error> {
         let failed_revision = (!input.failed_pods.is_empty()).then_some(input.revision);
-        // Statement 0 is BEGIN; the RETURN below is statement 3.
+        // Statement 0 is BEGIN, 1 the LET; the RETURN is statement 2.
         let mut resp = self
             .db()
             .query(include_str!("../../../sql/view/ack_server_config.surql"))
             .bind(("server", input.server))
-            .bind(("canvas", input.canvas))
             .bind(("revision", input.revision))
             .bind(("error", input.error))
             .bind(("applied", input.applied))
             .bind(("failed_pods", input.failed_pods))
             .bind(("failed_revision", failed_revision))
             .await?;
-        Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
+        Ok(resp.take::<Option<bool>>(2)?.unwrap_or(false))
     }
 }
 
@@ -360,6 +364,8 @@ impl Processor<ListServerWatchState> for SurrealProcessor {
 struct CanvasGenerations {
     generation: i64,
     derived_generation: i64,
+    #[surreal(default)]
+    derived_view_seq: i64,
 }
 
 /// Everything one derivation pass reads, in a single transaction. The counters
@@ -369,6 +375,10 @@ pub struct DerivationInput {
     pub root: CanvasId,
     pub generation: i64,
     pub derived_generation: i64,
+    /// The tree's view `seq` sum the last committed pass converged against.
+    pub derived_view_seq: i64,
+    /// The tree's view `seq` sum as this read saw it.
+    pub view_seq: i64,
     pub topology: CanvasTopology,
     pub views: Vec<ServerConfigViewEntity>,
 }
@@ -401,10 +411,13 @@ impl Processor<LoadCanvasDerivationInput> for SurrealProcessor {
             .unwrap_or_else(|| input.canvas.clone());
         let rows = crate::entities::surreal::topology::group_rows(&mut resp, 4, root.clone())?;
         let views = resp.take::<Vec<ServerConfigViewEntity>>(9)?;
+        let view_seq = views.iter().map(|view| view.seq).sum();
         Ok(Some(DerivationInput {
             root: root.clone(),
             generation: generations.generation,
             derived_generation: generations.derived_generation,
+            derived_view_seq: generations.derived_view_seq,
+            view_seq,
             topology: CanvasTopology {
                 root,
                 canvases: rows.canvases,
@@ -434,10 +447,13 @@ pub struct ViewUpdate {
 }
 
 /// Commits a whole derivation pass, but only if the root canvas is still at the
-/// generation it was derived from. `canvas` must be the tree's root.
+/// generation it was derived from and no pass has published this state before.
+/// `canvas` must be the tree's root; `view_seq` is the tree's view `seq` sum the
+/// pass read.
 pub struct CommitCanvasDerivation {
     pub canvas: CanvasId,
     pub generation: i64,
+    pub view_seq: i64,
     pub updates: Vec<ViewUpdate>,
 }
 
@@ -453,13 +469,15 @@ impl Processor<CommitCanvasDerivation> for SurrealProcessor {
             .query(include_str!("../../../sql/view/commit_derivation.surql"))
             .bind(("canvas", input.canvas))
             .bind(("generation", input.generation))
+            .bind(("view_seq", input.view_seq))
             .bind(("updates", input.updates))
             .await?;
         Ok(resp.take::<Option<bool>>(3)?.unwrap_or(false))
     }
 }
 
-/// Canvases whose derivation is behind their edits; the cron sweep's input.
+/// Canvases whose derivation is behind their edits or their workers' acks; the
+/// cron sweep's input.
 pub struct ListStaleCanvases;
 
 impl Processor<ListStaleCanvases> for SurrealProcessor {
@@ -469,9 +487,7 @@ impl Processor<ListStaleCanvases> for SurrealProcessor {
     async fn process(&self, _input: ListStaleCanvases) -> Result<Self::Output, Self::Error> {
         let mut resp = self
             .db()
-            .query(
-                "SELECT VALUE id FROM orchestration_canvas WHERE generation > derived_generation",
-            )
+            .query(include_str!("../../../sql/view/list_stale_canvases.surql"))
             .await?;
         resp.take::<Vec<CanvasId>>(0)
     }

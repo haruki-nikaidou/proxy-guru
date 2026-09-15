@@ -161,7 +161,6 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
     let lease = chrono::TimeDelta::seconds(30);
     let register = |digest: &str, now: chrono::DateTime<chrono::Utc>| RegisterWorkerSession {
         server: s.id.clone(),
-        canvas: c.id.clone(),
         digest: digest.to_string(),
         now,
         lease_until: now + lease,
@@ -349,7 +348,6 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
     assert!(
         sp.process(AckServerConfig {
             server: s.id.clone(),
-            canvas: c.id.clone(),
             revision: 1,
             error: None,
             applied: None,
@@ -380,7 +378,6 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
     assert!(
         sp.process(AckServerConfig {
             server: s.id.clone(),
-            canvas: c.id.clone(),
             revision: 2,
             error: Some("cannot bind".to_string()),
             applied: None,
@@ -411,7 +408,6 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
     assert!(
         !sp.process(AckServerConfig {
             server: s.id.clone(),
-            canvas: c.id.clone(),
             revision: 7,
             error: None,
             applied: None,
@@ -497,7 +493,6 @@ async fn register_promotes_a_reported_desired_revision() -> TestResult {
     let now = chrono::Utc::now();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
-        canvas: c.id.clone(),
         digest: "digest-1".to_string(),
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
@@ -553,7 +548,6 @@ async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
     let now = chrono::Utc::now();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
-        canvas: c.id.clone(),
         digest: "digest-1".to_string(),
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
@@ -604,7 +598,6 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
     let now = chrono::Utc::now();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
-        canvas: c.id.clone(),
         digest: "digest-1".to_string(),
         now,
         lease_until: now + chrono::TimeDelta::seconds(30),
@@ -1034,7 +1027,6 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
     let register =
         |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| RegisterWorkerSession {
             server: s.id.clone(),
-            canvas: c.id.clone(),
             digest: digest.to_string(),
             now,
             lease_until: now,
@@ -1111,7 +1103,6 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported() ->
     let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, build: Option<&str>| {
         RegisterWorkerSession {
             server: s.id.clone(),
-            canvas: c.id.clone(),
             digest: digest.to_string(),
             now,
             lease_until: now,

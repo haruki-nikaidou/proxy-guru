@@ -20,7 +20,7 @@ use orchestration::entities::surreal::node::{
 use orchestration::entities::surreal::server::{
     FindServerById, ServerEntity, ServerId, ServerIpv6Resolve,
 };
-use orchestration::entities::surreal::view::TakeInFlight;
+use orchestration::entities::surreal::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::SweepLivenessSignal;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::services::OrchestrationError;
@@ -1097,5 +1097,226 @@ async fn two_consumers_handed_one_signal_run_the_pass_once() -> TestResult {
         offline, 1,
         "exactly one of the two deliveries swept: {history:?}"
     );
+    Ok(())
+}
+
+// --- many workers at once ---------------------------------------------------
+
+/// Five servers on one canvas, each running one pod, derived once. Returns the
+/// canvas and each server with its pod.
+async fn five_servers(
+    w: &World,
+) -> Result<(CanvasId, Vec<(ServerId, NodeWithPorts)>), Box<dyn std::error::Error>> {
+    let canvas = w
+        .canvases
+        .process(canvas_service::CreateCanvas {
+            actor: operator(),
+            name: "fleet".to_string(),
+            description: String::new(),
+        })
+        .await?;
+    let mut servers = Vec::new();
+    for i in 0..5u8 {
+        let server = w
+            .servers
+            .process(CreateServer {
+                actor: operator(),
+                canvas: canvas.id.clone(),
+                name: format!("s{i}"),
+                icon: String::new(),
+                comment: String::new(),
+                position: pos0(),
+                ipv6_resolve: ServerIpv6Resolve::Tolerated,
+                log_level: "info".to_string(),
+                addresses: AddressOverrides {
+                    override_v4: Some(format!("203.0.113.{}", 10 + i)),
+                    override_v6: None,
+                    extra_addresses: Vec::new(),
+                },
+            })
+            .await?;
+        let pod = create(
+            w,
+            &canvas.id,
+            &format!("pod-{i}"),
+            pod_spec_on(&server.id, 443),
+        )
+        .await?;
+        let entry = create(w, &canvas.id, &format!("in-{i}"), entry_spec()).await?;
+        let exit = create(
+            w,
+            &canvas.id,
+            &format!("out-{i}"),
+            exit_spec("10.0.0.5:8080"),
+        )
+        .await?;
+        wire(w, &pod, &entry, &exit).await?;
+        servers.push((server.id, pod));
+    }
+    w.derive(&canvas.id).await?;
+    Ok((canvas.id, servers))
+}
+
+async fn canvas_generation(w: &World, canvas: &CanvasId) -> i64 {
+    w.db.process(orchestration::entities::surreal::canvas::FindCanvasById { id: canvas.clone() })
+        .await
+        .unwrap()
+        .unwrap()
+        .generation
+}
+
+async fn is_stale(w: &World, canvas: &CanvasId) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(w.db.process(ListStaleCanvases).await?.contains(canvas))
+}
+
+/// Workers apply one revision within the same instant and all acknowledge at
+/// once. Every ack must land: an ack writes only its own server's rows, so
+/// there is no shared row for five of them to collide on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_workers_acking_at_once_all_land() -> TestResult {
+    let w = world().await?;
+    let (canvas, servers) = five_servers(&w).await?;
+    let mut acks = Vec::new();
+    for (server, pod) in &servers {
+        let agent = register(&w, server).await?;
+        let row = server_row(&w, server).await;
+        let snapshot =
+            w.db.process(TakeInFlight {
+                server: server.clone(),
+                generation: row.refresh_key_generation,
+                epoch: row.watch_epoch,
+            })
+            .await?
+            .ok_or("nothing in flight")?;
+        acks.push((agent, snapshot.revision, pod.node.name.clone()));
+    }
+    // Start the ack round caught up, so what the acks change is visible on its
+    // own.
+    w.derive(&canvas).await?;
+    let generation = canvas_generation(&w, &canvas).await;
+    assert!(!is_stale(&w, &canvas).await?, "the canvas starts caught up");
+
+    let mut handles = Vec::new();
+    for (agent, revision, tag) in acks {
+        let agents = w.agents.clone();
+        handles.push(tokio::spawn(async move {
+            agents
+                .process(AckConfig {
+                    agent,
+                    revision,
+                    error: None,
+                    pods: vec![ok(&tag)],
+                })
+                .await
+        }));
+    }
+    for handle in handles {
+        handle.await??;
+    }
+    for (server, _) in &servers {
+        let view = w.view(server).await?;
+        assert!(
+            view.in_flight.is_none() && view.applied.is_some(),
+            "{server:?}: the ack landed"
+        );
+    }
+
+    // The acks make the canvas stale without touching its generation, and one
+    // pass clears it.
+    assert_eq!(
+        canvas_generation(&w, &canvas).await,
+        generation,
+        "an ack does not bump the canvas generation"
+    );
+    assert!(is_stale(&w, &canvas).await?, "acks make the canvas stale");
+    w.derive(&canvas).await?;
+    assert!(!is_stale(&w, &canvas).await?, "one pass catches up");
+    Ok(())
+}
+
+/// Five workers registering in the same instant all get their session: like an
+/// ack, a registration writes only its own server's rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_workers_registering_at_once_all_land() -> TestResult {
+    let w = world().await?;
+    let (_canvas, servers) = five_servers(&w).await?;
+    let mut handles = Vec::new();
+    for (server, _) in &servers {
+        let agents = w.agents.clone();
+        let server = server.clone();
+        handles.push(tokio::spawn(async move {
+            agents
+                .process(RegisterWorker {
+                    credential: RegisterCredential::Operator(machine()),
+                    server_id: server,
+                    running_revision: 0,
+                    observed: None,
+                    reported: None,
+                    agent_version: None,
+                    agent_arch: None,
+                    last_update_error: None,
+                })
+                .await
+        }));
+    }
+    for handle in handles {
+        handle.await??;
+    }
+    for (server, _) in &servers {
+        assert_eq!(server_row(&w, server).await.refresh_key_generation, 1);
+    }
+    Ok(())
+}
+
+/// A deleted server takes its view row, and its share of the staleness
+/// counter, with it. The canvas still reads as stale, because deleting a server
+/// is an edit and edits bump the generation: nothing a worker did is hidden.
+#[tokio::test]
+async fn deleting_a_server_after_an_ack_keeps_the_canvas_stale() -> TestResult {
+    let w = world().await?;
+    let (canvas, servers) = five_servers(&w).await?;
+    let mut agents = Vec::new();
+    for (server, pod) in &servers {
+        let agent = register(&w, server).await?;
+        take_and_ack(&w, &agent, vec![ok(&pod.node.name)]).await?;
+        agents.push(agent);
+    }
+    w.derive(&canvas).await?;
+    assert!(!is_stale(&w, &canvas).await?);
+
+    // One more ack on s0, which needs a new revision: move its pod.
+    let (s0, pod0) = &servers[0];
+    w.nodes
+        .process(ReplaceNodeSpec {
+            actor: operator(),
+            node: pod0.node.id.clone(),
+            spec: pod_spec_on(s0, 444),
+            item_count: 0,
+        })
+        .await?;
+    w.derive(&canvas).await?;
+    take_and_ack(&w, &agents[0], vec![ok(&pod0.node.name)]).await?;
+    assert!(is_stale(&w, &canvas).await?);
+
+    // Delete s4, whose view row carried a larger counter than s0's ack added.
+    // Its pod goes first: a server with pods cannot be deleted.
+    w.nodes
+        .process(orchestration::services::node::RetireNode {
+            actor: operator(),
+            node: servers[4].1.node.id.clone(),
+        })
+        .await?;
+    w.servers
+        .process(orchestration::services::server::DeleteServer {
+            actor: operator(),
+            server: servers[4].0.clone(),
+        })
+        .await?;
+    assert!(
+        is_stale(&w, &canvas).await?,
+        "the edit keeps the canvas stale even though the counter sum shrank"
+    );
+    w.derive(&canvas).await?;
+    assert!(!is_stale(&w, &canvas).await?);
     Ok(())
 }

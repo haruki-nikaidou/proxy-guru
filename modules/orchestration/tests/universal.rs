@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::canvas::{CanvasId, FindCanvasById};
+use orchestration::entities::surreal::canvas::CanvasId;
 use orchestration::entities::surreal::connection::EdgeConnectionEntity;
 use orchestration::entities::surreal::node::{
     EntryConfig, ExitConfig, FindNodeWithPorts, LaneRole, LoadBalanceAggregateConfig,
@@ -18,7 +18,9 @@ use orchestration::entities::surreal::node::{
 use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
-use orchestration::entities::surreal::view::{AckServerConfig, ListenProtocol, TakeInFlight};
+use orchestration::entities::surreal::view::{
+    AckServerConfig, ListStaleCanvases, ListenProtocol, TakeInFlight,
+};
 use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{RegisterCredential, RegisterWorker};
 use orchestration::services::canvas::ValidateCanvas;
@@ -1011,7 +1013,6 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     };
     w.db.process(AckServerConfig {
         server: server.clone(),
-        canvas: row.canvas,
         revision: snapshot.revision,
         error: None,
         applied: None,
@@ -1031,11 +1032,7 @@ async fn settle(
         for server in servers {
             ack_current(w, server).await?;
         }
-        let row =
-            w.db.process(FindCanvasById { id: canvas.clone() })
-                .await?
-                .unwrap();
-        let mut caught_up = row.generation == row.derived_generation;
+        let mut caught_up = !w.db.process(ListStaleCanvases).await?.contains(canvas);
         for server in servers {
             let view = w.view(server).await?;
             caught_up &= view.in_flight.is_none()

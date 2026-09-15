@@ -475,7 +475,6 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     };
     w.db.process(AckServerConfig {
         server: server.clone(),
-        canvas: row.canvas,
         revision: snapshot.revision,
         error: None,
         applied: None,

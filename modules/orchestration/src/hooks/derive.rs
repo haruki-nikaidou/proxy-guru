@@ -165,7 +165,9 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 // The canvas was deleted; its servers keep their last config.
                 return Ok(());
             };
-            if state.generation == state.derived_generation {
+            if state.generation == state.derived_generation
+                && state.view_seq == state.derived_view_seq
+            {
                 return Ok(());
             }
             let certificates = self.certificates(&state.topology).await?;
@@ -207,6 +209,7 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 .process(CommitCanvasDerivation {
                     canvas: state.root.clone(),
                     generation: state.generation,
+                    view_seq: state.view_seq,
                     updates,
                 })
                 .await?

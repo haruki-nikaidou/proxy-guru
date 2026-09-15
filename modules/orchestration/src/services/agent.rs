@@ -91,7 +91,6 @@ impl Processor<RegisterWorker> for AgentService {
             .db
             .process(RegisterWorkerSession {
                 server: server.id.clone(),
-                canvas: server.canvas.clone(),
                 digest: sha256_hex(&secret),
                 now,
                 lease_until: self.lease.until(now),
@@ -407,7 +406,6 @@ impl Processor<AckConfig> for AgentService {
             .db
             .process(AckServerConfig {
                 server: server.id.clone(),
-                canvas: server.canvas.clone(),
                 revision: input.revision,
                 error: input.error,
                 applied,

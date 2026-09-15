@@ -3,6 +3,9 @@ BEGIN TRANSACTION;
 -- `reported_addresses` and the worker's build (`agent_version`, `agent_arch`)
 -- are replaced only when the worker sent them (`??` keeps the previous value
 -- otherwise, so an older worker cannot blank a known version).
+-- Only this server's rows are written: the view row's `seq` is what tells
+-- derivation to look again, and the canvas row is never touched, so a fleet
+-- registering at once never collides on it.
 LET $rotated = (UPDATE $server SET current_dynamic_refresh_key = $digest,
     refresh_key_generation += 1, session_lease_until = $lease_until, last_seen_at = $now,
     observed_address = $observed, observed_at = $now,
@@ -29,8 +32,7 @@ IF array::len($rotated) > 0 {
         -- counting on listeners nobody serves.
         UPDATE $v.id SET applied = NONE, apply_error = NONE, failed_revision = NONE, failed_pods = [];
     };
-    UPDATE $v.id SET in_flight = NONE;
-    fn::orchestration_touch($canvas);
+    UPDATE $v.id SET in_flight = NONE, seq += 1;
 };
 RETURN $rotated[0];
 COMMIT TRANSACTION;
