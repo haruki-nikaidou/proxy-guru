@@ -288,6 +288,17 @@ DEFINE FIELD private_key_pem ON internal_ca TYPE string;
 DEFINE FIELD not_after ON internal_ca TYPE datetime;
 DEFINE FIELD created_at ON internal_ca TYPE datetime;
 
+-- The published `guru-worker` release: what `manage-tool agent publish` last put
+-- in the download directory. Exactly one row, `orchestration_agent_release:current`.
+-- State rather than configuration, so a publish takes effect without a restart:
+-- the dashboard offers it to servers running another version and the worker
+-- verifies what it downloads against `sha256`.
+DEFINE TABLE orchestration_agent_release SCHEMAFULL;
+DEFINE FIELD version ON orchestration_agent_release TYPE string;
+DEFINE FIELD sha256 ON orchestration_agent_release TYPE string;
+DEFINE FIELD arch ON orchestration_agent_release TYPE string;
+DEFINE FIELD published_at ON orchestration_agent_release TYPE datetime;
+
 -- One leaf per pod whose listener is a TLS or QUIC relay, SAN
 -- `<pod-key>.relay.guru.internal`, rotated by the certificate cron. `version`
 -- plays the same role as on `certificate`.

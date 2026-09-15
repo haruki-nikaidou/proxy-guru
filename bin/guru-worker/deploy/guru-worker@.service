@@ -1,0 +1,38 @@
+# guru-worker in agent mode, one instance per server: guru-worker@<unit>.
+# Installed by install.sh, which also writes /etc/guru-worker/<unit>.env — the
+# only place the instance's settings live (master URL, server id, key, state
+# directory, log level).
+[Unit]
+Description=guru data-plane worker (agent, %i)
+After=network-online.target
+Wants=network-online.target
+# A data-plane node never gives up restarting.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=guru-worker
+Group=guru-worker
+EnvironmentFile=/etc/guru-worker/%i.env
+ExecStart=/opt/guru-worker/current/guru-worker
+Restart=always
+RestartSec=5
+# Only the innermost directory is owned by the service user; the worker's
+# GURU_STATE_DIR (from the env file) points there, never at the parent.
+StateDirectory=guru-worker/%i
+
+# Ports below 1024 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/guru-worker
+# Self-update installs the next version here and repoints `current`.
+ReadWritePaths=/opt/guru-worker
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

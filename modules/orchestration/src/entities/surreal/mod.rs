@@ -1,3 +1,4 @@
+pub mod agent_release;
 pub mod batch;
 pub mod ca;
 pub mod canvas;

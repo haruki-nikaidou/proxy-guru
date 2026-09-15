@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
+use orchestration::entities::surreal::agent_release::{FindAgentRelease, PublishAgentRelease};
 use orchestration::entities::surreal::canvas::{
     DeleteCanvasRow, FindCanvasById, ListCanvases, UpdateCanvasMeta,
 };
@@ -1143,5 +1144,37 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported() ->
         .await?
         .expect("the lapsed lease is taken over");
     assert_eq!(row.agent_version.as_deref(), Some("0.3.0"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_release_publish_replaces_the_single_row() -> TestResult {
+    let sp = setup().await?;
+    assert!(sp.process(FindAgentRelease).await?.is_none());
+
+    let first = chrono::Utc::now();
+    sp.process(PublishAgentRelease {
+        version: "0.2.0-beta".to_string(),
+        sha256: "a".repeat(64),
+        arch: "x86_64".to_string(),
+        now: first,
+    })
+    .await?;
+    let row = sp.process(FindAgentRelease).await?.expect("published");
+    assert_eq!(row.version, "0.2.0-beta");
+    assert_eq!(row.sha256, "a".repeat(64));
+    assert_eq!(row.arch, "x86_64");
+
+    // A second publish replaces the row rather than adding one.
+    sp.process(PublishAgentRelease {
+        version: "0.3.0".to_string(),
+        sha256: "b".repeat(64),
+        arch: "x86_64".to_string(),
+        now: first + chrono::TimeDelta::seconds(60),
+    })
+    .await?;
+    let row = sp.process(FindAgentRelease).await?.expect("published");
+    assert_eq!(row.version, "0.3.0");
+    assert_eq!(row.sha256, "b".repeat(64));
     Ok(())
 }
