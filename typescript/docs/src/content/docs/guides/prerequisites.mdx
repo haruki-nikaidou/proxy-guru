@@ -1,0 +1,441 @@
+---
+title: Prerequisites
+description: Set up everything the control plane depends on before you deploy it — SurrealDB, RabbitMQ, Docker, the build toolchain, surrealkit, Bun, and a hostname with a certificate.
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Both deployment guides — [Deploy with Docker](/guides/deploy-with-docker/) and
+[Deploy Natively](/guides/deploy-natively/) — start here. This page sets up the external
+dependencies and the operator tooling; the deployment guide you follow afterwards only wires the
+control plane to them.
+
+What each method actually needs:
+
+| | Deploy with Docker | Deploy Natively |
+|---|---|---|
+| SurrealDB ≥ 3.2 | yes | yes |
+| RabbitMQ 3.13/4.x | yes | yes |
+| Docker Engine + Compose | yes (everything runs from images) | yes (datastores only) |
+| `surrealkit` | yes | yes |
+| Rust toolchain + `protoc` | yes — `manage-tool` is not published as an image | yes — it builds every binary |
+| C toolchain, `make`, `cmake` | yes — `manage-tool` pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason |
+| `perl` | no | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
+| Bun | no | yes (builds and runs the dashboard) |
+| Hostname + TLS certificate | yes | yes |
+| Redis | no | no |
+
+Redis appears in the module scaffolding, but no binary connects to it today — do not provision one.
+
+## 1. Docker Engine and Compose
+
+SurrealDB and RabbitMQ run as containers in both methods, so the engine plus the Compose *plugin*
+(`docker compose`, not the legacy `docker-compose` script — except on Arch, where that *is* the
+package name) is the first thing to install. Pick your distro once; every tab on this page follows.
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+From [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/):
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-doc`,
+`docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on boot by the
+package here.
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+From [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/). Both
+the repository path and the suite expression differ from Debian's — Ubuntu derivatives report their
+own codename in `VERSION_CODENAME`, so the Ubuntu one has to win:
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-compose-v2`,
+`docker-doc`, `docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on
+boot by the package here.
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+On Fedora ([docs](https://docs.docker.com/engine/install/fedora/)):
+
+```sh
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+On RHEL ([docs](https://docs.docker.com/engine/install/rhel/)) the repository is added with the
+older subcommand form — the two are not interchangeable:
+
+```sh
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+Docker publishes no Arch packages; the [ArchWiki page](https://wiki.archlinux.org/title/Docker) is
+the distro reference. `docker-compose` is the Compose v2 plugin here:
+
+```sh
+sudo pacman -S --needed docker docker-compose
+sudo systemctl enable --now docker.service
+```
+
+</TabItem>
+</Tabs>
+
+Confirm the engine, and keep Compose an operator action — either `sudo docker compose …` (what the
+guides use) or your own account added to the `docker` group, which is root-equivalent on the host
+and should therefore never be granted to a service account:
+
+```sh
+sudo docker run --rm hello-world
+```
+
+## 2. Host packages
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+```sh
+sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config perl cmake protobuf-compiler \
+                    openssl nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+```sh
+sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
+```
+
+`base-devel` already carries `gcc`, `make`, `pkgconf` and `perl`.
+
+</TabItem>
+</Tabs>
+
+None of these are decoration — each is a real dependency of this workspace:
+
+| Package | Needed because |
+|---|---|
+| `protoc` (`protobuf-compiler`, on Arch `protobuf`) | `lib/rpguru_sdk`'s build script compiles `proto/` with `tonic-prost-build`, which shells out to `protoc`. Every binary depends on that crate, `manage-tool` included, so a missing `protoc` fails the build. Set `PROTOC=/path/to/protoc` if yours is not on `PATH`. |
+| C compiler, `make` | Both methods build `manage-tool`, which reaches the certificate stack through the `orchestration` module; several of its crates (`aws-lc-sys`, `ring`, `zstd-sys`) compile vendored C sources. |
+| `cmake` | `aws-lc-sys` builds its vendored sources with cmake, so it is needed wherever `manage-tool` is built. |
+| `perl` | `guru-worker` links OpenSSL with the `vendored` feature: OpenSSL is compiled from the bundled source tree, and its `Configure` is a perl script. Native deployment only. |
+| `pkgconf` / `pkg-config` | Build-dependency of the `*-sys` crates above. |
+| `openssl` | The deployment guides generate passwords and keys with `openssl rand -hex 32`. |
+| `unzip` | Required by the Bun installer on Linux. |
+| `nginx` | Terminates TLS for the dashboard, and for the worker API in the native guide. Any current build has `http_ssl_module` and `http_v2_module`, which is what `grpc_pass` (nginx ≥ 1.13.10) needs. |
+
+No `libssl-dev`/`openssl-devel` and no `libprotobuf` development packages: what the Rust build needs
+of those, it vendors.
+
+## 3. Rust, surrealkit and Bun
+
+Everything above needed root; everything in this section belongs to the account that will **own the
+checkout**, and that account differs per deployment method:
+
+<Tabs syncKey="deployment">
+<TabItem label="Native deployment">
+
+The control plane, the dashboard and everything you build run as one unprivileged service user, so
+create it now and install the toolchains from *its* shell — otherwise they land in your home and
+systemd will not find them:
+
+```sh
+sudo useradd --create-home --shell /bin/bash guru
+sudo -iu guru                 # the rest of this section runs as guru
+```
+
+The native guide uses `guru` and `/home/guru` throughout (including `User=`/`Group=` and the Bun
+path in its units); substitute your own name consistently. Do **not** add it to the `docker` group:
+that group is root-equivalent and no unit ever invokes Docker, so Compose stays an operator action.
+
+</TabItem>
+<TabItem label="Image deployment">
+
+Nothing runs from the checkout permanently — it only builds `manage-tool` and holds the schema
+files — so your own operator account is the right place. Bun is not needed at all.
+
+</TabItem>
+</Tabs>
+
+<Steps>
+
+1. **Rust**, via [rustup](https://rustup.rs/). The workspace pins the toolchain in
+   `rust-toolchain.toml` (channel `1.98`) and rustup installs that pin on the first `cargo`
+   invocation. Do not substitute a distro `rust` package: an older compiler cannot build edition
+   2024.
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   . "$HOME/.cargo/env"
+   ```
+
+2. **surrealkit**, the schema tool used by
+   [Setup Database Schema](/guides/setup-database-schema/):
+
+   ```sh
+   cargo install surrealkit          # `cargo binstall surrealkit` if you have cargo-binstall
+   surrealkit --version              # the guides were written against 0.7.0
+   ```
+
+3. **The checkout.** Both guides need it: the schema files under `database/`, the Compose file and
+   `manage-tool` all come from the repository, and none of them is shipped as an image.
+
+   ```sh
+   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```
+
+4. **Bun** — native deployment only, to build and run the dashboard. Node is not used anywhere;
+   SvelteKit's post-build step needs `Promise.withResolvers`, which Node 20 lacks.
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   The installer takes a version pin (`bash -s "bun-v1.3.3"`) to match the `oven/bun:1.3` image the
+   published dashboard is built with. Arch ships a `bun` package too, but installing it needs root
+   and puts the binary outside the service account's home.
+
+</Steps>
+
+## 4. SurrealDB and RabbitMQ
+
+### What the control plane needs from them
+
+| | Requirement |
+|---|---|
+| SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
+| | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that. |
+| | **Durable storage.** `rocksdb:/data/guru.db` on a volume you back up. This is the only irreplaceable state in the system. |
+| RabbitMQ | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. |
+| | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser. |
+| | The broker is **mandatory in all four master modes**. Periodic work *is* a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
+
+A managed SurrealDB or an existing broker is fine as long as it meets the rows above; the rest of
+this section is the self-hosted path.
+
+### Credentials
+
+Generate the passwords **URL-safe** — the broker password is interpolated into `AMQP_URI`, where
+`@`, `:`, `/` and `%` change the meaning of the URI:
+
+```sh
+openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+```
+
+Hex avoids every quoting and percent-encoding question. If you insist on punctuation, percent-encode
+it in `AMQP_URI` (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`); SurrealDB's password is passed
+as an argv value and needs quoting only.
+
+Write them down now, in the file the datastores will read. Each deployment guide appends its own
+variables (master key, listen addresses, image tags) to this same file later:
+
+<Tabs syncKey="deployment">
+<TabItem label="Native deployment">
+
+```sh
+# /path/to/proxy-guru/.env   (chmod 600; gitignored)
+SURREALDB_HOST=ws://127.0.0.1:8000
+SURREALDB_USER=root
+SURREALDB_PASSWORD=<first hex string>
+SURREALDB_NAMESPACE=guru
+SURREALDB_NAME=guru
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+```
+
+Compose interpolates `${…}` from it because it sits next to the checkout's `docker-compose.yml`,
+and systemd later reads the same file verbatim through `EnvironmentFile=` — systemd does **not**
+expand `${…}`, which is why `AMQP_URI` is written out in full.
+
+</TabItem>
+<TabItem label="Image deployment">
+
+```sh
+# /srv/guru/.env   (chmod 600)
+SURREAL_ROOT_USER=root
+SURREAL_ROOT_PASSWORD=<first hex string>
+
+RABBIT_USER=guru
+RABBIT_PASSWORD=<second hex string>
+
+GURU_NS=guru
+GURU_DB=guru
+```
+
+Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below lives next to this
+`.env`, and the image guide adds `MASTER_VERSION`, `FRONTEND_VERSION` and `GURU_MASTER_KEY` to it.
+
+</TabItem>
+</Tabs>
+
+### Start them
+
+<Tabs>
+<TabItem label="Native deployment">
+
+The repository ships a `docker-compose.yml` for exactly this: SurrealDB on RocksDB under
+`./data/db`, RabbitMQ under `./data/mq` (both gitignored), both published on loopback only, both
+reading their credentials from the checkout's `.env`.
+
+```sh
+cd /path/to/proxy-guru
+sudo docker compose up -d
+sudo docker compose ps        # wait for rabbitmq to report healthy
+```
+
+</TabItem>
+<TabItem label="Image deployment">
+
+Create the deployment directory (`/srv/guru` in the image guide) and put the two datastores in its
+Compose file, next to the `.env` that holds their credentials:
+
+```yaml
+# /srv/guru/docker-compose.yml
+name: guru
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    restart: unless-stopped
+    command:
+      - start
+      - --user
+      - ${SURREAL_ROOT_USER}
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD}
+      - rocksdb:/data/guru.db
+    user: root
+    volumes:
+      - surreal-data:/data
+    # Loopback only: the operator machine reaches it through an SSH tunnel.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  surreal-data:
+  rabbit-data:
+```
+
+```sh
+cd /srv/guru
+sudo docker compose up -d surrealdb rabbitmq
+```
+
+The masters are added to this same file later, in the image guide — the datastores have to exist
+first, because the schema has to be in place before any master starts.
+
+</TabItem>
+</Tabs>
+
+Two details are load-bearing in either shape. The `surrealdb/surrealdb` image runs as an
+unprivileged user that cannot write a root-owned volume or bind mount, hence `user: root`. RabbitMQ
+names its data directory after its node name, `rabbit@<hostname>`, so the checkout's Compose file
+pins `hostname:`; without it every container recreation would start an empty broker.
+
+The queues the consumer binds are created for you: `guru_orchestration_canvas_dirty` for edits, plus
+`guru_orchestration_derive_stale_canvases`, `guru_orchestration_sweep_liveness`,
+`guru_orchestration_trim_health_history`, `guru_orchestration_renew_certificates` and
+`guru_orchestration_rotate_relay_certificates` for the five periodic jobs.
+
+## 5. A hostname and a certificate
+
+One DNS name pointing at the host, plus a TLS certificate for it (`certbot`, your CA, anything).
+Both guides terminate the dashboard on it; the native guide terminates the worker API on the same
+name.
+
+:::danger[HTTPS is not optional]
+The dashboard's session cookie (`guru_session`) is issued with `Secure`, so browsers drop it over
+plain HTTP on anything but `localhost`. The app also reconstructs its own origin per request and
+rejects a login POST whose browser `Origin` does not match, which is why the proxy has to forward
+`X-Forwarded-Proto` and `X-Forwarded-Host`.
+:::
+
+:::caution[Keep the hostname off Cloudflare's proxy]
+Cloudflare's proxy closes a streaming response after 100 s without data. `WatchConfig` is silent
+between revisions, so behind the orange cloud every worker would reconnect every couple of minutes.
+Leave the record DNS-only; TLS to your own nginx already protects the API key in transit.
+:::
+
+## 6. Next
+
+The datastores are up but empty. Apply the schema before starting any master — that is its own
+article, because the same flow maintains the schema for the rest of the installation's life:
+**[Setup Database Schema](/guides/setup-database-schema/)**.
+
+Then continue with [Deploy with Docker](/guides/deploy-with-docker/) or
+[Deploy Natively](/guides/deploy-natively/).

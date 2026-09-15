@@ -28,6 +28,8 @@ export default defineConfig({
 					items: [
 						{ label: 'Introduction', link: '/guides/introduction/' },
 						{ label: 'Local Development', link: '/guides/local-development/' },
+						{ label: 'Prerequisites', link: '/guides/prerequisites/' },
+						{ label: 'Setup Database Schema', link: '/guides/setup-database-schema/' },
 						{ label: 'Deploy with Docker', link: '/guides/deploy-with-docker/' },
 						{ label: 'Deploy Natively', link: '/guides/deploy-natively/' }
 					]

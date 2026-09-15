@@ -53,19 +53,16 @@ crosses the public internet.
 
 ## 2. Prerequisites
 
-- A Linux host with Docker ≥ 24 and the Compose plugin.
-- A DNS name for the dashboard plus a TLS certificate (nginx, Caddy, Traefik — anything).
-- A checkout of this repository on an operator machine. You need it for two things: the schema
-  files under `database/` and the `manage-tool` admin CLI. Neither is shipped as an image.
-- [`surrealkit`](https://github.com/surrealdb/surrealkit) on that operator machine:
+Work through **[Prerequisites](/guides/prerequisites/)** before this guide. For an image deployment
+you need, from that page: Docker Engine and the Compose plugin, a checkout of this repository on an
+operator machine (the schema files under `database/` and the `manage-tool` CLI are not shipped as
+images), a Rust toolchain plus `protobuf-compiler` to build `manage-tool`, `surrealkit`, `openssl`,
+a DNS name with a TLS certificate — and SurrealDB and RabbitMQ themselves, which that page brings
+up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
 
-  ```sh
-  cargo binstall surrealkit     # or: cargo install surrealkit
-  surrealkit --version          # this guide was written against 0.7.0
-  ```
-
-- A Rust toolchain on that machine (the repository pins it in `rust-toolchain.toml`) plus
-  `protobuf-compiler`, to build `manage-tool`.
+Bun is the one thing you can skip here — the dashboard ships as an image. The C toolchain and
+`cmake` you do need: `manage-tool` pulls in the certificate stack, whose crates compile vendored C
+sources. `perl` is only needed where `guru-worker` is built, which is not here.
 
 ## 3. Pick versions
 
@@ -85,34 +82,18 @@ Both images are public, so no `docker login ghcr.io` is needed to pull.
 
 ## 4. Lay out the secrets
 
-Create a deployment directory (this guide uses `/srv/guru`) with a `.env` next to the Compose file:
-
-Generate the two passwords **URL-safe** — the broker password is interpolated into `AMQP_URI`,
-where `@`, `:`, `/` and `%` change the meaning of the URI:
-
-```sh
-openssl rand -hex 32
-```
+[Prerequisites](/guides/prerequisites/) already created `/srv/guru/.env` next to the Compose file,
+with the datastore credentials (`SURREAL_ROOT_USER`, `SURREAL_ROOT_PASSWORD`, `RABBIT_USER`,
+`RABBIT_PASSWORD`, `GURU_NS`, `GURU_DB`). Append the image tags you pinned in section 3:
 
 ```sh
-# /srv/guru/.env
+# /srv/guru/.env  (append)
 # The master and the frontend are tagged and released independently; pin each one.
 MASTER_VERSION=v0.2.0-beta
 FRONTEND_VERSION=v0.1.0-beta
-
-SURREAL_ROOT_USER=root
-SURREAL_ROOT_PASSWORD=<hex string from openssl>
-
-RABBIT_USER=guru
-RABBIT_PASSWORD=<hex string from openssl>
-
-GURU_NS=guru
-GURU_DB=guru
 ```
 
-If you insist on a passphrase with punctuation, percent-encode it before putting it in `AMQP_URI`
-(`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`). SurrealDB's password is passed as an argv
-value, so it needs no encoding — only quoting.
+`GURU_MASTER_KEY` joins the same file in section 7, once `manage-tool` can print one.
 
 :::caution[The repository `.env` is a different file]
 The repository root may contain a `.env` with credentials of *another* environment, and both
@@ -125,100 +106,25 @@ rewriting production.
 
 ## 5. SurrealDB and RabbitMQ
 
-### SurrealDB
-
-Use a **3.2 or newer** server. Older 3.0 binaries disagree with the client the workspace links
-against and mis-handle assertions that read a row written earlier in the same transaction, which
-shows up as spurious "table does not exist" or cancelled-transaction errors.
-
-Two things the control plane needs from it:
-
-- **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects
-  namespace and database. A namespace- or database-scoped user will not work.
-- **A durable storage backend.** `rocksdb:/data/guru.db` in this guide; put it on a volume you
-  back up. The `surrealdb/surrealdb` image runs as an unprivileged user that cannot write to a
-  fresh named volume, hence `user: root` in the service below.
-
-### RabbitMQ
-
-Any 3.13/4.x server works; the control plane declares its own exchange and its durable queues on
-startup, so there is nothing to pre-create. Create a user and leave it on the default vhost. The
-queues are one per message the consumer binds: `guru_orchestration_canvas_dirty` for edits, and
-`guru_orchestration_derive_stale_canvases`, `guru_orchestration_sweep_liveness`,
-`guru_orchestration_trim_health_history`, `guru_orchestration_renew_certificates` and
-`guru_orchestration_rotate_relay_certificates` for the five periodic jobs.
-
-The URI form matters: `amqp://user:password@host:5672/` — the **trailing slash** selects the default
-vhost. `/%2f` is rejected by the parser.
-
-The broker is **mandatory in all four modes**, and every one of them refuses to start without a
-reachable `AMQP_URI`. For the serving modes the reason is that a control plane which cannot publish
-a dirty-canvas event would accept edits nothing re-derives. For `cron` and `consumer` it is more
-direct: periodic work *is* a message, so while the broker is down nothing sweeps stale canvases,
-nothing flips a silent server to `Offline` and nothing renews a certificate. The generation
-counters make the catch-up automatic once it returns, but a long broker outage is not only a
-latency problem — treat RabbitMQ as a dependency of the control plane, not as an optimisation.
-
-### Compose services
-
-```yaml
-# /srv/guru/docker-compose.yml
-name: guru
-
-services:
-  surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
-    restart: unless-stopped
-    command:
-      - start
-      - --user
-      - ${SURREAL_ROOT_USER}
-      - --pass
-      - ${SURREAL_ROOT_PASSWORD}
-      - rocksdb:/data/guru.db
-    user: root
-    volumes:
-      - surreal-data:/data
-    # Loopback only: the operator machine reaches it through an SSH tunnel.
-    ports:
-      - "127.0.0.1:8000:8000"
-
-  rabbitmq:
-    image: rabbitmq:4-alpine
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
-    volumes:
-      - rabbit-data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
-
-volumes:
-  surreal-data:
-  rabbit-data:
-```
-
-Bring the two datastores up first — the schema has to exist before any master starts:
+Both datastores, their Compose services and the requirements behind them (SurrealDB ≥ 3.2, root
+credentials, durable RocksDB storage; RabbitMQ on the default vhost with a trailing-slash URI) live
+in **[Prerequisites → SurrealDB and RabbitMQ](/guides/prerequisites/#4-surrealdb-and-rabbitmq)**.
+They must be up before any master starts:
 
 ```sh
 cd /srv/guru
-docker compose up -d surrealdb rabbitmq
+docker compose ps          # surrealdb up, rabbitmq healthy
 ```
+
+Two consequences worth repeating here, because they shape this deployment: the broker is mandatory
+in **all four** master modes — periodic work is a message, so a broker outage stalls derivation,
+liveness and certificate renewal — and the masters sign in to SurrealDB as **root**, so the
+credentials in `/srv/guru/.env` are the ones the `x-master` anchor in section 7 passes on.
 
 ## 6. Apply the schema with `surrealkit`
 
-The schema is a set of declarative `.surql` files under `database/schema/` (one per module) plus
-`database/setup.surql`, which defines the two bookkeeping tables (`__entity`, `__rollout`)
-`surrealkit` itself needs. Run every command from the repository root, because `surrealkit` resolves
-`./database` relative to the working directory (`--folder` overrides it).
-
-Wrap the connection in a shell function so the flags stay short, nothing falls back to the
-repository `.env`, and the password survives whatever characters it contains (a `SK="… --pass $pw"`
-string variable would be re-tokenized on spaces):
+Follow **[Setup Database Schema](/guides/setup-database-schema/)** — pick its *Image deployment*
+tab, which uses the `/srv/guru/.env` names and runs from your checkout:
 
 ```sh
 cd ~/proxy-guru                      # your checkout
@@ -229,63 +135,18 @@ sk() {
   surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
     --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
 }
+sk setup                             # then rollout plan / lint / start / complete
 ```
 
 If the database only listens on loopback on the server, tunnel to it:
 `ssh -N -L 8000:127.0.0.1:8000 guru-host`.
 
-**Step 1 — bookkeeping tables.** Once per database:
-
-```sh
-sk setup
-```
-
-**Step 2 — plan the change.** `plan` diffs the schema files against the live database and writes a
-reviewable manifest:
-
-```sh
-sk rollout plan --name initial_schema
-# Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
-# Updated ./database/snapshots/catalog_snapshot.json
-```
-
-Read the manifest, then validate it without touching the database:
-
-```sh
-sk rollout lint 20260913083052__initial_schema
-```
-
-**Step 3 — expand.** `start` applies the *non-destructive* half (new tables, fields, indexes,
-functions). It is safe to run while an older control plane is live:
-
-```sh
-sk rollout start 20260913083052__initial_schema
-# Rollout ... is ready to complete.
-```
-
-**Step 4 — cut over, then contract.** Deploy the master version that matches the schema
-(section 7), and only then run the destructive half — dropping objects the new code no longer uses:
-
-```sh
-sk rollout complete 20260913083052__initial_schema
-sk status
-# __rollout:20260913083052__initial_schema [completed] initial_schema
-```
-
-For the very first deployment steps 3 and 4 run back to back: there is no old version to keep
-alive.
-
-Other commands you will want eventually:
-
-| Command | When |
-|---|---|
-| `surrealkit rollout baseline` | First rollout against a database that already has the schema (adopts the current state instead of diffing it from empty) |
-| `surrealkit rollout rollback <target>` | Revert an in-flight rollout |
-| `surrealkit rollout repair <target>` | A `start`/`complete` was killed mid-flight and `__rollout.status` is stuck on `running_*`; reconciles metadata only |
-| `surrealkit sync` | **Disposable databases only.** Reconciles immediately, prunes deleted objects, no review step, no rollback |
-
-Commit `database/rollouts/*.toml` and `database/snapshots/*.json`: they are how the next `plan`
-knows what the shared database already has.
+One thing that article settles differently for this deployment: `sk rollout complete` (the
+destructive half) belongs **after** section 7 has rolled out the master version that matches the
+schema. On a first install the two halves run back to back, since there is no old version to keep
+alive. The rollout manifests and snapshots it writes under `database/` stay on this operator
+machine — they are gitignored per-environment state, so back them up with your credentials rather
+than committing them.
 
 ## 7. Run the control plane
 
@@ -456,32 +317,30 @@ stray `.env` silently redirects the command.
 
 ### Seed the module configuration
 
-The operator-tunable settings live in the `app_config` table, one row per key. Write the defaults
-once the schema is in place:
+The operator-tunable settings live in the `app_config` table, one row per key, and the seed step is
+part of [Setup Database Schema → Seed the module
+configuration](/guides/setup-database-schema/#3-seed-the-module-configuration) — run it now if you
+skipped it there:
 
 ```sh
 ./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
+  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
   --namespace guru --database guru \
   config seed
 # seeded auth
 # seeded orchestration
 ```
 
-Re-run it after every schema change: it only fills in keys that have none, so a value you have
-edited is left alone. `config list` prints every stored document, and `config set <key> <json>`
-replaces one key — for example a two-week ACME renewal window:
+`config list` prints every stored document, and `config set <key> <json>` replaces one key — for
+example a two-week ACME renewal window:
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_renew_before_secs":1209600}'
 ```
 
 A `set` is validated against the config's type before it is written and replaces the whole
-document, with unspecified fields taking their default. The masters read these keys once at
-startup, so restart them to pick a change up. Skipping the seed is safe — an unseeded installation
-runs the defaults — but a stored document that does not match its type fails master startup naming
-the key, which is deliberate: silently falling back to defaults could move ACME from staging to the
-production directory. See
+document, with unspecified fields taking their default. The masters read these keys once at startup,
+so restart them to pick a change up. See
 [Configuration → Module configuration](/reference/configuration#module-configuration).
 
 The cadence of the periodic jobs lives on the same key: `sweep_interval_secs` (30),

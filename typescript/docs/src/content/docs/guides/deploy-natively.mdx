@@ -33,290 +33,30 @@ the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent
 
 ## 2. Prerequisites
 
-Installed once, on the host that builds and runs the control plane. Distro tabs cover Debian,
-Ubuntu, Fedora/RHEL and Arch, and they are synchronised — pick your distro once and every tab on
-the page follows. On anything else, map the package names yourself; the *requirements* below are
-what matter.
+Work through **[Prerequisites](/guides/prerequisites/)** first: Docker Engine and Compose, the host
+packages (C toolchain, `cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, surrealkit, Bun, the
+checkout, SurrealDB and RabbitMQ, and a hostname with a certificate. For this deployment shape you
+need all of it — the native build is the one that compiles vendored OpenSSL and aws-lc, and the one
+that runs the dashboard from Bun.
 
-### Build and runtime packages
-
-<Tabs syncKey="distro">
-<TabItem label="Debian">
-
-```sh
-sudo apt update
-sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
-                    nginx curl unzip git
-```
-
-</TabItem>
-<TabItem label="Ubuntu">
-
-```sh
-sudo apt update
-sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
-                    nginx curl unzip git
-```
-
-</TabItem>
-<TabItem label="Fedora / RHEL">
-
-```sh
-sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config perl cmake protobuf-compiler \
-                    nginx curl unzip git
-```
-
-</TabItem>
-<TabItem label="Arch">
-
-```sh
-sudo pacman -S --needed base-devel cmake protobuf nginx curl unzip git
-```
-
-`base-devel` already carries `gcc`, `make`, `pkgconf` and `perl`.
-
-</TabItem>
-</Tabs>
-
-None of these are decoration — each one is a build dependency of this workspace:
-
-| Package | Needed because |
-|---|---|
-| `protoc` (`protobuf-compiler`, on Arch `protobuf`) | `lib/rpguru_sdk`'s build script compiles `proto/` with `tonic-prost-build`, which shells out to `protoc`. All three binaries depend on that crate, so a missing `protoc` fails the whole build. Set `PROTOC=/path/to/protoc` if yours is not on `PATH`. |
-| C compiler, `make`, `perl` | `guru-worker` links OpenSSL with the `vendored` feature, so OpenSSL is compiled from the bundled source tree — and its `Configure` is a perl script. |
-| `cmake` | `aws-lc-sys` (pulled in by the ACME and certificate-generation stack) builds its vendored C sources with cmake. |
-| `pkgconf` / `pkg-config` | Build-dependency of the `*-sys` crates above. |
-| `unzip` | Required by the Bun installer on Linux. |
-| `nginx` | TLS for the dashboard and the worker API (section 7). |
-
-No `libssl-dev`/`openssl-devel`, no `libprotobuf`, no Redis: everything native is vendored, and
-nothing in the native flow connects to Redis.
-
-### Docker Engine and Compose
-
-SurrealDB and RabbitMQ run as containers; the repository ships the Compose file for them. Install
-the engine plus the Compose *plugin* (`docker compose`, not the legacy `docker-compose` script
-except on Arch, where that is the package name):
-
-<Tabs syncKey="distro">
-<TabItem label="Debian">
-
-From [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/):
-
-```sh
-sudo apt install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/debian
-Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-```
-
-Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-doc`,
-`docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on boot by the
-package here.
-
-</TabItem>
-<TabItem label="Ubuntu">
-
-From [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/). The
-repository path and the suite expression both differ from Debian's — Ubuntu derivatives report
-their own codename in `VERSION_CODENAME`, so the Ubuntu one has to be preferred:
-
-```sh
-sudo apt install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/ubuntu
-Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-```
-
-Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-compose-v2`,
-`docker-doc`, `docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on
-boot by the package here.
-
-</TabItem>
-<TabItem label="Fedora / RHEL">
-
-On Fedora ([docs](https://docs.docker.com/engine/install/fedora/)):
-
-```sh
-sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
-sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl enable --now docker
-```
-
-On RHEL ([docs](https://docs.docker.com/engine/install/rhel/)) the repo is added with the older
-subcommand form — the two are not interchangeable:
-
-```sh
-sudo dnf -y install dnf-plugins-core
-sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl enable --now docker
-```
-
-</TabItem>
-<TabItem label="Arch">
-
-Docker publishes no Arch packages; the [ArchWiki page](https://wiki.archlinux.org/title/Docker) is
-the distro reference. `docker-compose` is the Compose v2 plugin here:
-
-```sh
-sudo pacman -S --needed docker docker-compose
-sudo systemctl enable --now docker.service
-```
-
-</TabItem>
-</Tabs>
-
-Check the engine as root, and keep Compose an operator action — either `sudo docker compose …` (what
-this guide uses) or your own account added to the `docker` group, which is equivalent to root on the
-host and therefore never granted to the service account:
-
-```sh
-sudo docker run --rm hello-world
-```
+Two consequences of running from a checkout are worth restating before you start.
 
 ### The deployment user
 
-Everything above needed root. Everything below — the toolchains, the checkout, the build, the
-schema, the dashboard build — belongs to one unprivileged user that **owns the checkout**, because
-the binaries, the `.env`, `data/` and the surrealkit manifests all live inside it (which is also
-why the units in sections 5–6 cannot use `DynamicUser=`/`ProtectHome=`).
+The prerequisites create an unprivileged `guru` user (in the *Native deployment* tab of its
+toolchain section) and install rustup, surrealkit, Bun and the checkout as that user, because the
+units in sections 5–6 run as it: the binaries, the `.env`, `data/` and the surrealkit manifests all
+live inside the checkout it owns — which is also why those units cannot use
+`DynamicUser=`/`ProtectHome=`.
 
-```sh
-sudo useradd --create-home --shell /bin/bash guru
-sudo -iu guru                         # the rest of this guide runs as guru
-```
+This guide therefore has two shells, and says which one every command belongs to: **`guru`** for
+the build, the schema, `manage-tool` and the dashboard build; **your own sudo-capable account** for
+Docker, systemd and nginx. `guru` is deliberately not in the `docker` group and needs no sudo.
 
-This guide uses `guru` and `/home/guru` throughout; substitute your own name consistently,
-including the `User=`/`Group=` and Bun paths in the units. Install rustup, Bun and surrealkit
-*after* switching, so they land in that user's home where systemd can find them.
+### Where each piece listens
 
-The account is deliberately **not** in the `docker` group — that group is root-equivalent, and
-neither unit ever invokes Docker. Compose stays an operator action: run the `docker compose`
-commands in section 4 from your own account with `sudo`, or as root.
-
-### Rust, Bun and surrealkit
-
-<Steps>
-
-1. **Rust**, via rustup. The workspace pins the toolchain in `rust-toolchain.toml` (channel
-   `1.98`), and rustup installs that pin on the first `cargo` invocation — do not install a distro
-   `rust` package instead, an older compiler cannot build edition 2024.
-
-   ```sh
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   . "$HOME/.cargo/env"
-   ```
-
-2. **Bun**, for the dashboard and these docs. Node is not used anywhere: the frontend build needs
-   Bun for its own subprocesses.
-
-   <Tabs syncKey="distro">
-   <TabItem label="Debian">
-
-   ```sh
-   curl -fsSL https://bun.com/install | bash
-   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
-   ```
-
-   </TabItem>
-   <TabItem label="Ubuntu">
-
-   ```sh
-   curl -fsSL https://bun.com/install | bash
-   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
-   ```
-
-   </TabItem>
-   <TabItem label="Fedora / RHEL">
-
-   ```sh
-   curl -fsSL https://bun.com/install | bash
-   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
-   ```
-
-   </TabItem>
-   <TabItem label="Arch">
-
-   ```sh
-   curl -fsSL https://bun.com/install | bash
-   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
-   ```
-
-   Arch does ship a `bun` package, but installing it needs root and puts the binary outside the
-   service account's home — add it back in the root package step if you prefer it.
-
-   </TabItem>
-   </Tabs>
-
-   The installer takes a version pin (`bash -s "bun-v1.3.3"`) if you want to match the
-   `oven/bun:1.3` image the published dashboard is built with.
-
-3. **surrealkit**, the schema tool. It is a Rust binary, so install it with cargo:
-
-   ```sh
-   cargo binstall surrealkit     # or: cargo install surrealkit
-   surrealkit --version          # this guide was written against 0.7.0
-   ```
-
-4. **The checkout.** Everything below runs from it — the binaries, the `.env`, the schema files
-   and the Compose file all live inside it.
-
-   ```sh
-   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
-   ```
-
-</Steps>
-
-### What the control plane needs from the datastores
-
-The Compose file in the checkout already satisfies all of this; the requirements are listed so that
-a managed SurrealDB or an existing broker can be judged against them.
-
-| | Requirement |
-|---|---|
-| SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
-| | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that. |
-| | **Durable storage.** The shipped service runs `rocksdb:/data/guru.db` on a bind mount. This is the only irreplaceable state in the system. |
-| RabbitMQ | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. |
-| | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser. |
-| | The broker is **mandatory in all four modes**. Periodic work *is* a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
-
-Two details in the shipped `docker-compose.yml` are load-bearing. The SurrealDB image runs as
-`nonroot` and cannot write a root-owned bind mount, so the service sets `user: root`. RabbitMQ names
-its data directory after its node name, `rabbit@<hostname>`, so the service pins `hostname:`;
-without it every container recreation would start an empty broker.
-
-### A hostname and a certificate
-
-One DNS name pointing at this host, and a TLS certificate for it (`certbot`, your CA, anything).
-Section 7 terminates both the dashboard and the worker API on it.
-
-:::caution[Keep the hostname off Cloudflare's proxy]
-Cloudflare's proxy closes a streaming response after 100 s without data. `WatchConfig` is silent
-between revisions, so behind the orange cloud every worker would reconnect every couple of minutes.
-Leave the record DNS-only; TLS from the worker to nginx already protects the API key in transit.
-:::
+The datastores are already up on loopback from the checkout's `docker-compose.yml` (prerequisites,
+section 4). Nothing else is exposed until section 7 adds the single nginx server block.
 
 ## 3. Build
 
@@ -333,34 +73,23 @@ continuing.
 
 ### The secrets file
 
-All secrets live in one file, the repository root `.env` (it is gitignored). Compose interpolates
-`${…}` from it because it sits next to `docker-compose.yml`; systemd reads it verbatim through
-`EnvironmentFile=`. systemd does **not** expand `${…}`, so `AMQP_URI` has to be written out, and hex
-secrets avoid every quoting and URL-encoding question.
+[Prerequisites](/guides/prerequisites/) already created `/path/to/proxy-guru/.env` with the
+datastore credentials (`SURREALDB_*`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`). The masters
+read the same file through `EnvironmentFile=`, so append what they add:
 
 <Steps>
 
-1. Generate the two passwords and the master key. `GURU_MASTER_KEY` encrypts every DNS provider
-   token, ACME account key and certificate key at rest, and there is no way to recover those
-   without it:
+1. Generate the master key. It encrypts every DNS provider token, ACME account key and certificate
+   key at rest, and there is no way to recover those without it:
 
    ```sh
-   openssl rand -hex 32                              # once for SurrealDB, once for RabbitMQ
    ./target/release/manage-tool generate-master-key   # needs no database
    ```
 
-2. Write them into `/path/to/proxy-guru/.env`:
+2. Append these lines to the existing `.env`:
 
    ```sh
-   # /path/to/proxy-guru/.env  (chmod 600)
-   SURREALDB_HOST=ws://127.0.0.1:8000
-   SURREALDB_USER=root
-   SURREALDB_PASSWORD=<openssl rand -hex 32>
-   SURREALDB_NAMESPACE=guru
-   SURREALDB_NAME=guru
-   RABBIT_USER=guru
-   RABBIT_PASSWORD=<openssl rand -hex 32>
-   AMQP_URI=amqp://guru:<RABBIT_PASSWORD>@127.0.0.1:5672/
+   # /path/to/proxy-guru/.env  (append)
    GURU_MASTER_KEY=<manage-tool generate-master-key>
    GURU_DASHBOARD_GRPC_ADDR=127.0.0.1:50051
    GURU_WORKERS_GRPC_ADDR=127.0.0.1:50052
@@ -375,133 +104,37 @@ secrets avoid every quoting and URL-encoding question.
 plaintext worker API. `GURU_MASTER_KEY` is deliberately environment-only — it has no flag, because
 argv is visible in process listings.
 
-### Start the datastores
-
-The repository ships a `docker-compose.yml` for exactly this layout: SurrealDB on RocksDB under
-`./data/db`, RabbitMQ under `./data/mq` (both gitignored), both published on loopback only, both
-reading the credentials from the `.env` you just wrote.
-
-This is the one step that needs Docker, so run it **from your own (sudo-capable) account**, not from
-the `guru` shell:
-
-```sh
-cd /path/to/proxy-guru
-sudo docker compose up -d
-sudo docker compose ps     # wait for rabbitmq to report healthy
-```
-
-Then go back to the service account (`sudo -iu guru`) for everything that follows — the schema, the
-config seed, the CA and the admin account all run as `guru`.
-
 ### Setup Database Schema
 
-The schema is a set of declarative `.surql` files — `database/schema/{auth,base,orchestration}.surql`,
-one per module — plus `database/setup.surql`, which defines the two bookkeeping tables (`__entity`,
-`__rollout`) that `surrealkit` itself needs. Run every command from the repository root, because
-`surrealkit` resolves `./database` relative to the working directory (`--folder` overrides it).
-
-:::caution[Always pass the connection explicitly]
-`surrealkit` resolves CLI flags > environment > `.env`, and the repository `.env` is inherited by
-every process started from the checkout. On a machine that also has credentials for another
-environment, a forgotten flag is how a "local" command ends up rewriting production.
-:::
-
-Wrap the connection in a shell function so the flags stay short and the password survives whatever
-characters it contains (a `SK="… --pass $pw"` string variable would be re-tokenized on spaces):
+The datastores are up (per the prerequisites) but empty, and no master may start against an empty
+database. Apply the schema now, and seed the module configuration, following
+**[Setup Database Schema](/guides/setup-database-schema/)** — run it as `guru`, from the checkout,
+with the credentials it already holds:
 
 ```sh
 cd /path/to/proxy-guru
-set -a; . ./.env; set +a       # the credentials you wrote in "The secrets file"
+set -a; . ./.env; set +a       # the credentials you wrote above
 
 sk() {
   surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
     --user root --pass "$SURREALDB_PASSWORD" "$@"
 }
+sk setup                                            # once per database
+sk rollout plan --name initial_schema               # then lint / start / complete
 ```
 
-Then create the bookkeeping tables once per database, and apply the schema:
+One thing that article settles differently here: on a later schema change, `complete` waits until
+the rebuilt masters from sections 5–6 are running and verified. The manifests and snapshots it
+writes under `database/` stay on this host (they are gitignored per-environment state) — back them
+up with the `.env`.
 
-<Steps>
-
-1. **Bookkeeping tables.** Once per database, before anything else:
-
-   ```sh
-   sk setup
-   ```
-
-2. **Plan the change.** `plan` diffs the schema files against the live database and writes a
-   reviewable manifest; `lint` validates it without touching the database.
-
-   ```sh
-   sk rollout plan --name initial_schema
-   # Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
-   # Updated ./database/snapshots/catalog_snapshot.json
-
-   sk rollout lint 20260913083052__initial_schema
-   ```
-
-   Read the manifest before applying it. `surrealkit sync` — the one-shot reconcile used in
-   [Local Development](/guides/local-development/) — is for disposable databases only: it prunes
-   deleted objects with no review step and no rollback, so it has no place on a deployment you care
-   about.
-
-3. **Expand.** `start` applies the non-destructive half — new tables, fields, indexes, functions.
-   It is safe to run while an older control plane is still serving:
-
-   ```sh
-   sk rollout start 20260913083052__initial_schema
-   # Rollout ... is ready to complete.
-   ```
-
-4. **Contract.** `complete` drops what the new code no longer uses, so it must not run before the
-   matching binaries do. On this first install there is no old version to keep alive and it follows
-   immediately; on a later schema change it waits until the rebuilt masters from sections 5–6 are
-   running and verified:
-
-   ```sh
-   sk rollout complete 20260913083052__initial_schema
-   ```
-
-   A rollout that went wrong is reverted with `sk rollout rollback <target>`.
-
-5. **Confirm it landed.**
-
-   ```sh
-   sk status
-   ```
-
-</Steps>
-
-Unlike the image deployment, the manifests and snapshots `surrealkit` writes under
-`database/rollouts/` and `database/snapshots/` are gitignored here: with a single machine they are
-per-environment state and there is nothing to share them with. Keep them on the host — the next
-`plan` diffs against them.
-
-Other commands you will want eventually:
-
-| Command | When |
-|---|---|
-| `sk rollout baseline` | First rollout against a database that already has the schema (adopts the current state instead of diffing it from empty) |
-| `sk rollout rollback <target>` | Revert an in-flight rollout |
-| `sk rollout repair <target>` | A `start`/`complete` was killed mid-flight and `__rollout.status` is stuck on `running_*`; reconciles metadata only |
-
-### Seed the module configuration
-
-Everything an operator tunes per installation — health thresholds and retention, the default ACME
-directory, the renewal window, how often each periodic job runs — lives in the database, in one
-`app_config` row per key, not in the environment. Write the defaults with the same environment the
-masters will see:
+Finish with the configuration seed from the same article:
 
 ```sh
 (set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
 # seeded auth
 # seeded orchestration
 ```
-
-It is idempotent and never overwrites a value you have edited, so re-run it after every schema
-change. `config list`, `config get <key>` and `config set <key> <json>` inspect and change those
-values, and the masters read them once at startup — so a change needs a restart, not a redeploy.
-See [Configuration → Module configuration](/reference/configuration#module-configuration).
 
 ### The internal CA and the first administrator
 
