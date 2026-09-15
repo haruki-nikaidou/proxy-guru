@@ -541,5 +541,22 @@
 	"health_nodes_show": "表示",
 	"health_nodes_hide": "非表示",
 	"health_nodes_empty_title": "ノードがありません",
-	"health_nodes_empty_description": "このキャンバスには状態を報告するエントリー、リレー、エグジット、ロードバランサーのノードがありません。"
+	"health_nodes_empty_description": "このキャンバスには状態を報告するエントリー、リレー、エグジット、ロードバランサーのノードがありません。",
+	"editor_menu_nodes": "ノード",
+	"editor_menu_view": "表示",
+	"editor_new_server": "新しいサーバー",
+	"editor_new_entry": "新しいエントリー",
+	"editor_new_relay": "新しいリレー",
+	"editor_new_exit": "新しいエグジット",
+	"editor_new_lb_distribute": "新しい負荷分散（分配）",
+	"editor_new_lb_aggregate": "新しい負荷分散（集約）",
+	"editor_new_universal_distribute": "新しいユニバーサル分配器",
+	"editor_new_universal_aggregate": "新しいユニバーサル集約器",
+	"editor_view_fullscreen": "全画面表示",
+	"editor_view_interactive": "操作の切り替え",
+	"editor_view_zoom": "ズーム {percent}%",
+	"editor_view_zoom_in": "拡大",
+	"editor_view_zoom_out": "縮小",
+	"editor_view_zoom_fit": "全体を表示",
+	"editor_menu_subcanvas_import": "サブキャンバスをインポート"
 }

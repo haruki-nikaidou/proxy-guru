@@ -541,5 +541,22 @@
 	"health_nodes_show": "显示",
 	"health_nodes_hide": "隐藏",
 	"health_nodes_empty_title": "暂无节点",
-	"health_nodes_empty_description": "此画布没有可报告状态的入口、中继、出口或负载均衡节点。"
+	"health_nodes_empty_description": "此画布没有可报告状态的入口、中继、出口或负载均衡节点。",
+	"editor_menu_nodes": "节点",
+	"editor_menu_view": "视图",
+	"editor_new_server": "新建服务器",
+	"editor_new_entry": "新建入口",
+	"editor_new_relay": "新建中继",
+	"editor_new_exit": "新建出口",
+	"editor_new_lb_distribute": "新建负载均衡（分发）",
+	"editor_new_lb_aggregate": "新建负载均衡（聚合）",
+	"editor_new_universal_distribute": "新建万能分发器",
+	"editor_new_universal_aggregate": "新建万能聚合器",
+	"editor_view_fullscreen": "全屏",
+	"editor_view_interactive": "切换交互",
+	"editor_view_zoom": "缩放 {percent}%",
+	"editor_view_zoom_in": "放大",
+	"editor_view_zoom_out": "缩小",
+	"editor_view_zoom_fit": "适应窗口",
+	"editor_menu_subcanvas_import": "导入子画布"
 }

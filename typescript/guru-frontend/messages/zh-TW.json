@@ -541,5 +541,22 @@
 	"health_nodes_show": "顯示",
 	"health_nodes_hide": "隱藏",
 	"health_nodes_empty_title": "尚無節點",
-	"health_nodes_empty_description": "此畫布沒有可回報狀態的 entry、relay、exit 或負載平衡節點。"
+	"health_nodes_empty_description": "此畫布沒有可回報狀態的 entry、relay、exit 或負載平衡節點。",
+	"editor_menu_nodes": "節點",
+	"editor_menu_view": "檢視",
+	"editor_new_server": "新增伺服器",
+	"editor_new_entry": "新增入口",
+	"editor_new_relay": "新增中繼",
+	"editor_new_exit": "新增出口",
+	"editor_new_lb_distribute": "新增負載平衡（分發）",
+	"editor_new_lb_aggregate": "新增負載平衡（聚合）",
+	"editor_new_universal_distribute": "新增萬能分發器",
+	"editor_new_universal_aggregate": "新增萬能聚合器",
+	"editor_view_fullscreen": "全螢幕",
+	"editor_view_interactive": "切換互動",
+	"editor_view_zoom": "縮放 {percent}%",
+	"editor_view_zoom_in": "放大",
+	"editor_view_zoom_out": "縮小",
+	"editor_view_zoom_fit": "符合視窗",
+	"editor_menu_subcanvas_import": "匯入子畫布"
 }

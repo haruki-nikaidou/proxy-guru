@@ -541,5 +541,22 @@
 	"health_nodes_show": "표시",
 	"health_nodes_hide": "숨기기",
 	"health_nodes_empty_title": "노드가 없습니다",
-	"health_nodes_empty_description": "이 캔버스에는 상태를 보고할 엔트리, 릴레이, 엑시트, 로드 밸런스 노드가 없습니다."
+	"health_nodes_empty_description": "이 캔버스에는 상태를 보고할 엔트리, 릴레이, 엑시트, 로드 밸런스 노드가 없습니다.",
+	"editor_menu_nodes": "노드",
+	"editor_menu_view": "보기",
+	"editor_new_server": "새 서버",
+	"editor_new_entry": "새 엔트리",
+	"editor_new_relay": "새 릴레이",
+	"editor_new_exit": "새 출구",
+	"editor_new_lb_distribute": "새 로드 밸런스 (분산)",
+	"editor_new_lb_aggregate": "새 로드 밸런스 (집계)",
+	"editor_new_universal_distribute": "새 유니버설 분배기",
+	"editor_new_universal_aggregate": "새 유니버설 집계기",
+	"editor_view_fullscreen": "전체 화면",
+	"editor_view_interactive": "상호작용 전환",
+	"editor_view_zoom": "확대/축소 {percent}%",
+	"editor_view_zoom_in": "확대",
+	"editor_view_zoom_out": "축소",
+	"editor_view_zoom_fit": "화면에 맞추기",
+	"editor_menu_subcanvas_import": "하위 캔버스 가져오기"
 }

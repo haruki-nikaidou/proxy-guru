@@ -541,5 +541,22 @@
 	"health_nodes_show": "Show",
 	"health_nodes_hide": "Hide",
 	"health_nodes_empty_title": "No nodes yet",
-	"health_nodes_empty_description": "This canvas has no entry, relay, exit or load-balance node to report on."
+	"health_nodes_empty_description": "This canvas has no entry, relay, exit or load-balance node to report on.",
+	"editor_menu_nodes": "Nodes",
+	"editor_menu_view": "View",
+	"editor_new_server": "New server",
+	"editor_new_entry": "New entry",
+	"editor_new_relay": "New relay",
+	"editor_new_exit": "New exit",
+	"editor_new_lb_distribute": "New load balance (distribute)",
+	"editor_new_lb_aggregate": "New load balance (aggregate)",
+	"editor_new_universal_distribute": "New universal distributor",
+	"editor_new_universal_aggregate": "New universal aggregator",
+	"editor_view_fullscreen": "Full screen",
+	"editor_view_interactive": "Toggle interactivity",
+	"editor_view_zoom": "Zoom {percent}%",
+	"editor_view_zoom_in": "Zoom in",
+	"editor_view_zoom_out": "Zoom out",
+	"editor_view_zoom_fit": "Fit view",
+	"editor_menu_subcanvas_import": "Import subcanvas"
 }

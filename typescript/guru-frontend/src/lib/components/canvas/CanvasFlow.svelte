@@ -1,9 +1,6 @@
 <script lang="ts">
-import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-import PlusIcon from '@lucide/svelte/icons/plus';
 import {
 	Background,
-	Controls,
 	MiniMap,
 	Panel,
 	SvelteFlow,
@@ -66,8 +63,8 @@ import NodePanel from '#lib/components/canvas/panels/NodePanel.svelte';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
-import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
+import * as Menubar from '#lib/components/ui/menubar/index.js';
 import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { errorMessage } from '#lib/i18n/codes.js';
@@ -101,7 +98,14 @@ let flowEl = $state<HTMLDivElement | null>(null);
 let deleteBatches = $state.raw<Tombstones[]>([]);
 const pendingDeletes = $derived(mergeTombstones(deleteBatches));
 
-const { screenToFlowPosition, updateNode } = useSvelteFlow();
+const {
+	screenToFlowPosition,
+	updateNode,
+	getViewport,
+	setViewport,
+	getZoom,
+	fitView: fitViewport
+} = useSvelteFlow();
 const updateNodeInternals = useUpdateNodeInternals();
 
 const nodeTypes = {
@@ -167,6 +171,58 @@ function palettePosition(): { x: number; y: number } {
 		y: rect.top + rect.height / 2
 	});
 	return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+/**
+ * The View menu stands in for Svelte Flow's `Controls`: `interactive` is the
+ * lock button (dragging, connecting and selecting at once), and the zoom label
+ * follows the viewport.
+ */
+let interactive = $state(true);
+let fullscreen = $state(false);
+let zoom = $state(1);
+
+/**
+ * Fullscreens the document, not the flow pane: the menus and dialogs portal into
+ * `document.body`, so anything smaller would render them outside the fullscreen
+ * element and make them invisible.
+ */
+function toggleFullscreen() {
+	const request = document.fullscreenElement
+		? document.exitFullscreen()
+		: document.documentElement.requestFullscreen();
+	// A refused request is the browser's call, not a failure worth reporting.
+	request.catch(() => undefined);
+}
+
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 2;
+const ZOOM_STEP = 1.2;
+
+/**
+ * Steps the zoom around the centre of the pane, or fits the whole canvas. The
+ * viewport is moved with `setViewport` rather than `zoomIn`/`zoomOut`, whose
+ * `scaleBy` leaves the transform untouched in Svelte Flow 1.6.
+ */
+async function rescale(step: 'in' | 'out' | 'fit') {
+	if (step === 'fit') {
+		await fitViewport();
+	} else {
+		const current = getViewport();
+		const wanted = current.zoom * (step === 'in' ? ZOOM_STEP : 1 / ZOOM_STEP);
+		const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, wanted));
+		const rect = flowEl?.getBoundingClientRect();
+		// The pane centre stays put: it is the point the zoom is anchored on.
+		const cx = (rect?.width ?? 0) / 2;
+		const cy = (rect?.height ?? 0) / 2;
+		const ratio = next / current.zoom;
+		await setViewport({
+			x: cx - (cx - current.x) * ratio,
+			y: cy - (cy - current.y) * ratio,
+			zoom: next
+		});
+	}
+	zoom = getZoom();
 }
 
 /**
@@ -306,7 +362,7 @@ const ARROW_KEYS: Record<string, true> = {
  * flow count: the node panel's inputs handle their own arrows.
  */
 function nudgeStop(event: KeyboardEvent) {
-	if (!editable || !ARROW_KEYS[event.key]) return;
+	if (!editable || !interactive || !ARROW_KEYS[event.key]) return;
 	if (!(event.target instanceof Node) || !flowEl?.contains(event.target)) return;
 	const selected = nodes.filter(node => node.selected);
 	if (selected.length > 0) persistMove(selected);
@@ -486,6 +542,9 @@ $effect(() => {
 </script>
 
 <svelte:window onkeyup={nudgeStop} />
+<svelte:document
+	onfullscreenchange={() => (fullscreen = document.fullscreenElement !== null)}
+/>
 
 <svelte:boundary>
 	<!-- Only the first load has nothing to show: a refresh keeps the flow mounted,
@@ -503,125 +562,142 @@ $effect(() => {
 						{nodeTypes}
 						{edgeTypes}
 						fitView
-						minZoom={0.2}
+						minZoom={ZOOM_MIN}
+						maxZoom={ZOOM_MAX}
 						colorMode={mode.current ?? 'system'}
-						nodesDraggable={editable}
-						nodesConnectable={editable}
+						nodesDraggable={editable && interactive}
+						nodesConnectable={editable && interactive}
+						elementsSelectable={interactive}
 						{isValidConnection}
 						onconnect={connect}
 						onbeforedelete={beforeDelete}
 						onnodeclick={({ node }) => selectNode(node)}
 						onnodedragstop={({ nodes: dragged }) => persistMove(dragged)}
-						deleteKey={editable ? 'Delete' : null}
+						onmove={(_, viewport) => (zoom = viewport.zoom)}
+						deleteKey={editable && interactive ? 'Delete' : null}
 					>
 						<Background />
-						<!-- Bottom-left belongs to the problems panel. -->
-						<Controls position="top-right" />
 						<MiniMap />
 
-						{#if editable}
-							<Panel position="top-left">
-								<div class="flex flex-wrap gap-2">
-									<Button size="sm" variant="secondary" onclick={addServer}>
-										<PlusIcon />
-										{m.editor_add_server()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('entry', m.editor_add_entry())}
-									>
-										<PlusIcon />
-										{m.editor_add_entry()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('relay', m.editor_add_relay())}
-									>
-										<PlusIcon />
-										{m.editor_add_relay()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('exit', m.editor_add_exit())}
-									>
-										<PlusIcon />
-										{m.editor_add_exit()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('load_balance_distribute', m.editor_add_lb_distribute())}
-									>
-										<PlusIcon />
-										{m.editor_add_lb_distribute()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('load_balance_aggregate', m.editor_add_lb_aggregate())}
-									>
-										<PlusIcon />
-										{m.editor_add_lb_aggregate()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('universal_distribute', m.editor_add_universal_distribute())}
-									>
-										<PlusIcon />
-										{m.editor_add_universal_distribute()}
-									</Button>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => addNode('universal_aggregate', m.editor_add_universal_aggregate())}
-									>
-										<PlusIcon />
-										{m.editor_add_universal_aggregate()}
-									</Button>
-									<DropdownMenu.Root>
-										<DropdownMenu.Trigger>
-											{#snippet child({ props })}
-												<Button {...props} size="sm" variant="secondary">
-													<PlusIcon />
-													{m.editor_kind_subcanvas()}
-													<ChevronDownIcon />
-												</Button>
-											{/snippet}
-										</DropdownMenu.Trigger>
-										<DropdownMenu.Content align="start">
-											<DropdownMenu.Item
-												onSelect={() => {
-													subcanvasMode = 'create';
-													subcanvasOpen = true;
-												}}
+						<Panel position="top-left">
+							<!-- The bar floats over the grid, so it needs a surface of its own. -->
+							<Menubar.Root class="bg-background shadow-sm">
+								{#if editable}
+									<Menubar.Menu>
+										<Menubar.Trigger>{m.editor_menu_nodes()}</Menubar.Trigger>
+										<Menubar.Content>
+											<Menubar.Group>
+												<Menubar.Item onSelect={addServer}>{m.editor_new_server()}</Menubar.Item>
+												<Menubar.Item onSelect={() => addNode('entry', m.editor_add_entry())}>
+													{m.editor_new_entry()}
+												</Menubar.Item>
+												<Menubar.Item onSelect={() => addNode('relay', m.editor_add_relay())}>
+													{m.editor_new_relay()}
+												</Menubar.Item>
+												<Menubar.Item onSelect={() => addNode('exit', m.editor_add_exit())}>
+													{m.editor_new_exit()}
+												</Menubar.Item>
+											</Menubar.Group>
+											<Menubar.Separator />
+											<Menubar.Group>
+												<Menubar.Item
+													onSelect={() =>
+														addNode('load_balance_distribute', m.editor_add_lb_distribute())}
+												>
+													{m.editor_new_lb_distribute()}
+												</Menubar.Item>
+												<Menubar.Item
+													onSelect={() =>
+														addNode('load_balance_aggregate', m.editor_add_lb_aggregate())}
+												>
+													{m.editor_new_lb_aggregate()}
+												</Menubar.Item>
+											</Menubar.Group>
+											<Menubar.Separator />
+											<Menubar.Group>
+												<Menubar.Item
+													onSelect={() =>
+														addNode('universal_distribute', m.editor_add_universal_distribute())}
+												>
+													{m.editor_new_universal_distribute()}
+												</Menubar.Item>
+												<Menubar.Item
+													onSelect={() =>
+														addNode('universal_aggregate', m.editor_add_universal_aggregate())}
+												>
+													{m.editor_new_universal_aggregate()}
+												</Menubar.Item>
+											</Menubar.Group>
+										</Menubar.Content>
+									</Menubar.Menu>
+
+									<Menubar.Menu>
+										<Menubar.Trigger>{m.editor_kind_subcanvas()}</Menubar.Trigger>
+										<Menubar.Content>
+											<Menubar.Group>
+												<Menubar.Item
+													onSelect={() => {
+														subcanvasMode = 'create';
+														subcanvasOpen = true;
+													}}
+												>
+													{m.editor_subcanvas_create_title()}
+												</Menubar.Item>
+												<Menubar.Item
+													onSelect={() => {
+														subcanvasMode = 'import';
+														subcanvasOpen = true;
+													}}
+												>
+													{m.editor_menu_subcanvas_import()}
+												</Menubar.Item>
+												<Menubar.Item onSelect={() => (exportDialogOpen = true)}>
+													{m.editor_kind_export()}
+												</Menubar.Item>
+											</Menubar.Group>
+										</Menubar.Content>
+									</Menubar.Menu>
+								{/if}
+
+								<!-- Opening the menu re-reads the zoom: `fitView` and the node panel move
+								     the viewport without a move event. -->
+								<Menubar.Menu
+									onOpenChange={open => {
+										if (open) zoom = getZoom();
+									}}
+								>
+									<Menubar.Trigger>{m.editor_menu_view()}</Menubar.Trigger>
+									<Menubar.Content>
+										<Menubar.Group>
+											<Menubar.CheckboxItem
+												checked={fullscreen}
+												onCheckedChange={toggleFullscreen}
 											>
-												{m.editor_subcanvas_create_title()}
-											</DropdownMenu.Item>
-											<DropdownMenu.Item
-												onSelect={() => {
-													subcanvasMode = 'import';
-													subcanvasOpen = true;
-												}}
-											>
-												{m.editor_subcanvas_import_title()}
-											</DropdownMenu.Item>
-										</DropdownMenu.Content>
-									</DropdownMenu.Root>
-									<Button
-										size="sm"
-										variant="secondary"
-										onclick={() => (exportDialogOpen = true)}
-									>
-										<PlusIcon />
-										{m.editor_kind_export()}
-									</Button>
-								</div>
-							</Panel>
-						{/if}
+												{m.editor_view_fullscreen()}
+											</Menubar.CheckboxItem>
+											<Menubar.CheckboxItem bind:checked={interactive}>
+												{m.editor_view_interactive()}
+											</Menubar.CheckboxItem>
+										</Menubar.Group>
+										<Menubar.Separator />
+										<Menubar.Group>
+											<Menubar.GroupHeading>
+												{m.editor_view_zoom({ percent: Math.round(zoom * 100) })}
+											</Menubar.GroupHeading>
+											<Menubar.Item closeOnSelect={false} onSelect={() => rescale('in')}>
+												{m.editor_view_zoom_in()}
+											</Menubar.Item>
+											<Menubar.Item closeOnSelect={false} onSelect={() => rescale('out')}>
+												{m.editor_view_zoom_out()}
+											</Menubar.Item>
+											<Menubar.Item onSelect={() => rescale('fit')}>
+												{m.editor_view_zoom_fit()}
+											</Menubar.Item>
+										</Menubar.Group>
+									</Menubar.Content>
+								</Menubar.Menu>
+							</Menubar.Root>
+						</Panel>
 
 						<Panel position="bottom-left">
 							{#if current}
