@@ -111,9 +111,7 @@ pub enum LiveMessage {
 
 /// Which mutation produced a [`LiveMessage::CanvasChanged`]. The dashboard uses
 /// it to decide what to animate; a watcher's reload does not depend on it.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CanvasChangeKind {
     CanvasUpdated,
     CanvasDeleted,

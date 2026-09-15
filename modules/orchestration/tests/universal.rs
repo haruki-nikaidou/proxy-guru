@@ -19,14 +19,16 @@ use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, 
 use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
 use orchestration::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
 use orchestration::entities::surreal::view::{AckServerConfig, ListenProtocol, TakeInFlight};
+use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{RegisterCredential, RegisterWorker};
 use orchestration::services::canvas::ValidateCanvas;
-use orchestration::services::edge::{Connect, ConnectEnd, ConnectUniversal, Disconnect, UniversalGroup};
+use orchestration::services::edge::{
+    Connect, ConnectEnd, ConnectUniversal, Disconnect, UniversalGroup,
+};
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec, RetireNode};
 use orchestration::services::server::{AddressOverrides, CreateServer, DeleteServer};
 use orchestration::services::topology::{ProblemKind, ProblemSeverity};
 use orchestration::services::universal;
-use orchestration::services::OrchestrationError;
 use orchestration::utils::ids::record_key;
 use std::collections::BTreeMap;
 
@@ -161,7 +163,9 @@ async fn bundle(w: &World, from: &NodeWithPorts, to: &NodeWithPorts) -> EdgeConn
             let mut ins: Vec<&PortEntity> = to
                 .ports
                 .iter()
-                .filter(|p| universal::is_member_port(p) && p.direction == PortDirection::Input && !used(p))
+                .filter(|p| {
+                    universal::is_member_port(p) && p.direction == PortDirection::Input && !used(p)
+                })
                 .collect();
             ins.sort_by_key(|p| p.position);
             ConnectEnd::Port(
@@ -203,10 +207,12 @@ fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::LoadBa
     names
         .iter()
         .enumerate()
-        .map(|(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
-            slot: u32::try_from(i + 1).unwrap(),
-            name: (*name).to_string(),
-        })
+        .map(
+            |(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+                slot: u32::try_from(i + 1).unwrap(),
+                name: (*name).to_string(),
+            },
+        )
         .collect()
 }
 
@@ -267,13 +273,7 @@ async fn picture(w: &World) -> Picture {
         distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
     )
     .await;
-    let ua = create(
-        w,
-        &canvas,
-        "join",
-        aggregator(),
-    )
-    .await;
+    let ua = create(w, &canvas, "join", aggregator()).await;
     let e0 = create(w, &canvas, "exit-0", exit("10.0.0.5:8080")).await;
     let e1 = create(w, &canvas, "exit-1", exit("10.0.0.6:8080")).await;
 
@@ -388,7 +388,9 @@ fn edges_touching(topology: &CanvasTopology, node: &NodeWithPorts) -> Vec<EdgeCo
     topology
         .edges
         .iter()
-        .filter(|e| ports.contains(&record_key(&e.source.0)) || ports.contains(&record_key(&e.target.0)))
+        .filter(|e| {
+            ports.contains(&record_key(&e.source.0)) || ports.contains(&record_key(&e.target.0))
+        })
         .cloned()
         .collect()
 }
@@ -438,11 +440,27 @@ async fn the_picture_expands_into_lanes() -> TestResult {
 
     let p0 = record_key(&p.p0.node.id.0);
     let p1 = record_key(&p.p1.node.id.0);
-    let ud_chan0 = p.ud.ports.iter().find(|x| x.key == universal::chan_key(&p0)).unwrap();
-    let ud_chan1 = p.ud.ports.iter().find(|x| x.key == universal::chan_key(&p1)).unwrap();
+    let ud_chan0 =
+        p.ud.ports
+            .iter()
+            .find(|x| x.key == universal::chan_key(&p0))
+            .unwrap();
+    let ud_chan1 =
+        p.ud.ports
+            .iter()
+            .find(|x| x.key == universal::chan_key(&p1))
+            .unwrap();
     assert_eq!((ud_chan0.position, ud_chan1.position), (0, 1));
-    let ua_chan0 = p.ua.ports.iter().find(|x| x.key == universal::chan_key(&p0)).unwrap();
-    let ua_chan1 = p.ua.ports.iter().find(|x| x.key == universal::chan_key(&p1)).unwrap();
+    let ua_chan0 =
+        p.ua.ports
+            .iter()
+            .find(|x| x.key == universal::chan_key(&p0))
+            .unwrap();
+    let ua_chan1 =
+        p.ua.ports
+            .iter()
+            .find(|x| x.key == universal::chan_key(&p1))
+            .unwrap();
     assert_eq!((ua_chan0.position, ua_chan1.position), (0, 1));
     assert_eq!(
         p.ud.ports.len(),
@@ -455,7 +473,10 @@ async fn the_picture_expands_into_lanes() -> TestResult {
 
     assert_clean(&w, &p.canvas).await;
     let topology = topology(&w, &p.canvas).await;
-    assert!(!universal::is_stale(&topology), "a fresh write is its own expansion");
+    assert!(
+        !universal::is_stale(&topology),
+        "a fresh write is its own expansion"
+    );
     Ok(())
 }
 
@@ -518,7 +539,11 @@ async fn distributor_edits_flow_into_the_lanes() -> TestResult {
     let rerolled = lanes(&w, &p.canvas).await;
     assert_eq!(ids_of(&before), ids_of(&rerolled));
     for (key, port) in landing_ports(&before) {
-        assert_ne!(landing_ports(&rerolled)[&key], port, "landing {key} kept its port");
+        assert_ne!(
+            landing_ports(&rerolled)[&key],
+            port,
+            "landing {key} kept its port"
+        );
     }
     for lane in rerolled.values() {
         if let NodeSpec::Relay(cfg) = &lane.node.spec {
@@ -526,7 +551,11 @@ async fn distributor_edits_flow_into_the_lanes() -> TestResult {
         }
     }
     let ud = reload(&w, &p.ud.node.id).await;
-    assert_eq!(ud.ports.len(), 6, "a spec edit leaves the on-demand ports alone");
+    assert_eq!(
+        ud.ports.len(),
+        6,
+        "a spec edit leaves the on-demand ports alone"
+    );
     assert_clean(&w, &p.canvas).await;
     Ok(())
 }
@@ -589,16 +618,33 @@ async fn disconnects_shrink_the_expansion() -> TestResult {
     let topology = topology(&w, &p.canvas).await;
     let ud_to_hk2 = edges_touching(&topology, &p.ud)
         .into_iter()
-        .find(|e| p.up2.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.target.0)))
+        .find(|e| {
+            p.up2
+                .ports
+                .iter()
+                .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
+        })
         .expect("the bundle to hk2");
     disconnect(&w, &ud_to_hk2).await?;
     let lanes_now = lanes(&w, &p.canvas).await;
     assert_eq!(count(&lanes_now, LaneRole::Landing), 2);
     assert_eq!(count(&lanes_now, LaneRole::Relay), 2);
-    assert_eq!(count(&lanes_now, LaneRole::Distribute), 0, "one target: direct");
-    assert_eq!(count(&lanes_now, LaneRole::Aggregate), 0, "one feeder: direct");
+    assert_eq!(
+        count(&lanes_now, LaneRole::Distribute),
+        0,
+        "one target: direct"
+    );
+    assert_eq!(
+        count(&lanes_now, LaneRole::Aggregate),
+        0,
+        "one feeder: direct"
+    );
     let hk2 = record_key(&p.hk2.0);
-    assert!(lanes_now.values().all(|n| !matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2)));
+    assert!(
+        lanes_now.values().all(
+            |n| !matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2)
+        )
+    );
     let ud = reload(&w, &p.ud.node.id).await;
     assert_eq!(ud.ports.len(), 6, "the member stays, unwired");
     let up2 = reload(&w, &p.up2.node.id).await;
@@ -608,17 +654,32 @@ async fn disconnects_shrink_the_expansion() -> TestResult {
     let topology = self::topology(&w, &p.canvas).await;
     let chan0 = edges_touching(&topology, &p.p0)
         .into_iter()
-        .find(|e| p.ud.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.source.0)))
+        .find(|e| {
+            p.ud.ports
+                .iter()
+                .any(|x| record_key(&x.id.0) == record_key(&e.source.0))
+        })
         .expect("the channel edge of p0");
     disconnect(&w, &chan0).await?;
     let lanes_now = lanes(&w, &p.canvas).await;
     let p0 = record_key(&p.p0.node.id.0);
-    assert!(lanes_now.values().all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p0));
-    assert_eq!(lanes_now.len(), 2, "landing + relay of the remaining channel");
+    assert!(
+        lanes_now
+            .values()
+            .all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p0)
+    );
+    assert_eq!(
+        lanes_now.len(),
+        2,
+        "landing + relay of the remaining channel"
+    );
     let ua = reload(&w, &p.ua.node.id).await;
     assert!(ua.ports.iter().all(|x| x.key != universal::chan_key(&p0)));
     let topology = self::topology(&w, &p.canvas).await;
-    assert!(edges_touching(&topology, &p.e0).is_empty(), "exit-0 lost its edge with the channel");
+    assert!(
+        edges_touching(&topology, &p.e0).is_empty(),
+        "exit-0 lost its edge with the channel"
+    );
     assert_clean_but(&w, &p.canvas, &[ProblemKind::DistributeSingleMember]).await;
     Ok(())
 }
@@ -637,7 +698,11 @@ async fn retiring_a_channel_pod_retires_its_lanes() -> TestResult {
     let lanes_now = lanes(&w, &p.canvas).await;
     assert_eq!(lanes_now.len(), 6);
     let p1 = record_key(&p.p1.node.id.0);
-    assert!(lanes_now.values().all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p1));
+    assert!(
+        lanes_now
+            .values()
+            .all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p1)
+    );
     assert_clean(&w, &p.canvas).await;
     Ok(())
 }
@@ -705,7 +770,10 @@ async fn handle_connects_are_checked() -> TestResult {
     let invalid = |r: Result<EdgeConnectionEntity, OrchestrationError>| {
         let err = r.expect_err("refused");
         assert!(
-            matches!(err, OrchestrationError::Invalid(_) | OrchestrationError::Conflict(_)),
+            matches!(
+                err,
+                OrchestrationError::Invalid(_) | OrchestrationError::Conflict(_)
+            ),
             "{err}"
         );
     };
@@ -731,15 +799,39 @@ async fn handle_connects_are_checked() -> TestResult {
     let m1 = ConnectEnd::Port(port_of(&p.ud, "member_1"));
     invalid(connect_universal(&w, m1.clone(), handle(&p.up2, UniversalGroup::BundleIn)).await);
     let up1_out = ConnectEnd::Port(port_of(&p.up1, universal::BUNDLE_OUT));
-    invalid(connect_universal(&w, up1_out.clone(), handle(&p.up2, UniversalGroup::BundleIn)).await);
+    invalid(
+        connect_universal(
+            &w,
+            up1_out.clone(),
+            handle(&p.up2, UniversalGroup::BundleIn),
+        )
+        .await,
+    );
     // A distributor straight into an aggregator, and onto a wired member.
     let hk3 = create_server(&w, &p.canvas, "hk3", "203.0.113.3").await;
     let up3 = universal_pod_of(&w, &p.canvas, &hk3).await;
     let ua_m1 = ConnectEnd::Port(port_of(&p.ua, "member_1"));
     invalid(connect_universal(&w, m1, ua_m1.clone()).await);
-    invalid(connect_universal(&w, ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)), ua_m1).await);
+    invalid(
+        connect_universal(
+            &w,
+            ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)),
+            ua_m1,
+        )
+        .await,
+    );
     // A universal pod or a distribute node takes bundles on its handle only.
-    invalid(connect_universal(&w, ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)), ConnectEnd::Port(port_of(&p.up1, &universal::bundle_in_key(&record_key(&p.ud.node.id.0))))).await);
+    invalid(
+        connect_universal(
+            &w,
+            ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)),
+            ConnectEnd::Port(port_of(
+                &p.up1,
+                &universal::bundle_in_key(&record_key(&p.ud.node.id.0)),
+            )),
+        )
+        .await,
+    );
     // A bundle port never joins a thin port.
     let err = w
         .edges
@@ -773,22 +865,46 @@ async fn half_drawn_pictures_warn() -> TestResult {
     let hk = create_server(&w, &canvas, "hk", "203.0.113.1").await;
     let up = universal_pod_of(&w, &canvas, &hk).await;
     let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
-    let ud = create(&w, &canvas, "fan", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
-    connect_universal(&w, handle(&ud, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    let ud = create(
+        &w,
+        &canvas,
+        "fan",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+    )
+    .await;
+    connect_universal(
+        &w,
+        handle(&ud, UniversalGroup::ChannelOut),
+        ConnectEnd::Port(port_of(&p0, "destination")),
+    )
+    .await?;
     let found = problems(&w, &canvas).await;
-    assert!(found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoTransit)), "{found:?}");
+    assert!(
+        found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoTransit)),
+        "{found:?}"
+    );
     assert!(lanes(&w, &canvas).await.is_empty());
 
     let ud = reload(&w, &ud.node.id).await;
     bundle(&w, &ud, &up).await;
     let found = problems(&w, &canvas).await;
-    assert!(found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoExit)), "{found:?}");
+    assert!(
+        found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoExit)),
+        "{found:?}"
+    );
     assert!(!found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoTransit)));
-    assert!(found.iter().all(|(s, _)| *s == ProblemSeverity::Warning), "{found:?}");
+    assert!(
+        found.iter().all(|(s, _)| *s == ProblemSeverity::Warning),
+        "{found:?}"
+    );
     let lanes_now = lanes(&w, &canvas).await;
     assert_eq!(count(&lanes_now, LaneRole::Landing), 1);
     assert_eq!(count(&lanes_now, LaneRole::Relay), 1);
-    assert!(lanes_now.values().all(|n| !matches!(n.node.spec, NodeSpec::UniversalPod(_))));
+    assert!(
+        lanes_now
+            .values()
+            .all(|n| !matches!(n.node.spec, NodeSpec::UniversalPod(_)))
+    );
     Ok(())
 }
 
@@ -812,9 +928,20 @@ async fn universal_pods_chain() -> TestResult {
     let up1 = universal_pod_of(&w, &canvas, &hk1).await;
     let up2 = universal_pod_of(&w, &canvas, &hk2).await;
     let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
-    let ud = create(&w, &canvas, "fan", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpTls)).await;
+    let ud = create(
+        &w,
+        &canvas,
+        "fan",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpTls),
+    )
+    .await;
     let ua = create(&w, &canvas, "join", aggregator()).await;
-    connect_universal(&w, handle(&ud, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    connect_universal(
+        &w,
+        handle(&ud, UniversalGroup::ChannelOut),
+        ConnectEnd::Port(port_of(&p0, "destination")),
+    )
+    .await?;
     let ud = reload(&w, &ud.node.id).await;
     bundle(&w, &ud, &up1).await;
     let up1 = reload(&w, &up1.node.id).await;
@@ -827,7 +954,11 @@ async fn universal_pods_chain() -> TestResult {
     assert_eq!(count(&lanes_now, LaneRole::Distribute), 0);
     assert_eq!(count(&lanes_now, LaneRole::Aggregate), 0);
     let ua = reload(&w, &ua.node.id).await;
-    assert!(ua.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0))));
+    assert!(
+        ua.ports
+            .iter()
+            .any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0)))
+    );
     // A cycle is refused outright.
     let up2 = reload(&w, &up2.node.id).await;
     let err = connect_universal(
@@ -864,7 +995,10 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
             })
             .await?;
     }
-    let row = w.db.process(FindServerById { id: server.clone() }).await?.unwrap();
+    let row =
+        w.db.process(FindServerById { id: server.clone() })
+            .await?
+            .unwrap();
     let Some(snapshot) =
         w.db.process(TakeInFlight {
             server: server.clone(),
@@ -887,18 +1021,26 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-async fn settle(w: &World, canvas: &CanvasId, servers: &[&ServerId]) -> Result<(), Box<dyn std::error::Error>> {
+async fn settle(
+    w: &World,
+    canvas: &CanvasId,
+    servers: &[&ServerId],
+) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..8 {
         w.derive(canvas).await?;
         for server in servers {
             ack_current(w, server).await?;
         }
-        let row = w.db.process(FindCanvasById { id: canvas.clone() }).await?.unwrap();
+        let row =
+            w.db.process(FindCanvasById { id: canvas.clone() })
+                .await?
+                .unwrap();
         let mut caught_up = row.generation == row.derived_generation;
         for server in servers {
             let view = w.view(server).await?;
             caught_up &= view.in_flight.is_none()
-                && view.applied.as_ref().map(|s| s.revision) == view.desired.as_ref().map(|s| s.revision);
+                && view.applied.as_ref().map(|s| s.revision)
+                    == view.desired.as_ref().map(|s| s.revision);
         }
         if caught_up {
             return Ok(());
@@ -931,8 +1073,16 @@ async fn the_picture_derives_the_flat_fabric() -> TestResult {
             .collect();
         targets.sort();
         assert_eq!(targets.len(), 2, "each channel dials both transit servers");
-        assert!(targets.iter().all(|(_, port)| landing.values().any(|l| i64::from(*l) == *port)));
-        assert!(deps.points_at.iter().all(|cap| cap.protocol == ListenProtocol::RelayTcp));
+        assert!(
+            targets
+                .iter()
+                .all(|(_, port)| landing.values().any(|l| i64::from(*l) == *port))
+        );
+        assert!(
+            deps.points_at
+                .iter()
+                .all(|cap| cap.protocol == ListenProtocol::RelayTcp)
+        );
     }
     let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
     for forwarding in &config.forwardings {
@@ -953,14 +1103,24 @@ async fn the_picture_derives_the_flat_fabric() -> TestResult {
             .forwardings
             .iter()
             .map(|f| match &f.to {
-                guru_worker_config::ForwardingTo::Exit { destination, .. } => format!("{destination:?}"),
+                guru_worker_config::ForwardingTo::Exit { destination, .. } => {
+                    format!("{destination:?}")
+                }
                 other => panic!("landing pod should exit, got {other:?}"),
             })
             .collect();
         exits.sort();
         assert_eq!(exits.len(), 2);
-        assert!(exits[0].contains("10.0.0.5") && exits[1].contains("10.0.0.6"), "{exits:?}");
-        assert!(applied.forwardings.iter().all(|d| d.serves.protocol == ListenProtocol::RelayTcp));
+        assert!(
+            exits[0].contains("10.0.0.5") && exits[1].contains("10.0.0.6"),
+            "{exits:?}"
+        );
+        assert!(
+            applied
+                .forwardings
+                .iter()
+                .all(|d| d.serves.protocol == ListenProtocol::RelayTcp)
+        );
     }
     Ok(())
 }
@@ -986,10 +1146,12 @@ async fn members_are_the_operators_rule() -> TestResult {
             protocol: RelayProtocol::TcpRaw,
             members: names
                 .into_iter()
-                .map(|(slot, name)| orchestration::entities::surreal::node::LoadBalanceMember {
-                    slot,
-                    name: name.to_string(),
-                })
+                .map(
+                    |(slot, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+                        slot,
+                        name: name.to_string(),
+                    },
+                )
                 .collect(),
         }),
         item_count: 0,
@@ -997,7 +1159,10 @@ async fn members_are_the_operators_rule() -> TestResult {
 
     // Rename, and reorder: the ports keep their ids, the bundles stay, the
     // lanes are untouched.
-    let renamed = w.nodes.process(replace(vec![(2, "hk2"), (1, "hk-114")])).await?;
+    let renamed = w
+        .nodes
+        .process(replace(vec![(2, "hk2"), (1, "hk-114")]))
+        .await?;
     assert_eq!(port_of(&renamed, "member_1"), m1);
     let positions: Vec<(String, i64)> = {
         let mut m: Vec<_> = renamed
@@ -1009,35 +1174,69 @@ async fn members_are_the_operators_rule() -> TestResult {
         m.sort();
         m
     };
-    assert_eq!(positions, [("member_1".to_string(), 1), ("member_2".to_string(), 0)]);
+    assert_eq!(
+        positions,
+        [("member_1".to_string(), 1), ("member_2".to_string(), 0)]
+    );
     assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
-    assert_eq!(landing_ports(&before), landing_ports(&lanes(&w, &p.canvas).await));
+    assert_eq!(
+        landing_ports(&before),
+        landing_ports(&lanes(&w, &p.canvas).await)
+    );
     assert_clean(&w, &p.canvas).await;
 
     // A third member: one more bundle port, nothing bundled yet.
-    let grown = w.nodes.process(replace(vec![(1, "hk-114"), (2, "hk2"), (3, "hk3")])).await?;
-    assert_eq!(grown.ports.len(), 7, "{:?}", grown.ports.iter().map(|x| &x.key).collect::<Vec<_>>());
+    let grown = w
+        .nodes
+        .process(replace(vec![(1, "hk-114"), (2, "hk2"), (3, "hk3")]))
+        .await?;
+    assert_eq!(
+        grown.ports.len(),
+        7,
+        "{:?}",
+        grown.ports.iter().map(|x| &x.key).collect::<Vec<_>>()
+    );
     assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
     let hk3 = create_server(&w, &p.canvas, "hk3", "203.0.113.3").await;
     let up3 = universal_pod_of(&w, &p.canvas, &hk3).await;
     bundle(&w, &grown, &up3).await;
     let lanes_now = lanes(&w, &p.canvas).await;
-    assert_eq!(count(&lanes_now, LaneRole::Landing), 6, "two channels on three servers");
+    assert_eq!(
+        count(&lanes_now, LaneRole::Landing),
+        6,
+        "two channels on three servers"
+    );
     for lane in lanes_now.values() {
         if let NodeSpec::LoadBalanceDistribute(cfg) = &lane.node.spec {
             assert_eq!(cfg.members.len(), 0, "lanes are laid out thin");
-            assert_eq!(lane.ports.iter().filter(|x| x.key.starts_with("member_")).count(), 3);
+            assert_eq!(
+                lane.ports
+                    .iter()
+                    .filter(|x| x.key.starts_with("member_"))
+                    .count(),
+                3
+            );
         }
     }
 
     // Removing a wired member is refused; the unwired one goes.
-    let err = w.nodes.process(replace(vec![(1, "hk-114"), (3, "hk3")])).await.expect_err("hk2 is wired");
+    let err = w
+        .nodes
+        .process(replace(vec![(1, "hk-114"), (3, "hk3")]))
+        .await
+        .expect_err("hk2 is wired");
     assert!(matches!(err, OrchestrationError::Conflict(_)), "{err}");
     let topology_now = topology(&w, &p.canvas).await;
     let up3 = reload(&w, &up3.node.id).await;
-    let to_hk3 = edges_touching(&topology_now, &up3).into_iter().next().expect("bundle to hk3");
+    let to_hk3 = edges_touching(&topology_now, &up3)
+        .into_iter()
+        .next()
+        .expect("bundle to hk3");
     disconnect(&w, &to_hk3).await?;
-    let shrunk = w.nodes.process(replace(vec![(1, "hk-114"), (2, "hk2")])).await?;
+    let shrunk = w
+        .nodes
+        .process(replace(vec![(1, "hk-114"), (2, "hk2")]))
+        .await?;
     assert_eq!(shrunk.ports.len(), 6);
     assert_eq!(ids_of(&before), ids_of(&lanes(&w, &p.canvas).await));
 
@@ -1047,7 +1246,11 @@ async fn members_are_the_operators_rule() -> TestResult {
         assert!(matches!(err, OrchestrationError::Invalid(_)), "{err}");
     };
     invalid(w.nodes.process(replace(vec![])).await);
-    invalid(w.nodes.process(replace(vec![(1, "same"), (2, "same")])).await);
+    invalid(
+        w.nodes
+            .process(replace(vec![(1, "same"), (2, "same")]))
+            .await,
+    );
     invalid(w.nodes.process(replace(vec![(1, "a"), (1, "b")])).await);
     invalid(w.nodes.process(replace(vec![(1, "  ")])).await);
     let mut counted = replace(vec![(1, "a"), (2, "b")]);
@@ -1129,7 +1332,12 @@ async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
     )
     .await;
     connect(&w, &port_of(&p0, "listen"), &port_of(&entry, "listen")).await;
-    connect_universal(&w, handle(&up, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    connect_universal(
+        &w,
+        handle(&up, UniversalGroup::ChannelOut),
+        ConnectEnd::Port(port_of(&p0, "destination")),
+    )
+    .await?;
     let lanes_now = lanes(&w, &canvas).await;
     assert_eq!(count(&lanes_now, LaneRole::Landing), 1, "{lanes_now:#?}");
     assert_eq!(count(&lanes_now, LaneRole::Relay), 1);
@@ -1140,16 +1348,28 @@ async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
         }
     }
     let up = reload(&w, &up.node.id).await;
-    assert!(up.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0))));
+    assert!(
+        up.ports
+            .iter()
+            .any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0)))
+    );
     let found = problems(&w, &canvas).await;
-    assert!(found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoExit)), "{found:?}");
+    assert!(
+        found.contains(&(ProblemSeverity::Warning, ProblemKind::ChannelNoExit)),
+        "{found:?}"
+    );
 
     // Bundle on to an aggregate node and give the channel an exit.
     let ua = create(&w, &canvas, "join", aggregator()).await;
     bundle(&w, &up, &ua).await;
     let ua = reload(&w, &ua.node.id).await;
     let exit0 = create(&w, &canvas, "exit", exit("10.0.0.5:8080")).await;
-    connect(&w, &port_of(&exit0, "destination"), &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0)))).await;
+    connect(
+        &w,
+        &port_of(&exit0, "destination"),
+        &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0))),
+    )
+    .await;
     assert_clean(&w, &canvas).await;
 
     settle(&w, &canvas, &[&us, &hk]).await?;
@@ -1157,8 +1377,14 @@ async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
     let applied = view.applied.as_ref().expect("us converged");
     assert_eq!(applied.forwardings.len(), 1, "{}", applied.toml);
     assert_eq!(applied.forwardings[0].points_at.len(), 1);
-    assert_eq!(applied.forwardings[0].points_at[0].server_key(), record_key(&hk.0));
-    assert_eq!(applied.forwardings[0].points_at[0].protocol, ListenProtocol::RelayTcp);
+    assert_eq!(
+        applied.forwardings[0].points_at[0].server_key(),
+        record_key(&hk.0)
+    );
+    assert_eq!(
+        applied.forwardings[0].points_at[0].protocol,
+        ListenProtocol::RelayTcp
+    );
     let hk_view = w.view(&hk).await?;
     assert_eq!(hk_view.applied.as_ref().unwrap().forwardings.len(), 1);
     Ok(())
@@ -1177,7 +1403,11 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
     for up in [&p.up1, &p.up2] {
         let out = edges_touching(&topology_now, up)
             .into_iter()
-            .find(|e| p.ua.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.target.0)))
+            .find(|e| {
+                p.ua.ports
+                    .iter()
+                    .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
+            })
             .expect("bundle into the aggregate node");
         disconnect(&w, &out).await?;
     }
@@ -1187,7 +1417,13 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
     let up4 = universal_pod_of(&w, &p.canvas, &hk4).await;
     // Raw TCP throughout: the in-memory world has no internal CA to sign relay
     // leaves with, and the protocol re-roll is covered elsewhere.
-    let ud2 = create(&w, &p.canvas, "tier-2", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    let ud2 = create(
+        &w,
+        &p.canvas,
+        "tier-2",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+    )
+    .await;
     let up1 = reload(&w, &p.up1.node.id).await;
     let up2 = reload(&w, &p.up2.node.id).await;
     bundle(&w, &up1, &ud2).await;
@@ -1214,7 +1450,11 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
     // tier 2 = per upstream server (2): 2 landings + 2 relays + 1 fan-out;
     // aggregate joins: hk3 and hk4 each join their 2 landings, the aggregate
     // node joins 2 feeders.
-    assert_eq!(count(&lanes_now, LaneRole::Landing), 2 * (2 + 4), "{lanes_now:#?}");
+    assert_eq!(
+        count(&lanes_now, LaneRole::Landing),
+        2 * (2 + 4),
+        "{lanes_now:#?}"
+    );
     assert_eq!(count(&lanes_now, LaneRole::Relay), 2 * (2 + 4));
     assert_eq!(count(&lanes_now, LaneRole::Distribute), 2 * (1 + 2));
     assert_eq!(count(&lanes_now, LaneRole::Aggregate), 2 * (2 + 1));
@@ -1222,10 +1462,16 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
         .values()
         .filter(|n| {
             matches!(n.node.spec, NodeSpec::Relay(_))
-                && n.node.lane.as_ref().is_some_and(|l| record_key(&l.group.0) == record_key(&ud2.node.id.0))
+                && n.node
+                    .lane
+                    .as_ref()
+                    .is_some_and(|l| record_key(&l.group.0) == record_key(&ud2.node.id.0))
         })
         .count();
-    assert_eq!(tier2_relays, 8, "the second tier owns one relay per channel, server and upstream path");
+    assert_eq!(
+        tier2_relays, 8,
+        "the second tier owns one relay per channel, server and upstream path"
+    );
 
     settle(&w, &p.canvas, &[&p.us, &p.hk1, &p.hk2, &hk3, &hk4]).await?;
     for server in [&p.hk1, &p.hk2] {
@@ -1246,7 +1492,12 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
         let view = w.view(server).await?;
         let applied = view.applied.as_ref().expect("tier 2 converged");
         assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
-        assert_eq!(applied.forwardings.len(), 4, "two channels from two upstream servers: {}", applied.toml);
+        assert_eq!(
+            applied.forwardings.len(),
+            4,
+            "two channels from two upstream servers: {}",
+            applied.toml
+        );
     }
     Ok(())
 }
@@ -1275,12 +1526,44 @@ async fn nested_distribute_nodes_nest_strategies() -> TestResult {
         ids.push(id);
     }
     let p0 = create(&w, &canvas, "p0", pod(&us, 10000)).await;
-    let entry = create(&w, &canvas, "entry", NodeSpec::Entry(EntryConfig { receive_proxy_protocol: None, tls: None })).await;
+    let entry = create(
+        &w,
+        &canvas,
+        "entry",
+        NodeSpec::Entry(EntryConfig {
+            receive_proxy_protocol: None,
+            tls: None,
+        }),
+    )
+    .await;
     connect(&w, &port_of(&p0, "listen"), &port_of(&entry, "listen")).await;
-    let outer = create(&w, &canvas, "outer", distributor(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw)).await;
-    let inner_a = create(&w, &canvas, "inner-a", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
-    let inner_b = create(&w, &canvas, "inner-b", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
-    connect_universal(&w, handle(&outer, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p0, "destination"))).await?;
+    let outer = create(
+        &w,
+        &canvas,
+        "outer",
+        distributor(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw),
+    )
+    .await;
+    let inner_a = create(
+        &w,
+        &canvas,
+        "inner-a",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+    )
+    .await;
+    let inner_b = create(
+        &w,
+        &canvas,
+        "inner-b",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+    )
+    .await;
+    connect_universal(
+        &w,
+        handle(&outer, UniversalGroup::ChannelOut),
+        ConnectEnd::Port(port_of(&p0, "destination")),
+    )
+    .await?;
     bundle(&w, &reload(&w, &outer.node.id).await, &inner_a).await;
     bundle(&w, &reload(&w, &outer.node.id).await, &inner_b).await;
     bundle(&w, &reload(&w, &inner_a.node.id).await, &ups[0]).await;
@@ -1289,17 +1572,31 @@ async fn nested_distribute_nodes_nest_strategies() -> TestResult {
     bundle(&w, &reload(&w, &inner_b.node.id).await, &ups[3]).await;
     let ua = create(&w, &canvas, "join", aggregator_with(&["a", "b", "c", "d"])).await;
     for up in &ups {
-        bundle(&w, &reload(&w, &up.node.id).await, &reload(&w, &ua.node.id).await).await;
+        bundle(
+            &w,
+            &reload(&w, &up.node.id).await,
+            &reload(&w, &ua.node.id).await,
+        )
+        .await;
     }
     let ua = reload(&w, &ua.node.id).await;
     let exit0 = create(&w, &canvas, "exit", exit("10.0.0.5:8080")).await;
-    connect(&w, &port_of(&exit0, "destination"), &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0)))).await;
+    connect(
+        &w,
+        &port_of(&exit0, "destination"),
+        &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0))),
+    )
+    .await;
     assert_clean(&w, &canvas).await;
 
     let lanes_now = lanes(&w, &canvas).await;
     assert_eq!(count(&lanes_now, LaneRole::Landing), 4, "{lanes_now:#?}");
     assert_eq!(count(&lanes_now, LaneRole::Relay), 4);
-    assert_eq!(count(&lanes_now, LaneRole::Distribute), 3, "outer + two inner");
+    assert_eq!(
+        count(&lanes_now, LaneRole::Distribute),
+        3,
+        "outer + two inner"
+    );
     assert_eq!(count(&lanes_now, LaneRole::Aggregate), 1);
 
     settle(&w, &canvas, &[&us, &ids[0], &ids[1], &ids[2], &ids[3]]).await?;
@@ -1307,16 +1604,23 @@ async fn nested_distribute_nodes_nest_strategies() -> TestResult {
     let applied = view.applied.as_ref().expect("us converged");
     assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
     let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
-    let guru_worker_config::ForwardingTo::LoadBalance(outer_group) = &config.forwardings[0].to else {
+    let guru_worker_config::ForwardingTo::LoadBalance(outer_group) = &config.forwardings[0].to
+    else {
         panic!("outer should balance: {}", applied.toml);
     };
-    assert_eq!(outer_group.strategy, guru_worker_config::LoadBalanceStrategy::Fallback);
+    assert_eq!(
+        outer_group.strategy,
+        guru_worker_config::LoadBalanceStrategy::Fallback
+    );
     assert_eq!(outer_group.members.len(), 2);
     for member in &outer_group.members {
         let guru_worker_config::ForwardingTo::LoadBalance(inner) = member else {
             panic!("inner members should be groups: {}", applied.toml);
         };
-        assert_eq!(inner.strategy, guru_worker_config::LoadBalanceStrategy::RoundRobin);
+        assert_eq!(
+            inner.strategy,
+            guru_worker_config::LoadBalanceStrategy::RoundRobin
+        );
         assert_eq!(inner.members.len(), 2);
     }
     Ok(())
@@ -1335,17 +1639,46 @@ async fn bundles_and_thin_lines_add_up() -> TestResult {
     for up in [&p.up1] {
         let out = edges_touching(&topology_now, up)
             .into_iter()
-            .find(|e| p.ua.ports.iter().any(|x| record_key(&x.id.0) == record_key(&e.target.0)))
+            .find(|e| {
+                p.ua.ports
+                    .iter()
+                    .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
+            })
             .expect("bundle into the aggregate node");
         disconnect(&w, &out).await?;
     }
-    let ud2 = create(&w, &p.canvas, "tier-2", distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw)).await;
+    let ud2 = create(
+        &w,
+        &p.canvas,
+        "tier-2",
+        distributor(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+    )
+    .await;
     let p2 = create(&w, &p.canvas, "ingress-10002", pod(&p.us, 10002)).await;
-    let entry = create(&w, &p.canvas, "entry-2", NodeSpec::Entry(EntryConfig { receive_proxy_protocol: None, tls: None })).await;
+    let entry = create(
+        &w,
+        &p.canvas,
+        "entry-2",
+        NodeSpec::Entry(EntryConfig {
+            receive_proxy_protocol: None,
+            tls: None,
+        }),
+    )
+    .await;
     connect(&w, &port_of(&p2, "listen"), &port_of(&entry, "listen")).await;
     bundle(&w, &reload(&w, &p.up1.node.id).await, &ud2).await;
-    connect_universal(&w, handle(&reload(&w, &ud2.node.id).await, UniversalGroup::ChannelOut), ConnectEnd::Port(port_of(&p2, "destination"))).await?;
-    bundle(&w, &reload(&w, &ud2.node.id).await, &reload(&w, &p.up2.node.id).await).await;
+    connect_universal(
+        &w,
+        handle(&reload(&w, &ud2.node.id).await, UniversalGroup::ChannelOut),
+        ConnectEnd::Port(port_of(&p2, "destination")),
+    )
+    .await?;
+    bundle(
+        &w,
+        &reload(&w, &ud2.node.id).await,
+        &reload(&w, &p.up2.node.id).await,
+    )
+    .await;
     let lanes_now = lanes(&w, &p.canvas).await;
     let hk2 = record_key(&p.hk2.0);
     let on_hk2 = lanes_now
@@ -1357,6 +1690,10 @@ async fn bundles_and_thin_lines_add_up() -> TestResult {
     assert_eq!(on_hk2, 2 + 2 + 1, "{lanes_now:#?}");
     let ud2 = reload(&w, &ud2.node.id).await;
     assert!(ud2.ports.iter().any(|x| x.key.starts_with("bundle_in:")));
-    assert!(ud2.ports.iter().any(|x| x.key == universal::chan_key(&record_key(&p2.node.id.0))));
+    assert!(
+        ud2.ports
+            .iter()
+            .any(|x| x.key == universal::chan_key(&record_key(&p2.node.id.0)))
+    );
     Ok(())
 }

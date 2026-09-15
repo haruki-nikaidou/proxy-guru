@@ -43,8 +43,8 @@ use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::orchestration_agent::worker_agent_client::WorkerAgentClient;
 use rpguru_sdk::orchestration_agent::worker_agent_server::{WorkerAgent, WorkerAgentServer};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport,
-    PodStatus, PollAgentUpdateReply, PollAgentUpdateRequest, RegisterReply, RegisterRequest,
+    AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport, PodStatus,
+    PollAgentUpdateReply, PollAgentUpdateRequest, RegisterReply, RegisterRequest,
     ReportHealthReply, WatchConfigRequest,
 };
 use std::net::SocketAddr;

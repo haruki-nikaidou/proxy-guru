@@ -63,14 +63,22 @@ fn port_in<'a>(
     topology
         .nodes
         .iter()
-        .find_map(|n| n.ports.iter().find(|p| record_key(&p.id.0) == key).map(|p| (p, n)))
+        .find_map(|n| {
+            n.ports
+                .iter()
+                .find(|p| record_key(&p.id.0) == key)
+                .map(|p| (p, n))
+        })
         .ok_or(OrchestrationError::NotFound)
 }
 
 /// Edges on the generated side of the graph are not the operator's to draw or
 /// cut; a bundle port only ever joins another bundle port (see
 /// [`ConnectUniversal`]), never a thin one.
-fn ensure_operator_port(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), OrchestrationError> {
+fn ensure_operator_port(
+    port: &PortEntity,
+    owner: &NodeWithPorts,
+) -> Result<(), OrchestrationError> {
     if universal::is_managed_port(port, &owner.node) {
         return Err(OrchestrationError::Conflict(
             "port is managed by a universal node; edit that node instead".into(),
@@ -86,7 +94,10 @@ fn ensure_operator_port(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), 
 
 /// The port a bundle leaves from: a distribute node's member or a universal
 /// pod's fixed `bundle_out`.
-fn ensure_bundle_source(port: &PortEntity, owner: &NodeWithPorts) -> Result<(), OrchestrationError> {
+fn ensure_bundle_source(
+    port: &PortEntity,
+    owner: &NodeWithPorts,
+) -> Result<(), OrchestrationError> {
     if universal::is_managed_port(port, &owner.node) {
         return Err(OrchestrationError::Conflict(
             "port is managed by a universal node; edit that node instead".into(),
@@ -199,7 +210,10 @@ pub enum ConnectEnd {
 }
 
 impl ConnectEnd {
-    fn node_of<'a>(&self, topology: &'a CanvasTopology) -> Result<&'a NodeWithPorts, OrchestrationError> {
+    fn node_of<'a>(
+        &self,
+        topology: &'a CanvasTopology,
+    ) -> Result<&'a NodeWithPorts, OrchestrationError> {
         match self {
             ConnectEnd::Port(port) => port_in(topology, port).map(|(_, n)| n),
             ConnectEnd::Handle { node, .. } => {
@@ -518,9 +532,13 @@ impl Processor<ConnectUniversal> for EdgeService {
             source: port_ref(source_port),
             target: port_ref(target_port),
         });
-        let prepared =
-            universal::prepare(&self.db, &self.config, &topology, universal::Primary { edits, batch })
-                .await?;
+        let prepared = universal::prepare(
+            &self.db,
+            &self.config,
+            &topology,
+            universal::Primary { edits, batch },
+        )
+        .await?;
         // No live event yet: the edge's id only exists after the write, and the
         // batch is what created the ports it hangs off.
         universal::apply(&self.db, &self.notifier, prepared, None).await?;

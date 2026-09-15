@@ -64,27 +64,28 @@ impl AddressOverrides {
         override_v6: &str,
         extra_addresses: &[String],
     ) -> Result<Self, OrchestrationError> {
-        let slot = |label: &str, raw: &str, want_v4: bool| -> Result<Option<String>, OrchestrationError> {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                return Ok(None);
-            }
-            let ip: IpAddr = raw.parse().map_err(|_| {
-                OrchestrationError::Invalid(format!("{label}: '{raw}' is not an IP address"))
-            })?;
-            if ip.is_ipv4() != want_v4 {
-                return Err(OrchestrationError::Invalid(format!(
-                    "{label}: '{raw}' is not an {} address",
-                    if want_v4 { "IPv4" } else { "IPv6" }
-                )));
-            }
-            if ip.is_unspecified() {
-                return Err(OrchestrationError::Invalid(format!(
-                    "{label}: '{raw}' is not an address anyone can dial"
-                )));
-            }
-            Ok(Some(ip.to_string()))
-        };
+        let slot =
+            |label: &str, raw: &str, want_v4: bool| -> Result<Option<String>, OrchestrationError> {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    return Ok(None);
+                }
+                let ip: IpAddr = raw.parse().map_err(|_| {
+                    OrchestrationError::Invalid(format!("{label}: '{raw}' is not an IP address"))
+                })?;
+                if ip.is_ipv4() != want_v4 {
+                    return Err(OrchestrationError::Invalid(format!(
+                        "{label}: '{raw}' is not an {} address",
+                        if want_v4 { "IPv4" } else { "IPv6" }
+                    )));
+                }
+                if ip.is_unspecified() {
+                    return Err(OrchestrationError::Invalid(format!(
+                        "{label}: '{raw}' is not an address anyone can dial"
+                    )));
+                }
+                Ok(Some(ip.to_string()))
+            };
         let mut extras: Vec<String> = Vec::new();
         for raw in extra_addresses {
             let raw = raw.trim();
@@ -346,15 +347,11 @@ impl Processor<IssueServerAgentInstall> for ServerService {
                 "agent_public_base_url is not configured on the orchestration config".into(),
             )
         })?;
-        let release = self
-            .db
-            .process(FindAgentRelease)
-            .await?
-            .ok_or_else(|| {
-                OrchestrationError::Invalid(
-                    "no worker release is published: run `manage-tool agent publish`".into(),
-                )
-            })?;
+        let release = self.db.process(FindAgentRelease).await?.ok_or_else(|| {
+            OrchestrationError::Invalid(
+                "no worker release is published: run `manage-tool agent publish`".into(),
+            )
+        })?;
         let server = self
             .db
             .process(FindServerById {
@@ -387,7 +384,8 @@ impl Processor<IssueServerAgentInstall> for ServerService {
                 vec![record_key(&server.id.0)],
             )
             .await;
-        let command = render_install_command(&self.config, &base, &release, &server, &unit, &secret);
+        let command =
+            render_install_command(&self.config, &base, &release, &server, &unit, &secret);
         Ok(AgentInstall {
             command,
             unit,
@@ -447,15 +445,11 @@ impl Processor<RequestAgentUpdate> for ServerService {
     #[tracing::instrument(name = "Service:RequestAgentUpdate", skip_all, err)]
     async fn process(&self, input: RequestAgentUpdate) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        let release = self
-            .db
-            .process(FindAgentRelease)
-            .await?
-            .ok_or_else(|| {
-                OrchestrationError::Invalid(
-                    "no worker release is published: run `manage-tool agent publish`".into(),
-                )
-            })?;
+        let release = self.db.process(FindAgentRelease).await?.ok_or_else(|| {
+            OrchestrationError::Invalid(
+                "no worker release is published: run `manage-tool agent publish`".into(),
+            )
+        })?;
         if self.config.agent_download_base().is_none() {
             return Err(OrchestrationError::Invalid(
                 "agent_public_base_url is not configured on the orchestration config".into(),
@@ -535,7 +529,6 @@ impl Processor<GetAgentRelease> for ServerService {
         })
     }
 }
-
 
 pub struct MoveServer {
     pub actor: Identity,
@@ -672,14 +665,23 @@ mod tests {
     fn unit_names_are_slugs_of_the_server_name() {
         assert_eq!(default_agent_unit("HK Edge 1", "k"), "hk-edge-1");
         assert_eq!(default_agent_unit("  tokyo--relay  ", "k"), "tokyo-relay");
-        assert_eq!(default_agent_unit("東京", "uz0ih3b30nrekqzs1h1y"), "uz0ih3b30nrekqzs1h1y");
-        assert_eq!(default_agent_unit(&"a".repeat(40), "k").len(), AGENT_UNIT_MAX_LEN);
+        assert_eq!(
+            default_agent_unit("東京", "uz0ih3b30nrekqzs1h1y"),
+            "uz0ih3b30nrekqzs1h1y"
+        );
+        assert_eq!(
+            default_agent_unit(&"a".repeat(40), "k").len(),
+            AGENT_UNIT_MAX_LEN
+        );
     }
 
     #[test]
     fn typed_unit_names_are_validated() {
         assert_eq!(agent_unit_from("  ").unwrap_or(None), None);
-        assert_eq!(agent_unit_from("hk-1").unwrap_or(None).as_deref(), Some("hk-1"));
+        assert_eq!(
+            agent_unit_from("hk-1").unwrap_or(None).as_deref(),
+            Some("hk-1")
+        );
         assert!(agent_unit_from("-hk").is_err());
         assert!(agent_unit_from("HK").is_err());
         assert!(agent_unit_from("hk 1").is_err());

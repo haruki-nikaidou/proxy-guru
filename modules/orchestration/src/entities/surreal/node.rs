@@ -69,7 +69,9 @@ impl Lane {
             record_key(&group.0),
             record_key(&channel.0),
             role.name(),
-            source.map(|s| record_key(&s.0)).unwrap_or_else(|| "-".to_string())
+            source
+                .map(|s| record_key(&s.0))
+                .unwrap_or_else(|| "-".to_string())
         );
         if let Some(via) = via {
             key.push(':');

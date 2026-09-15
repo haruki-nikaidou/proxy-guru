@@ -1031,8 +1031,8 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
-    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| {
-        RegisterWorkerSession {
+    let register =
+        |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| RegisterWorkerSession {
             server: s.id.clone(),
             canvas: c.id.clone(),
             digest: digest.to_string(),
@@ -1043,8 +1043,7 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
             reported: None,
             agent_version: None,
             agent_arch: None,
-        }
-    };
+        };
 
     // The first worker ran revision 3: registering as such records it as applied,
     // and there is nothing left to hand a stream.
@@ -1083,7 +1082,10 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
         })
         .await?
         .unwrap();
-    assert!(view.applied.is_none(), "a worker running nothing has applied nothing");
+    assert!(
+        view.applied.is_none(),
+        "a worker running nothing has applied nothing"
+    );
     assert!(view.in_flight.is_none());
     assert_eq!(view.apply_error, None);
     let taken = sp
@@ -1141,7 +1143,11 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported() ->
 
     // A newer build replaces it.
     let row = sp
-        .process(register("digest-3", later + chrono::TimeDelta::seconds(1), Some("0.3.0")))
+        .process(register(
+            "digest-3",
+            later + chrono::TimeDelta::seconds(1),
+            Some("0.3.0"),
+        ))
         .await?
         .expect("the lapsed lease is taken over");
     assert_eq!(row.agent_version.as_deref(), Some("0.3.0"));

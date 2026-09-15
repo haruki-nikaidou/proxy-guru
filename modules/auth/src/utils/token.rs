@@ -48,8 +48,7 @@ pub fn generate_refresh_key() -> String {
 /// of entropy. It authenticates that server's `Register` in place of an
 /// operator API key; only its digest is persisted, on the server row.
 pub fn generate_server_agent_key() -> String {
-    let mut secret =
-        String::with_capacity(SERVER_AGENT_KEY_PREFIX.len().saturating_add(TOKEN_LEN));
+    let mut secret = String::with_capacity(SERVER_AGENT_KEY_PREFIX.len().saturating_add(TOKEN_LEN));
     secret.push_str(SERVER_AGENT_KEY_PREFIX);
     secret.push_str(&random_alphanumeric(TOKEN_LEN));
     secret

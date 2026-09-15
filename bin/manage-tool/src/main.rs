@@ -456,8 +456,7 @@ async fn agent_publish(
     binary: PathBuf,
     dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes =
-        std::fs::read(&binary).map_err(|e| format!("reading {}: {e}", binary.display()))?;
+    let bytes = std::fs::read(&binary).map_err(|e| format!("reading {}: {e}", binary.display()))?;
     let arch = elf_arch(&bytes)
         .ok_or("the binary is not an ELF executable for a supported architecture")?;
     let version = worker_version(&binary)?;
@@ -468,7 +467,11 @@ async fn agent_publish(
         .map_err(|e| format!("creating {}: {e}", version_dir.display()))?;
     publish_file(&version_dir.join("guru-worker"), &bytes, 0o755)?;
     publish_file(&dir.join("install.sh"), INSTALL_SH.as_bytes(), 0o644)?;
-    publish_file(&dir.join("guru-worker@.service"), UNIT_FILE.as_bytes(), 0o644)?;
+    publish_file(
+        &dir.join("guru-worker@.service"),
+        UNIT_FILE.as_bytes(),
+        0o644,
+    )?;
     publish_file(&dir.join("guru-worker-guard"), GUARD_SH.as_bytes(), 0o644)?;
 
     db.process(PublishAgentRelease {
@@ -478,7 +481,10 @@ async fn agent_publish(
         now: chrono::Utc::now(),
     })
     .await?;
-    println!("published guru-worker {version} ({arch}) to {}", version_dir.display());
+    println!(
+        "published guru-worker {version} ({arch}) to {}",
+        version_dir.display()
+    );
     println!("  sha256 {sha256}");
     println!("  the dashboard now offers this version to servers running another one");
     Ok(())

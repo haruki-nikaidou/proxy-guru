@@ -235,9 +235,7 @@ pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
 
 /// A world whose services carry `config`; the gRPC stream tests shorten the
 /// keep-alive so a test does not have to wait fifteen seconds for one.
-pub async fn world_with(
-    config: OrchestrationConfig,
-) -> Result<World, Box<dyn std::error::Error>> {
+pub async fn world_with(config: OrchestrationConfig) -> Result<World, Box<dyn std::error::Error>> {
     let db = setup().await?;
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let bus = LiveBus::new();

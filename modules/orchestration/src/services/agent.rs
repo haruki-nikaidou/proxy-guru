@@ -257,7 +257,9 @@ impl Processor<PollAgentUpdate> for AgentService {
                     sha256: release.sha256.clone(),
                 }));
             }
-            (None, _) => "the published release was withdrawn before the worker fetched it".to_string(),
+            (None, _) => {
+                "the published release was withdrawn before the worker fetched it".to_string()
+            }
             (_, None) => "agent_public_base_url is no longer configured".to_string(),
             (Some(release), _) => format!(
                 "the published release changed to {} before the worker fetched {requested}",

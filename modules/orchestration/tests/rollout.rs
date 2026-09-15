@@ -195,11 +195,11 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     let ingress = create(
         "ingress",
         NodeSpec::Pod(PodConfig {
-                server: tokyo_ip,
-                port: 443,
-                bind_ip: None,
-                advertise_ip: None,
-            }),
+            server: tokyo_ip,
+            port: 443,
+            bind_ip: None,
+            advertise_ip: None,
+        }),
     )
     .await?;
     let entry = create(
@@ -222,11 +222,11 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     let osaka_hop = create(
         "osaka-hop",
         NodeSpec::Pod(PodConfig {
-                server: osaka_ip,
-                port: 9443,
-                bind_ip: None,
-                advertise_ip: None,
-            }),
+            server: osaka_ip,
+            port: 9443,
+            bind_ip: None,
+            advertise_ip: None,
+        }),
     )
     .await?;
     let exit = create(

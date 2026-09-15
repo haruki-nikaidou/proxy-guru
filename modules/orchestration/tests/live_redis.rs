@@ -126,8 +126,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another() -> TestResult {
             icon: String::new(),
             comment: String::new(),
             position: pos0(),
-            ipv6_resolve:
-                orchestration::entities::surreal::server::ServerIpv6Resolve::Tolerated,
+            ipv6_resolve: orchestration::entities::surreal::server::ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),

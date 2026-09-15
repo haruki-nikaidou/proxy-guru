@@ -86,7 +86,11 @@ impl Default for LiveBus {
 /// Never returns early on error: a master whose live bus died would keep serving
 /// dashboards that silently stop updating. Every failure path loops back into a
 /// reconnect, and every successful connect broadcasts a resync.
-pub async fn run_redis_subscriber(client: redis::Client, bus: LiveBus, shutdown: CancellationToken) {
+pub async fn run_redis_subscriber(
+    client: redis::Client,
+    bus: LiveBus,
+    shutdown: CancellationToken,
+) {
     let mut backoff = MIN_BACKOFF;
     loop {
         if shutdown.is_cancelled() {

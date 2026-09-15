@@ -6,13 +6,13 @@
 mod mem;
 
 use mem::*;
-use orchestration::entities::surreal::server::ServerId;
 use orchestration::entities::surreal::node::{
     CanvasExportAs, EntryConfig, ExitConfig, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeSpec, PodConfig, ProxyProtocolVersion,
     RelayConfig, RelayProtocol,
 };
 use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortKind};
+use orchestration::entities::surreal::server::ServerId;
 use orchestration::services::topology::{
     ProblemKind, ProblemSeverity, TopologyProblem, analyze, ensure_valid,
 };
@@ -677,21 +677,39 @@ fn bundle_port(key: &str, direction: PortDirection) -> (String, PortKind, PortDi
     (key.to_string(), PortKind::Bundle, direction, 0)
 }
 
-fn channel_ports(pod: &str, out_first: bool, ordinal: i64) -> Vec<(String, PortKind, PortDirection, i64)> {
+fn channel_ports(
+    pod: &str,
+    out_first: bool,
+    ordinal: i64,
+) -> Vec<(String, PortKind, PortDirection, i64)> {
     let (chan_dir, lane_dir) = if out_first {
         (PortDirection::Output, PortDirection::Input)
     } else {
         (PortDirection::Input, PortDirection::Output)
     };
     vec![
-        (universal::chan_key(pod), PortKind::DeriveDestination, chan_dir, ordinal),
-        (universal::lane_key(pod), PortKind::DeriveDestination, lane_dir, ordinal),
+        (
+            universal::chan_key(pod),
+            PortKind::DeriveDestination,
+            chan_dir,
+            ordinal,
+        ),
+        (
+            universal::lane_key(pod),
+            PortKind::DeriveDestination,
+            lane_dir,
+            ordinal,
+        ),
     ]
 }
 
 /// A distribute node laid out like a lane: no declared members.
 fn ud(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
-    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig { mode, protocol, members: Vec::new() })
+    NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
+        mode,
+        protocol,
+        members: Vec::new(),
+    })
 }
 
 /// An operator's distribute node: the named members are its bundle outputs.
@@ -732,7 +750,11 @@ fn expanded_builder() -> Builder {
     b.connect("p0-listen", "entry-listen");
     let mut ud_ports = channel_ports("p0", true, 0);
     ud_ports.extend(distribute_member_ports(&["hk"]));
-    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["hk"]), ud_ports);
+    b.node(
+        "ud",
+        ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["hk"]),
+        ud_ports,
+    );
     b.connect("ud-chan:p0", "p0-destination");
     b.node(
         "hk-up",
@@ -744,10 +766,22 @@ fn expanded_builder() -> Builder {
     );
     b.connect("ud-member_1", "hk-up-bundle_in:ud");
     // The lanes.
-    let landing = Lane::new(&ids::node_id("hk-up"), &ids::node_id("p0"), LaneRole::Landing, Some(&ids::node_id("ud")), None);
+    let landing = Lane::new(
+        &ids::node_id("hk-up"),
+        &ids::node_id("p0"),
+        LaneRole::Landing,
+        Some(&ids::node_id("ud")),
+        None,
+    );
     b.node("landing", pod(&hk, 45000), pod_ports());
     b.lane(landing);
-    let relay_lane = Lane::new(&ids::node_id("ud"), &ids::node_id("p0"), LaneRole::Relay, Some(&ids::node_id("hk-up")), None);
+    let relay_lane = Lane::new(
+        &ids::node_id("ud"),
+        &ids::node_id("p0"),
+        LaneRole::Relay,
+        Some(&ids::node_id("hk-up")),
+        None,
+    );
     b.node("relay", relay(RelayProtocol::TcpRaw), relay_ports());
     b.lane(relay_lane);
     b.connect("landing-listen", "relay-listen");
@@ -766,7 +800,10 @@ fn a_matching_expansion_is_not_stale_and_derives_through_the_channel() {
     // One member wired: the single-member warning, next to the missing exit.
     assert_eq!(
         warnings(&problems),
-        [ProblemKind::DistributeSingleMember, ProblemKind::ChannelNoExit],
+        [
+            ProblemKind::DistributeSingleMember,
+            ProblemKind::ChannelNoExit
+        ],
         "{problems:?}"
     );
     assert!(!universal::is_stale(&topology));
@@ -789,10 +826,14 @@ fn missing_lanes_are_a_warning() {
     let mut b = expanded_builder();
     let topology = b.build();
     let relay_id = ids::node_id("relay");
-    let projected = topology.project(&[orchestration::services::topology::TopologyEdit::RetireNode { node: relay_id }]);
+    let projected = topology
+        .project(&[orchestration::services::topology::TopologyEdit::RetireNode { node: relay_id }]);
     let problems = analyze(&projected);
     assert!(errors(&problems).is_empty(), "{problems:?}");
-    assert!(warnings(&problems).contains(&ProblemKind::LanesStale), "{problems:?}");
+    assert!(
+        warnings(&problems).contains(&ProblemKind::LanesStale),
+        "{problems:?}"
+    );
     let _ = &mut b;
 }
 
@@ -811,10 +852,19 @@ fn a_universal_pod_may_start_a_channel() {
     b.node("hk-up", up(&hk), up_ports);
     b.connect("hk-up-chan:p0", "p0-destination");
     let problems = analyze(&b.build());
-    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
-    assert!(!errors(&problems).contains(&ProblemKind::ChannelTargetNotPod), "{problems:?}");
+    assert!(
+        !errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
+    assert!(
+        !errors(&problems).contains(&ProblemKind::ChannelTargetNotPod),
+        "{problems:?}"
+    );
     // Nothing generated yet: the expansion is stale until the write lands.
-    assert!(warnings(&problems).contains(&ProblemKind::LanesStale), "{problems:?}");
+    assert!(
+        warnings(&problems).contains(&ProblemKind::LanesStale),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -827,17 +877,41 @@ fn bundles_may_enter_a_distribute_node() {
         up(&hk),
         vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)],
     );
-    let mut ud2_ports = vec![bundle_port(&universal::bundle_in_key("hk-up"), PortDirection::Input)];
+    let mut ud2_ports = vec![bundle_port(
+        &universal::bundle_in_key("hk-up"),
+        PortDirection::Input,
+    )];
     ud2_ports.extend(distribute_member_ports(&["next"]));
-    b.node("ud2", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["next"]), ud2_ports);
-    let mut ud3_ports = vec![bundle_port(&universal::bundle_in_key("ud2"), PortDirection::Input)];
+    b.node(
+        "ud2",
+        ud_with(
+            LoadBalanceMode::RoundRobin,
+            RelayProtocol::TcpRaw,
+            &["next"],
+        ),
+        ud2_ports,
+    );
+    let mut ud3_ports = vec![bundle_port(
+        &universal::bundle_in_key("ud2"),
+        PortDirection::Input,
+    )];
     ud3_ports.extend(distribute_member_ports(&["x"]));
-    b.node("ud3", ud_with(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw, &["x"]), ud3_ports);
+    b.node(
+        "ud3",
+        ud_with(LoadBalanceMode::Fallback, RelayProtocol::TcpRaw, &["x"]),
+        ud3_ports,
+    );
     b.connect("hk-up-bundle_out", "ud2-bundle_in:hk-up");
     b.connect("ud2-member_1", "ud3-bundle_in:ud2");
     let problems = analyze(&b.build());
-    assert!(!errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
-    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        !errors(&problems).contains(&ProblemKind::BundleEdgeInvalid),
+        "{problems:?}"
+    );
+    assert!(
+        !errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 }
 
 /// A universal pod's `bundle_out` lands on an aggregate node's member: a plain
@@ -846,28 +920,53 @@ fn bundles_may_enter_a_distribute_node() {
 fn a_bundle_lands_on_an_aggregate_member() {
     let mut b = Builder::new("prod");
     let hk = b.server("hk");
-    b.node("hk-up", up(&hk), vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)]);
-    b.node("ua", ua_with(&["hk", "spare"]), aggregate_member_ports(&["hk", "spare"]));
+    b.node(
+        "hk-up",
+        up(&hk),
+        vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)],
+    );
+    b.node(
+        "ua",
+        ua_with(&["hk", "spare"]),
+        aggregate_member_ports(&["hk", "spare"]),
+    );
     b.connect("hk-up-bundle_out", "ua-member_1");
     let problems = analyze(&b.build());
-    assert!(!errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
-    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        !errors(&problems).contains(&ProblemKind::BundleEdgeInvalid),
+        "{problems:?}"
+    );
+    assert!(
+        !errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 }
 
 #[test]
 fn bundles_only_join_the_allowed_pairs_on_matching_keys() {
     // A distributor's member straight into an aggregator's member.
     let mut b = Builder::new("prod");
-    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]), distribute_member_ports(&["a"]));
+    b.node(
+        "ud",
+        ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]),
+        distribute_member_ports(&["a"]),
+    );
     b.node("ua", ua_with(&["a"]), aggregate_member_ports(&["a"]));
     b.connect("ud-member_1", "ua-member_1");
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::BundleEdgeInvalid),
+        "{problems:?}"
+    );
 
     // The right pair, but the collecting port is named after another node.
     let mut b = Builder::new("prod");
     let hk = b.server("hk");
-    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]), distribute_member_ports(&["a"]));
+    b.node(
+        "ud",
+        ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]),
+        distribute_member_ports(&["a"]),
+    );
     b.node(
         "hk-up",
         up(&hk),
@@ -878,20 +977,35 @@ fn bundles_only_join_the_allowed_pairs_on_matching_keys() {
     );
     b.connect("ud-member_1", "hk-up-bundle_in:other");
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::BundleEdgeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::BundleEdgeInvalid),
+        "{problems:?}"
+    );
 
     // A universal pod into a distribute node's member (members are outputs).
     let mut b = Builder::new("prod");
     let hk = b.server("hk");
-    b.node("hk-up", up(&hk), vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)]);
+    b.node(
+        "hk-up",
+        up(&hk),
+        vec![bundle_port(universal::BUNDLE_OUT, PortDirection::Output)],
+    );
     b.node(
         "ud",
         ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a"]),
-        vec![("member_1".to_string(), PortKind::Bundle, PortDirection::Input, 0)],
+        vec![(
+            "member_1".to_string(),
+            PortKind::Bundle,
+            PortDirection::Input,
+            0,
+        )],
     );
     b.connect("hk-up-bundle_out", "ud-member_1");
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -918,7 +1032,10 @@ fn a_bundle_cycle_is_an_error() {
     b.connect("a-up-bundle_out", "c-up-bundle_in:a-up");
     b.connect("c-up-bundle_out", "a-up-bundle_in:c-up");
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::BundleCycle), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::BundleCycle),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -928,10 +1045,17 @@ fn a_channel_must_feed_the_pod_it_is_named_after() {
     b.ip("_", &us, "198.51.100.1");
     b.node("p0", pod(&us, 10000), pod_ports());
     b.node("p1", pod(&us, 10001), pod_ports());
-    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), channel_ports("p0", true, 0));
+    b.node(
+        "ud",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        channel_ports("p0", true, 0),
+    );
     b.connect("ud-chan:p0", "p1-destination");
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::ChannelTargetNotPod), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::ChannelTargetNotPod),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -941,17 +1065,28 @@ fn universal_ports_must_have_their_kind_shape() {
     let hk = b.server("hk");
     b.node("hk-up", up(&hk), vec![]);
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 
     // A distributor with a channel port but no lane twin.
     let mut b = Builder::new("prod");
     b.node(
         "ud",
         ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
-        vec![(universal::chan_key("p0"), PortKind::DeriveDestination, PortDirection::Output, 0)],
+        vec![(
+            universal::chan_key("p0"),
+            PortKind::DeriveDestination,
+            PortDirection::Output,
+            0,
+        )],
     );
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 
     // An aggregate node with its pair the right way round is fine, with or
     // without hand-drawn ports next to it.
@@ -961,26 +1096,53 @@ fn universal_ports_must_have_their_kind_shape() {
     mixed.extend(aggregate_ports(2));
     b.node("ua2", ua(), mixed);
     let problems = analyze(&b.build());
-    assert!(!errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        !errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 
     // Hand-drawn ports are all or nothing: a lone `source` is half a node.
     let mut b = Builder::new("prod");
     b.node(
         "ua",
         ua(),
-        vec![("source".to_string(), PortKind::DeriveDestination, PortDirection::Input, 0)],
+        vec![(
+            "source".to_string(),
+            PortKind::DeriveDestination,
+            PortDirection::Input,
+            0,
+        )],
     );
     let problems = analyze(&b.build());
-    assert!(errors(&problems).contains(&ProblemKind::PortShapeInvalid), "{problems:?}");
+    assert!(
+        errors(&problems).contains(&ProblemKind::PortShapeInvalid),
+        "{problems:?}"
+    );
 
     // Declared members must be there, one bundle port each, in order.
     let mut b = Builder::new("prod");
-    b.node("ud", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a", "b"]), distribute_member_ports(&["a"]));
+    b.node(
+        "ud",
+        ud_with(
+            LoadBalanceMode::RoundRobin,
+            RelayProtocol::TcpRaw,
+            &["a", "b"],
+        ),
+        distribute_member_ports(&["a"]),
+    );
     let mut swapped = distribute_member_ports(&["a", "b"]);
     swapped.swap(0, 1);
     swapped[0].3 = 0;
     swapped[1].3 = 1;
-    b.node("ud2", ud_with(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw, &["a", "b"]), swapped);
+    b.node(
+        "ud2",
+        ud_with(
+            LoadBalanceMode::RoundRobin,
+            RelayProtocol::TcpRaw,
+            &["a", "b"],
+        ),
+        swapped,
+    );
     b.node("ua", ua_with(&["a"]), aggregate_member_ports(&["a"]));
     let problems = analyze(&b.build());
     let shape_errors = problems
@@ -999,10 +1161,17 @@ fn channel_lanes_are_not_members() {
     let us = b.server("us");
     b.ip("_", &us, "198.51.100.1");
     b.node("p0", pod(&us, 10000), pod_ports());
-    b.node("ud", ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw), channel_ports("p0", true, 0));
+    b.node(
+        "ud",
+        ud(LoadBalanceMode::RoundRobin, RelayProtocol::TcpRaw),
+        channel_ports("p0", true, 0),
+    );
     b.connect("ud-chan:p0", "p0-destination");
     b.node("exit", exit("10.0.0.5:8080"), exit_ports());
     b.connect("exit-destination", "ud-lane:p0");
     let problems = analyze(&b.build());
-    assert!(!warnings(&problems).contains(&ProblemKind::DistributeSingleMember), "{problems:?}");
+    assert!(
+        !warnings(&problems).contains(&ProblemKind::DistributeSingleMember),
+        "{problems:?}"
+    );
 }

@@ -122,7 +122,12 @@ async fn country(url: &str) -> Option<String> {
         .user_agent("guru-worker")
         .build()
         .ok()?;
-    let body = match client.get(url).send().await.and_then(|r| r.error_for_status()) {
+    let body = match client
+        .get(url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
         Ok(response) => response.text().await.ok()?,
         Err(error) => {
             tracing::debug!(url, error = %error, "geo lookup failed");

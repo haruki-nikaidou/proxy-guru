@@ -155,7 +155,12 @@ impl<V: LiveView> ViewRegistry<V> {
         };
         let entry = entries.entry(key.clone()).or_insert_with(|| {
             let (tx, _) = watch::channel(ViewValue::Loading);
-            let task = tokio::spawn(run_view(view, self.db.clone(), self.bus.clone(), tx.clone()));
+            let task = tokio::spawn(run_view(
+                view,
+                self.db.clone(),
+                self.bus.clone(),
+                tx.clone(),
+            ));
             ViewEntry {
                 tx,
                 subscribers: 0,

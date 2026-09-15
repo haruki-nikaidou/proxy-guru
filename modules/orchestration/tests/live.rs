@@ -129,9 +129,7 @@ fn pod_on(server: &ServerId, port: u16) -> NodeSpec {
 }
 
 /// A wired canvas with one server and one pod, ready to derive.
-async fn wired(
-    w: &World,
-) -> Result<(CanvasId, ServerId), Box<dyn std::error::Error>> {
+async fn wired(w: &World) -> Result<(CanvasId, ServerId), Box<dyn std::error::Error>> {
     let canvas = canvas_named(w, "prod").await?;
     let server = make_server(w, &canvas, "tokyo", "203.0.113.10").await?;
     let pod = make_node(w, &canvas, "web", pod_on(&server, 443)).await?;
@@ -156,7 +154,12 @@ async fn wired(
     )
     .await?;
     connect(w, port_of(&pod, "listen"), port_of(&entry, "listen")).await?;
-    connect(w, port_of(&exit, "destination"), port_of(&pod, "destination")).await?;
+    connect(
+        w,
+        port_of(&exit, "destination"),
+        port_of(&pod, "destination"),
+    )
+    .await?;
     Ok((canvas, server))
 }
 
@@ -176,12 +179,9 @@ async fn register(
             last_update_error: None,
         })
         .await?;
-    let row =
-        w.db.process(
-            orchestration::entities::surreal::server::FindServerById {
-                id: server.clone(),
-            },
-        )
+    let row = w
+        .db
+        .process(orchestration::entities::surreal::server::FindServerById { id: server.clone() })
         .await?
         .ok_or("server vanished")?;
     Ok(AgentIdentity {
@@ -198,11 +198,9 @@ async fn take_and_ack(
     error: Option<String>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let row =
-        w.db.process(
-            orchestration::entities::surreal::server::FindServerById {
-                id: agent.server.clone(),
-            },
-        )
+        w.db.process(orchestration::entities::surreal::server::FindServerById {
+            id: agent.server.clone(),
+        })
         .await?
         .ok_or("server vanished")?;
     let snapshot =
@@ -234,9 +232,7 @@ fn pod_ok(tag: &str) -> PodResult {
 }
 
 /// Waits for the next value a view publishes that is not `Loading`.
-async fn next_value<T: Clone + Send + Sync + 'static>(
-    handle: &mut ViewHandle<T>,
-) -> ViewValue<T> {
+async fn next_value<T: Clone + Send + Sync + 'static>(handle: &mut ViewHandle<T>) -> ViewValue<T> {
     tokio::time::timeout(WAIT, async {
         loop {
             handle.rx.changed().await.expect("the view task is alive");
@@ -478,7 +474,9 @@ async fn subcanvas_edit_refreshes_parent_view() -> TestResult {
         &w,
         &root,
         "sub",
-        NodeSpec::CanvasImport(CanvasImportConfig { canvas: sub.clone() }),
+        NodeSpec::CanvasImport(CanvasImportConfig {
+            canvas: sub.clone(),
+        }),
     )
     .await?;
     assert!(import.ports.is_empty(), "nothing is exported yet");
@@ -621,7 +619,10 @@ async fn rollouts_follow_derive_and_ack() -> TestResult {
         }
     };
     let (state, _) = ready(&derived);
-    assert_eq!(state.servers[0].status.desired.as_ref().unwrap().revision, 1);
+    assert_eq!(
+        state.servers[0].status.desired.as_ref().unwrap().revision,
+        1
+    );
     assert!(!state.servers[0].status.derivation_pending);
 
     let agent = register(&w, &server).await?;
@@ -685,9 +686,10 @@ async fn server_health_stream_dedupes_and_sees_offline() -> TestResult {
             report: report(0),
         })
         .await?;
-    let message = next_message(&mut events, |m| {
-        matches!(m, LiveMessage::ServerHealth { server, .. } if *server == server_key)
-    })
+    let message = next_message(
+        &mut events,
+        |m| matches!(m, LiveMessage::ServerHealth { server, .. } if *server == server_key),
+    )
     .await;
     let LiveMessage::ServerHealth { record, .. } = &*message else {
         panic!("filtered above");
@@ -790,11 +792,7 @@ async fn node_health_deploying_then_ready_then_failed() -> TestResult {
         panic!("filtered above");
     };
     assert_eq!(
-        records
-            .iter()
-            .find(|r| r.node == node_key)
-            .unwrap()
-            .status,
+        records.iter().find(|r| r.node == node_key).unwrap().status,
         NodeHealthStatus::Deploying
     );
 
@@ -988,8 +986,7 @@ async fn node_health_recovery_pages_through_identical_timestamps() -> TestResult
 
     // The handler's loop: page on `(report_time, id)` until a short page.
     const PAGE: i64 = 200;
-    let mut cursor: (chrono::DateTime<Utc>, Option<String>) =
-        (chrono::DateTime::UNIX_EPOCH, None);
+    let mut cursor: (chrono::DateTime<Utc>, Option<String>) = (chrono::DateTime::UNIX_EPOCH, None);
     let mut seen: Vec<String> = Vec::new();
     loop {
         let rows =

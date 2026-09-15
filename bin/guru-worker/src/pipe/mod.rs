@@ -157,7 +157,10 @@ pub async fn write_proxy_header<S: AsyncWrite + Unpin>(
 /// are both expressed as IPv6, the IPv4 side as `::ffff:a.b.c.d`, which the
 /// receiving side unmaps again in `read_proxy_header`.
 fn same_family(src: SocketAddr, dst: SocketAddr) -> (SocketAddr, SocketAddr) {
-    let (src, dst) = (crate::listener::canonical(src), crate::listener::canonical(dst));
+    let (src, dst) = (
+        crate::listener::canonical(src),
+        crate::listener::canonical(dst),
+    );
     if src.is_ipv4() == dst.is_ipv4() {
         return (src, dst);
     }

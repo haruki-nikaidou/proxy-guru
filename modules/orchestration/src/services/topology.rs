@@ -573,7 +573,10 @@ fn check_edges(index: &Index<'_>, topology: &CanvasTopology, out: &mut Vec<Topol
                         format!("edge {edge_key} {message}"),
                     )
                     .with_edges(vec![edge.id.clone()])
-                    .with_nodes(vec![source_node.node.id.clone(), target_node.node.id.clone()]),
+                    .with_nodes(vec![
+                        source_node.node.id.clone(),
+                        target_node.node.id.clone(),
+                    ]),
                 );
             }
             bundled
@@ -698,7 +701,9 @@ fn bundle_edge_problem(
         return Some("bundles nodes that cannot be bundled".to_string());
     }
     let source_ok = match universal::parse_port_key(&source.key) {
-        Some(UniversalPort::BundleOut) => matches!(source_node.node.spec, NodeSpec::UniversalPod(_)),
+        Some(UniversalPort::BundleOut) => {
+            matches!(source_node.node.spec, NodeSpec::UniversalPod(_))
+        }
         None => {
             matches!(source_node.node.spec, NodeSpec::LoadBalanceDistribute(_))
                 && universal::is_member_port(source)
@@ -919,7 +924,10 @@ fn check_specs(index: &Index<'_>, out: &mut Vec<TopologyProblem>) {
                         .with_nodes(vec![node.node.id.clone()]),
                     );
                 }
-                for (label, value) in [("bind_ip", &cfg.bind_ip), ("advertise_ip", &cfg.advertise_ip)] {
+                for (label, value) in [
+                    ("bind_ip", &cfg.bind_ip),
+                    ("advertise_ip", &cfg.advertise_ip),
+                ] {
                     if let Some(raw) = value
                         && raw.parse::<std::net::IpAddr>().is_err()
                     {

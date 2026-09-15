@@ -92,7 +92,12 @@ impl Notifier {
 
     /// The canvas the edit happened in, not the root: a view matches the key
     /// against its own tree, so a subcanvas edit still refreshes its parents.
-    pub async fn canvas_changed(&self, canvas: &CanvasId, kind: CanvasChangeKind, ids: Vec<String>) {
+    pub async fn canvas_changed(
+        &self,
+        canvas: &CanvasId,
+        kind: CanvasChangeKind,
+        ids: Vec<String>,
+    ) {
         self.live(LiveMessage::CanvasChanged {
             canvas: record_key(&canvas.0),
             kind,

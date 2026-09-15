@@ -72,7 +72,10 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server() -> T
             unit: None,
         })
         .await?;
-    assert_eq!(install.unit, "hk-edge-1", "the unit is the server name as a slug");
+    assert_eq!(
+        install.unit, "hk-edge-1",
+        "the unit is the server name as a slug"
+    );
     assert_eq!(install.version, "0.2.0-beta");
     assert!(
         install
@@ -88,7 +91,11 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server() -> T
         "GURU_AGENT_VERSION=0.2.0-beta",
         &format!("GURU_AGENT_SHA256={}", "c".repeat(64)),
     ] {
-        assert!(install.command.contains(expected), "missing {expected} in {}", install.command);
+        assert!(
+            install.command.contains(expected),
+            "missing {expected} in {}",
+            install.command
+        );
     }
     assert!(
         !install.command.contains("GURU_DOWNLOAD_BASE"),
@@ -106,7 +113,10 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server() -> T
 
     // The key registers its own server …
     w.agents
-        .process(register(RegisterCredential::ServerKey(secret.clone()), &a.id))
+        .process(register(
+            RegisterCredential::ServerKey(secret.clone()),
+            &a.id,
+        ))
         .await?;
     // … never another one, and an unknown key registers nothing at all.
     let err = w
@@ -117,7 +127,10 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server() -> T
     assert!(matches!(err, OrchestrationError::PermissionDenied), "{err}");
     let err = w
         .agents
-        .process(register(RegisterCredential::ServerKey("gs_nope".to_string()), &a.id))
+        .process(register(
+            RegisterCredential::ServerKey("gs_nope".to_string()),
+            &a.id,
+        ))
         .await
         .expect_err("an unknown key is refused");
     assert!(matches!(err, OrchestrationError::PermissionDenied), "{err}");
@@ -201,7 +214,10 @@ async fn issuing_needs_an_origin_a_release_and_a_key_manager() -> TestResult {
         .process(GetAgentRelease { actor: operator() })
         .await?;
     assert!(info.base_url_configured);
-    assert_eq!(info.release.map(|r| r.version).as_deref(), Some("0.2.0-beta"));
+    assert_eq!(
+        info.release.map(|r| r.version).as_deref(),
+        Some("0.2.0-beta")
+    );
     // A trailing slash on the origin does not double up in the URLs.
     let install = servers.process(issue(Some("x-1"))).await?;
     assert!(
@@ -253,11 +269,10 @@ async fn register_as(
             last_update_error: last_update_error.map(str::to_owned),
         })
         .await?;
-    let row = w
-        .db
-        .process(FindServerById { id: server.clone() })
-        .await?
-        .expect("registered");
+    let row =
+        w.db.process(FindServerById { id: server.clone() })
+            .await?
+            .expect("registered");
     Ok(AgentIdentity {
         server: server.clone(),
         generation: row.refresh_key_generation,
@@ -265,14 +280,19 @@ async fn register_as(
 }
 
 #[tokio::test]
-async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_reports() -> TestResult {
+async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_reports() -> TestResult
+{
     let w = published_world().await?;
     let c = canvas(&w.db, "prod").await?;
     let a = server(&w.db, &c, "edge").await?;
     let row = |w: &World| {
         let id = a.id.clone();
         let db = w.db.clone();
-        async move { db.process(FindServerById { id }).await.map(|r| r.expect("row")) }
+        async move {
+            db.process(FindServerById { id })
+                .await
+                .map(|r| r.expect("row"))
+        }
     };
 
     // Nothing to offer before the operator asks, and nothing to ask for a
@@ -305,7 +325,10 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
             server: a.id.clone(),
         })
         .await?;
-    assert_eq!(updated.agent_update_requested.as_deref(), Some("0.2.0-beta"));
+    assert_eq!(
+        updated.agent_update_requested.as_deref(),
+        Some("0.2.0-beta")
+    );
     let offered = w
         .agents
         .process(PollAgentUpdate {
@@ -373,7 +396,13 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
             server: a.id.clone(),
         })
         .await?;
-    register_as(&w, &a.id, "0.2.0-beta", Some("0.3.0: did not come up in 3 starts")).await?;
+    register_as(
+        &w,
+        &a.id,
+        "0.2.0-beta",
+        Some("0.3.0: did not come up in 3 starts"),
+    )
+    .await?;
     let r = row(&w).await?;
     assert_eq!(r.agent_update_requested, None);
     assert_eq!(
@@ -408,7 +437,9 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
     let r = row(&w).await?;
     assert_eq!(r.agent_update_requested, None);
     assert!(
-        r.agent_update_error.as_deref().is_some_and(|e| e.contains("0.4.0")),
+        r.agent_update_error
+            .as_deref()
+            .is_some_and(|e| e.contains("0.4.0")),
         "{:?}",
         r.agent_update_error
     );

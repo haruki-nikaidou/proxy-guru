@@ -3,7 +3,9 @@
 //! Handlers are thin: decode ids and specs, call a service, encode the reply. All
 //! rules live in `services`.
 
-use crate::entities::surreal::canvas::{CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition};
+use crate::entities::surreal::canvas::{
+    CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition,
+};
 use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::dns::DnsProvider;
@@ -14,9 +16,8 @@ use crate::entities::surreal::health::{
 use crate::entities::surreal::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
     LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMember,
-    LoadBalanceMode,
-    NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion, RelayConfig,
-    RelayProtocol, TlsConfig, UniversalPodConfig,
+    LoadBalanceMode, NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion,
+    RelayConfig, RelayProtocol, TlsConfig, UniversalPodConfig,
 };
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
@@ -574,9 +575,7 @@ fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
         effective_address: effective
             .map(|(address, _)| address.to_string())
             .unwrap_or_default(),
-        reported_country: reported
-            .and_then(|r| r.country.clone())
-            .unwrap_or_default(),
+        reported_country: reported.and_then(|r| r.country.clone()).unwrap_or_default(),
         effective_source: match effective.map(|(_, source)| source) {
             None => pb::AddressSource::Unspecified,
             Some(AddressSource::Override) => pb::AddressSource::AddressOverride,
@@ -1248,8 +1247,14 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             .await?;
         let release = info.release;
         Ok(Response::new(pb::GetAgentReleaseReply {
-            version: release.as_ref().map(|r| r.version.clone()).unwrap_or_default(),
-            sha256: release.as_ref().map(|r| r.sha256.clone()).unwrap_or_default(),
+            version: release
+                .as_ref()
+                .map(|r| r.version.clone())
+                .unwrap_or_default(),
+            sha256: release
+                .as_ref()
+                .map(|r| r.sha256.clone())
+                .unwrap_or_default(),
             arch: release.as_ref().map(|r| r.arch.clone()).unwrap_or_default(),
             published_at: release
                 .as_ref()
@@ -1412,28 +1417,29 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
     ) -> Result<Response<pb::ConnectReply>, Status> {
         let actor = auth::rpc::middleware::from_request(&request)?;
         let input = request.into_inner();
-        let end = |port: &str, handle: Option<pb::UniversalHandle>| -> Result<edge::ConnectEnd, Status> {
-            if !port.is_empty() {
-                return Ok(edge::ConnectEnd::Port(ids::port_id(port)));
-            }
-            let handle = handle.ok_or_else(|| {
-                Status::invalid_argument("each end needs a port id or a universal handle")
-            })?;
-            if handle.node_id.is_empty() {
-                return Err(Status::invalid_argument("handle: node_id is required"));
-            }
-            let group = match pb::UniversalGroup::try_from(handle.group) {
-                Ok(pb::UniversalGroup::ChannelOut) => edge::UniversalGroup::ChannelOut,
-                Ok(pb::UniversalGroup::BundleIn) => edge::UniversalGroup::BundleIn,
-                Ok(pb::UniversalGroup::Unspecified) | Err(_) => {
-                    return Err(Status::invalid_argument("handle: group is required"));
+        let end =
+            |port: &str, handle: Option<pb::UniversalHandle>| -> Result<edge::ConnectEnd, Status> {
+                if !port.is_empty() {
+                    return Ok(edge::ConnectEnd::Port(ids::port_id(port)));
                 }
+                let handle = handle.ok_or_else(|| {
+                    Status::invalid_argument("each end needs a port id or a universal handle")
+                })?;
+                if handle.node_id.is_empty() {
+                    return Err(Status::invalid_argument("handle: node_id is required"));
+                }
+                let group = match pb::UniversalGroup::try_from(handle.group) {
+                    Ok(pb::UniversalGroup::ChannelOut) => edge::UniversalGroup::ChannelOut,
+                    Ok(pb::UniversalGroup::BundleIn) => edge::UniversalGroup::BundleIn,
+                    Ok(pb::UniversalGroup::Unspecified) | Err(_) => {
+                        return Err(Status::invalid_argument("handle: group is required"));
+                    }
+                };
+                Ok(edge::ConnectEnd::Handle {
+                    node: ids::node_id(&handle.node_id),
+                    group,
+                })
             };
-            Ok(edge::ConnectEnd::Handle {
-                node: ids::node_id(&handle.node_id),
-                group,
-            })
-        };
         let output = end(&input.output_port_id, input.output_handle)?;
         let input_end = end(&input.input_port_id, input.input_handle)?;
         let edge = match (output, input_end) {

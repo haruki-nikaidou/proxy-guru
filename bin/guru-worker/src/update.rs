@@ -243,6 +243,8 @@ pub fn confirm_pending() {
             "update confirmed: registered and reporting health"
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!(path = %path.display(), error = %e, "could not clear the pending marker"),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "could not clear the pending marker")
+        }
     }
 }

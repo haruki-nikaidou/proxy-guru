@@ -375,7 +375,13 @@ struct Expansion<'a> {
 }
 
 impl<'a> Expansion<'a> {
-    fn lane_at(&self, group: &NodeWithPorts, lane: Lane, name: String, shape: LaneShape) -> DesiredLane {
+    fn lane_at(
+        &self,
+        group: &NodeWithPorts,
+        lane: Lane,
+        name: String,
+        shape: LaneShape,
+    ) -> DesiredLane {
         DesiredLane {
             lane,
             canvas: group.node.canvas.clone(),
@@ -401,7 +407,13 @@ impl<'a> Expansion<'a> {
         let server = universal_server(target)?;
         let pod_id = channel.pod.node.id.clone();
         let pod_name = channel.pod.node.name.clone();
-        let landing = Lane::new(&target.node.id, &pod_id, LaneRole::Landing, Some(&owner.node.id), via);
+        let landing = Lane::new(
+            &target.node.id,
+            &pod_id,
+            LaneRole::Landing,
+            Some(&owner.node.id),
+            via,
+        );
         let relay = Lane::new(&owner.node.id, &pod_id, LaneRole::Relay, relay_source, via);
         self.desired.edges.insert((
             EndRef::lane(&landing.key, "listen"),
@@ -550,20 +562,21 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             .insert((source.position, t.clone()));
         in_edges.entry(t).or_default().insert((target.position, s));
     }
-    let ordered = |edges: BTreeMap<String, BTreeSet<(i64, String)>>| -> BTreeMap<String, Vec<String>> {
-        edges
-            .into_iter()
-            .map(|(k, set)| {
-                let mut seen = BTreeSet::new();
-                let list = set
-                    .into_iter()
-                    .map(|(_, far)| far)
-                    .filter(|far| seen.insert(far.clone()))
-                    .collect();
-                (k, list)
-            })
-            .collect()
-    };
+    let ordered =
+        |edges: BTreeMap<String, BTreeSet<(i64, String)>>| -> BTreeMap<String, Vec<String>> {
+            edges
+                .into_iter()
+                .map(|(k, set)| {
+                    let mut seen = BTreeSet::new();
+                    let list = set
+                        .into_iter()
+                        .map(|(_, far)| far)
+                        .filter(|far| seen.insert(far.clone()))
+                        .collect();
+                    (k, list)
+                })
+                .collect()
+        };
     let outs = ordered(out_edges);
     let ins = ordered(in_edges);
 
@@ -607,7 +620,9 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     ordinal: p.position,
                 },
             );
-            own.entry(key.clone()).or_default().insert(pod_key.to_string());
+            own.entry(key.clone())
+                .or_default()
+                .insert(pod_key.to_string());
         }
     }
 
@@ -797,8 +812,14 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     // An entry pod drawn straight into this node: a raw TCP hop
                     // of its own, landing here like any bundled channel.
                     if own_here.contains(pod_key)
-                        && let Some(member) =
-                            ex.hop(node, node, &channel, RelayProtocol::TcpRaw, Some(&pod_id), None)
+                        && let Some(member) = ex.hop(
+                            node,
+                            node,
+                            &channel,
+                            RelayProtocol::TcpRaw,
+                            Some(&pod_id),
+                            None,
+                        )
                     {
                         ex.desired
                             .edges
@@ -976,7 +997,10 @@ fn landing_protocol(index: &Index<'_>, pod: &NodeWithPorts) -> Option<RelayProto
 
 /// A port on `server` no pod of the tree listens on yet, from the default
 /// range. `taken` also holds the ports handed out earlier in the same plan.
-fn free_port(taken: &mut HashSet<(String, u16)>, server: &ServerId) -> Result<u16, OrchestrationError> {
+fn free_port(
+    taken: &mut HashSet<(String, u16)>,
+    server: &ServerId,
+) -> Result<u16, OrchestrationError> {
     let server_key = record_key(&server.0);
     let mut rng = rand::rng();
     for _ in 0..4096 {
@@ -1029,7 +1053,9 @@ fn lane_spec(shape: &LaneShape, port: u16, keep: Option<&PodConfig>) -> (NodeSpe
 /// Whether two lane specs differ in anything the expansion decides.
 fn spec_differs(current: &NodeSpec, desired: &NodeSpec) -> bool {
     match (current, desired) {
-        (NodeSpec::LoadBalanceDistribute(a), NodeSpec::LoadBalanceDistribute(b)) => a.mode != b.mode,
+        (NodeSpec::LoadBalanceDistribute(a), NodeSpec::LoadBalanceDistribute(b)) => {
+            a.mode != b.mode
+        }
         (NodeSpec::LoadBalanceAggregate(_), NodeSpec::LoadBalanceAggregate(_)) => false,
         (NodeSpec::Relay(a), NodeSpec::Relay(b)) => a.protocol != b.protocol,
         (NodeSpec::Pod(a), NodeSpec::Pod(b)) => {

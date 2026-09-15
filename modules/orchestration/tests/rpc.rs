@@ -201,7 +201,12 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
         .into_inner()
         .node
         .unwrap();
-    assert_eq!(ud.ports.len(), 1, "one bundle port per member: {:?}", ud.ports);
+    assert_eq!(
+        ud.ports.len(),
+        1,
+        "one bundle port per member: {:?}",
+        ud.ports
+    );
     assert_eq!(ud.ports[0].key, "member_1");
     assert_eq!(ud.ports[0].kind, i32::from(pb::PortKind::Bundle));
     let destination = pod.ports.iter().find(|p| p.key == "destination").unwrap();
@@ -238,7 +243,14 @@ async fn connect_ports_accepts_universal_handles() -> TestResult {
     let up = canvas
         .nodes
         .iter()
-        .find(|n| matches!(&n.spec, Some(pb::NodeSpec { spec: Some(pb::node_spec::Spec::UniversalPod(_)) })))
+        .find(|n| {
+            matches!(
+                &n.spec,
+                Some(pb::NodeSpec {
+                    spec: Some(pb::node_spec::Spec::UniversalPod(_))
+                })
+            )
+        })
         .expect("the server's universal pod");
     assert_eq!(up.ports.len(), 1);
     assert_eq!(up.ports[0].kind, i32::from(pb::PortKind::Bundle));
@@ -477,7 +489,11 @@ async fn watch_rollouts_covers_the_whole_tree() -> TestResult {
     let Some(pb::rollout_event::Event::Snapshot(snapshot)) = first.event else {
         panic!("a stream opens with a snapshot, got {first:?}");
     };
-    let mut canvases: Vec<_> = snapshot.servers.iter().map(|s| s.canvas_id.clone()).collect();
+    let mut canvases: Vec<_> = snapshot
+        .servers
+        .iter()
+        .map(|s| s.canvas_id.clone())
+        .collect();
     canvases.sort();
     let mut expected = vec![root.id.clone(), sub.id.clone()];
     expected.sort();

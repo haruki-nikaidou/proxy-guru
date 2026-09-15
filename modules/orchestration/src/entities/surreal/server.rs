@@ -359,7 +359,9 @@ impl Processor<SettleAgentUpdate> for SurrealProcessor {
     #[tracing::instrument(name = "Query-Transaction:SettleAgentUpdate", skip_all, err, fields(id = ?input.id))]
     async fn process(&self, input: SettleAgentUpdate) -> Result<Self::Output, Self::Error> {
         self.db()
-            .query(include_str!("../../../sql/server/settle_agent_update.surql"))
+            .query(include_str!(
+                "../../../sql/server/settle_agent_update.surql"
+            ))
             .bind(("id", input.id))
             .bind(("reported", input.reported_version))
             .bind(("error", input.error))

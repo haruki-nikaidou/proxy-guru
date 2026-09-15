@@ -25,11 +25,7 @@ use orchestration::events::SweepLivenessSignal;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{
-    AckConfig,
-    AgentIdentity,
-    PodResult,
-    RegisterCredential,
-    RegisterWorker,
+    AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
 };
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::edge::Connect;
@@ -447,18 +443,29 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
         key: key.to_string(),
         position,
     };
-    let agg = w
-        .db
-        .process(orchestration::entities::surreal::node::CreateNodeRow {
+    let agg =
+        w.db.process(orchestration::entities::surreal::node::CreateNodeRow {
             canvas: canvas.clone(),
             name: "agg".to_string(),
             comment: String::new(),
             spec: NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
             position: pos0(),
             ports: vec![
-                thin("source", orchestration::entities::surreal::port::PortDirection::Input, 0),
-                thin("copy_0", orchestration::entities::surreal::port::PortDirection::Output, 1),
-                thin("copy_1", orchestration::entities::surreal::port::PortDirection::Output, 2),
+                thin(
+                    "source",
+                    orchestration::entities::surreal::port::PortDirection::Input,
+                    0,
+                ),
+                thin(
+                    "copy_0",
+                    orchestration::entities::surreal::port::PortDirection::Output,
+                    1,
+                ),
+                thin(
+                    "copy_1",
+                    orchestration::entities::surreal::port::PortDirection::Output,
+                    2,
+                ),
             ],
             import_sync: None,
         })

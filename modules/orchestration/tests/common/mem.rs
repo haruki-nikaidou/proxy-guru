@@ -118,10 +118,12 @@ pub fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::Lo
     names
         .iter()
         .enumerate()
-        .map(|(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
-            slot: u32::try_from(i + 1).unwrap(),
-            name: (*name).to_string(),
-        })
+        .map(
+            |(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+                slot: u32::try_from(i + 1).unwrap(),
+                name: (*name).to_string(),
+            },
+        )
         .collect()
 }
 
@@ -130,7 +132,14 @@ pub fn distribute_member_ports(names: &[&str]) -> Vec<PortSpec> {
     members(names)
         .iter()
         .enumerate()
-        .map(|(i, m)| spec(&m.port_key(), PortKind::Bundle, PortDirection::Output, i as i64))
+        .map(|(i, m)| {
+            spec(
+                &m.port_key(),
+                PortKind::Bundle,
+                PortDirection::Output,
+                i as i64,
+            )
+        })
         .collect()
 }
 
@@ -139,7 +148,14 @@ pub fn aggregate_member_ports(names: &[&str]) -> Vec<PortSpec> {
     members(names)
         .iter()
         .enumerate()
-        .map(|(i, m)| spec(&m.port_key(), PortKind::Bundle, PortDirection::Input, i as i64))
+        .map(|(i, m)| {
+            spec(
+                &m.port_key(),
+                PortKind::Bundle,
+                PortDirection::Input,
+                i as i64,
+            )
+        })
         .collect()
 }
 
