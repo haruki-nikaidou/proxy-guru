@@ -3,7 +3,7 @@ title: Proxy Guru
 description: A managed TCP/TLS proxy fabric — design a topology on a canvas, ship one config per server.
 template: splash
 hero:
-  layout: centered-top
+  layout: centered
   tagline: |
     Operators design a topology on a canvas, the control plane derives one config per server from
     it, and data-plane workers pick up every new revision automatically.
@@ -17,9 +17,6 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
-import { ContainerSection } from 'lucode-starlight/components';
-
-<ContainerSection width="xl">
 
 ## Two planes, one model
 
@@ -57,5 +54,3 @@ import { ContainerSection } from 'lucode-starlight/components';
 		[Workspace Layout](/reference/workspace-layout/)
 	</Card>
 </CardGrid>
-
-</ContainerSection>

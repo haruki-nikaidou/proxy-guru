@@ -70,7 +70,7 @@ frontend listens on `:3000` and reaches the control plane through `GURU_GRPC_URL
 ## Documentation
 
 The full manual lives in `typescript/docs` — an Astro Starlight site themed with
-[`lucode-starlight`](https://lucas-labs.github.io/lucode-starlight-theme/):
+[`starlight-theme-black`](https://starlight-theme-black.vercel.app/):
 
 ```sh
 bun install

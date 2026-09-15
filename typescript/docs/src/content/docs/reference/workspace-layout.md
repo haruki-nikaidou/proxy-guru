@@ -47,11 +47,11 @@ import { GreeterDefinition } from 'app-protobuf/sample/hello';
 ## Documentation site
 
 This site is `typescript/docs`, an Astro Starlight project themed with
-[`lucode-starlight`](https://lucas-labs.github.io/lucode-starlight-theme/).
+[`starlight-theme-black`](https://starlight-theme-black.vercel.app/).
 
 ```text
 typescript/docs/
-├── astro.config.mjs           # Starlight config + lucode theme plugin
+├── astro.config.mjs           # Starlight config + starlight-theme-black plugin
 ├── src/
 │   ├── content.config.ts      # docs collection, schema extended by the theme
 │   └── content/docs/

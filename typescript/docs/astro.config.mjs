@@ -1,6 +1,6 @@
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
-import lucode from 'lucode-starlight';
+import starlightThemeBlack from 'starlight-theme-black';
 
 export default defineConfig({
 	integrations: [
@@ -48,7 +48,7 @@ export default defineConfig({
 				}
 			],
 			plugins: [
-				lucode({
+				starlightThemeBlack({
 					navLinks: [
 						{ label: 'Docs', link: '/guides/introduction/' },
 						{ label: 'Reference', link: '/reference/architecture/' },
@@ -57,8 +57,7 @@ export default defineConfig({
 							link: 'https://github.com/haruki-nikaidou/proxy-guru',
 							attrs: { target: '_blank', rel: 'noreferrer' }
 						}
-					],
-					footerText: 'Proxy Guru — control plane and data plane for a managed proxy fabric.'
+					]
 				})
 			]
 		})

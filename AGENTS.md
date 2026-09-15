@@ -223,7 +223,7 @@ workspace.
 ### `docs` — the project manual
 
 `typescript/docs` is an Astro Starlight site themed with the
-[`lucode-starlight`](https://lucas-labs.github.io/lucode-starlight-theme/)
+[`starlight-theme-black`](https://starlight-theme-black.vercel.app/)
 plugin. Pages are Markdown/MDX under `src/content/docs/`, split into `guides/`
 (task-oriented) and `reference/` (lookup); the sidebar is declared in
 `astro.config.mjs`. Run it with `bun run docs:dev` and build it with
