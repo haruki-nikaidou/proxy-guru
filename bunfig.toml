@@ -1,0 +1,9 @@
+[install]
+# Bun >= 1.4 defaults workspaces to the isolated linker, which leaves platform
+# binaries (satteri's `@bruits/satteri-<platform>` napi bindings) reachable only
+# through their own package directory. Astro bundles that loader into the
+# prerendered page chunks of every MDX page with a code block, and the bundled
+# `require` then resolves from `dist/`, so the docs build fails with
+# "Cannot find native binding". The hoisted layout keeps those bindings at the
+# workspace root, where the built output can find them.
+linker = "hoisted"

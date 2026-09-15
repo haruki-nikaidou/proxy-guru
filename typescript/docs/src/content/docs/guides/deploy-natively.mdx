@@ -1,0 +1,763 @@
+---
+title: Deploy Natively
+description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, keep SurrealDB and RabbitMQ in Docker, apply the schema with surrealkit, and terminate TLS for workers with nginx.
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The [Deploy with Docker](/guides/deploy-with-docker/) guide runs everything from images. This guide is the other
+common shape: **one machine that is both the build box and the control plane**. The Rust binaries
+run from `target/release/` under systemd, the dashboard runs from its build output, and only the two
+datastores live in Docker. A code change is `cargo build` plus a unit restart, with no image in
+between.
+
+It also covers the one thing the image guide leaves out: putting the worker API behind **TLS on the
+same public hostname as the dashboard**, so workers anywhere on the internet can reach it with
+`--master https://guru.example.com` and no VPN.
+
+Replace `guru.example.com` throughout with your hostname, and `/path/to/proxy-guru` with your
+checkout. Nothing else is host-specific.
+
+## 1. Layout
+
+| Piece | Runs as | Listens on |
+|---|---|---|
+| SurrealDB 3.2 | Docker Compose (`docker-compose.yml` in the checkout) | `127.0.0.1:8000` |
+| RabbitMQ 4 | Docker Compose | `127.0.0.1:5672` |
+| `guru-master` ×4 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
+| dashboard | systemd `guru-frontend` | `127.0.0.1:3100` |
+| nginx | your existing nginx, one server block | `:443` |
+
+Everything but nginx binds loopback. The only public surface is the TLS server block, which serves
+the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent/` to `:50052`.
+
+## 2. Prerequisites
+
+Installed once, on the host that builds and runs the control plane. Distro tabs cover Debian,
+Ubuntu, Fedora/RHEL and Arch, and they are synchronised — pick your distro once and every tab on
+the page follows. On anything else, map the package names yourself; the *requirements* below are
+what matter.
+
+### Build and runtime packages
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+```sh
+sudo apt update
+sudo apt install -y build-essential pkgconf perl cmake protobuf-compiler \
+                    nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+```sh
+sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config perl cmake protobuf-compiler \
+                    nginx curl unzip git
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+```sh
+sudo pacman -S --needed base-devel cmake protobuf nginx curl unzip git
+```
+
+`base-devel` already carries `gcc`, `make`, `pkgconf` and `perl`.
+
+</TabItem>
+</Tabs>
+
+None of these are decoration — each one is a build dependency of this workspace:
+
+| Package | Needed because |
+|---|---|
+| `protoc` (`protobuf-compiler`, on Arch `protobuf`) | `lib/rpguru_sdk`'s build script compiles `proto/` with `tonic-prost-build`, which shells out to `protoc`. All three binaries depend on that crate, so a missing `protoc` fails the whole build. Set `PROTOC=/path/to/protoc` if yours is not on `PATH`. |
+| C compiler, `make`, `perl` | `guru-worker` links OpenSSL with the `vendored` feature, so OpenSSL is compiled from the bundled source tree — and its `Configure` is a perl script. |
+| `cmake` | `aws-lc-sys` (pulled in by the ACME and certificate-generation stack) builds its vendored C sources with cmake. |
+| `pkgconf` / `pkg-config` | Build-dependency of the `*-sys` crates above. |
+| `unzip` | Required by the Bun installer on Linux. |
+| `nginx` | TLS for the dashboard and the worker API (section 7). |
+
+No `libssl-dev`/`openssl-devel`, no `libprotobuf`, no Redis: everything native is vendored, and
+nothing in the native flow connects to Redis.
+
+### Docker Engine and Compose
+
+SurrealDB and RabbitMQ run as containers; the repository ships the Compose file for them. Install
+the engine plus the Compose *plugin* (`docker compose`, not the legacy `docker-compose` script
+except on Arch, where that is the package name):
+
+<Tabs syncKey="distro">
+<TabItem label="Debian">
+
+From [docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/):
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-doc`,
+`docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on boot by the
+package here.
+
+</TabItem>
+<TabItem label="Ubuntu">
+
+From [docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/). The
+repository path and the suite expression both differ from Debian's — Ubuntu derivatives report
+their own codename in `VERSION_CODENAME`, so the Ubuntu one has to be preferred:
+
+```sh
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Remove any conflicting distro packages first: `docker.io`, `docker-compose`, `docker-compose-v2`,
+`docker-doc`, `docker-buildx`, `podman-docker`, `containerd`, `runc`. The service is enabled on
+boot by the package here.
+
+</TabItem>
+<TabItem label="Fedora / RHEL">
+
+On Fedora ([docs](https://docs.docker.com/engine/install/fedora/)):
+
+```sh
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+On RHEL ([docs](https://docs.docker.com/engine/install/rhel/)) the repo is added with the older
+subcommand form — the two are not interchangeable:
+
+```sh
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+</TabItem>
+<TabItem label="Arch">
+
+Docker publishes no Arch packages; the [ArchWiki page](https://wiki.archlinux.org/title/Docker) is
+the distro reference. `docker-compose` is the Compose v2 plugin here:
+
+```sh
+sudo pacman -S --needed docker docker-compose
+sudo systemctl enable --now docker.service
+```
+
+</TabItem>
+</Tabs>
+
+Check the engine as root, and keep Compose an operator action — either `sudo docker compose …` (what
+this guide uses) or your own account added to the `docker` group, which is equivalent to root on the
+host and therefore never granted to the service account:
+
+```sh
+sudo docker run --rm hello-world
+```
+
+### The deployment user
+
+Everything above needed root. Everything below — the toolchains, the checkout, the build, the
+schema, the dashboard build — belongs to one unprivileged user that **owns the checkout**, because
+the binaries, the `.env`, `data/` and the surrealkit manifests all live inside it (which is also
+why the units in sections 5–6 cannot use `DynamicUser=`/`ProtectHome=`).
+
+```sh
+sudo useradd --create-home --shell /bin/bash guru
+sudo -iu guru                         # the rest of this guide runs as guru
+```
+
+This guide uses `guru` and `/home/guru` throughout; substitute your own name consistently,
+including the `User=`/`Group=` and Bun paths in the units. Install rustup, Bun and surrealkit
+*after* switching, so they land in that user's home where systemd can find them.
+
+The account is deliberately **not** in the `docker` group — that group is root-equivalent, and
+neither unit ever invokes Docker. Compose stays an operator action: run the `docker compose`
+commands in section 4 from your own account with `sudo`, or as root.
+
+### Rust, Bun and surrealkit
+
+<Steps>
+
+1. **Rust**, via rustup. The workspace pins the toolchain in `rust-toolchain.toml` (channel
+   `1.98`), and rustup installs that pin on the first `cargo` invocation — do not install a distro
+   `rust` package instead, an older compiler cannot build edition 2024.
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   . "$HOME/.cargo/env"
+   ```
+
+2. **Bun**, for the dashboard and these docs. Node is not used anywhere: the frontend build needs
+   Bun for its own subprocesses.
+
+   <Tabs syncKey="distro">
+   <TabItem label="Debian">
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   </TabItem>
+   <TabItem label="Ubuntu">
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   </TabItem>
+   <TabItem label="Fedora / RHEL">
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   </TabItem>
+   <TabItem label="Arch">
+
+   ```sh
+   curl -fsSL https://bun.com/install | bash
+   export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"
+   ```
+
+   Arch does ship a `bun` package, but installing it needs root and puts the binary outside the
+   service account's home — add it back in the root package step if you prefer it.
+
+   </TabItem>
+   </Tabs>
+
+   The installer takes a version pin (`bash -s "bun-v1.3.3"`) if you want to match the
+   `oven/bun:1.3` image the published dashboard is built with.
+
+3. **surrealkit**, the schema tool. It is a Rust binary, so install it with cargo:
+
+   ```sh
+   cargo binstall surrealkit     # or: cargo install surrealkit
+   surrealkit --version          # this guide was written against 0.7.0
+   ```
+
+4. **The checkout.** Everything below runs from it — the binaries, the `.env`, the schema files
+   and the Compose file all live inside it.
+
+   ```sh
+   git clone https://github.com/haruki-nikaidou/proxy-guru.git /path/to/proxy-guru
+   ```
+
+</Steps>
+
+### What the control plane needs from the datastores
+
+The Compose file in the checkout already satisfies all of this; the requirements are listed so that
+a managed SurrealDB or an existing broker can be judged against them.
+
+| | Requirement |
+|---|---|
+| SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
+| | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that. |
+| | **Durable storage.** The shipped service runs `rocksdb:/data/guru.db` on a bind mount. This is the only irreplaceable state in the system. |
+| RabbitMQ | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. |
+| | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser. |
+| | The broker is **mandatory in all four modes**. Periodic work *is* a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
+
+Two details in the shipped `docker-compose.yml` are load-bearing. The SurrealDB image runs as
+`nonroot` and cannot write a root-owned bind mount, so the service sets `user: root`. RabbitMQ names
+its data directory after its node name, `rabbit@<hostname>`, so the service pins `hostname:`;
+without it every container recreation would start an empty broker.
+
+### A hostname and a certificate
+
+One DNS name pointing at this host, and a TLS certificate for it (`certbot`, your CA, anything).
+Section 7 terminates both the dashboard and the worker API on it.
+
+:::caution[Keep the hostname off Cloudflare's proxy]
+Cloudflare's proxy closes a streaming response after 100 s without data. `WatchConfig` is silent
+between revisions, so behind the orange cloud every worker would reconnect every couple of minutes.
+Leave the record DNS-only; TLS from the worker to nginx already protects the API key in transit.
+:::
+
+## 3. Build
+
+```sh
+cd /path/to/proxy-guru
+cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
+```
+
+The first build compiles vendored OpenSSL and aws-lc, which is why `perl`, `make` and `cmake` are
+prerequisites. `manage-tool` is needed by the configuration section below, so build it before
+continuing.
+
+## 4. Configuration
+
+### The secrets file
+
+All secrets live in one file, the repository root `.env` (it is gitignored). Compose interpolates
+`${…}` from it because it sits next to `docker-compose.yml`; systemd reads it verbatim through
+`EnvironmentFile=`. systemd does **not** expand `${…}`, so `AMQP_URI` has to be written out, and hex
+secrets avoid every quoting and URL-encoding question.
+
+<Steps>
+
+1. Generate the two passwords and the master key. `GURU_MASTER_KEY` encrypts every DNS provider
+   token, ACME account key and certificate key at rest, and there is no way to recover those
+   without it:
+
+   ```sh
+   openssl rand -hex 32                              # once for SurrealDB, once for RabbitMQ
+   ./target/release/manage-tool generate-master-key   # needs no database
+   ```
+
+2. Write them into `/path/to/proxy-guru/.env`:
+
+   ```sh
+   # /path/to/proxy-guru/.env  (chmod 600)
+   SURREALDB_HOST=ws://127.0.0.1:8000
+   SURREALDB_USER=root
+   SURREALDB_PASSWORD=<openssl rand -hex 32>
+   SURREALDB_NAMESPACE=guru
+   SURREALDB_NAME=guru
+   RABBIT_USER=guru
+   RABBIT_PASSWORD=<openssl rand -hex 32>
+   AMQP_URI=amqp://guru:<RABBIT_PASSWORD>@127.0.0.1:5672/
+   GURU_MASTER_KEY=<manage-tool generate-master-key>
+   GURU_DASHBOARD_GRPC_ADDR=127.0.0.1:50051
+   GURU_WORKERS_GRPC_ADDR=127.0.0.1:50052
+   GURU_LOG_LEVEL=info
+   ```
+
+3. Lock it down: `chmod 600 .env`.
+
+</Steps>
+
+`GURU_WORKERS_GRPC_ADDR` is loopback on purpose: nginx is the only thing that should reach the
+plaintext worker API. `GURU_MASTER_KEY` is deliberately environment-only — it has no flag, because
+argv is visible in process listings.
+
+### Start the datastores
+
+The repository ships a `docker-compose.yml` for exactly this layout: SurrealDB on RocksDB under
+`./data/db`, RabbitMQ under `./data/mq` (both gitignored), both published on loopback only, both
+reading the credentials from the `.env` you just wrote.
+
+This is the one step that needs Docker, so run it **from your own (sudo-capable) account**, not from
+the `guru` shell:
+
+```sh
+cd /path/to/proxy-guru
+sudo docker compose up -d
+sudo docker compose ps     # wait for rabbitmq to report healthy
+```
+
+Then go back to the service account (`sudo -iu guru`) for everything that follows — the schema, the
+config seed, the CA and the admin account all run as `guru`.
+
+### Setup Database Schema
+
+The schema is a set of declarative `.surql` files — `database/schema/{auth,base,orchestration}.surql`,
+one per module — plus `database/setup.surql`, which defines the two bookkeeping tables (`__entity`,
+`__rollout`) that `surrealkit` itself needs. Run every command from the repository root, because
+`surrealkit` resolves `./database` relative to the working directory (`--folder` overrides it).
+
+:::caution[Always pass the connection explicitly]
+`surrealkit` resolves CLI flags > environment > `.env`, and the repository `.env` is inherited by
+every process started from the checkout. On a machine that also has credentials for another
+environment, a forgotten flag is how a "local" command ends up rewriting production.
+:::
+
+Wrap the connection in a shell function so the flags stay short and the password survives whatever
+characters it contains (a `SK="… --pass $pw"` string variable would be re-tokenized on spaces):
+
+```sh
+cd /path/to/proxy-guru
+set -a; . ./.env; set +a       # the credentials you wrote in "The secrets file"
+
+sk() {
+  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
+    --user root --pass "$SURREALDB_PASSWORD" "$@"
+}
+```
+
+Then create the bookkeeping tables once per database, and apply the schema:
+
+<Steps>
+
+1. **Bookkeeping tables.** Once per database, before anything else:
+
+   ```sh
+   sk setup
+   ```
+
+2. **Plan the change.** `plan` diffs the schema files against the live database and writes a
+   reviewable manifest; `lint` validates it without touching the database.
+
+   ```sh
+   sk rollout plan --name initial_schema
+   # Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
+   # Updated ./database/snapshots/catalog_snapshot.json
+
+   sk rollout lint 20260913083052__initial_schema
+   ```
+
+   Read the manifest before applying it. `surrealkit sync` — the one-shot reconcile used in
+   [Local Development](/guides/local-development/) — is for disposable databases only: it prunes
+   deleted objects with no review step and no rollback, so it has no place on a deployment you care
+   about.
+
+3. **Expand.** `start` applies the non-destructive half — new tables, fields, indexes, functions.
+   It is safe to run while an older control plane is still serving:
+
+   ```sh
+   sk rollout start 20260913083052__initial_schema
+   # Rollout ... is ready to complete.
+   ```
+
+4. **Contract.** `complete` drops what the new code no longer uses, so it must not run before the
+   matching binaries do. On this first install there is no old version to keep alive and it follows
+   immediately; on a later schema change it waits until the rebuilt masters from sections 5–6 are
+   running and verified:
+
+   ```sh
+   sk rollout complete 20260913083052__initial_schema
+   ```
+
+   A rollout that went wrong is reverted with `sk rollout rollback <target>`.
+
+5. **Confirm it landed.**
+
+   ```sh
+   sk status
+   ```
+
+</Steps>
+
+Unlike the image deployment, the manifests and snapshots `surrealkit` writes under
+`database/rollouts/` and `database/snapshots/` are gitignored here: with a single machine they are
+per-environment state and there is nothing to share them with. Keep them on the host — the next
+`plan` diffs against them.
+
+Other commands you will want eventually:
+
+| Command | When |
+|---|---|
+| `sk rollout baseline` | First rollout against a database that already has the schema (adopts the current state instead of diffing it from empty) |
+| `sk rollout rollback <target>` | Revert an in-flight rollout |
+| `sk rollout repair <target>` | A `start`/`complete` was killed mid-flight and `__rollout.status` is stuck on `running_*`; reconciles metadata only |
+
+### Seed the module configuration
+
+Everything an operator tunes per installation — health thresholds and retention, the default ACME
+directory, the renewal window, how often each periodic job runs — lives in the database, in one
+`app_config` row per key, not in the environment. Write the defaults with the same environment the
+masters will see:
+
+```sh
+(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
+# seeded auth
+# seeded orchestration
+```
+
+It is idempotent and never overwrites a value you have edited, so re-run it after every schema
+change. `config list`, `config get <key>` and `config set <key> <json>` inspect and change those
+values, and the masters read them once at startup — so a change needs a restart, not a redeploy.
+See [Configuration → Module configuration](/reference/configuration#module-configuration).
+
+### The internal CA and the first administrator
+
+There is no self-service signup: the first account is created straight against the database, which
+deliberately bypasses RBAC because no admin exists yet. Relay links over TLS or QUIC additionally
+need the internal CA before their pods can derive.
+
+```sh
+(set -a; . ./.env; set +a; ./target/release/manage-tool orchestration init-ca)
+(set -a; . ./.env; set +a; ./target/release/manage-tool create-admin \
+    --email admin@example.com --password '<strong password>')
+# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+```
+
+`init-ca` needs `GURU_MASTER_KEY` (the `.env` supplies it), prints the CA certificate, marks every
+canvas holding a TLS/QUIC relay for re-derivation, and refuses to run twice.
+
+## 5. The masters under systemd
+
+One template unit, one instance per mode, running the binary straight out of the checkout and
+reading the repository `.env`. Both units run as the `guru` user from
+[the deployment user](#the-deployment-user), which owns the checkout — that is also why
+`DynamicUser=`/`ProtectHome=` are not used here: they would hide the binary, the `.env` and the
+data directory the service needs.
+
+```ini
+# /etc/systemd/system/guru-master@.service
+[Unit]
+Description=guru-master (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+# Never rate-limit Restart=always: the datastores may come up later than we do.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=guru
+Group=guru
+WorkingDirectory=/path/to/proxy-guru
+EnvironmentFile=/path/to/proxy-guru/.env
+Environment=GURU_WORKER_MODE=%i
+ExecStart=/path/to/proxy-guru/target/release/guru-master
+Restart=always
+RestartSec=3s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Installing and starting units is operator work — run this block **from your sudo-capable account**:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc \
+                            guru-master@consumer guru-master@cron
+journalctl -u 'guru-master@*' -n 20
+```
+
+`consumer` and `cron` exit non-zero when the broker connection drops; `Restart=always` is what heals
+them, so keep it.
+
+Redeploying after a code change is two shells: build as `guru`, restart as the operator.
+
+```sh
+sudo -iu guru bash -lc 'cd /path/to/proxy-guru && \
+  cargo build --release --locked -p guru-master -p manage-tool -p guru-worker'
+sudo systemctl restart 'guru-master@*'
+```
+
+## 6. The dashboard under systemd
+
+Build it as `guru` with Bun, forcing Bun for every subprocess — SvelteKit's post-build step needs
+`Promise.withResolvers`, which Node 20 lacks — and run the adapter-node output with Bun as well:
+
+```sh
+bun install --frozen-lockfile --filter guru-frontend
+cd typescript/guru-frontend && NODE_ENV=production bun --bun run build
+```
+
+```ini
+# /etc/systemd/system/guru-frontend.service
+[Unit]
+Description=guru dashboard (SvelteKit adapter-node)
+After=network-online.target guru-master@dashboard_grpc.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=guru
+Group=guru
+WorkingDirectory=/path/to/proxy-guru/typescript/guru-frontend
+# No EnvironmentFile: the dashboard must not inherit the database credentials.
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3100
+Environment=GURU_GRPC_URL=127.0.0.1:50051
+Environment=PROTOCOL_HEADER=x-forwarded-proto
+Environment=HOST_HEADER=x-forwarded-host
+Environment=ADDRESS_HEADER=x-forwarded-for
+ExecStart=/home/guru/.bun/bin/bun build/index.js
+Restart=always
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then, as the operator again:
+
+```sh
+sudo systemctl enable --now guru-frontend
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/   # 303 → /auth
+```
+
+`ExecStart` must be the absolute path to *that user's* Bun (`sudo -iu guru command -v bun`);
+systemd resolves no `PATH` lookups. Rebuild and `sudo systemctl restart guru-frontend` after a
+frontend change.
+
+## 7. nginx: dashboard and worker API on one hostname
+
+gRPC has no notion of a path prefix: every call is `POST /<package>.<Service>/<Method>`, and the
+worker's service is `guru.orchestration.agent.WorkerAgent`. So nginx can share one server block
+between the dashboard and the worker API by routing on that prefix. Longest prefix wins, so the gRPC
+location never falls into the dashboard one.
+
+`grpc_pass` needs nginx ≥ 1.13.10 with `http_v2_module`, and TLS needs `http_ssl_module`; the
+Debian/Ubuntu, Fedora and Arch packages from section 2 are built with both. An `http`-level `map` for
+WebSocket upgrades is the only other prerequisite:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+```
+
+The server block, with the certificate you already have for the hostname:
+
+```nginx
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
+    server_name guru.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
+
+    # ---- worker agent API: TLS terminated here, plaintext h2c to the master.
+    location ^~ /guru.orchestration.agent.WorkerAgent/ {
+        grpc_pass grpc://127.0.0.1:50052;
+        grpc_connect_timeout 5s;
+        # WatchConfig is a server stream that may be silent for hours; ReportHealth a
+        # client stream carrying one message per 15 s. The grpc_* defaults are 60 s.
+        grpc_read_timeout 7d;
+        grpc_send_timeout 7d;
+        grpc_socket_keepalive on;
+        # ReportHealth is one request body that grows for the life of the session;
+        # nginx counts it cumulatively, so any limit would eventually 413 the stream.
+        client_max_body_size 0;
+        # Gap allowed between two ReportHealth frames (4 missed reports). With nginx
+        # in the path this is what bounds dead-worker detection.
+        client_body_timeout 60s;
+        grpc_set_header x-api-key     $http_x_api_key;
+        grpc_set_header x-refresh-key $http_x_refresh_key;
+        grpc_set_header X-Real-IP     $remote_addr;
+    }
+
+    # ---- dashboard. `^~` keeps any regex locations in the same block (static
+    # asset caching rules, PHP handlers) from capturing /_app/immutable/*.
+    location ^~ / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Host  $http_host;   # $host drops the port
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_cache off;          # in case a global proxy_cache is configured
+        proxy_buffering off;      # SvelteKit streams responses
+        proxy_redirect off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+nginx is root's too — the whole of section 7 runs from the operator account:
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Three of those settings deserve a sentence each:
+
+- **`grpc_read_timeout 7d`.** With the 60 s default, nginx ends `WatchConfig` every minute, the
+  worker re-registers, and its refresh key rotates every minute — a self-inflicted
+  re-registration storm.
+- **`client_max_body_size 0`.** `ReportHealth` is a client-streaming RPC: one HTTP/2 request whose
+  body grows by one message per report for as long as the session lives. nginx enforces the body
+  limit cumulatively, so a limit would reset the health stream after a few weeks.
+- **`client_body_timeout 60s`.** The master detects a dead worker through HTTP/2 PINGs on its own
+  connection. With nginx in between those PINGs are answered by nginx, so a worker that vanished
+  without a FIN is noticed when nginx times out the health body instead — about a minute rather than
+  twenty seconds. Acceptable; this constant is where to tune it.
+
+Only the `Origin`/forwarded headers on the dashboard location are mandatory for correctness (see the
+[dashboard warning](/guides/deploy-with-docker/#9-run-the-dashboard)); the rest is what keeps long-lived
+streams alive.
+
+## 8. Verify
+
+Work through these in order — each fails loudly and independently:
+
+```sh
+# 1. Datastores
+sudo docker compose ps                              # surrealdb up, rabbitmq healthy
+
+# 2. Schema
+sk status                                           # the rollout you applied, [completed]
+
+# 3. Control plane: one banner per mode, no restart loop
+journalctl -u 'guru-master@*' -n 20
+
+# 4. Dashboard behind nginx (303 to /auth)
+curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
+
+# 5. gRPC reaches the master through TLS: HTTP/2 200 with a grpc-status header
+curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
+  --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
+
+# 6. A worker with a bogus key must be rejected by the master, not by TLS or nginx
+GURU_API_KEY=bogus ./target/release/guru-worker --master https://guru.example.com \
+  --server probe --state-dir /tmp/gw
+#   ERROR guru_worker::agent: agent session ended error=... "Missing identity"
+```
+
+Then log in at `https://guru.example.com/` with the account from section 4 — that is the only check
+that exercises dashboard → operator API → SurrealDB end to end. If it returns `Forbidden` while
+everything else passes, the forwarded headers in section 7 are wrong.
+
+Finally, create a server and an API key in the dashboard and start a real worker with
+`--master https://guru.example.com`. Watch it for longer than three minutes — that is what proves
+the 60 s nginx defaults are overridden — and push a canvas change to see `applied config revision`
+in its log.
+
+The `https://` form needs a worker built from a checkout that includes TLS support in the agent
+(`bin/guru-worker` with tonic's `tls-ring` + `tls-native-roots`); it verifies the certificate against
+the host's `ca-certificates` and sends its own HTTP/2 keepalive pings. `http://host:50052` on a
+private network works as before.
