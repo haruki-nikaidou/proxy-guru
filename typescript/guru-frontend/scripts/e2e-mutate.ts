@@ -1,5 +1,5 @@
 // Mutations for the universal e2e: `protocol <tcp_raw|tcp_tls|quic>` on the
-// distributor, or `unbundle <server-name>` (cuts the bundle into that server).
+// distribute node, or `unbundle <server-name>` (cuts the bundle into that server).
 import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
 import { AuthDefinition, LoginResult } from 'app-protobuf/auth/auth';
 import { LoadBalanceMode, OrchestrationDefinition, RelayProtocol } from 'app-protobuf/orchestration/orchestration';
@@ -12,9 +12,9 @@ if (login.result !== LoginResult.SUCCESS) throw new Error('login failed');
 const opts = { metadata: new Metadata({ 'x-session-id': login.sessionId }) };
 const detail = await orch.getCanvas({ canvasId: canvasId! }, opts);
 if (action === 'protocol') {
-	const ud = detail.nodes.find(n => n.spec?.universalDistribute)!;
+	const ud = detail.nodes.find(n => n.spec?.loadBalanceDistribute && n.ports.some(p => p.key.startsWith('chan:')))!;
 	const protocol = arg === 'quic' ? RelayProtocol.RELAY_QUIC : arg === 'tcp_tls' ? RelayProtocol.RELAY_TCP_TLS : RelayProtocol.RELAY_TCP_RAW;
-	await orch.replaceNodeSpec({ nodeId: ud.id, spec: { universalDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol } }, itemCount: 0 }, opts);
+	await orch.replaceNodeSpec({ nodeId: ud.id, spec: { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol } }, itemCount: 0 }, opts);
 } else if (action === 'unbundle') {
 	const server = detail.servers.find(s => s.name === arg)!;
 	const up = detail.nodes.find(n => n.spec?.universalPod?.serverId === server.id)!;

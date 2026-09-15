@@ -73,12 +73,30 @@ export type ExitNodeDto = NodeBase & {
 	destination: string;
 	passProxyProtocol: ProxyProtocolName;
 };
+/**
+ * A load-balance node. Its hand-drawn ports (`member_*` / `destination`, or
+ * `source` / `copy_*`, absent when `memberCount` is 0) sit next to the ports
+ * the control plane creates on demand: a distribute node takes entry pods as
+ * *channels* and bundles them out, an aggregate node takes bundles in and grows
+ * one coloured input per channel for an exit.
+ */
 export type LoadBalanceNodeDto = NodeBase & {
 	kind: 'load_balance';
 	mode: 'distribute' | 'aggregate';
 	/** Only meaningful for `distribute`; `aggregate` has no mode field in the proto. */
 	balanceMode: LoadBalanceModeName;
+	/** How a distribute node's channels are relayed to the universal pods. */
+	protocol: RelayProtocolName;
 	memberCount: number;
+	/** The hand-drawn ports only. */
+	manualPorts: CanvasPort[];
+	/**
+	 * The channels this node carries: drawn into a distribute node, or brought
+	 * by bundles into an aggregate node (`portId` is the `chan:` input that
+	 * takes the exit).
+	 */
+	channels: (ChannelDto & { portId?: string })[];
+	bundleCount: number;
 };
 /**
  * Embeds another canvas as one node. Its ports mirror the target's export
@@ -96,10 +114,10 @@ export type CanvasExportNodeDto = NodeBase & {
 	portKind: ExportPortKindName;
 	exportAs: CanvasExportAsName;
 };
-/** The handle groups a universal node offers instead of one-edge ports. */
+/** The handle groups a bundle-capable node offers next to its one-edge ports. */
 export type UniversalGroupName = 'channel_out' | 'bundle_in' | 'bundle_out';
 /**
- * One channel: an entry pod connected to a universal distributor. `ordinal` is
+ * One channel: an entry pod connected to a distribute node. `ordinal` is
  * the position of its `chan:` port, handed out once per canvas tree and never
  * reused, so `colorIndex` (ordinal modulo the palette) stays put when other
  * channels come and go.
@@ -111,33 +129,13 @@ export type ChannelDto = {
 	colorIndex: number;
 	distributorId: string;
 };
-/**
- * Fans every channel connected to it over every universal pod it is bundled
- * to. Its ports are created on demand and never edited: the canvas shows one
- * handle per group.
- */
-export type UniversalDistributeNodeDto = NodeBase & {
-	kind: 'universal_distribute';
-	balanceMode: LoadBalanceModeName;
-	protocol: RelayProtocolName;
-	/** The channels drawn into it, in ordinal order. */
-	channels: ChannelDto[];
-};
-/** One `chan:` input per channel its bundles carry, to be fed by an exit. */
-export type UniversalAggregateNodeDto = NodeBase & {
-	kind: 'universal_aggregate';
-	/** The channels it exposes, each with the `chan:` port that takes the exit. */
-	channels: (ChannelDto & { portId: string })[];
-};
 export type StandaloneNode =
 	| EntryNodeDto
 	| RelayNodeDto
 	| ExitNodeDto
 	| LoadBalanceNodeDto
 	| CanvasImportNodeDto
-	| CanvasExportNodeDto
-	| UniversalDistributeNodeDto
-	| UniversalAggregateNodeDto;
+	| CanvasExportNodeDto;
 
 export type PodDto = {
 	id: string;
@@ -159,7 +157,7 @@ export type PodDto = {
 export type LaneDto = {
 	nodeId: string;
 	channel: ChannelDto;
-	/** The universal node the bundle came from: a distributor's name or a server's. */
+	/** The node the bundle came from: a distribute node's name or a server's. */
 	sourceName: string;
 	serverId: string;
 	port: number;

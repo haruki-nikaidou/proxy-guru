@@ -54,8 +54,6 @@ import ExitNode from '#lib/components/canvas/nodes/ExitNode.svelte';
 import LoadBalanceNode from '#lib/components/canvas/nodes/LoadBalanceNode.svelte';
 import RelayNode from '#lib/components/canvas/nodes/RelayNode.svelte';
 import ServerNode from '#lib/components/canvas/nodes/ServerNode.svelte';
-import UniversalAggregateNode from '#lib/components/canvas/nodes/UniversalAggregateNode.svelte';
-import UniversalDistributeNode from '#lib/components/canvas/nodes/UniversalDistributeNode.svelte';
 import AddExportDialog from '#lib/components/canvas/panels/AddExportDialog.svelte';
 import AddSubcanvasDialog from '#lib/components/canvas/panels/AddSubcanvasDialog.svelte';
 import ForceDeleteDialog from '#lib/components/canvas/panels/ForceDeleteDialog.svelte';
@@ -115,9 +113,7 @@ const nodeTypes = {
 	exit: ExitNode,
 	loadBalance: LoadBalanceNode,
 	canvasImport: CanvasImportNode,
-	canvasExport: CanvasExportNode,
-	universalDistribute: UniversalDistributeNode,
-	universalAggregate: UniversalAggregateNode
+	canvasExport: CanvasExportNode
 };
 
 const edgeTypes = { bundle: BundleEdge };
@@ -262,14 +258,7 @@ async function addServer() {
  * clear of the names already on the canvas.
  */
 async function addNode(
-	kind:
-		| 'entry'
-		| 'relay'
-		| 'exit'
-		| 'load_balance_distribute'
-		| 'load_balance_aggregate'
-		| 'universal_distribute'
-		| 'universal_aggregate',
+	kind: 'entry' | 'relay' | 'exit' | 'load_balance_distribute' | 'load_balance_aggregate',
 	typeLabel: string
 ) {
 	const { x, y } = palettePosition();
@@ -374,7 +363,7 @@ const isValidConnection = (connection: Edge | Connection): boolean => {
 };
 
 /**
- * A handle is either a port id or a universal node's group (`u:<flow>:<group>`);
+ * A handle is either a port id or a bundle-capable node's group (`u:<flow>:<group>`);
  * the control plane creates the port behind a group in the same write.
  */
 function connectEnd(handle: string): { portId: string } | { nodeId: string; group: 'channel_out' | 'bundle_in' | 'bundle_out' } {
@@ -611,21 +600,6 @@ $effect(() => {
 														addNode('load_balance_aggregate', m.editor_add_lb_aggregate())}
 												>
 													{m.editor_new_lb_aggregate()}
-												</Menubar.Item>
-											</Menubar.Group>
-											<Menubar.Separator />
-											<Menubar.Group>
-												<Menubar.Item
-													onSelect={() =>
-														addNode('universal_distribute', m.editor_add_universal_distribute())}
-												>
-													{m.editor_new_universal_distribute()}
-												</Menubar.Item>
-												<Menubar.Item
-													onSelect={() =>
-														addNode('universal_aggregate', m.editor_add_universal_aggregate())}
-												>
-													{m.editor_new_universal_aggregate()}
 												</Menubar.Item>
 											</Menubar.Group>
 										</Menubar.Content>

@@ -2,21 +2,34 @@
 import { untrack } from 'svelte';
 import { toast } from 'svelte-sonner';
 import { replaceLoadBalanceSpec, updateNodeText } from '#lib/components/canvas/commands.js';
+import { channelColor } from '#lib/components/canvas/graph.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
-import type { LoadBalanceModeName, LoadBalanceNodeDto } from '#lib/dto/topology.js';
+import type {
+	CanvasGraph,
+	LoadBalanceModeName,
+	LoadBalanceNodeDto,
+	RelayProtocolName
+} from '#lib/dto/topology.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 
 let {
 	canvasId,
 	node,
-	editable
-}: { canvasId: string; node: LoadBalanceNodeDto; editable: boolean } = $props();
+	editable,
+	graph
+}: {
+	canvasId: string;
+	node: LoadBalanceNodeDto;
+	editable: boolean;
+	/** Resolves the exit an aggregate node's channel input is connected to. */
+	graph: CanvasGraph | undefined;
+} = $props();
 
 const MODES: LoadBalanceModeName[] = ['round_robin', 'random', 'ip_hash', 'fallback'];
 const modeLabel = (value: LoadBalanceModeName): string =>
@@ -27,10 +40,18 @@ const modeLabel = (value: LoadBalanceModeName): string =>
 			: value === 'fallback'
 				? m.editor_balance_fallback()
 				: m.editor_balance_round_robin();
+const PROTOCOLS: RelayProtocolName[] = ['tcp_raw', 'tcp_tls', 'quic'];
+const protocolLabel = (value: RelayProtocolName): string =>
+	value === 'tcp_tls'
+		? m.editor_relay_tcp_tls()
+		: value === 'quic'
+			? m.editor_relay_quic()
+			: m.editor_relay_tcp_raw();
 
 let name = $state('');
 let comment = $state('');
 let balanceMode = $state<LoadBalanceModeName>('round_robin');
+let protocol = $state<RelayProtocolName>('tcp_raw');
 // `Input` renders a dynamic `type`, so Svelte never coerces: number fields are
 // strings here and are converted exactly once, at the call.
 let memberCount = $state('2');
@@ -45,6 +66,7 @@ $effect(() => {
 		name = snapshot.name;
 		comment = snapshot.comment;
 		balanceMode = snapshot.balanceMode;
+		protocol = snapshot.protocol;
 		memberCount = String(snapshot.memberCount);
 	});
 });
@@ -60,6 +82,7 @@ async function save() {
 			nodeId: node.id,
 			mode: node.mode,
 			balanceMode,
+			protocol,
 			memberCount: Number(memberCount)
 		});
 		toast.success(m.editor_saved());
@@ -70,6 +93,15 @@ async function save() {
 		pending = false;
 	}
 }
+
+/** Exit node name by the `chan:` port id an edge into this node ends at. */
+const exitOf = (portId: string | undefined): string | null => {
+	if (!graph || !portId) return null;
+	const edge = graph.edges.find(entry => entry.targetPortId === portId);
+	if (!edge) return null;
+	const owner = graph.nodes.find(entry => entry.ports.some(port => port.id === edge.sourcePortId));
+	return owner?.name ?? null;
+};
 </script>
 
 <Field.FieldGroup>
@@ -102,6 +134,28 @@ async function save() {
 				</Select.Content>
 			</Select.Root>
 		</Field.Field>
+
+		<Field.Field>
+			<Field.FieldLabel for="lb-protocol">{m.editor_relay_protocol()}</Field.FieldLabel>
+			<Select.Root
+				type="single"
+				value={protocol}
+				disabled={!editable}
+				onValueChange={next => (protocol = next as RelayProtocolName)}
+			>
+				<Select.Trigger id="lb-protocol">{protocolLabel(protocol)}</Select.Trigger>
+				<Select.Content>
+					<Select.Group>
+						{#each PROTOCOLS as option (option)}
+							<Select.Item value={option} label={protocolLabel(option)}>
+								{protocolLabel(option)}
+							</Select.Item>
+						{/each}
+					</Select.Group>
+				</Select.Content>
+			</Select.Root>
+			<Field.FieldDescription>{m.editor_universal_protocol_hint()}</Field.FieldDescription>
+		</Field.Field>
 	{/if}
 
 	<Field.Field>
@@ -109,7 +163,7 @@ async function save() {
 		<Input
 			id="lb-members"
 			type="number"
-			min={2}
+			min={0}
 			max={256}
 			bind:value={memberCount}
 			disabled={!editable}
@@ -122,3 +176,24 @@ async function save() {
 	{#if pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>
+
+<h3 class="mt-6 text-sm font-medium">{m.editor_universal_channels()}</h3>
+{#if node.channels.length === 0}
+	<p class="mt-2 text-sm text-muted-foreground">
+		{node.mode === 'distribute' ? m.editor_universal_channels_hint() : m.editor_universal_no_channels()}
+	</p>
+{:else}
+	<ul class="mt-2 grid gap-1">
+		{#each node.channels as channel (channel.podId)}
+			<li class="flex items-center gap-2 text-sm">
+				<span class="size-3 shrink-0 rounded-full" style="background: {channelColor(channel)}"></span>
+				<span class="truncate">{channel.podName}</span>
+				{#if node.mode === 'aggregate'}
+					<span class="ms-auto truncate text-xs text-muted-foreground">
+						{exitOf(channel.portId) ?? m.editor_universal_no_exit()}
+					</span>
+				{/if}
+			</li>
+		{/each}
+	</ul>
+{/if}

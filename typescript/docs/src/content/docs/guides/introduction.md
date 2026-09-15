@@ -50,13 +50,14 @@ binds every address of the host by default; it can be restricted to IPv4 or pinn
 interface.
 
 Every server also comes with a **universal pod**: the place other servers' traffic lands without
-drawing a pod per rule. Connect your ingress pods to a **universal distributor** (one strategy and
-one relay protocol for all of them), bundle the distributor to the universal pods of your transit
-servers, and bundle those to a **universal aggregator**, which gives you one coloured output per
-rule to connect to an exit. Each rule is a *channel* with its own colour along the whole path; a
-bundle is one thick line carrying every channel. Behind the scenes the control plane generates the
-real pods, relays and load balancers ("lanes") — the landing pod of each rule on each transit
-server shows up in that server's panel with an editable port.
+drawing a pod per rule. Connect your ingress pods to the channel handle of a **load balance
+(distribute)** node (one strategy and one relay protocol for all of them), bundle it to the
+universal pods of your transit servers, and bundle those to a **load balance (aggregate)** node,
+which grows one coloured input per rule to connect to an exit. Each rule is a *channel* with its
+own colour along the whole path; a bundle is one thick line carrying every channel. Behind the
+scenes the control plane generates the real pods, relays and load balancers ("lanes") — the
+landing pod of each rule on each transit server shows up in that server's panel with an editable
+port. The same load-balance nodes still take hand-drawn members next to their channels.
 
 Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
 it registers (and every minute after, if they change), the master remembers where the registration

@@ -13,8 +13,6 @@ import type {
 	RelayNodeDto,
 	ServerDto,
 	ServerHealthStatusName,
-	UniversalAggregateNodeDto,
-	UniversalDistributeNodeDto,
 	UniversalGroupName
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
@@ -36,9 +34,7 @@ export type FlowNodeData =
 	| { kind: 'exit'; node: ExitNodeDto; problem: ProblemLevel }
 	| { kind: 'load_balance'; node: LoadBalanceNodeDto; problem: ProblemLevel }
 	| { kind: 'canvas_import'; node: CanvasImportNodeDto; problem: ProblemLevel }
-	| { kind: 'canvas_export'; node: CanvasExportNodeDto; problem: ProblemLevel }
-	| { kind: 'universal_distribute'; node: UniversalDistributeNodeDto; problem: ProblemLevel }
-	| { kind: 'universal_aggregate'; node: UniversalAggregateNodeDto; problem: ProblemLevel };
+	| { kind: 'canvas_export'; node: CanvasExportNodeDto; problem: ProblemLevel };
 
 export type FlowNode = Node<FlowNodeData>;
 /**
@@ -161,11 +157,7 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 								? 'canvasImport'
 								: node.kind === 'canvas_export'
 									? 'canvasExport'
-									: node.kind === 'universal_distribute'
-										? 'universalDistribute'
-										: node.kind === 'universal_aggregate'
-											? 'universalAggregate'
-											: 'loadBalance',
+									: 'loadBalance',
 			position: { x: node.x, y: node.y },
 			// The union is discriminated by the same `kind` the DTO carries.
 			data: { kind: node.kind, node, problem } as FlowNodeData
@@ -212,7 +204,10 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 	}
 	for (const node of graph.nodes) {
 		const owner = flowNodeId('node', node.id);
-		if (node.kind === 'universal_distribute') {
+		// A load-balance node's on-demand ports map onto its handle groups; its
+		// hand-drawn ports (and an aggregate node's per-channel inputs) stay
+		// one-edge handles of their own. Hidden `lane:` ports are not indexed.
+		if (node.kind === 'load_balance' && node.mode === 'distribute') {
 			const channelOut = group(owner, 'channel_out', 'derive_destination');
 			const bundleOut = group(owner, 'bundle_out', 'bundle');
 			index.set(groupHandleId(owner, 'channel_out'), channelOut);
@@ -220,15 +215,18 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 			for (const port of node.ports) {
 				if (port.kind === 'bundle') index.set(port.id, bundleOut);
 				else if (port.key.startsWith('chan:')) index.set(port.id, channelOut);
+				else if (!port.key.startsWith('lane:')) {
+					index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
+				}
 			}
 			continue;
 		}
-		if (node.kind === 'universal_aggregate') {
+		if (node.kind === 'load_balance') {
 			const bundleIn = group(owner, 'bundle_in', 'bundle');
 			index.set(groupHandleId(owner, 'bundle_in'), bundleIn);
 			for (const port of node.ports) {
 				if (port.kind === 'bundle') index.set(port.id, bundleIn);
-				else if (port.key.startsWith('chan:')) {
+				else if (!port.key.startsWith('lane:')) {
 					index.set(port.id, { flowNodeId: owner, kind: port.kind, direction: port.direction });
 				}
 			}
@@ -256,15 +254,12 @@ function channelPorts(graph: CanvasGraph): Map<string, ChannelDto> {
 		}
 	}
 	for (const node of graph.nodes) {
-		if (node.kind === 'universal_distribute') {
-			for (const port of node.ports) {
-				const channel = port.key.startsWith('chan:')
-					? graph.channels[port.key.slice('chan:'.length)]
-					: undefined;
-				if (channel) byPort.set(port.id, channel);
-			}
-		} else if (node.kind === 'universal_aggregate') {
-			for (const channel of node.channels) byPort.set(channel.portId, channel);
+		if (node.kind !== 'load_balance') continue;
+		for (const port of node.ports) {
+			const channel = port.key.startsWith('chan:')
+				? graph.channels[port.key.slice('chan:'.length)]
+				: undefined;
+			if (channel) byPort.set(port.id, channel);
 		}
 	}
 	return byPort;
@@ -277,7 +272,7 @@ function channelPorts(graph: CanvasGraph): Map<string, ChannelDto> {
 function bundleCounts(graph: CanvasGraph, index: Map<string, PortIndexEntry>): Map<string, number> {
 	const carried = new Map<string, Set<string>>();
 	for (const node of graph.nodes) {
-		if (node.kind !== 'universal_distribute') continue;
+		if (node.kind !== 'load_balance' || node.mode !== 'distribute') continue;
 		carried.set(flowNodeId('node', node.id), new Set(node.channels.map(c => c.podId)));
 	}
 	const bundles = graph.edges.flatMap(edge => {
@@ -501,7 +496,7 @@ export function canConnect(
 	if (source.kind !== target.kind) return false;
 	if (source.direction !== 'output' || target.direction !== 'input') return false;
 	if (source.group === 'channel_out') {
-		// Into a pod's destination, never into another universal node.
+		// Into a pod's destination, never into another bundle-capable node.
 		if (target.group || !target.flowNodeId.startsWith('server:')) return false;
 	}
 	if (source.kind === 'bundle' && (!source.group || !target.group)) return false;

@@ -77,11 +77,13 @@ const portSchema = v.pipe(
 	v.minValue(1, 'port_out_of_range'),
 	v.maxValue(65535, 'port_out_of_range')
 );
+/** 0 means no hand-drawn ports (a node used through bundles only); else 2-256. */
 const memberCountSchema = v.pipe(
 	v.number(),
 	v.integer(),
-	v.minValue(2, 'member_count_out_of_range'),
-	v.maxValue(256, 'member_count_out_of_range')
+	v.minValue(0, 'member_count_out_of_range'),
+	v.maxValue(256, 'member_count_out_of_range'),
+	v.check(value => value !== 1, 'member_count_out_of_range')
 );
 /** An optional IP literal: empty means unset. */
 const optionalIpSchema = v.optional(
@@ -379,14 +381,29 @@ function toStandalone(
 			passProxyProtocol: toProxy(spec.exit.passProxyProtocol)
 		};
 	}
+	// The on-demand ports of a load-balance node are the control plane's
+	// (channels, bundles); only the rest are the operator's hand-drawn layout.
+	const onDemand = (port: CanvasPort) =>
+		port.kind === 'bundle' || port.key.startsWith('chan:') || port.key.startsWith('lane:');
+	const channelsOf = (withPort: boolean) =>
+		base.ports
+			.flatMap(port => {
+				const pod = channelOf(port.key);
+				const channel = pod === null ? undefined : channels.get(pod);
+				return channel ? [withPort ? { ...channel, portId: port.id } : channel] : [];
+			})
+			.sort((a, b) => a.ordinal - b.ordinal);
 	if (spec?.loadBalanceDistribute) {
 		return {
 			...base,
 			kind: 'load_balance',
 			mode: 'distribute',
 			balanceMode: toBalanceMode(spec.loadBalanceDistribute.mode),
-			// Every port but the single `destination` output is a member.
-			memberCount: base.ports.filter(port => port.key.startsWith('member_')).length
+			protocol: toRelayProtocol(spec.loadBalanceDistribute.protocol),
+			memberCount: base.ports.filter(port => port.key.startsWith('member_')).length,
+			manualPorts: base.ports.filter(port => !onDemand(port)),
+			channels: channelsOf(false),
+			bundleCount: base.ports.filter(port => port.kind === 'bundle').length
 		};
 	}
 	if (spec?.loadBalanceAggregate) {
@@ -395,7 +412,11 @@ function toStandalone(
 			kind: 'load_balance',
 			mode: 'aggregate',
 			balanceMode: 'round_robin',
-			memberCount: base.ports.filter(port => port.key.startsWith('copy_')).length
+			protocol: 'tcp_raw',
+			memberCount: base.ports.filter(port => port.key.startsWith('copy_')).length,
+			manualPorts: base.ports.filter(port => !onDemand(port)),
+			channels: channelsOf(true),
+			bundleCount: base.ports.filter(port => port.kind === 'bundle').length
 		};
 	}
 	if (spec?.canvasImport) {
@@ -418,46 +439,18 @@ function toStandalone(
 					: 'output_out_of_canvas'
 		};
 	}
-	if (spec?.universalDistribute) {
-		return {
-			...base,
-			kind: 'universal_distribute',
-			balanceMode: toBalanceMode(spec.universalDistribute.mode),
-			protocol: toRelayProtocol(spec.universalDistribute.protocol),
-			channels: base.ports
-				.flatMap(port => {
-					const pod = channelOf(port.key);
-					const channel = pod === null ? undefined : channels.get(pod);
-					return channel ? [channel] : [];
-				})
-				.sort((a, b) => a.ordinal - b.ordinal)
-		};
-	}
-	if (spec?.universalAggregate) {
-		return {
-			...base,
-			kind: 'universal_aggregate',
-			channels: base.ports
-				.flatMap(port => {
-					const pod = channelOf(port.key);
-					const channel = pod === null ? undefined : channels.get(pod);
-					return channel ? [{ ...channel, portId: port.id }] : [];
-				})
-				.sort((a, b) => a.ordinal - b.ordinal)
-		};
-	}
 	return null;
 }
 
 /**
- * The channels of a canvas: every `chan:` port of a distributor names the entry
- * pod that is the channel; the port's position is the channel's ordinal.
+ * The channels of a canvas: every `chan:` port of a distribute node names the
+ * entry pod that is the channel; the port's position is the channel's ordinal.
  */
 function collectChannels(nodes: ProtoNode[]): Map<string, ChannelDto> {
 	const names = new Map(nodes.map(node => [node.id, node.name]));
 	const channels = new Map<string, ChannelDto>();
 	for (const node of nodes) {
-		if (!node.spec?.universalDistribute) continue;
+		if (!node.spec?.loadBalanceDistribute) continue;
 		for (const port of node.ports) {
 			const podId = channelOf(port.key);
 			if (podId === null) continue;
@@ -861,9 +854,7 @@ const standaloneKindSchema = v.picklist([
 	'relay',
 	'exit',
 	'load_balance_distribute',
-	'load_balance_aggregate',
-	'universal_distribute',
-	'universal_aggregate'
+	'load_balance_aggregate'
 ] as const);
 
 export const createStandaloneNode = command(
@@ -894,17 +885,13 @@ export const createStandaloneNode = command(
 					: kind === 'exit'
 						? { exit: { destination: '', passProxyProtocol: ProxyProtocolVersion.UNSPECIFIED } }
 						: kind === 'load_balance_distribute'
-							? { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN } }
-							: kind === 'load_balance_aggregate'
-								? { loadBalanceAggregate: {} }
-								: kind === 'universal_distribute'
-									? {
-											universalDistribute: {
-												mode: LoadBalanceMode.ROUND_ROBIN,
-												protocol: RelayProtocol.RELAY_TCP_RAW
-											}
-										}
-									: { universalAggregate: {} };
+							? {
+									loadBalanceDistribute: {
+										mode: LoadBalanceMode.ROUND_ROBIN,
+										protocol: RelayProtocol.RELAY_TCP_RAW
+									}
+								}
+							: { loadBalanceAggregate: {} };
 		const itemCount =
 			kind === 'load_balance_distribute' || kind === 'load_balance_aggregate' ? memberCount : 0;
 
@@ -1323,15 +1310,22 @@ export const replaceExitSpec = command(
 	}
 );
 
+/**
+ * A distribute node's mode and protocol apply to every channel at once. A
+ * protocol change re-rolls the ports of every landing pod its channels reach,
+ * since a listener cannot change protocol in place; the control plane does that
+ * in the same write. The on-demand ports survive a member-count change.
+ */
 export const replaceLoadBalanceSpec = command(
 	v.object({
 		canvasId: idSchema,
 		nodeId: idSchema,
 		mode: v.picklist(['distribute', 'aggregate'] as const),
 		balanceMode: balanceModeSchema,
+		protocol: v.optional(relayProtocolSchema, 'tcp_raw'),
 		memberCount: memberCountSchema
 	}),
-	async ({ canvasId, nodeId, mode, balanceMode, memberCount }) => {
+	async ({ canvasId, nodeId, mode, balanceMode, protocol, memberCount }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		// The spec kind cannot change, so `mode` only picks which config to resend.
 		await callGrpc(() =>
@@ -1340,44 +1334,14 @@ export const replaceLoadBalanceSpec = command(
 					nodeId,
 					spec:
 						mode === 'distribute'
-							? { loadBalanceDistribute: { mode: fromBalanceMode(balanceMode) } }
+							? {
+									loadBalanceDistribute: {
+										mode: fromBalanceMode(balanceMode),
+										protocol: fromRelayProtocol(protocol)
+									}
+								}
 							: { loadBalanceAggregate: {} },
 					itemCount: memberCount
-				},
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
-);
-
-/**
- * A distributor's mode and protocol apply to every channel at once. A protocol
- * change re-rolls the ports of every landing pod its channels reach, since a
- * listener cannot change protocol in place; the control plane does that in the
- * same write.
- */
-export const replaceUniversalDistributeSpec = command(
-	v.object({
-		canvasId: idSchema,
-		nodeId: idSchema,
-		balanceMode: balanceModeSchema,
-		protocol: relayProtocolSchema
-	}),
-	async ({ canvasId, nodeId, balanceMode, protocol }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					spec: {
-						universalDistribute: {
-							mode: fromBalanceMode(balanceMode),
-							protocol: fromRelayProtocol(protocol)
-						}
-					},
-					itemCount: 0
 				},
 				{ metadata }
 			)

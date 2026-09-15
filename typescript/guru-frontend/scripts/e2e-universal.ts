@@ -1,6 +1,7 @@
 // End-to-end fixture through the operator API: one ingress server with two
-// SOCKS ingress pods, a universal distributor bundled to N transit servers'
-// universal pods, all bundled into an aggregator, two exits.
+// SOCKS ingress pods, a load-balance distribute node bundled to N transit
+// servers' universal pods, all bundled into a load-balance aggregate node, two
+// exits.
 // Usage: bun scripts/e2e-universal.ts <email> <password> <ingress-name> <exit host:port> <transit-name>...
 import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
 import { AuthDefinition, LoginResult } from 'app-protobuf/auth/auth';
@@ -53,8 +54,8 @@ const universalPodOf = async (serverId: string) => {
 	return up;
 };
 
-const ud = await node('fan-out', { universalDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW } }, 500, 100);
-const ua = await node('join', { universalAggregate: {} }, 1350, 100);
+const ud = await node('fan-out', { loadBalanceDistribute: { mode: LoadBalanceMode.ROUND_ROBIN, protocol: RelayProtocol.RELAY_TCP_RAW } }, 500, 100);
+const ua = await node('join', { loadBalanceAggregate: {} }, 1350, 100);
 const pods = [];
 for (const [i, p] of [10000, 10001].entries()) {
 	const pod = await node(`ingress-${p}`, { pod: { serverId: ingress.id, port: p, bindIp: '', advertiseIp: '' } }, 0, 0);
