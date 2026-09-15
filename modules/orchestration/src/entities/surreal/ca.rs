@@ -63,17 +63,7 @@ impl Processor<CreateInternalCa> for SurrealProcessor {
         // Statement 0 is BEGIN, 1 the LET; the RETURN is statement 2.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $created = IF record::exists($id) { [] } ELSE {
-                     CREATE $id CONTENT {
-                         certificate_pem: $certificate_pem, private_key_pem: $private_key_pem,
-                         not_after: $not_after, created_at: $now
-                     }
-                 };
-                 RETURN array::len($created) > 0;
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!("../../../sql/ca/create_internal_ca.surql"))
             .bind(("id", internal_ca_id()))
             .bind(("certificate_pem", input.certificate_pem))
             .bind(("private_key_pem", input.private_key_pem))
@@ -146,33 +136,11 @@ impl Processor<StoreRelayCertificate> for SurrealProcessor {
     #[tracing::instrument(name = "Query-Transaction:StoreRelayCertificate", skip_all, err)]
     async fn process(&self, input: StoreRelayCertificate) -> Result<Self::Output, Self::Error> {
         // Statement 0 is BEGIN, 1-2 the LETs; the RETURN is statement 3.
-        // The UPDATE returns an array indexed with [0] because `UPDATE ONLY`
-        // errors when the WHERE fences the write out, which is a lost race and
-        // not a failure.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $existing = (SELECT VALUE id FROM relay_certificate WHERE pod = $pod LIMIT 1)[0];
-                 LET $row = IF $existing = NONE {
-                     IF $expected_version = NONE {
-                         CREATE ONLY relay_certificate CONTENT {
-                             pod: $pod, sni: $sni, private_key_pem: $private_key_pem,
-                             certificate_pem: $certificate_pem, not_before: $not_before,
-                             not_after: $not_after, version: 1
-                         }
-                     }
-                 } ELSE {
-                     (UPDATE $existing SET
-                         sni = $sni, private_key_pem = $private_key_pem,
-                         certificate_pem = $certificate_pem, not_before = $not_before,
-                         not_after = $not_after, version += 1
-                     WHERE $expected_version = NONE OR version = $expected_version
-                     RETURN AFTER)[0]
-                 };
-                 RETURN $row;
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!(
+                "../../../sql/ca/store_relay_certificate.surql"
+            ))
             .bind(("pod", input.pod))
             .bind(("sni", input.sni))
             .bind(("private_key_pem", input.private_key_pem))

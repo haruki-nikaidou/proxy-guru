@@ -139,34 +139,12 @@ impl Processor<InsertServerHealthRecord> for SurrealProcessor {
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:InsertServerHealthRecord", skip_all, err)]
     async fn process(&self, input: InsertServerHealthRecord) -> Result<Self::Output, Self::Error> {
-        // Statement 0 is BEGIN; the RETURN is statement 5. `$before` is read
-        // ahead of the UPDATE on purpose: a row written earlier in the same
-        // transaction is not guaranteed to be visible to a later read.
+        // Statement 0 is BEGIN; the RETURN is statement 5.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $before = (SELECT VALUE health_status FROM ONLY $server);
-                 LET $matched = UPDATE $server
-                     SET last_health_report_at = $report_time, last_seen_at = $report_time,
-                         health_status = $status
-                     WHERE refresh_key_generation = $generation RETURN AFTER;
-                 LET $rec = IF array::len($matched) > 0 {
-                     (CREATE ONLY server_health_record SET server = $server, status = $status,
-                         report_time = $report_time, upload_bytes = $upload_bytes,
-                         download_bytes = $download_bytes,
-                         current_connections = $current_connections,
-                         max_connections = $max_connections RETURN AFTER)
-                 } ELSE { NONE };
-                 LET $node_rows = IF array::len($matched) > 0 AND array::len($nodes) > 0 {
-                     (INSERT INTO node_health_record $nodes RETURN AFTER)
-                 } ELSE { [] };
-                 RETURN IF array::len($matched) > 0 {
-                     { record: $rec, canvas: $matched[0].canvas,
-                       previous_status: $before, nodes: $node_rows }
-                 } ELSE { NONE };
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!(
+                "../../../sql/health/insert_server_health_record.surql"
+            ))
             .bind(("server", input.server))
             .bind(("generation", input.generation))
             .bind(("status", input.status))
@@ -205,24 +183,9 @@ impl Processor<SetServerHealthStatus> for SurrealProcessor {
         // Statement 0 is BEGIN; the RETURN is statement 4.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $before = (SELECT VALUE health_status FROM ONLY $server);
-                 LET $matched = UPDATE $server SET health_status = $status
-                     WHERE health_status != $status
-                       AND ($generation = NONE OR refresh_key_generation = $generation)
-                     RETURN AFTER;
-                 LET $rec = IF array::len($matched) > 0 {
-                     (CREATE ONLY server_health_record SET server = $server, status = $status,
-                         report_time = $now, upload_bytes = 0, download_bytes = 0,
-                         current_connections = 0, max_connections = 0 RETURN AFTER)
-                 } ELSE { NONE };
-                 RETURN IF array::len($matched) > 0 {
-                     { record: $rec, canvas: $matched[0].canvas,
-                       previous_status: $before, nodes: [] }
-                 } ELSE { NONE };
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!(
+                "../../../sql/health/set_server_health_status.surql"
+            ))
             .bind(("server", input.server))
             .bind(("generation", input.generation))
             .bind(("status", input.status))
@@ -365,14 +328,9 @@ impl Processor<ListNodeHealthAfter> for SurrealProcessor {
     async fn process(&self, input: ListNodeHealthAfter) -> Result<Self::Output, Self::Error> {
         let mut resp = self
             .db()
-            .query(
-                "SELECT * FROM node_health_record \
-                 WHERE node = $node \
-                   AND (report_time > $after \
-                        OR (report_time = $after \
-                            AND ($after_id = NONE OR id > $after_id))) \
-                 ORDER BY report_time ASC, id ASC LIMIT $limit",
-            )
+            .query(include_str!(
+                "../../../sql/health/list_node_health_after.surql"
+            ))
             .bind(("node", input.node))
             .bind(("after", input.after))
             .bind(("after_id", input.after_id))

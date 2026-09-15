@@ -93,18 +93,9 @@ impl Processor<EnsureCertificate> for SurrealProcessor {
         // Statement 0 is BEGIN; the RETURN below is statement 3.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $existing = (SELECT * FROM certificate WHERE sni = $sni AND acme_directory = $acme_directory LIMIT 1);
-                 LET $row = IF array::len($existing) > 0 { $existing[0] } ELSE {
-                     (CREATE ONLY certificate CONTENT {
-                         sni: $sni, dns_provider: $dns_provider, domain_id: $domain_id,
-                         acme_directory: $acme_directory, status: 'pending', created_at: $now
-                     })
-                 };
-                 RETURN $row;
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!(
+                "../../../sql/certificate/ensure_certificate.surql"
+            ))
             .bind(("sni", input.sni))
             .bind(("dns_provider", input.dns_provider))
             .bind(("domain_id", input.domain_id))
@@ -226,16 +217,9 @@ impl Processor<ListCertificatesDue> for SurrealProcessor {
     async fn process(&self, input: ListCertificatesDue) -> Result<Self::Output, Self::Error> {
         let mut resp = self
             .db()
-            .query(
-                "SELECT * FROM certificate WHERE
-                    (status = 'pending' AND (last_attempt_at = NONE OR last_attempt_at < $retry_before))
-                    OR (status = 'failed' AND (last_attempt_at = NONE OR last_attempt_at < $retry_before))
-                    OR (status = 'issued' AND (
-                        last_attempt_at = NONE
-                        OR (not_after != NONE AND not_after < $renew_before AND last_attempt_at < $retry_before)
-                    ))
-                 ORDER BY created_at ASC",
-            )
+            .query(include_str!(
+                "../../../sql/certificate/list_certificates_due.surql"
+            ))
             .bind(("renew_before", input.renew_before))
             .bind(("retry_before", input.retry_before))
             .await?;
@@ -304,19 +288,9 @@ impl Processor<StoreIssuedCertificate> for SurrealProcessor {
     async fn process(&self, input: StoreIssuedCertificate) -> Result<Self::Output, Self::Error> {
         let mut resp = self
             .db()
-            .query(
-                "UPDATE $id SET
-                    status = 'issued',
-                    acme_account_key = $acme_account_key,
-                    private_key_pem = $private_key_pem,
-                    full_chain_pem = $full_chain_pem,
-                    not_before = $not_before,
-                    not_after = $not_after,
-                    last_error = NONE,
-                    last_attempt_at = $now,
-                    version += 1
-                 RETURN AFTER",
-            )
+            .query(include_str!(
+                "../../../sql/certificate/store_issued_certificate.surql"
+            ))
             .bind(("id", input.id))
             .bind(("acme_account_key", input.acme_account_key))
             .bind(("private_key_pem", input.private_key_pem))

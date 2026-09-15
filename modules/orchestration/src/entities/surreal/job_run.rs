@@ -89,26 +89,9 @@ impl Processor<ClaimJobRun> for SurrealProcessor {
     #[tracing::instrument(name = "Query-Transaction:ClaimJobRun", skip_all, err, fields(job = %input.job))]
     async fn process(&self, input: ClaimJobRun) -> Result<Self::Output, Self::Error> {
         // Statement 0 is BEGIN, 1-2 the LETs; the RETURN is statement 3.
-        //
-        // `UPDATE` (not `UPDATE ONLY`) on purpose: the fence is the `WHERE`, and a
-        // refused claim has to come back as an empty result, not an error.
         let mut resp = self
             .db()
-            .query(
-                "BEGIN TRANSACTION;
-                 LET $id = type::record('orchestration_job_run', $job);
-                 LET $claimed = IF record::exists($id) {
-                     (UPDATE $id SET last_run_at = $now, last_signal_tick = $tick
-                         WHERE last_signal_tick < $tick
-                           AND last_signal_tick <= $tick_not_before
-                         RETURN AFTER)
-                 } ELSE {
-                     (CREATE $id CONTENT { last_run_at: $now, last_signal_tick: $tick }
-                         RETURN AFTER)
-                 };
-                 RETURN array::len($claimed) > 0;
-                 COMMIT TRANSACTION;",
-            )
+            .query(include_str!("../../../sql/job_run/claim_job_run.surql"))
             .bind(("job", input.job.to_string()))
             .bind(("now", input.now))
             .bind(("tick", input.tick))
