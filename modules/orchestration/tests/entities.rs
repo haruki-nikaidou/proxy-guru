@@ -1014,3 +1014,74 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
     assert_eq!(topology.servers.len(), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> TestResult {
+    let sp = setup().await?;
+    let c = canvas(&sp, "prod").await?;
+    let s = server(&sp, &c, "tokyo").await?;
+    seed_desired(&sp, &s.id, 3).await?;
+    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| {
+        RegisterWorkerSession {
+            server: s.id.clone(),
+            canvas: c.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now,
+            running_revision: running,
+            observed: None,
+            reported: None,
+        }
+    };
+
+    // The first worker ran revision 3: registering as such records it as applied,
+    // and there is nothing left to hand a stream.
+    let now = chrono::Utc::now();
+    sp.process(register("digest-1", now, 3))
+        .await?
+        .expect("the free session is taken");
+    let view = sp
+        .process(FindServerConfigView {
+            server: s.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert_eq!(view.applied.as_ref().map(|s| s.revision), Some(3));
+    assert!(
+        sp.process(TakeInFlight {
+            server: s.id.clone(),
+            generation: 1,
+            epoch: 0,
+        })
+        .await?
+        .is_none(),
+        "desired equals applied: converged, nothing to send"
+    );
+
+    // The host was reinstalled: the new worker runs nothing. Treating the server
+    // as still converged would leave it running nothing forever.
+    let later = now + chrono::TimeDelta::seconds(1);
+    let row = sp
+        .process(register("digest-2", later, 0))
+        .await?
+        .expect("the lapsed lease is taken over");
+    let view = sp
+        .process(FindServerConfigView {
+            server: s.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert!(view.applied.is_none(), "a worker running nothing has applied nothing");
+    assert!(view.in_flight.is_none());
+    assert_eq!(view.apply_error, None);
+    let taken = sp
+        .process(TakeInFlight {
+            server: s.id.clone(),
+            generation: row.refresh_key_generation,
+            epoch: 0,
+        })
+        .await?
+        .expect("the desired revision is offered to the new worker again");
+    assert_eq!(taken.revision, 3);
+    Ok(())
+}

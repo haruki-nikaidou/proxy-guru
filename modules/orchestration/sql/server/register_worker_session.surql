@@ -18,6 +18,13 @@ IF array::len($rotated) > 0 {
         } ELSE IF $v.applied.revision != $running_revision {
             UPDATE $v.id SET apply_error = "running revision " + <string>$running_revision + " unknown";
         };
+    } ELSE {
+        -- A worker running nothing (a fresh install, a wiped state directory,
+        -- a replay that failed) is not running what an earlier session applied:
+        -- forget that, so the stream hands the desired revision out again
+        -- instead of treating the server as converged, and dependants stop
+        -- counting on listeners nobody serves.
+        UPDATE $v.id SET applied = NONE, apply_error = NONE, failed_revision = NONE, failed_pods = [];
     };
     UPDATE $v.id SET in_flight = NONE;
     fn::orchestration_touch($canvas);

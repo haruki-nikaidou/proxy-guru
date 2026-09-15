@@ -303,9 +303,11 @@ impl Processor<DeleteServerRow> for SurrealProcessor {
 ///
 /// Registration is the one moment the master learns exactly what a worker runs, so
 /// it is also where the config view is repaired: a running revision that matches
-/// `desired` or `in_flight` is promoted to `applied`, and whatever was left in
-/// flight is cleared — the worker is not running it, so it was lost with the
-/// session that sent it.
+/// `desired` or `in_flight` is promoted to `applied`, a running revision of `0`
+/// (nothing running: a fresh install, a wiped state directory) forgets `applied`
+/// so the stream resends the desired revision, and whatever was left in flight is
+/// cleared — the worker is not running it, so it was lost with the session that
+/// sent it.
 ///
 /// The rotation is refused while another worker session is still alive, so a
 /// second worker configured with the same `server_id` cannot steal a running
