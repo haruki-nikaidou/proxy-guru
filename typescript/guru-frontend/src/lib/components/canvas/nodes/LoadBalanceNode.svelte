@@ -37,6 +37,10 @@ const protocol = $derived(
 			: m.editor_relay_tcp_raw()
 );
 const portOf = (portId: string | undefined) => data.node.ports.find(port => port.id === portId);
+// A distribute node takes bundles in (from a universal pod or another
+// distribute node) and bundles out; an aggregate node only takes them in.
+const bundlesIn = $derived(data.node.bundlePorts.filter(port => port.key.startsWith('bundle_in:')));
+const bundlesOut = $derived(data.node.bundlePorts.filter(port => port.key.startsWith('bundle_out:')));
 </script>
 
 <NodeShell
@@ -65,6 +69,9 @@ const portOf = (portId: string | undefined) => data.node.ports.find(port => port
 	{#if distribute}
 		<div class="grid grid-cols-2 border-t pt-1">
 			<div>
+				{#each bundlesIn as port (port.id)}
+					<PortHandle {port} label={port.peerName} side="left" />
+				{/each}
 				{#each data.node.channels as channel (channel.podId)}
 					{@const port = portOf(channel.portId)}
 					{#if port}
@@ -73,13 +80,19 @@ const portOf = (portId: string | undefined) => data.node.ports.find(port => port
 				{/each}
 				<GroupHandle
 					flowId={id}
+					group="bundle_in"
+					label={m.editor_universal_add_bundle()}
+					side="left"
+				/>
+				<GroupHandle
+					flowId={id}
 					group="channel_out"
 					label={m.editor_universal_add_channel()}
 					side="left"
 				/>
 			</div>
 			<div>
-				{#each data.node.bundlePorts as port (port.id)}
+				{#each bundlesOut as port (port.id)}
 					<PortHandle {port} label={port.peerName} side="right" />
 				{/each}
 				<GroupHandle

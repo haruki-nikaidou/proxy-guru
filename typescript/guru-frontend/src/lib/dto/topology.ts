@@ -177,6 +177,11 @@ export type UniversalPodDto = {
 	nodeId: string;
 	/** `bundle_in:<source>` ports, one per bundle drawn into it. */
 	bundleIn: BundlePortDto[];
+	/**
+	 * Entry pods drawn straight into this universal pod (a raw TCP hop of their
+	 * own), each with the `chan:` output the edge starts at.
+	 */
+	channels: (ChannelDto & { portId: string })[];
 	/** The fixed outgoing bundle port. */
 	bundleOut: CanvasPort | null;
 	lanes: LaneDto[];

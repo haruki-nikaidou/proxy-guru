@@ -175,7 +175,7 @@
 	"editor_universal_add_bundle": "+ 总线",
 	"editor_universal_no_channels": "还没有通道：把某台服务器的万能 Pod 用总线接进来。",
 	"editor_universal_no_exit": "无出口",
-	"editor_universal_protocol_hint": "从本节点总线出去的所有通道共用一个策略和一个中继协议；手画成员不受影响。更改协议会给每个落地 Pod 分配新端口。",
+	"editor_universal_protocol_hint": "从本节点摊出去的所有通道共用一个策略和一个中继协议；手画成员不受影响，没有任何节点标明协议的跳（细线直落、万能 Pod 之间）走 TCP。更改协议会给每个落地 Pod 分配新端口。",
 	"editor_lanes": "落地 Pod",
 	"editor_lanes_hint": "由接进本服务器的总线自动生成，每条通道一个。它们随总线一起删除；只能改端口。",
 	"editor_lanes_none": "还没有通道落地：把分发器或另一台服务器用总线接进来。",

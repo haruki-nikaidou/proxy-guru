@@ -106,10 +106,31 @@ const channelOf = (podId: string) => data.channels[podId];
 					{#each universal.bundleIn as port (port.id)}
 						<PortHandle {port} label={port.peerName} side="left" />
 					{/each}
+					{#each universal.channels as channel (channel.podId)}
+						<PortHandle
+							port={{
+								id: channel.portId,
+								kind: 'derive_destination',
+								direction: 'output',
+								key: `chan:${channel.podId}`,
+								position: channel.ordinal,
+								label: null
+							}}
+							label={channel.podName}
+							color={channelColor(channel)}
+							side="left"
+						/>
+					{/each}
 					<GroupHandle
 						flowId={id}
 						group="bundle_in"
 						label={m.editor_universal_add_bundle()}
+						side="left"
+					/>
+					<GroupHandle
+						flowId={id}
+						group="channel_out"
+						label={m.editor_universal_add_channel()}
 						side="left"
 					/>
 				</div>

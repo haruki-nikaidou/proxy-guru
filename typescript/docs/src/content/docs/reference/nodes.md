@@ -119,17 +119,25 @@ through it (see [Channels and bundles](#channels-and-bundles)). Both live on the
 |---|---|---|
 | `member_0` … `member_{n-1}` | destination (olive) | inputs |
 | `destination` | destination (olive) | output |
+| one per incoming bundle | bundle (grey square), named after the far node | target — one edge, from a universal pod's `bundle out` or another distribute node |
 | one per channel | destination, channel colour | source — one edge, to the `destination` of the entry pod that is the channel |
+| `+ bundle` (left) | bundle (grey square), add | target — where an upstream `bundle out` is dropped: every channel it carries is fanned out again from here |
 | `+ channel` | destination (olive), add | source — drag to the `destination` of an entry pod; the connected pod becomes one more coloured channel |
-| one per bundle | bundle (grey square), named after the far server | source — one edge |
-| `+ bundle` | bundle (grey square), add | source — drag to a universal pod's `+ bundle`; one more bundle out |
+| one per outgoing bundle | bundle (grey square), named after the far node | source — one edge |
+| `+ bundle` (right) | bundle (grey square), add | source — drag to a universal pod's or a distribute node's `+ bundle`; one more bundle out |
 
 - **Balance mode** — `Round robin`, `Random`, `IP hash` or `Fallback`. `IP hash` requires a known
   client IP, so it is an error under an Entry that receives no PROXY protocol. It applies to the
   hand-drawn members and to every channel alike.
-- **Relay protocol** — how the channels are relayed to the universal pods this node bundles to
-  (`TCP (raw)`, `TCP (TLS)`, `QUIC`). It has no effect on hand-drawn members. Changing it gives
-  every landing pod a new port.
+- **Relay protocol** — how the channels this node fans out are relayed to the universal pods it
+  bundles to (`TCP (raw)`, `TCP (TLS)`, `QUIC`). It has no effect on hand-drawn members, and a hop
+  nothing states a protocol for (an entry pod drawn straight into a universal pod, a universal pod
+  bundled to the next one) is raw TCP. Changing it gives every landing pod a new port.
+
+Bundled *into*, a distribute node fans out again everything the bundles carry — the second tier of
+a fan-out (four transit servers spreading over two landing servers), or, bundled to from another
+distribute node, a nested strategy (a `Fallback` node whose members are two `Round robin` groups).
+Each upstream path gets lanes of its own on the target servers.
 - **Members** — 0, or between 2 and 256. `0` means no hand-drawn ports at all: a node used through
   channels and bundles only. Unconnected members are skipped when the config is derived, not an
   error; exactly one connected member is a warning. There are no weights — fan-out is per member
@@ -209,9 +217,11 @@ and never disturbs the rest of the config.
 
 **Universal pod.** Created with the server, one per server, and neither creatable nor deletable by
 hand. It is where other servers' traffic lands without drawing a pod per rule: one grey square per
-incoming bundle (named after where it comes from) plus a faint `+ bundle` handle accepting the
-next, and the single `bundle out` (grey square, exactly one edge) hands the bundle on to the next
-universal pod or to a load balance (aggregate) node. Every channel
+incoming bundle (named after where it comes from), one coloured circle per entry pod drawn straight
+into it (a raw TCP hop of its own, no balancing), the faint `+ bundle` / `+ channel` handles
+accepting the next, and the single `bundle out` (grey square, exactly one edge) that hands the
+bundle on to the next universal pod, to a distribute node or to a load balance (aggregate) node.
+Every channel
 a bundle carries gets a real **landing pod** here, listed in the server's inspector with an editable
 port.
 
@@ -234,10 +244,11 @@ Lane nodes are managed: they cannot be retired or re-wired, and only a landing p
 addresses may be edited. A lane keeps its identity across edits, so it keeps its port, its row and
 its health history.
 
-Legal bundles are distribute → universal pod, universal pod → universal pod, and universal pod →
-aggregate. Distribute → aggregate is refused: bundle the distribute node to your transit servers'
-universal pods first. A bundle cycle is an error; a channel bundled to no server, or landing
-somewhere and going nowhere, is a warning.
+Legal bundles are distribute → universal pod, distribute → distribute (nesting), universal pod →
+universal pod, universal pod → distribute (the next tier), and universal pod → aggregate.
+Distribute → aggregate is refused: bundle the distribute node to your transit servers' universal
+pods first. A bundle cycle is an error; a channel bundled to no server, or landing somewhere and
+going nowhere, is a warning.
 
 ## Export
 

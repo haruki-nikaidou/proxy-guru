@@ -459,14 +459,15 @@ function toStandalone(
 }
 
 /**
- * The channels of a canvas: every `chan:` port of a distribute node names the
- * entry pod that is the channel; the port's position is the channel's ordinal.
+ * The channels of a canvas: every `chan:` port of a distribute node or a
+ * universal pod names the entry pod that is the channel; the port's position is
+ * the channel's ordinal.
  */
 function collectChannels(nodes: ProtoNode[]): Map<string, ChannelDto> {
 	const names = new Map(nodes.map(node => [node.id, node.name]));
 	const channels = new Map<string, ChannelDto>();
 	for (const node of nodes) {
-		if (!node.spec?.loadBalanceDistribute) continue;
+		if (!node.spec?.loadBalanceDistribute && !node.spec?.universalPod) continue;
 		for (const port of node.ports) {
 			const podId = channelOf(port.key);
 			if (podId === null) continue;
@@ -582,6 +583,13 @@ export const getCanvasGraph = query(
 						.filter(port => port.key.startsWith('bundle_in:'))
 						.map(port => ({ ...port, peerName: sourceName(bundlePeerOf(port.key) ?? '') }))
 						.sort((a, b) => a.peerName.localeCompare(b.peerName)),
+					channels: ports
+						.flatMap(port => {
+							const pod = channelOf(port.key);
+							const channel = pod === null ? undefined : channels.get(pod);
+							return channel ? [{ ...channel, portId: port.id }] : [];
+						})
+						.sort((a, b) => a.ordinal - b.ordinal),
 					bundleOut: ports.find(port => port.key === 'bundle_out') ?? null,
 					lanes: []
 				});

@@ -189,7 +189,11 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 		for (const pod of server.pods) for (const p of pod.ports) port(owner, p);
 		if (server.universal) {
 			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
+			index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
 			for (const p of server.universal.bundleIn) port(owner, p);
+			for (const c of server.universal.channels) {
+				index.set(c.portId, { flowNodeId: owner, kind: 'derive_destination', direction: 'output' });
+			}
 			// The fixed outgoing bundle port takes one edge, like any port.
 			if (server.universal.bundleOut) port(owner, server.universal.bundleOut);
 		}
@@ -197,11 +201,12 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 	for (const node of graph.nodes) {
 		const owner = flowNodeId('node', node.id);
 		if (node.kind === 'load_balance') {
+			// Both take bundles in; a distribute node also starts channels and
+			// bundles out.
+			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
 			if (node.mode === 'distribute') {
 				index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
 				index.set(groupHandleId(owner, 'bundle_out'), add(owner, 'bundle_out', 'bundle'));
-			} else {
-				index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
 			}
 		}
 		for (const p of node.ports) port(owner, p);
@@ -222,6 +227,7 @@ function channelPorts(graph: CanvasGraph): Map<string, ChannelDto> {
 			if (!channel) continue;
 			for (const port of pod.ports) byPort.set(port.id, channel);
 		}
+		for (const channel of server.universal?.channels ?? []) byPort.set(channel.portId, channel);
 	}
 	for (const node of graph.nodes) {
 		if (node.kind !== 'load_balance') continue;
@@ -244,6 +250,12 @@ function bundleCounts(graph: CanvasGraph, index: Map<string, PortIndexEntry>): M
 	for (const node of graph.nodes) {
 		if (node.kind !== 'load_balance' || node.mode !== 'distribute') continue;
 		carried.set(flowNodeId('node', node.id), new Set(node.channels.map(c => c.podId)));
+	}
+	for (const server of graph.servers) {
+		const own = server.universal?.channels ?? [];
+		if (own.length > 0) {
+			carried.set(flowNodeId('server', server.id), new Set(own.map(c => c.podId)));
+		}
 	}
 	const bundles = graph.edges.flatMap(edge => {
 		const source = index.get(edge.sourcePortId);
@@ -463,7 +475,9 @@ export function canConnect(
 	if (source.kind !== target.kind) return false;
 	if (source.direction !== 'output' || target.direction !== 'input') return false;
 	if (source.group === 'channel_out') {
-		// Into a pod's destination, never into another bundle-capable node.
+		// Into a pod's destination, never into another bundle-capable node. A
+		// universal pod's channel handle may take a pod of its own server: a
+		// hop within one server is a warning, not an error.
 		if (target.group || !target.flowNodeId.startsWith('server:')) return false;
 	}
 	// A bundle is drawn from an "add" handle to an "add" handle, or out of a

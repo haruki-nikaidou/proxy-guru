@@ -57,7 +57,10 @@ which grows one coloured input per rule to connect to an exit. Each rule is a *c
 own colour along the whole path; a bundle is one thick line carrying every channel. Behind the
 scenes the control plane generates the real pods, relays and load balancers ("lanes") — the
 landing pod of each rule on each transit server shows up in that server's panel with an editable
-port. The same load-balance nodes still take hand-drawn members next to their channels.
+port. The same load-balance nodes still take hand-drawn members next to their channels, a
+distribute node bundled *into* fans everything out again (a second tier, or a nested strategy), and
+an entry pod can be drawn straight into a server's universal pod when one hop with no balancing is
+all a rule needs.
 
 Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
 it registers (and every minute after, if they change), the master remembers where the registration

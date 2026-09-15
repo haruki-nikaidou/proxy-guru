@@ -175,7 +175,7 @@
 	"editor_universal_add_bundle": "+ 匯流排",
 	"editor_universal_no_channels": "還沒有通道：把某台伺服器的萬能 Pod 用匯流排接進來。",
 	"editor_universal_no_exit": "無出口",
-	"editor_universal_protocol_hint": "從本節點匯流排出去的所有通道共用一個策略與一個中繼協定；手繪成員不受影響。變更協定會給每個落地 Pod 分配新埠。",
+	"editor_universal_protocol_hint": "從本節點攤出去的所有通道共用一個策略與一個中繼協定；手繪成員不受影響，沒有任何節點標明協定的跳（細線直落、萬能 Pod 之間）走 TCP。變更協定會給每個落地 Pod 分配新埠。",
 	"editor_lanes": "落地 Pod",
 	"editor_lanes_hint": "由接進本伺服器的匯流排自動產生，每條通道一個。它們隨匯流排一起刪除；只能改埠。",
 	"editor_lanes_none": "還沒有通道落地：把分發器或另一台伺服器用匯流排接進來。",
