@@ -100,62 +100,54 @@ description: 画布上的每一种节点 —— 卡片显示什么、有哪些�
 
 ## 负载均衡（distribute）
 
-![一张标题为 “fan-out” 的 Distribute 节点卡片，摘要行为 “Round robin · TCP (raw) · Members: 0”，左侧是两个以其 Entry pod 命名的彩色通道连接点以及一个浅色的 “+ channel” 连接点，右侧是四个名为 hk-1 到 hk-4 的方形 bundle 连接点以及一个浅色的 “+ bundle” 连接点](/img/nodes/node-distribute.avif)
+![一张标题为 “fan-out” 的 Distribute 节点卡片，摘要行为 “Round robin · QUIC · Members: 4”，左侧是三个以其 Entry pod 命名的彩色通道连接点以及浅色的 “+ bundle”、“+ channel” 连接点，右侧是四个名为 hk-1 到 hk-4 的方形成员连接点](/img/nodes/node-distribute.avif)
 
-把一个目标扇出到多个成员上 —— 既可以手工连线，也可以为每一个经它捆绑的**通道**各扇出一次
-（参见[通道与捆绑](#通道与捆绑)）。两种方式共存于同一张卡片上。
+把经它捆绑的每一个**通道**扇出到它的**成员**上（参见[通道与捆绑](#通道与捆绑)）。成员就是你写下的
+规则：每台中转服务器一个，名字由你填，每个成员一条出向捆绑。四台 AWS 就是四个成员；第五台就是再加一个
+成员、再拉一条捆绑。
 
 | 连接点 | 种类 | 方向 |
 |---|---|---|
-| `member_0` … `member_{n-1}` | destination（橄榄色） | 输入 |
-| `destination` | destination（橄榄色） | 输出 |
-| 每条入向捆绑一个 | bundle（灰色方块），以对端节点命名 | 目标端 —— 一条连线，来自某个 universal pod 的 `bundle out` 或另一个 distribute 节点 |
+| 每个成员一个，名字是你填的 | bundle（灰色方块） | 源端 —— 一条连线，连到某个 universal pod 或某个 distribute 节点的 `+ bundle` |
+| 每条入向捆绑一个 | bundle（灰色方块），以对端节点命名 | 目标端 —— 一条连线，来自某个 universal pod 的 `bundle out` 或另一个 distribute 节点的成员 |
 | 每个通道一个 | destination，通道颜色 | 源端 —— 一条连线，连到作为该通道的 Entry pod 的 `destination` |
-| `+ bundle`（左侧） | bundle（灰色方块），add | 目标端 —— 上游 `bundle out` 落到这里：它携带的每个通道都会从这里再次扇出 |
+| `+ bundle` | bundle（灰色方块），add | 目标端 —— 上游捆绑落到这里：它携带的每个通道都会从这里再次扇出 |
 | `+ channel` | destination（橄榄色），add | 源端 —— 拖到某个 Entry pod 的 `destination`；被连上的 pod 就成为又一个彩色通道 |
-| 每条出向捆绑一个 | bundle（灰色方块），以对端节点命名 | 源端 —— 一条连线 |
-| `+ bundle`（右侧） | bundle（灰色方块），add | 源端 —— 拖到某个 universal pod 或某个 distribute 节点的 `+ bundle`；就多出一条出向捆绑 |
 
 - **Balance mode** —— `Round robin`、`Random`、`IP hash` 或 `Fallback`。`IP hash` 需要已知的客户端
-  IP，因此它位于一个不接收 PROXY 协议的 Entry 之下时是错误。该模式同样作用于手工连线的成员和每一个
-  通道。
-- **Relay protocol** —— 该节点扇出的这些通道，以何种方式中继到它所捆绑到的 universal pod
-  （`TCP (raw)`、`TCP (TLS)`、`QUIC`）。它对手工连线的成员没有影响；而任何没有声明协议的跳
-  （Entry pod 直连到 universal pod，或 universal pod 捆绑到下一个 universal pod）都是裸 TCP。
-  修改它会让每个落地 pod 拿到一个新端口。
+  IP，因此它位于一个不接收 PROXY 协议的 Entry 之下时是错误。
+- **Relay protocol** —— 该节点扇出的这些通道，以何种方式中继到成员所捆绑到的 universal pod
+  （`TCP (raw)`、`TCP (TLS)`、`QUIC`）。任何没有声明协议的跳（Entry pod 直连到 universal pod，或
+  universal pod 捆绑到下一个 universal pod）都是裸 TCP。修改它会让每个落地 pod 拿到一个新端口。
+- **Members** —— 1 到 256 个，每个都有你自己起的名字（不重复，最多 64 个字符）。检查器会列出每个
+  成员以及它那条捆绑的对端；用 *添加成员* 加一个，用行尾的垃圾桶删一个。成员改名、调顺序都会保留它的
+  连接点和捆绑；删除一个还挂着捆绑的成员会被拒绝，先把捆绑断开。恰好只有一个成员接了捆绑会产生警告。
+  这里没有权重 —— 扇出是按成员进行的。
 
 作为捆绑的*接收方*时，distribute 节点会把这些捆绑携带的一切再次扇出 —— 这就是扇出的第二层（四台中转
 服务器铺开到两台落地服务器），或者当捆绑来自另一个 distribute 节点时，构成嵌套策略（一个 `Fallback`
 节点，其成员是两组 `Round robin`）。每条上游路径在目标服务器上都会得到属于自己的 lane。
-- **Members** —— 0，或者 2 到 256 之间。`0` 表示完全没有手工连线的端口：这个节点只通过通道和捆绑来
-  使用。未连接的成员在派生配置时会被跳过，不算错误；而恰好只连了一个成员会产生警告。这里没有权重 ——
-  扇出是按成员端口进行的。
 
-一个通道必须起始于某个 **pod** 的 destination 连接点；其他任何起点都会被拒绝。连接点下方的通道列表
-会为每个通道显示一枚彩色标签。手工连线的成员与通道从不混合：手工连线这条规则只经由 `member_*` 和
-`destination` 派生。
-
-减少成员数量之前请先断开对应成员：某个即将消失的端口上还挂着连线时，该次编辑会被阻止。
+一个通道必须起始于某个 **pod** 的 destination 连接点；其他任何起点都会被拒绝。成员下方的通道列表
+会为每个通道显示一枚彩色标签。
 
 ## 负载均衡（aggregate）
 
-![一张标题为 “join” 的 Aggregate 节点卡片，摘要行为 “Members: 0”，左侧是四个名为 hk-1 到 hk-4 的方形 bundle 连接点以及一个浅色的 “+ bundle” 连接点，右侧是两个以其 Entry pod 命名的彩色通道输入](/img/nodes/node-aggregate.avif)
+![一张标题为 “join” 的 Aggregate 节点卡片，摘要行为 “Members: 4”，左侧是四个名为 hk-1 到 hk-4 的方形成员连接点，右侧是四个以其 Entry pod 命名的彩色通道输出](/img/nodes/node-aggregate.avif)
 
-distribute 的镜像：**一棵目标子树被多个消费方复用。** 它本身不向派生出的配置贡献任何内容 —— 每个副本
-都解析成接入 `source` 的那一份。作为捆绑的接收方时，它会为这些捆绑携带的**每个通道各长出一个输入**，
-每个输入都等待一个 Exit。
+distribute 的镜像：捆绑重新汇合的地方。它的**成员**就是它要汇合的那些捆绑，每台中转服务器一个，名字
+由你填；捆绑进来之后，它会为这些捆绑携带的**每个通道各长出一个输出**，每个输出都等待一个 Exit。它本身
+不向派生出的配置贡献任何内容。
 
 | 连接点 | 种类 | 方向 |
 |---|---|---|
-| `source` | destination（橄榄色） | 输入 |
-| `copy_0` … `copy_{n-1}` | destination（橄榄色） | 输出 |
-| 每条捆绑一个 | bundle（灰色方块），以对端服务器命名 | 目标端 —— 一条连线 |
-| `+ bundle` | bundle（灰色方块），add | 目标端 —— universal pod 的 `bundle out` 落到这里 |
-| 每个通道一个 | destination，通道颜色 | 输入 —— 为每一个连上一个 Exit |
+| 每个成员一个，名字是你填的 | bundle（灰色方块） | 目标端 —— 一条连线，来自某个 universal pod 的 `bundle out` |
+| 每个通道一个 | destination，通道颜色 | 输出 —— 为每一个连上一个 Exit |
 
-**Members**（0，或 2–256）是唯一的设置项；aggregate 没有 balance mode，而 distribute ↔ aggregate
-的选择在节点创建时就固定下来。它的检查器会列出每个通道以及接入它的 Exit，或者显示 `no exit`；在还没有
-任何 universal pod 捆绑进来之前，卡片显示 *No channels yet*。
+**Members**（1–256 个，带名字）是唯一的设置项；aggregate 没有 balance mode，而 distribute ↔ aggregate
+的选择在节点创建时就固定下来。改名会保留成员的捆绑；删除一个还挂着捆绑的成员会被拒绝。它的检查器会
+列出每个通道以及接入它的 Exit，或者显示 `no exit`；在还没有任何 universal pod 捆绑到成员上之前，卡片
+显示 *No channels yet*。
 
 ## Server
 
@@ -200,8 +192,10 @@ v6。`no address yet` 会在该服务器的每个 pod 上产生警告 —— 它
 流量落地之处，无需为每条规则各画一个 pod：每条入向捆绑对应一个灰色方块（以来源命名），每个直连进来的
 Entry pod 对应一个彩色圆点（它自身就是一次裸 TCP 的跳，不做负载均衡），浅色的 `+ bundle` / `+ channel`
 连接点用于接受下一个，以及唯一的 `bundle out`（灰色方块，恰好一条连线），把该捆绑交给下一个
-universal pod、一个 distribute 节点，或一个负载均衡（aggregate）节点。捆绑携带的每一个通道都会在这里
-得到一个真实的**落地 pod**，并列在该服务器的检查器中，其端口可编辑。
+universal pod、一个 distribute 节点，或负载均衡（aggregate）节点的某个成员。捆绑携带的每一个通道都会
+在这里得到一个真实的**落地 pod**，并列在该服务器的检查器中，其端口可编辑。这一区块的标题行为落到
+这里的每个通道（规则）画一个圆点，并分别统计通道数和落地 pod 数：一条规则经两条路径（比如直接一条、
+再经第二层一条）到达同一台服务器时会落地两次并在这里汇合，所以是一个通道、两个 pod。
 
 ## 通道与捆绑
 
@@ -219,10 +213,13 @@ distribute lane，以及在同一通道的多个落地 pod 汇合处加一个 ag
 lane 节点是受管的：它们不能被退役也不能重新连线，只有落地 pod 的端口和地址可以编辑。lane 在多次编辑
 之间保持自己的身份，所以它会保留自己的端口、数据行和健康历史。
 
-合法的捆绑方向是：distribute → universal pod、distribute → distribute（嵌套）、universal pod →
-universal pod、universal pod → distribute（下一层），以及 universal pod → aggregate。
-distribute → aggregate 会被拒绝：请先把 distribute 节点捆绑到你中转服务器的 universal pod。捆绑成环
-是错误；一个通道没有捆绑到任何服务器，或者落地之后无处可去，则是警告。
+一条捆绑总是从一个已经存在的连接点出发 —— distribute 节点的成员，或 universal pod 的 `bundle out`
+—— 并在对端被收集：universal pod 或 distribute 节点会为落到它 `+ bundle` 上的每条捆绑长出一个方块，
+aggregate 节点则用它的某个成员来接。合法的捆绑方向是：成员 → universal pod、成员 → distribute
+（嵌套）、universal pod → universal pod、universal pod → distribute（下一层），以及 universal pod →
+aggregate 的成员。distribute → aggregate 会被拒绝：请先把 distribute 节点捆绑到你中转服务器的
+universal pod。同一个节点的两个成员不会捆绑到同一个对端。捆绑成环是错误；一个通道没有捆绑到任何
+服务器，或者落地之后无处可去，则是警告。
 
 ## Export
 
