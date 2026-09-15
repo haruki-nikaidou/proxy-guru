@@ -97,8 +97,8 @@ openssl rand -hex 32
 ```sh
 # /srv/guru/.env
 # The master and the frontend are tagged and released independently; pin each one.
-MASTER_VERSION=v0.1.0-alpha
-FRONTEND_VERSION=v0.0.1-alpha
+MASTER_VERSION=v0.2.0-beta
+FRONTEND_VERSION=v0.1.0-beta
 
 SURREAL_ROOT_USER=root
 SURREAL_ROOT_PASSWORD=<hex string from openssl>

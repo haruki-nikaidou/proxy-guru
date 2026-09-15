@@ -1,6 +1,6 @@
 [package]
 name = "newtype_record_id"
-version = "0.1.0-alpha"  # master side
+version = "0.2.0-beta"  # master side
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
