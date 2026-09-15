@@ -28,6 +28,10 @@ export default defineConfig({
 					]
 				},
 				{
+					label: 'Core Concepts',
+					items: [{ label: 'Nodes', link: '/reference/nodes/' }]
+				},
+				{
 					label: 'Configuration',
 					items: [
 						{ label: 'Configuration Reference', link: '/reference/configuration/' },

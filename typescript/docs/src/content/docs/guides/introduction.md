@@ -87,6 +87,7 @@ generated API client.
 
 - [Local Development](/guides/local-development/) — bring up the whole stack on one
   machine.
+- [Nodes](/reference/nodes/) — every node kind on the canvas, handle by handle.
 - [Architecture](/reference/architecture/) — crate roles and layer rules.
 - [Rollout Model](/reference/rollout/) — how a canvas edit reaches a worker.
 - [Independent Worker Deployment](/guides/independent-worker/) — run a worker from a
