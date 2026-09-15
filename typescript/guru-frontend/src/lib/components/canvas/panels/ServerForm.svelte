@@ -19,6 +19,7 @@ import {
 	serverHealthBadge,
 	serverHealthLabel
 } from '#lib/components/canvas/graph.js';
+import ServerGlyph from '#lib/components/canvas/ServerGlyph.svelte';
 import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
@@ -318,7 +319,13 @@ const forget = () =>
 
 	<Field.Field>
 		<Field.FieldLabel for="server-icon">{m.editor_server_icon()}</Field.FieldLabel>
-		<Input id="server-icon" bind:value={icon} disabled={!editable} />
+		<!-- The preview is the only feedback that a name resolves: an unknown one
+		     shows the default glyph instead of the icon. -->
+		<div class="flex items-center gap-2">
+			<Input id="server-icon" bind:value={icon} disabled={!editable} />
+			<ServerGlyph {icon} />
+		</div>
+		<Field.FieldDescription>{m.editor_server_icon_hint()}</Field.FieldDescription>
 	</Field.Field>
 
 	<Field.Field>

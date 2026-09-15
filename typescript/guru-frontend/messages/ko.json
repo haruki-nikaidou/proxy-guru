@@ -122,6 +122,7 @@
 	"editor_member_count": "멤버 수",
 	"editor_member_count_hint": "2에서 256 사이입니다. 멤버를 제거하기 전에 먼저 연결을 끊으세요.",
 	"editor_server_icon": "아이콘",
+	"editor_server_icon_hint": "선택 사항입니다. flag:us는 국기, logo:tauri는 브랜드 로고를 표시합니다. 그 외의 값은 기본 아이콘으로 대체됩니다.",
 	"editor_server_log_level": "로그 레벨",
 	"editor_server_ipv6": "IPv6 해석",
 	"editor_server_ipv6_hint": "출구 대상이 도메인일 때 IPv4/IPv6 중 어느 것으로 해석할지만 결정합니다. 현재 다른 효과는 없으며 보통 바꿀 필요가 없습니다.",

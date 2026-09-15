@@ -1,6 +1,6 @@
 <script lang="ts">
-import ServerIcon from '@lucide/svelte/icons/server';
 import type { NodeProps } from '@xyflow/svelte';
+import ServerGlyph from '#lib/components/canvas/ServerGlyph.svelte';
 import {
 	channelColor,
 	portLabel,
@@ -61,13 +61,9 @@ const channelOf = (podId: string) => data.channels[podId];
 	background="bg-canvas-server"
 	width="w-[300px]"
 >
-	<!-- `icon` is a free-form operator string, shown verbatim next to the glyph. -->
-	{#snippet icon()}
-		<ServerIcon class="size-4 shrink-0" />
-		{#if data.server.icon}
-			<span class="text-xs text-muted-foreground">{data.server.icon}</span>
-		{/if}
-	{/snippet}
+	<!-- `icon` names an Iconify icon (`flag:*` / `logo:*`); invalid or empty
+	     falls back to the default server glyph. -->
+	{#snippet icon()}<ServerGlyph icon={data.server.icon} />{/snippet}
 	{#snippet badge()}
 		<Badge variant={health.variant} class="shrink-0 {health.class}">
 			{serverHealthLabel(data.server.healthStatus)}

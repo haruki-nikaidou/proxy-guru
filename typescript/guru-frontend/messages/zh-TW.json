@@ -122,6 +122,7 @@
 	"editor_member_count": "成員數",
 	"editor_member_count_hint": "介於 2 和 256 之間。移除成員前請先中斷它的連線。",
 	"editor_server_icon": "圖示",
+	"editor_server_icon_hint": "選填。flag:us 顯示國旗，logo:tauri 顯示品牌圖示。其他內容會回退為預設圖示。",
 	"editor_server_log_level": "日誌等級",
 	"editor_server_ipv6": "IPv6 解析",
 	"editor_server_ipv6_hint": "僅影響出口目標為網域名稱時解析成 IPv4 或 IPv6，目前沒有其他作用，一般無需變更。",

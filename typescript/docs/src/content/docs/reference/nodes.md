@@ -150,6 +150,14 @@ aggregate choice is fixed when the node is created.
 One machine running `guru-worker`. A server is not a node spec but a container: it holds every
 **pod** on that machine plus the machine's **universal pod**. Pods never appear as separate cards.
 
+**Icon.** The header glyph is yours to pick, from two icon sets behind short prefixes: `flag:<code>`
+for a country flag (`flag:us`, `flag:jp`) and `logo:<name>` for a brand logo (`logo:tauri`,
+`logo:svelte`). Names come from [circle-flags](https://icon-sets.iconify.design/circle-flags/) and
+[theSVG Color](https://icon-sets.iconify.design/thesvg-color/); the icon itself is fetched on demand
+from the Iconify API, so an air-gapped browser keeps the default glyph. Anything else — a raw
+Iconify name, an unknown prefix, a name the set does not have, an empty field — also renders the
+default server glyph, and the inspector previews the result next to the field while you type.
+
 The header badge is health: `Online`, `Degraded` (apply error, failed pods, or a revision lagging
 past the grace period), `Offline` (nothing reported for three health intervals — 45 s by default),
 or `Unknown`. The two summary lines are the log level, the IPv6 resolution policy

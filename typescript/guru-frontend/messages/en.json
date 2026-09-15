@@ -122,6 +122,7 @@
 	"editor_member_count": "Members",
 	"editor_member_count_hint": "Between 2 and 256. Disconnect a member before removing it.",
 	"editor_server_icon": "Icon",
+	"editor_server_icon_hint": "Optional. flag:us shows a country flag, logo:tauri a brand logo. Anything else falls back to the default icon.",
 	"editor_server_log_level": "Log level",
 	"editor_server_ipv6": "IPv6 resolution",
 	"editor_server_ipv6_hint": "Only decides which address family a domain-name destination resolves to. It has no other effect today; leave it alone unless you need it.",
