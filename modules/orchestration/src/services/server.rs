@@ -19,9 +19,10 @@ use crate::entities::surreal::server::{
 };
 use crate::entities::surreal::topology::LoadCanvasTopology;
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::events::live::CanvasChangeKind;
 use crate::services::converge::ensure_switch_safe;
 use crate::services::node::port_layout;
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::{OrchestrationError, rollout};
 use crate::utils::ids::record_key;
@@ -39,7 +40,7 @@ pub const DEFAULT_POD_PORTS: RangeInclusive<u16> = 40000..=59999;
 #[derive(Clone)]
 pub struct ServerService {
     pub db: SurrealProcessor,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
 
@@ -168,6 +169,13 @@ impl Processor<CreateServer> for ServerService {
             })
             .await?;
         self.notifier.notify(&input.canvas).await;
+        self.notifier
+            .canvas_changed(
+                &input.canvas,
+                CanvasChangeKind::ServerCreated,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
         Ok(server)
     }
 }
@@ -234,6 +242,13 @@ impl Processor<UpdateServer> for ServerService {
             })
             .await?;
         self.notifier.notify(&canvas).await;
+        self.notifier
+            .canvas_changed(
+                &canvas,
+                CanvasChangeKind::ServerUpdated,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
         Ok(server)
     }
 }
@@ -250,19 +265,28 @@ impl Processor<MoveServer> for ServerService {
     #[tracing::instrument(name = "Service:MoveServer", skip_all, err)]
     async fn process(&self, input: MoveServer) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        self.db
+        let row = self
+            .db
             .process(FindServerById {
                 id: input.server.clone(),
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        // Metadata only.
+        // Metadata only: no revision, no re-derivation — but the dashboard
+        // renders the position, so the live event is sent all the same.
         self.db
             .process(MoveServerPosition {
-                id: input.server,
+                id: input.server.clone(),
                 position: input.position,
             })
             .await?;
+        self.notifier
+            .canvas_changed(
+                &row.canvas,
+                CanvasChangeKind::ServerMoved,
+                vec![record_key(&input.server.0)],
+            )
+            .await;
         Ok(())
     }
 }
@@ -345,6 +369,13 @@ impl Processor<DeleteServer> for ServerService {
             })
             .await?;
         self.notifier.notify(&canvas).await;
+        self.notifier
+            .canvas_changed(
+                &canvas,
+                CanvasChangeKind::ServerDeleted,
+                vec![record_key(&input.server.0)],
+            )
+            .await;
         Ok(())
     }
 }

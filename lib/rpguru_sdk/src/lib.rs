@@ -52,7 +52,12 @@ pub mod auth {
 
 /// Generated types and service traits for `proto/orchestration/orchestration.proto`
 /// (`package guru.orchestration`).
+///
+/// The `large_enum_variant` allow is for the live-stream `oneof`s: a
+/// `CanvasSnapshot` next to an empty `KeepAlive` is a deliberate wire shape,
+/// and the generated code is not ours to box.
 pub mod orchestration {
+    #![allow(clippy::large_enum_variant)]
     tonic::include_proto!("guru.orchestration");
 }
 

@@ -15,9 +15,10 @@ use crate::entities::surreal::server::{
 use crate::entities::surreal::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
 };
+use crate::events::live::{CanvasChangeKind, LiveMessage, RolloutScope};
 use crate::services::OrchestrationError;
 use crate::services::health::{NodeVerdicts, ParsedSnapshot, SnapshotEntry, parse_snapshot};
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::watch::{SessionLease, WatchHub};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
@@ -40,7 +41,7 @@ pub struct AgentService {
     pub db: SurrealProcessor,
     pub hub: WatchHub,
     pub lease: SessionLease,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
 }
 
 pub struct RegisterWorker {
@@ -96,6 +97,18 @@ impl Processor<RegisterWorker> for AgentService {
         self.hub
             .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
         self.notifier.notify(&server.canvas).await;
+        // A registration reconciles what the worker runs and clears `in_flight`,
+        // and it may have brought a new observed address with it.
+        self.notifier
+            .canvas_changed(
+                &server.canvas,
+                CanvasChangeKind::ServerIpChanged,
+                vec![record_key(&server.id.0)],
+            )
+            .await;
+        self.notifier
+            .rollout_changed(RolloutScope::Server(record_key(&server.id.0)))
+            .await;
         Ok(secret)
     }
 }
@@ -221,12 +234,14 @@ impl Processor<AckConfig> for AgentService {
         // The verdict is known now; nobody should have to wait for the next
         // report to see it. The status write is fenced on the session like the
         // ack itself.
-        self.db
+        let node_rows = self
+            .db
             .process(InsertNodeHealthRecords { records: nodes })
             .await?;
-        self.db
+        let health = self
+            .db
             .process(SetServerHealthStatus {
-                server: server.id,
+                server: server.id.clone(),
                 generation: Some(input.agent.generation),
                 status: if degraded {
                     ServerHealthStatus::Degraded
@@ -237,6 +252,27 @@ impl Processor<AckConfig> for AgentService {
             })
             .await?;
         self.notifier.notify(&server.canvas).await;
+        let server_key = record_key(&server.id.0);
+        self.notifier
+            .rollout_changed(RolloutScope::Server(server_key.clone()))
+            .await;
+        if !node_rows.is_empty() {
+            self.notifier
+                .live(LiveMessage::NodeHealth {
+                    records: node_rows.iter().map(Into::into).collect(),
+                })
+                .await;
+        }
+        if let Some(write) = &health {
+            self.notifier
+                .live(LiveMessage::ServerHealth {
+                    server: server_key,
+                    canvas: record_key(&write.canvas.0),
+                    record: (&write.record).into(),
+                    status_changed: write.previous_status != write.record.status,
+                })
+                .await;
+        }
         Ok(())
     }
 }

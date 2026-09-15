@@ -1,6 +1,6 @@
 ---
 title: Prerequisites
-description: Set up everything the control plane depends on before you deploy it — SurrealDB, RabbitMQ, Docker, the build toolchain, surrealkit, Bun, and a hostname with a certificate.
+description: Set up everything the control plane depends on before you deploy it — SurrealDB, RabbitMQ, Redis, Docker, the build toolchain, surrealkit, Bun, and a hostname with a certificate.
 ---
 
 import { Steps, Tabs, TabItem } from "@astrojs/starlight/components";
@@ -16,6 +16,7 @@ What each method actually needs:
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | SurrealDB ≥ 3.2              | yes                                                                                                                                       | yes                                                                        |
 | RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
+| Redis 7.x                    | yes                                                                                                                                       | yes                                                                        |
 | Docker Engine + Compose      | yes (runs the published application images; optional for the datastores)                                                                  | no                                                                         |
 | `surrealkit`                 | yes                                                                                                                                       | yes                                                                        |
 | Rust toolchain + `protoc`    | only if you build `manage-tool` yourself — it is also attached to every `master-v*` release                                                | yes — it builds every binary                                               |
@@ -23,15 +24,12 @@ What each method actually needs:
 | `perl`                       | no                                                                                                                                        | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
 | Bun                          | no                                                                                                                                        | yes (builds and runs the dashboard)                                        |
 | Hostname + TLS certificate   | yes                                                                                                                                       | yes                                                                        |
-| Redis                        | no                                                                                                                                        | no                                                                         |
-
-Redis appears in the module scaffolding, but no binary connects to it today — do not provision one.
 
 ## 1. Docker Engine and Compose (image deployment only)
 
 Install Docker only if you are following the image deployment. Native deployment does not require
-Docker: install SurrealDB and RabbitMQ directly, use managed services, or run them by another method.
-Pick your distro once; every tab on this page follows.
+Docker: install SurrealDB, RabbitMQ and Redis directly, use managed services, or run them by
+another method. Pick your distro once; every tab on this page follows.
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
@@ -250,7 +248,7 @@ is the right place. Bun is not needed at all.
 
 </Steps>
 
-## 4. SurrealDB and RabbitMQ
+## 4. SurrealDB, RabbitMQ and Redis
 
 ### What the control plane needs from them
 
@@ -262,6 +260,9 @@ is the right place. Bun is not needed at all.
 | RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. RabbitMQ is the only broker tested by this project.                                  |
 |           | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser.                                                                                                                 |
 |           | The broker is **mandatory in all four master modes**. Periodic work _is_ a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
+| Redis     | **7.x or newer.** Pub/sub only — the control plane stores nothing in it, declares nothing and needs no persistence, so any reachable server works, including a managed one. One instance shared by the whole fleet: replicas find each other through it. |
+|           | URL form: `redis://127.0.0.1:6379/`, passed as `REDIS_URL`. Required in `dashboard_grpc`, `workers_grpc` and `consumer` — the three modes that open a database connection. `cron` never touches it.                                                     |
+|           | It carries the operator API's `Watch*` streams: every mutation publishes one event on the channel `guru:orchestration:live`, and each `dashboard_grpc` replica subscribes once and fans it out to the streams it serves. An outage costs open streams their deliveries and nothing else — edits still apply and still derive, and the subscriber reconnects with backoff and then asks every watcher to re-read the database. The bundled dashboard does not consume these streams yet, so `live bus connected` in a master's log is the check, not a browser. |
 
 :::caution[Non-RabbitMQ brokers are not supported drop-ins]
 The control plane uses the `amqprs` AMQP 0-9-1 client and RabbitMQ exchange and queue declaration
@@ -271,9 +272,11 @@ you validate an alternative end to end.
 :::
 
 Neither containers nor Docker Compose are required for the datastores. Follow the official
-[SurrealDB installation guide](https://surrealdb.com/docs/running/installation) and
-[RabbitMQ download guide](https://www.rabbitmq.com/docs/download), use managed services, or use the
-Compose examples below. Whichever method you choose must satisfy the requirements above.
+[SurrealDB installation guide](https://surrealdb.com/docs/running/installation),
+[RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
+[Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/), use
+managed services, or use the Compose examples below. Whichever method you choose must satisfy the
+requirements above.
 
 ### Credentials
 
@@ -287,6 +290,10 @@ openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
 Hex avoids every quoting and percent-encoding question. If you insist on punctuation, percent-encode
 it in `AMQP_URI` (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`); SurrealDB's password is passed
 as an argv value and needs quoting only.
+
+Two passwords, not three: Redis takes no credentials at all. Its listener is the access control —
+bind it to loopback, or leave it on the private Compose network. The other two guard state that a
+stray client could read or destroy, which is why they get a password and it does not.
 
 Record the connection credentials in the file the control plane will read. The image-deployment
 Compose example also reads its datastore credentials from this file:
@@ -304,6 +311,7 @@ SURREALDB_NAME=guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd later reads this file verbatim through `EnvironmentFile=`. Keep `AMQP_URI` written out in
@@ -326,6 +334,8 @@ GURU_DB=guru
 
 Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below lives next to this
 `.env`, and the image guide adds `MASTER_VERSION`, `FRONTEND_VERSION` and `GURU_MASTER_KEY` to it.
+`REDIS_URL` never appears in it: Redis needs no credentials, so Compose spells the URL out itself
+(`redis://redis:6379/`), exactly as it builds `AMQP_URI` from the two Rabbit variables.
 
 </TabItem>
 </Tabs>
@@ -335,12 +345,15 @@ Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below liv
 <Tabs>
 <TabItem label="Native deployment">
 
-Install both services with the official
-[SurrealDB installation guide](https://surrealdb.com/docs/running/installation) and
-[RabbitMQ download guide](https://www.rabbitmq.com/docs/download). Configure SurrealDB with durable
-storage, root credentials and a loopback listener on port `8000`; configure RabbitMQ with the user
-and password from `.env`, the default vhost, durable storage and a loopback listener on port `5672`.
-Use your operating system's service manager to start both services and enable them at boot.
+Install the three services with the official
+[SurrealDB installation guide](https://surrealdb.com/docs/running/installation),
+[RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
+[Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/). Configure
+SurrealDB with durable storage, root credentials and a loopback listener on port `8000`; configure
+RabbitMQ with the user and password from `.env`, the default vhost, durable storage and a loopback
+listener on port `5672`; configure Redis with a loopback listener on port `6379` and persistence
+turned off (`save ""` and `appendonly no`), because nothing in it is worth restoring. Use your
+operating system's service manager to start all three services and enable them at boot.
 
 Docker Compose is an optional alternative, not a deployment requirement. If you choose it, the
 repository's `docker-compose.yml` provides the same loopback-only layout with persistent data under
@@ -349,7 +362,7 @@ repository's `docker-compose.yml` provides the same loopback-only layout with pe
 </TabItem>
 <TabItem label="Image deployment">
 
-Create the deployment directory (`/srv/guru` in the image guide) and put the two datastores in its
+Create the deployment directory (`/srv/guru` in the image guide) and put the three datastores in its
 Compose file, next to the `.env` that holds their credentials:
 
 ```yaml
@@ -388,6 +401,12 @@ services:
       timeout: 10s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Pub/sub only: nothing is persisted.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
 volumes:
   surreal-data:
   rabbit-data:
@@ -395,7 +414,7 @@ volumes:
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq
+sudo docker compose up -d surrealdb rabbitmq redis
 ```
 
 The masters are added to this same file later, in the image guide — the datastores have to exist
@@ -407,7 +426,9 @@ first, because the schema has to be in place before any master starts.
 The Compose examples need two additional details. The `surrealdb/surrealdb` image runs as an
 unprivileged user that cannot write a root-owned volume or bind mount, hence `user: root`. RabbitMQ
 names its data directory after its node name, `rabbit@<hostname>`, so the repository's Compose file
-pins `hostname:`; without it every container recreation would start an empty broker.
+pins `hostname:`; without it every container recreation would start an empty broker. Redis is the
+odd one out on purpose: no volume, no published port and no healthcheck — the masters reach it over
+the Compose network, and a fresh empty server is exactly as useful as the one it replaces.
 
 The queues the consumer binds are created for you: `guru_orchestration_canvas_dirty` for edits, plus
 `guru_orchestration_derive_stale_canvases`, `guru_orchestration_sweep_liveness`,

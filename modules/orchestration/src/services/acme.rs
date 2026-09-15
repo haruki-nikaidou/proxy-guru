@@ -17,13 +17,16 @@
 
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::certificate::{
-    CertificateEntity, CertificateId, DeleteCertificateRow, EnsureCertificate, FindCertificateById,
-    ListCanvasesUsingSni, ListCertificates as ListCertificatesRow, ListTlsRequests,
-    MarkCertificateAttemptFailed, RetryCertificateRow, StoreIssuedCertificate, TouchCanvases,
+    CertificateEntity, CertificateId, CertificateStatus, DeleteCertificateRow, EnsureCertificate,
+    FindCertificateById, ListCanvasesUsingSni, ListCertificates as ListCertificatesRow,
+    ListTlsRequests, MarkCertificateAttemptFailed, RetryCertificateRow, StoreIssuedCertificate,
+    TouchCanvases,
 };
 use crate::entities::surreal::dns::{DnsProvider, DnsProviderEntity, FindDnsProviderById};
+use crate::events::live::LiveMessage;
 use crate::services::OrchestrationError;
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
+use crate::utils::ids::record_key;
 use crate::utils::secret::{SecretError, SecretKey};
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
@@ -541,7 +544,7 @@ pub struct AcmeService {
     pub db: SurrealProcessor,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
     pub http: reqwest::Client,
     pub issuer: Arc<dyn AcmeIssuer>,
 }
@@ -598,6 +601,26 @@ impl AcmeService {
             })
             .await
     }
+
+    /// Puts one certificate row's new state on the live bus. No RPC consumes it
+    /// yet; it exists so the issue table is complete and a future certificate
+    /// stream needs no publisher changes.
+    async fn publish_certificate(
+        &self,
+        id: &CertificateId,
+        status: CertificateStatus,
+        not_after: Option<DateTime<Utc>>,
+        error: Option<String>,
+    ) {
+        self.notifier
+            .live(LiveMessage::CertificateChanged {
+                certificate: record_key(&id.0),
+                status,
+                not_after_unix_secs: not_after.map(|t| t.timestamp()),
+                error,
+            })
+            .await;
+    }
 }
 
 /// Issues or renews one certificate row and records the outcome on it. An ACME
@@ -625,17 +648,33 @@ impl Processor<IssueCertificate> for AcmeService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
+        // What the row holds *after* a failed attempt: `MarkCertificateAttemptFailed`
+        // keeps an already-issued certificate `Issued` (its material is still
+        // valid and still served) and only fails a `Pending` one. Publishing a
+        // flat `Failed` would tell a dashboard a live certificate had died.
+        let after_failure = if row.status == CertificateStatus::Issued {
+            CertificateStatus::Issued
+        } else {
+            CertificateStatus::Failed
+        };
         let material = match self.obtain(&row).await {
             Ok(material) => material,
             Err(e) => {
                 let error = e.to_string();
                 self.db
                     .process(MarkCertificateAttemptFailed {
-                        id: input.id,
+                        id: input.id.clone(),
                         error: error.clone(),
                         now: Utc::now(),
                     })
                     .await?;
+                self.publish_certificate(
+                    &input.id,
+                    after_failure,
+                    row.not_after,
+                    Some(error.clone()),
+                )
+                .await;
                 return Ok(IssueOutcome::Failed {
                     sni: row.sni,
                     error,
@@ -648,11 +687,18 @@ impl Processor<IssueCertificate> for AcmeService {
                 let error = e.to_string();
                 self.db
                     .process(MarkCertificateAttemptFailed {
-                        id: input.id,
+                        id: input.id.clone(),
                         error: error.clone(),
                         now: Utc::now(),
                     })
                     .await?;
+                self.publish_certificate(
+                    &input.id,
+                    after_failure,
+                    row.not_after,
+                    Some(error.clone()),
+                )
+                .await;
                 return Ok(IssueOutcome::Failed {
                     sni: row.sni,
                     error,
@@ -662,7 +708,7 @@ impl Processor<IssueCertificate> for AcmeService {
         let stored = self
             .db
             .process(StoreIssuedCertificate {
-                id: input.id,
+                id: input.id.clone(),
                 acme_account_key: self.secrets.encrypt_str(&material.account_credentials)?,
                 private_key_pem: self.secrets.encrypt_str(&material.private_key_pem)?,
                 full_chain_pem: material.full_chain_pem,
@@ -671,6 +717,13 @@ impl Processor<IssueCertificate> for AcmeService {
                 now: Utc::now(),
             })
             .await?;
+        self.publish_certificate(
+            &input.id,
+            stored.status,
+            stored.not_after,
+            stored.last_error.clone(),
+        )
+        .await;
         let canvases = self
             .db
             .process(ListCanvasesUsingSni {
@@ -769,10 +822,16 @@ impl Processor<RetryCertificate> for AcmeService {
     #[tracing::instrument(name = "Service:RetryCertificate", skip_all, err)]
     async fn process(&self, input: RetryCertificate) -> Result<Self::Output, Self::Error> {
         ensure_admin(&input.actor)?;
-        self.db
-            .process(RetryCertificateRow { id: input.id })
+        let row = self
+            .db
+            .process(RetryCertificateRow {
+                id: input.id.clone(),
+            })
             .await?
-            .ok_or(OrchestrationError::NotFound)
+            .ok_or(OrchestrationError::NotFound)?;
+        self.publish_certificate(&input.id, row.status, row.not_after, row.last_error.clone())
+            .await;
+        Ok(row)
     }
 }
 
@@ -814,8 +873,19 @@ impl Processor<DeleteCertificate> for AcmeService {
             )));
         }
         self.db
-            .process(DeleteCertificateRow { id: input.id })
+            .process(DeleteCertificateRow {
+                id: input.id.clone(),
+            })
             .await?;
+        // The row is gone; the status is the one it held, and `error` says so —
+        // a consumer that renders the certificate list drops it either way.
+        self.publish_certificate(
+            &input.id,
+            row.status,
+            row.not_after,
+            Some("deleted".to_string()),
+        )
+        .await;
         Ok(())
     }
 }

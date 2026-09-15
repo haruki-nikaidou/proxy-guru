@@ -16,10 +16,11 @@ use crate::entities::surreal::node::{FindNodeById, NewPort, NodeId, NodeSpec, No
 use crate::entities::surreal::port::{FindPortById, PortDirection, PortEntity, PortId, PortKind};
 use crate::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::converge::ensure_switch_safe;
 use crate::services::node::port_rows;
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::universal;
 use crate::utils::ids;
@@ -33,7 +34,7 @@ use wakuwaku::surreal::SurrealProcessor;
 #[derive(Clone)]
 pub struct EdgeService {
     pub db: SurrealProcessor,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
 
@@ -167,6 +168,13 @@ impl Processor<Connect> for EdgeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
+        self.notifier
+            .canvas_changed(
+                &topology.root,
+                CanvasChangeKind::EdgeConnected,
+                vec![record_key(&edge.id.0)],
+            )
+            .await;
         Ok(edge)
     }
 }
@@ -513,7 +521,9 @@ impl Processor<ConnectUniversal> for EdgeService {
         let prepared =
             universal::prepare(&self.db, &self.config, &topology, universal::Primary { edits, batch })
                 .await?;
-        universal::apply(&self.db, &self.notifier, prepared).await?;
+        // No live event yet: the edge's id only exists after the write, and the
+        // batch is what created the ports it hangs off.
+        universal::apply(&self.db, &self.notifier, prepared, None).await?;
 
         // The edge, by its ends, now that both ports exist.
         let mut resp = self
@@ -530,9 +540,18 @@ impl Processor<ConnectUniversal> for EdgeService {
             .bind(("target_key", inp.key.clone()))
             .await
             .map_err(OrchestrationError::Db)?;
-        resp.take::<Option<EdgeConnectionEntity>>(0)
+        let edge = resp
+            .take::<Option<EdgeConnectionEntity>>(0)
             .map_err(OrchestrationError::Db)?
-            .ok_or(OrchestrationError::NotFound)
+            .ok_or(OrchestrationError::NotFound)?;
+        self.notifier
+            .canvas_changed(
+                &topology.root,
+                CanvasChangeKind::EdgeConnected,
+                vec![record_key(&edge.id.0)],
+            )
+            .await;
+        Ok(edge)
     }
 }
 
@@ -589,7 +608,16 @@ impl Processor<Disconnect> for EdgeService {
                 },
             };
             let prepared = universal::prepare(&self.db, &self.config, &topology, primary).await?;
-            return universal::apply(&self.db, &self.notifier, prepared).await;
+            return universal::apply(
+                &self.db,
+                &self.notifier,
+                prepared,
+                Some((
+                    CanvasChangeKind::EdgeRetired,
+                    vec![record_key(&input.edge.0)],
+                )),
+            )
+            .await;
         }
         let projected = topology.project(&edits);
         ensure_valid(&projected)?;
@@ -601,6 +629,7 @@ impl Processor<Disconnect> for EdgeService {
             .await?;
         ensure_switch_safe(&projected, &views, &self.config)?;
 
+        let edge = record_key(&input.edge.0);
         self.db
             .process(DeleteEdgeRow {
                 id: input.edge,
@@ -608,6 +637,9 @@ impl Processor<Disconnect> for EdgeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
+        self.notifier
+            .canvas_changed(&topology.root, CanvasChangeKind::EdgeRetired, vec![edge])
+            .await;
         Ok(())
     }
 }
@@ -636,6 +668,7 @@ impl Processor<ForceDisconnect> for EdgeService {
             .ok_or(OrchestrationError::NotFound)?;
         let canvas = canvas_of_port(&self.db, &edge.source).await?;
         tracing::info!(edge = %record_key(&edge.id.0), "force-deleting edge");
+        let id = record_key(&input.edge.0);
         self.db
             .process(DeleteEdgeRow {
                 id: input.edge,
@@ -643,6 +676,9 @@ impl Processor<ForceDisconnect> for EdgeService {
             })
             .await?;
         self.notifier.notify(&canvas).await;
+        self.notifier
+            .canvas_changed(&canvas, CanvasChangeKind::EdgeDeleted, vec![id])
+            .await;
         Ok(())
     }
 }

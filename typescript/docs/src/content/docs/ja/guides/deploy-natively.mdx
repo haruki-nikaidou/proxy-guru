@@ -1,11 +1,11 @@
 ---
 title: ネイティブにデプロイ
-description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB と RabbitMQ に接続し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
+description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB、RabbitMQ、Redis に接続し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。SurrealDB と RabbitMQ はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
+[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。SurrealDB、RabbitMQ、Redis はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
 
 さらに、イメージ版のガイドが扱っていない点も説明します。それは、ワーカー API を**ダッシュボードと同じ公開ホスト名上の TLS** の背後に置くことです。これにより、インターネット上のどこにいるワーカーでも VPN なしで `--master https://guru.example.com` で到達できます。
 
@@ -17,6 +17,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 |---|---|---|
 | SurrealDB 3.2 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:8000` |
 | RabbitMQ 4 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5672` |
+| Redis 7 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:6379` |
 | `guru-master` ×4 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | ダッシュボード | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 既存の nginx、server ブロック 1 つ | `:443` |
@@ -25,7 +26,7 @@ nginx 以外はすべてループバックにバインドします。公開さ�
 
 ## 2. 前提条件
 
-まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、到達可能な SurrealDB と RabbitMQ、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
+まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、到達可能な SurrealDB・RabbitMQ・Redis、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
 
 チェックアウトから実行することによる 2 つの帰結は、始める前に改めて確認しておく価値があります。
 
@@ -52,7 +53,7 @@ cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 
 ### シークレットファイル
 
-[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報（`SURREALDB_*`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`）を含む `/path/to/proxy-guru/.env` はすでに作成済みです。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
+[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報を含む `/path/to/proxy-guru/.env` はすでに作成済みです — `SURREALDB_*`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`、そして認証情報をまったく必要としない `REDIS_URL=redis://127.0.0.1:6379/` です。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
 
 <Steps>
 
@@ -158,7 +159,7 @@ sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc 
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。
+`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、SurrealDB、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要としません — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
 
 コード変更後の再デプロイはシェル 2 つでの作業です。`guru` としてビルドし、オペレーターとして再起動します。
 
@@ -302,27 +303,32 @@ sudo nginx -t && sudo systemctl reload nginx
 次の順番で進めてください。それぞれが独立して、はっきり失敗します。データストアは、サービスマネージャーまたはマネージドプロバイダーが提供するヘルスチェックで確認してください。最初の 2 コマンドはローカルにネイティブインストールした場合の例なので、リモートサービスでは省略します。残りのチェックは新しいオペレーターのシェルで実行します。サービスアカウントに属するチェックは `sudo -iu guru` で包んであります。
 
 ```sh
-# 1. Local datastore examples only; use provider health checks for remote services
+# 1. ローカルにネイティブインストールした場合の例のみ。リモートサービスはプロバイダーのヘルスチェックで
+#    確認してください
 surreal is-ready --endpoint http://127.0.0.1:8000
 rabbitmq-diagnostics -q ping
+redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
-# 2. Schema (guru: it owns the manifests under database/)
+# 2. スキーマ（guru: database/ 配下のマニフェストを所有しています）
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
   surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
     --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
-#   → the rollout you applied, [completed]
+#   → 適用したロールアウトが [completed] になっていること
 
-# 3. Control plane: one banner per mode, no restart loop
+# 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと、そして
+#    dashboard_grpc から `live bus connected` が 1 行 — オペレーター API の `Watch*`
+#    ストリームはここから配信されます（ダッシュボードはまだそれを利用していないため、
+#    確認手段はこの行です）
 journalctl -u 'guru-master@*' -n 20
 
-# 4. Dashboard behind nginx (303 to /auth)
+# 4. nginx 背後のダッシュボード（/auth へ 303）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 5. gRPC reaches the master through TLS: HTTP/2 200 with a grpc-status header
+# 5. gRPC が TLS を通って master に届くこと: grpc-status ヘッダー付きの HTTP/2 200
 curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
   --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
-# 6. A worker with a bogus key must be rejected by the master, not by TLS or nginx
+# 6. 偽のキーを持つワーカーは、TLS や nginx ではなく master に拒否されること
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
   ./target/release/guru-worker --master https://guru.example.com \
     --server probe --state-dir /tmp/gw'

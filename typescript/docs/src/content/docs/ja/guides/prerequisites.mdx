@@ -1,6 +1,6 @@
 ---
 title: 前提条件
-description: コントロールプレーンをデプロイする前に、依存コンポーネントをすべて用意します — SurrealDB、RabbitMQ、Docker、ビルドツールチェーン、surrealkit、Bun、そして証明書付きのホスト名。
+description: コントロールプレーンをデプロイする前に、依存コンポーネントをすべて用意します — SurrealDB、RabbitMQ、Redis、Docker、ビルドツールチェーン、surrealkit、Bun、そして証明書付きのホスト名。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -16,6 +16,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 |---|---|---|
 | SurrealDB ≥ 3.2 | 必要 | 必要 |
 | RabbitMQ 3.13/4.x | 必要 | 必要 |
+| Redis 7.x | 必要 | 必要 |
 | Docker Engine + Compose | 必要（公開済みアプリケーションイメージの実行に使用。データストアへの使用は任意） | 不要 |
 | `surrealkit` | 必要 | 必要 |
 | Rust ツールチェーン + `protoc` | `manage-tool` を自分でビルドする場合のみ必要 — バイナリは `master-v*` リリースからダウンロードできます | 必要 — すべてのバイナリをビルドします |
@@ -23,7 +24,6 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | `perl` | 不要 | 必要 — `guru-worker` は同梱の OpenSSL をビルドし、その構成は perl スクリプトが行います |
 | Bun | 不要 | 必要（ダッシュボードのビルドと実行） |
 | ホスト名 + TLS 証明書 | 必要 | 必要 |
-| Redis | 不要 | 不要 |
 
 イメージデプロイの Rust 行が「場合のみ」なのは、`master-v*` タグが GHCR のイメージに加えて
 `guru-master` と `manage-tool` のバイナリ（`x86_64-unknown-linux-gnu`）を GitHub リリースとしても公開する
@@ -31,12 +31,10 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 ただし `database/` 配下のスキーマファイルはリリースに含まれないため、チェックアウトと `surrealkit` は
 どちらの方式でも必要です。
 
-Redis はモジュールの雛形に登場しますが、現時点でこれに接続するバイナリはありません。用意する必要はありません。
-
 ## 1. Docker Engine と Compose（イメージデプロイのみ）
 
 Docker が必要なのは、イメージデプロイを選ぶ場合だけです。ネイティブデプロイに Docker は不要であり、
-SurrealDB と RabbitMQ は直接インストールするか、マネージドサービスまたは別の実行方法を利用できます。
+SurrealDB、RabbitMQ、Redis は直接インストールするか、マネージドサービスまたは別の実行方法を利用できます。
 ディストリビューションを一度選べば、このページのすべてのタブが連動します。
 
 <Tabs syncKey="distro">
@@ -258,7 +256,7 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 
 </Steps>
 
-## 4. SurrealDB と RabbitMQ
+## 4. SurrealDB、RabbitMQ と Redis
 
 ### コントロールプレーンが求める条件
 
@@ -270,6 +268,9 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 | RabbitMQ | 3.13/4.x のサーバーであれば何でも構いません。コントロールプレーンは起動時に自身の exchange と永続キューを宣言するため、事前に作成しておくものはありません。デフォルト vhost のユーザーが 1 つあれば十分です。このプロジェクトでテスト済みのブローカーは RabbitMQ だけです。 |
 | | URI の書式: `amqp://user:password@host:5672/` で、**末尾のスラッシュ**がデフォルト vhost を選択します。`/%2f` 形式はパーサーに拒否されます。 |
 | | ブローカーは**4 つのマスターモードすべてで必須**です。定期処理はメッセージそのものであり、ブローカーが停止している間は古いキャンバスのスイープも、応答のないサーバーを `Offline` にする処理も、証明書の更新も行われません。最適化ではなく依存コンポーネントとして扱ってください。 |
+| Redis | **7.x 以降。** pub/sub のみに使います — コントロールプレーンはここに何も保存せず、何も宣言せず、永続化も必要としません。そのため到達できるサーバーであれば何でも、マネージドサービスでも構いません。フリート全体で共有する 1 インスタンスを用意してください。レプリカは互いをこれを通して見つけます。 |
+| | URL の書式: `redis://127.0.0.1:6379/`。`REDIS_URL` として渡します。データベース接続を開く 3 つのモード — `dashboard_grpc`、`workers_grpc`、`consumer` — で必須で、`cron` はこれに一切触れません。 |
+| | これはオペレーター API の `Watch*` ストリームを運びます。すべての変更はチャンネル `guru:orchestration:live` にイベントを 1 件 publish し、各 `dashboard_grpc` レプリカがそれを一度だけ subscribe して、自分が提供しているストリームへ流します。停止して失われるのは、開いているストリームの配信だけで、それ以外は何も失われません。編集は適用され、導出も走り、subscriber はバックオフしながら再接続して、そのあとすべての watcher にデータベースの再読み込みを求めます。同梱のダッシュボードはまだこれらのストリームを利用していないため、確認手段はブラウザーではなく、マスターのログに出る `live bus connected` です。 |
 
 :::caution[RabbitMQ 以外のブローカーはそのまま置き換えられません]
 コントロールプレーンは AMQP 0-9-1 クライアントの `amqprs` と、RabbitMQ の exchange／queue 宣言の
@@ -280,8 +281,9 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 
 データストアにコンテナや Docker Compose は必須ではありません。公式の
 [SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
-[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従うか、マネージドサービスまたは
-以下の Compose 例を使用してください。どの方法でも、上記の要件を満たす必要があります。
+[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従い、Redis はディストリビューションの
+パッケージか公式の配布物を使うか、あるいはマネージドサービスまたは以下の Compose 例を使用してください。
+どの方法でも、上記の要件を満たす必要があります。
 
 ### 認証情報
 
@@ -312,6 +314,7 @@ SURREALDB_NAME=guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd は後で `EnvironmentFile=` からこのファイルをそのまま読み込みます。systemd は `${…}` を
@@ -343,12 +346,14 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="ネイティブデプロイ">
 
-公式の [SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
-[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従って、両方のサービスを
-インストールします。SurrealDB は永続ストレージ、root 認証情報、ポート `8000` のループバックリスナーを設定し、
-RabbitMQ は `.env` のユーザーとパスワード、デフォルト vhost、永続ストレージ、ポート `5672` の
-ループバックリスナーを設定します。オペレーティングシステムのサービスマネージャーを使って両方を起動し、
-ブート時に有効化してください。
+3 つのサービスをインストールします。SurrealDB と RabbitMQ は公式の
+[SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
+[RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従い、Redis はディストリビューションの
+パッケージか公式の配布物で構いません。SurrealDB は永続ストレージ、root 認証情報、ポート `8000` の
+ループバックリスナーを設定し、RabbitMQ は `.env` のユーザーとパスワード、デフォルト vhost、永続ストレージ、
+ポート `5672` のループバックリスナーを設定し、Redis はポート `6379` のループバックリスナーだけを設定します
+（保存するものがないので、AOF も RDB も無効にして構いません）。オペレーティングシステムのサービスマネージャーを
+使って 3 つすべてを起動し、ブート時に有効化してください。
 
 Docker Compose は任意の代替手段であり、デプロイ要件ではありません。使用する場合、リポジトリの
 `docker-compose.yml` が同じループバック限定の構成を提供し、永続データを `./data/` 以下に保存します。
@@ -357,7 +362,7 @@ Docker Compose は任意の代替手段であり、デプロイ要件ではあ�
 <TabItem label="イメージデプロイ">
 
 デプロイ用ディレクトリ（イメージガイドでは `/srv/guru`）を作成し、認証情報を持つ `.env` の隣にある Compose
-ファイルに 2 つのデータストアを記述します:
+ファイルに 3 つのデータストアを記述します:
 
 ```yaml
 # /srv/guru/docker-compose.yml
@@ -395,6 +400,12 @@ services:
       timeout: 10s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Pub/sub only: nothing is persisted.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
 volumes:
   surreal-data:
   rabbit-data:
@@ -402,7 +413,7 @@ volumes:
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq
+sudo docker compose up -d surrealdb rabbitmq redis
 ```
 
 マスターは後でイメージガイドの中で同じファイルに追加します。データストアが先に存在していなければならないのは、

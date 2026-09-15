@@ -859,6 +859,130 @@ export function addressSourceToJSON(object: AddressSource): string {
   }
 }
 
+export enum CanvasChangeKind {
+  /** UNSPECIFIED - the opening snapshot, or a refresh after a bus reconnect */
+  UNSPECIFIED = 0,
+  CANVAS_UPDATED = 1,
+  CANVAS_DELETED = 2,
+  SERVER_CREATED = 3,
+  SERVER_UPDATED = 4,
+  SERVER_MOVED = 5,
+  SERVER_DELETED = 6,
+  SERVER_IP_CHANGED = 7,
+  NODE_CREATED = 8,
+  NODE_REPLACED = 9,
+  NODE_META_UPDATED = 10,
+  NODE_RETIRED = 11,
+  NODE_DELETED = 12,
+  EDGE_CONNECTED = 13,
+  EDGE_RETIRED = 14,
+  EDGE_DELETED = 15,
+  SERVER_HEALTH_CHANGED = 16,
+  UNRECOGNIZED = -1,
+}
+
+export function canvasChangeKindFromJSON(object: any): CanvasChangeKind {
+  switch (object) {
+    case 0:
+    case "CANVAS_CHANGE_KIND_UNSPECIFIED":
+      return CanvasChangeKind.UNSPECIFIED;
+    case 1:
+    case "CANVAS_UPDATED":
+      return CanvasChangeKind.CANVAS_UPDATED;
+    case 2:
+    case "CANVAS_DELETED":
+      return CanvasChangeKind.CANVAS_DELETED;
+    case 3:
+    case "SERVER_CREATED":
+      return CanvasChangeKind.SERVER_CREATED;
+    case 4:
+    case "SERVER_UPDATED":
+      return CanvasChangeKind.SERVER_UPDATED;
+    case 5:
+    case "SERVER_MOVED":
+      return CanvasChangeKind.SERVER_MOVED;
+    case 6:
+    case "SERVER_DELETED":
+      return CanvasChangeKind.SERVER_DELETED;
+    case 7:
+    case "SERVER_IP_CHANGED":
+      return CanvasChangeKind.SERVER_IP_CHANGED;
+    case 8:
+    case "NODE_CREATED":
+      return CanvasChangeKind.NODE_CREATED;
+    case 9:
+    case "NODE_REPLACED":
+      return CanvasChangeKind.NODE_REPLACED;
+    case 10:
+    case "NODE_META_UPDATED":
+      return CanvasChangeKind.NODE_META_UPDATED;
+    case 11:
+    case "NODE_RETIRED":
+      return CanvasChangeKind.NODE_RETIRED;
+    case 12:
+    case "NODE_DELETED":
+      return CanvasChangeKind.NODE_DELETED;
+    case 13:
+    case "EDGE_CONNECTED":
+      return CanvasChangeKind.EDGE_CONNECTED;
+    case 14:
+    case "EDGE_RETIRED":
+      return CanvasChangeKind.EDGE_RETIRED;
+    case 15:
+    case "EDGE_DELETED":
+      return CanvasChangeKind.EDGE_DELETED;
+    case 16:
+    case "SERVER_HEALTH_CHANGED":
+      return CanvasChangeKind.SERVER_HEALTH_CHANGED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return CanvasChangeKind.UNRECOGNIZED;
+  }
+}
+
+export function canvasChangeKindToJSON(object: CanvasChangeKind): string {
+  switch (object) {
+    case CanvasChangeKind.UNSPECIFIED:
+      return "CANVAS_CHANGE_KIND_UNSPECIFIED";
+    case CanvasChangeKind.CANVAS_UPDATED:
+      return "CANVAS_UPDATED";
+    case CanvasChangeKind.CANVAS_DELETED:
+      return "CANVAS_DELETED";
+    case CanvasChangeKind.SERVER_CREATED:
+      return "SERVER_CREATED";
+    case CanvasChangeKind.SERVER_UPDATED:
+      return "SERVER_UPDATED";
+    case CanvasChangeKind.SERVER_MOVED:
+      return "SERVER_MOVED";
+    case CanvasChangeKind.SERVER_DELETED:
+      return "SERVER_DELETED";
+    case CanvasChangeKind.SERVER_IP_CHANGED:
+      return "SERVER_IP_CHANGED";
+    case CanvasChangeKind.NODE_CREATED:
+      return "NODE_CREATED";
+    case CanvasChangeKind.NODE_REPLACED:
+      return "NODE_REPLACED";
+    case CanvasChangeKind.NODE_META_UPDATED:
+      return "NODE_META_UPDATED";
+    case CanvasChangeKind.NODE_RETIRED:
+      return "NODE_RETIRED";
+    case CanvasChangeKind.NODE_DELETED:
+      return "NODE_DELETED";
+    case CanvasChangeKind.EDGE_CONNECTED:
+      return "EDGE_CONNECTED";
+    case CanvasChangeKind.EDGE_RETIRED:
+      return "EDGE_RETIRED";
+    case CanvasChangeKind.EDGE_DELETED:
+      return "EDGE_DELETED";
+    case CanvasChangeKind.SERVER_HEALTH_CHANGED:
+      return "SERVER_HEALTH_CHANGED";
+    case CanvasChangeKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface CanvasUiPosition {
   x: bigint;
   y: bigint;
@@ -1533,6 +1657,96 @@ export interface SetOrchestrationConfigRequest {
 
 export interface SetOrchestrationConfigReply {
   config: ConfigDocument | undefined;
+}
+
+/**
+ * ---- live streams -----------------------------------------------------------
+ * Every Watch* stream opens with a snapshot and then sends a new message per
+ * change; an empty KeepAlive is sent every `stream_keepalive_secs`. Streams need
+ * a human session and end with UNAUTHENTICATED once that session is gone, and
+ * with NOT_FOUND if the watched record disappears. The server never asks the
+ * client to re-request: a slow consumer receives fewer, newer snapshots.
+ */
+export interface KeepAlive {
+}
+
+export interface WatchCanvasRequest {
+  canvasId: string;
+}
+
+/**
+ * The whole GetCanvas reply again. `generation` is the root canvas's edit counter
+ * and is informational only: metadata edits (positions, names) do not bump it.
+ * Several changes may collapse into one snapshot; `cause` is then the latest.
+ */
+export interface CanvasSnapshot {
+  generation: bigint;
+  cause: CanvasChangeKind;
+  affectedIds: string[];
+  contents: GetCanvasReply | undefined;
+}
+
+export interface CanvasEvent {
+  snapshot?: CanvasSnapshot | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
+/** `since` is RFC 3339; empty means one hour ago. */
+export interface WatchServerHealthRequest {
+  serverId: string;
+  since: string;
+}
+
+export interface ServerHealthSnapshot {
+  status: ServerHealthStatus;
+  lastSeenAt: string;
+  /** oldest first */
+  records: ServerHealthRecord[];
+}
+
+export interface ServerHealthEvent {
+  snapshot?: ServerHealthSnapshot | undefined;
+  record?: ServerHealthRecord | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
+/** `limit` bounds the opening snapshot; 0 means 50. */
+export interface WatchNodeHealthRequest {
+  nodeId: string;
+  limit: number;
+}
+
+export interface NodeHealthSnapshot {
+  /** the newest record's status; UNSPECIFIED when there is none */
+  status: NodeHealthStatus;
+  /** newest first */
+  records: NodeHealthRecord[];
+}
+
+export interface NodeHealthEvent {
+  snapshot?: NodeHealthSnapshot | undefined;
+  record?: NodeHealthRecord | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
+/** Any canvas of a tree may be given; the snapshot covers every server of the tree. */
+export interface WatchRolloutsRequest {
+  canvasId: string;
+}
+
+export interface ServerRollout {
+  serverId: string;
+  canvasId: string;
+  status: GetServerRolloutStatusReply | undefined;
+}
+
+export interface RolloutSnapshot {
+  servers: ServerRollout[];
+}
+
+export interface RolloutEvent {
+  snapshot?: RolloutSnapshot | undefined;
+  keepAlive?: KeepAlive | undefined;
 }
 
 function createBaseCanvasUiPosition(): CanvasUiPosition {
@@ -10417,6 +10631,1168 @@ export const SetOrchestrationConfigReply: MessageFns<SetOrchestrationConfigReply
   },
 };
 
+function createBaseKeepAlive(): KeepAlive {
+  return {};
+}
+
+export const KeepAlive: MessageFns<KeepAlive> = {
+  encode(_: KeepAlive, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): KeepAlive {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseKeepAlive();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): KeepAlive {
+    return {};
+  },
+
+  toJSON(_: KeepAlive): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<KeepAlive>): KeepAlive {
+    return KeepAlive.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<KeepAlive>): KeepAlive {
+    const message = createBaseKeepAlive();
+    return message;
+  },
+};
+
+function createBaseWatchCanvasRequest(): WatchCanvasRequest {
+  return { canvasId: "" };
+}
+
+export const WatchCanvasRequest: MessageFns<WatchCanvasRequest> = {
+  encode(message: WatchCanvasRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.canvasId !== "") {
+      writer.uint32(10).string(message.canvasId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchCanvasRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchCanvasRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchCanvasRequest {
+    return {
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+    };
+  },
+
+  toJSON(message: WatchCanvasRequest): unknown {
+    const obj: any = {};
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchCanvasRequest>): WatchCanvasRequest {
+    return WatchCanvasRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchCanvasRequest>): WatchCanvasRequest {
+    const message = createBaseWatchCanvasRequest();
+    message.canvasId = object.canvasId ?? "";
+    return message;
+  },
+};
+
+function createBaseCanvasSnapshot(): CanvasSnapshot {
+  return { generation: 0n, cause: 0, affectedIds: [], contents: undefined };
+}
+
+export const CanvasSnapshot: MessageFns<CanvasSnapshot> = {
+  encode(message: CanvasSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.generation !== 0n) {
+      if (BigInt.asIntN(64, message.generation) !== message.generation) {
+        throw new globalThis.Error("value provided for field message.generation of type int64 too large");
+      }
+      writer.uint32(8).int64(message.generation);
+    }
+    if (message.cause !== 0) {
+      writer.uint32(16).int32(message.cause);
+    }
+    for (const v of message.affectedIds) {
+      writer.uint32(26).string(v!);
+    }
+    if (message.contents !== undefined) {
+      GetCanvasReply.encode(message.contents, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CanvasSnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCanvasSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.generation = reader.int64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.cause = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.affectedIds.push(reader.string());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.contents = GetCanvasReply.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CanvasSnapshot {
+    return {
+      generation: isSet(object.generation) ? BigInt(object.generation) : 0n,
+      cause: isSet(object.cause) ? canvasChangeKindFromJSON(object.cause) : 0,
+      affectedIds: globalThis.Array.isArray(object?.affectedIds)
+        ? object.affectedIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.affected_ids)
+        ? object.affected_ids.map((e: any) => globalThis.String(e))
+        : [],
+      contents: isSet(object.contents) ? GetCanvasReply.fromJSON(object.contents) : undefined,
+    };
+  },
+
+  toJSON(message: CanvasSnapshot): unknown {
+    const obj: any = {};
+    if (message.generation !== 0n) {
+      obj.generation = message.generation.toString();
+    }
+    if (message.cause !== 0) {
+      obj.cause = canvasChangeKindToJSON(message.cause);
+    }
+    if (message.affectedIds?.length) {
+      obj.affectedIds = message.affectedIds;
+    }
+    if (message.contents !== undefined) {
+      obj.contents = GetCanvasReply.toJSON(message.contents);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CanvasSnapshot>): CanvasSnapshot {
+    return CanvasSnapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CanvasSnapshot>): CanvasSnapshot {
+    const message = createBaseCanvasSnapshot();
+    message.generation = (object.generation !== undefined && object.generation !== null)
+      ? BigInt(object.generation)
+      : 0n;
+    message.cause = object.cause ?? 0;
+    message.affectedIds = object.affectedIds?.map((e) => e) || [];
+    message.contents = (object.contents !== undefined && object.contents !== null)
+      ? GetCanvasReply.fromPartial(object.contents)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseCanvasEvent(): CanvasEvent {
+  return { snapshot: undefined, keepAlive: undefined };
+}
+
+export const CanvasEvent: MessageFns<CanvasEvent> = {
+  encode(message: CanvasEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      CanvasSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CanvasEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCanvasEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = CanvasSnapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CanvasEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? CanvasSnapshot.fromJSON(object.snapshot) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: CanvasEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = CanvasSnapshot.toJSON(message.snapshot);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CanvasEvent>): CanvasEvent {
+    return CanvasEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CanvasEvent>): CanvasEvent {
+    const message = createBaseCanvasEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? CanvasSnapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseWatchServerHealthRequest(): WatchServerHealthRequest {
+  return { serverId: "", since: "" };
+}
+
+export const WatchServerHealthRequest: MessageFns<WatchServerHealthRequest> = {
+  encode(message: WatchServerHealthRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.since !== "") {
+      writer.uint32(18).string(message.since);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchServerHealthRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchServerHealthRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.since = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchServerHealthRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      since: isSet(object.since) ? globalThis.String(object.since) : "",
+    };
+  },
+
+  toJSON(message: WatchServerHealthRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.since !== "") {
+      obj.since = message.since;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchServerHealthRequest>): WatchServerHealthRequest {
+    return WatchServerHealthRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchServerHealthRequest>): WatchServerHealthRequest {
+    const message = createBaseWatchServerHealthRequest();
+    message.serverId = object.serverId ?? "";
+    message.since = object.since ?? "";
+    return message;
+  },
+};
+
+function createBaseServerHealthSnapshot(): ServerHealthSnapshot {
+  return { status: 0, lastSeenAt: "", records: [] };
+}
+
+export const ServerHealthSnapshot: MessageFns<ServerHealthSnapshot> = {
+  encode(message: ServerHealthSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== 0) {
+      writer.uint32(8).int32(message.status);
+    }
+    if (message.lastSeenAt !== "") {
+      writer.uint32(18).string(message.lastSeenAt);
+    }
+    for (const v of message.records) {
+      ServerHealthRecord.encode(v!, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerHealthSnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerHealthSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.lastSeenAt = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.records.push(ServerHealthRecord.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerHealthSnapshot {
+    return {
+      status: isSet(object.status) ? serverHealthStatusFromJSON(object.status) : 0,
+      lastSeenAt: isSet(object.lastSeenAt)
+        ? globalThis.String(object.lastSeenAt)
+        : isSet(object.last_seen_at)
+        ? globalThis.String(object.last_seen_at)
+        : "",
+      records: globalThis.Array.isArray(object?.records)
+        ? object.records.map((e: any) => ServerHealthRecord.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ServerHealthSnapshot): unknown {
+    const obj: any = {};
+    if (message.status !== 0) {
+      obj.status = serverHealthStatusToJSON(message.status);
+    }
+    if (message.lastSeenAt !== "") {
+      obj.lastSeenAt = message.lastSeenAt;
+    }
+    if (message.records?.length) {
+      obj.records = message.records.map((e) => ServerHealthRecord.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ServerHealthSnapshot>): ServerHealthSnapshot {
+    return ServerHealthSnapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ServerHealthSnapshot>): ServerHealthSnapshot {
+    const message = createBaseServerHealthSnapshot();
+    message.status = object.status ?? 0;
+    message.lastSeenAt = object.lastSeenAt ?? "";
+    message.records = object.records?.map((e) => ServerHealthRecord.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseServerHealthEvent(): ServerHealthEvent {
+  return { snapshot: undefined, record: undefined, keepAlive: undefined };
+}
+
+export const ServerHealthEvent: MessageFns<ServerHealthEvent> = {
+  encode(message: ServerHealthEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      ServerHealthSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.record !== undefined) {
+      ServerHealthRecord.encode(message.record, writer.uint32(18).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerHealthEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerHealthEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = ServerHealthSnapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.record = ServerHealthRecord.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerHealthEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? ServerHealthSnapshot.fromJSON(object.snapshot) : undefined,
+      record: isSet(object.record) ? ServerHealthRecord.fromJSON(object.record) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: ServerHealthEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = ServerHealthSnapshot.toJSON(message.snapshot);
+    }
+    if (message.record !== undefined) {
+      obj.record = ServerHealthRecord.toJSON(message.record);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ServerHealthEvent>): ServerHealthEvent {
+    return ServerHealthEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ServerHealthEvent>): ServerHealthEvent {
+    const message = createBaseServerHealthEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? ServerHealthSnapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.record = (object.record !== undefined && object.record !== null)
+      ? ServerHealthRecord.fromPartial(object.record)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseWatchNodeHealthRequest(): WatchNodeHealthRequest {
+  return { nodeId: "", limit: 0 };
+}
+
+export const WatchNodeHealthRequest: MessageFns<WatchNodeHealthRequest> = {
+  encode(message: WatchNodeHealthRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    if (message.limit !== 0) {
+      writer.uint32(16).uint32(message.limit);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchNodeHealthRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchNodeHealthRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.limit = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchNodeHealthRequest {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
+    };
+  },
+
+  toJSON(message: WatchNodeHealthRequest): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.limit !== 0) {
+      obj.limit = Math.round(message.limit);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchNodeHealthRequest>): WatchNodeHealthRequest {
+    return WatchNodeHealthRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchNodeHealthRequest>): WatchNodeHealthRequest {
+    const message = createBaseWatchNodeHealthRequest();
+    message.nodeId = object.nodeId ?? "";
+    message.limit = object.limit ?? 0;
+    return message;
+  },
+};
+
+function createBaseNodeHealthSnapshot(): NodeHealthSnapshot {
+  return { status: 0, records: [] };
+}
+
+export const NodeHealthSnapshot: MessageFns<NodeHealthSnapshot> = {
+  encode(message: NodeHealthSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== 0) {
+      writer.uint32(8).int32(message.status);
+    }
+    for (const v of message.records) {
+      NodeHealthRecord.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthSnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNodeHealthSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.records.push(NodeHealthRecord.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): NodeHealthSnapshot {
+    return {
+      status: isSet(object.status) ? nodeHealthStatusFromJSON(object.status) : 0,
+      records: globalThis.Array.isArray(object?.records)
+        ? object.records.map((e: any) => NodeHealthRecord.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: NodeHealthSnapshot): unknown {
+    const obj: any = {};
+    if (message.status !== 0) {
+      obj.status = nodeHealthStatusToJSON(message.status);
+    }
+    if (message.records?.length) {
+      obj.records = message.records.map((e) => NodeHealthRecord.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<NodeHealthSnapshot>): NodeHealthSnapshot {
+    return NodeHealthSnapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<NodeHealthSnapshot>): NodeHealthSnapshot {
+    const message = createBaseNodeHealthSnapshot();
+    message.status = object.status ?? 0;
+    message.records = object.records?.map((e) => NodeHealthRecord.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseNodeHealthEvent(): NodeHealthEvent {
+  return { snapshot: undefined, record: undefined, keepAlive: undefined };
+}
+
+export const NodeHealthEvent: MessageFns<NodeHealthEvent> = {
+  encode(message: NodeHealthEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      NodeHealthSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.record !== undefined) {
+      NodeHealthRecord.encode(message.record, writer.uint32(18).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNodeHealthEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = NodeHealthSnapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.record = NodeHealthRecord.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): NodeHealthEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? NodeHealthSnapshot.fromJSON(object.snapshot) : undefined,
+      record: isSet(object.record) ? NodeHealthRecord.fromJSON(object.record) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: NodeHealthEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = NodeHealthSnapshot.toJSON(message.snapshot);
+    }
+    if (message.record !== undefined) {
+      obj.record = NodeHealthRecord.toJSON(message.record);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<NodeHealthEvent>): NodeHealthEvent {
+    return NodeHealthEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<NodeHealthEvent>): NodeHealthEvent {
+    const message = createBaseNodeHealthEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? NodeHealthSnapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.record = (object.record !== undefined && object.record !== null)
+      ? NodeHealthRecord.fromPartial(object.record)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseWatchRolloutsRequest(): WatchRolloutsRequest {
+  return { canvasId: "" };
+}
+
+export const WatchRolloutsRequest: MessageFns<WatchRolloutsRequest> = {
+  encode(message: WatchRolloutsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.canvasId !== "") {
+      writer.uint32(10).string(message.canvasId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchRolloutsRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchRolloutsRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchRolloutsRequest {
+    return {
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+    };
+  },
+
+  toJSON(message: WatchRolloutsRequest): unknown {
+    const obj: any = {};
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchRolloutsRequest>): WatchRolloutsRequest {
+    return WatchRolloutsRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchRolloutsRequest>): WatchRolloutsRequest {
+    const message = createBaseWatchRolloutsRequest();
+    message.canvasId = object.canvasId ?? "";
+    return message;
+  },
+};
+
+function createBaseServerRollout(): ServerRollout {
+  return { serverId: "", canvasId: "", status: undefined };
+}
+
+export const ServerRollout: MessageFns<ServerRollout> = {
+  encode(message: ServerRollout, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.canvasId !== "") {
+      writer.uint32(18).string(message.canvasId);
+    }
+    if (message.status !== undefined) {
+      GetServerRolloutStatusReply.encode(message.status, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerRollout {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerRollout();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.status = GetServerRolloutStatusReply.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerRollout {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+      status: isSet(object.status) ? GetServerRolloutStatusReply.fromJSON(object.status) : undefined,
+    };
+  },
+
+  toJSON(message: ServerRollout): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    if (message.status !== undefined) {
+      obj.status = GetServerRolloutStatusReply.toJSON(message.status);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ServerRollout>): ServerRollout {
+    return ServerRollout.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ServerRollout>): ServerRollout {
+    const message = createBaseServerRollout();
+    message.serverId = object.serverId ?? "";
+    message.canvasId = object.canvasId ?? "";
+    message.status = (object.status !== undefined && object.status !== null)
+      ? GetServerRolloutStatusReply.fromPartial(object.status)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseRolloutSnapshot(): RolloutSnapshot {
+  return { servers: [] };
+}
+
+export const RolloutSnapshot: MessageFns<RolloutSnapshot> = {
+  encode(message: RolloutSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.servers) {
+      ServerRollout.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RolloutSnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRolloutSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.servers.push(ServerRollout.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RolloutSnapshot {
+    return {
+      servers: globalThis.Array.isArray(object?.servers)
+        ? object.servers.map((e: any) => ServerRollout.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: RolloutSnapshot): unknown {
+    const obj: any = {};
+    if (message.servers?.length) {
+      obj.servers = message.servers.map((e) => ServerRollout.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RolloutSnapshot>): RolloutSnapshot {
+    return RolloutSnapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RolloutSnapshot>): RolloutSnapshot {
+    const message = createBaseRolloutSnapshot();
+    message.servers = object.servers?.map((e) => ServerRollout.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseRolloutEvent(): RolloutEvent {
+  return { snapshot: undefined, keepAlive: undefined };
+}
+
+export const RolloutEvent: MessageFns<RolloutEvent> = {
+  encode(message: RolloutEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      RolloutSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RolloutEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRolloutEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = RolloutSnapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RolloutEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? RolloutSnapshot.fromJSON(object.snapshot) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: RolloutEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = RolloutSnapshot.toJSON(message.snapshot);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<RolloutEvent>): RolloutEvent {
+    return RolloutEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<RolloutEvent>): RolloutEvent {
+    const message = createBaseRolloutEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? RolloutSnapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
 export type OrchestrationDefinition = typeof OrchestrationDefinition;
 export const OrchestrationDefinition = {
   name: "Orchestration",
@@ -10618,6 +11994,38 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    watchCanvas: {
+      name: "WatchCanvas",
+      requestType: WatchCanvasRequest as typeof WatchCanvasRequest,
+      requestStream: false,
+      responseType: CanvasEvent as typeof CanvasEvent,
+      responseStream: true,
+      options: {},
+    },
+    watchServerHealth: {
+      name: "WatchServerHealth",
+      requestType: WatchServerHealthRequest as typeof WatchServerHealthRequest,
+      requestStream: false,
+      responseType: ServerHealthEvent as typeof ServerHealthEvent,
+      responseStream: true,
+      options: {},
+    },
+    watchNodeHealth: {
+      name: "WatchNodeHealth",
+      requestType: WatchNodeHealthRequest as typeof WatchNodeHealthRequest,
+      requestStream: false,
+      responseType: NodeHealthEvent as typeof NodeHealthEvent,
+      responseStream: true,
+      options: {},
+    },
+    watchRollouts: {
+      name: "WatchRollouts",
+      requestType: WatchRolloutsRequest as typeof WatchRolloutsRequest,
+      requestStream: false,
+      responseType: RolloutEvent as typeof RolloutEvent,
+      responseStream: true,
+      options: {},
+    },
     createDnsProvider: {
       name: "CreateDnsProvider",
       requestType: CreateDnsProviderRequest as typeof CreateDnsProviderRequest,
@@ -10776,6 +12184,22 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: ListNodeHealthHistoryRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ListNodeHealthHistoryReply>>;
+  watchCanvas(
+    request: WatchCanvasRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<CanvasEvent>>;
+  watchServerHealth(
+    request: WatchServerHealthRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<ServerHealthEvent>>;
+  watchNodeHealth(
+    request: WatchNodeHealthRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<NodeHealthEvent>>;
+  watchRollouts(
+    request: WatchRolloutsRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<RolloutEvent>>;
   createDnsProvider(
     request: CreateDnsProviderRequest,
     context: CallContext & CallContextExt,
@@ -10897,6 +12321,22 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<ListNodeHealthHistoryRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ListNodeHealthHistoryReply>;
+  watchCanvas(
+    request: DeepPartial<WatchCanvasRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<CanvasEvent>;
+  watchServerHealth(
+    request: DeepPartial<WatchServerHealthRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<ServerHealthEvent>;
+  watchNodeHealth(
+    request: DeepPartial<WatchNodeHealthRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<NodeHealthEvent>;
+  watchRollouts(
+    request: DeepPartial<WatchRolloutsRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<RolloutEvent>;
   createDnsProvider(
     request: DeepPartial<CreateDnsProviderRequest>,
     options?: CallOptions & CallOptionsExt,
@@ -10946,6 +12386,8 @@ export type DeepPartial<T> = T extends bigint ? string | number | bigint
 function isSet(value: any): boolean {
   return value !== null && value !== undefined;
 }
+
+export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
 export interface MessageFns<T> {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;

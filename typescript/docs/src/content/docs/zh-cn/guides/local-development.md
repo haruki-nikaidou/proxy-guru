@@ -1,14 +1,14 @@
 ---
 title: 本地开发
-description: 在同一台机器上启动 SurrealDB、RabbitMQ、控制平面与控制台。
+description: 在同一台机器上启动 SurrealDB、RabbitMQ、Redis、控制平面与控制台。
 ---
 
-控制平面需要一个 SurrealDB 实例和一个 AMQP 消息代理。其余部分全部从工作区直接运行。
+控制平面需要一个 SurrealDB 实例、一个 AMQP 消息代理和一个 Redis 服务端。其余部分全部从工作区直接运行。
 
 :::caution[仓库根目录的 `.env` 不是开发配置]
 根目录的 `.env` 可能保存着**生产环境**凭据（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`），而你启动的每个进程
-都会继承它。请显式传入数据库相关参数——或者覆盖这些变量——这样本地运行才不会意外连上远程数据库。
+`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`），而你启动的
+每个进程都会继承它。请显式传入数据库相关参数——或者覆盖这些变量——这样本地运行才不会意外连上远程数据库。
 :::
 
 ## 1. 依赖组件
@@ -18,12 +18,17 @@ docker run -d --name guru-surreal -p 8000:8000 \
   surrealdb/surrealdb:latest start --user root --pass root
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+
+docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
+  redis-server --save '' --appendonly no
 ```
 
 请使用 **3.2 或更高版本**的 SurrealDB 服务端。更旧的 3.0 版本二进制与本工作区链接的客户端不兼容，
 并且会错误处理那些读取同一事务中先前写入行的断言。
 
-消息代理 URI 的写法很关键：默认 vhost 请使用 `amqp://guest:guest@127.0.0.1:5672/`。
+消息代理 URI 的写法很关键：默认 vhost 请使用 `amqp://guest:guest@127.0.0.1:5672/`。Redis 的 URL 是
+`redis://127.0.0.1:6379/`；它只做 pub/sub——运维 API `Watch*` 流的实时事件都经由它，因此这里关掉了
+持久化，重启它也不会丢掉任何需要保留的东西。
 
 ## 2. Schema
 
@@ -78,7 +83,8 @@ cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 在 `consumer` 运行之前不会有任何画布被推导，因此请在第二个 shell 中启动一个——它既是编辑钩子，
@@ -89,7 +95,8 @@ cargo run -p guru-master -- \
   --mode consumer \
   --address ws://127.0.0.1:8000 --username root --password root \
   --namespace guru --database guru \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 第三个 shell 用来跑时钟。`cron` 只为每个到期任务发布一个执行信号，除此之外什么都不做：
@@ -104,7 +111,10 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
 
 `workers_grpc` 是第四种模式——即 Worker API 加上配置视图轮询器——它接受的参数与
 `dashboard_grpc` 完全一致。所有模式都依赖消息代理：RabbitMQ 停机时什么都启动不了；
-而 `cron` 或 `consumer` 停机时，任何周期任务都不会发生。
+而 `cron` 或 `consumer` 停机时，任何周期任务都不会发生。除 `cron` 之外的每种模式还需要 Redis：
+`REDIS_URL` 缺失或服务端连不上时它们会在启动阶段中止。它是运维 API `Watch*` 流背后的实时总线：
+Redis 停机时，已打开的流会收不到消息，而编辑与派生一切照旧。控制台目前还不消费这些流，所以无论
+它是否运行，浏览器里都看不出任何差别。
 
 如果想让某个周期任务立即执行而不必等待它的时间间隔，删除它的声明行即可——对应的表是
 `orchestration_job_run`，每个任务一行、以任务名作为键，所以执行

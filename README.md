@@ -66,10 +66,15 @@ docker build -f frontend.Dockerfile -t guru-frontend .
 ```
 
 `guru-master` is configured entirely through the environment (`GURU_WORKER_MODE`
-selects the mode; `SURREALDB_NAMESPACE`, `SURREALDB_NAME` and `AMQP_URI` have no
-defaults). The broker is required in every mode — periodic work is a message, so
-a broker outage stalls derivation, liveness and renewal until it returns. The
-frontend listens on `:3000` and reaches the control plane through `GURU_GRPC_URL`.
+selects the mode; `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and
+`REDIS_URL` have no defaults). The broker is required in every mode — periodic
+work is a message, so a broker outage stalls derivation, liveness and renewal
+until it returns. `REDIS_URL` (`redis://127.0.0.1:6379/`) is required in the
+three modes that open a database connection — `dashboard_grpc`, `workers_grpc`
+and `consumer`, never `cron` — and carries change events between master
+replicas, so the operator API's `Watch*` streams see edits made against any of
+them. The frontend listens on `:3000` and reaches the control plane through
+`GURU_GRPC_URL`.
 
 ## Documentation
 
@@ -87,8 +92,9 @@ bun run docs:build   # static output in typescript/docs/dist
 Rust 2024 on Tokio, [`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau) (everything is a `Processor`), gRPC via
 Tonic, SurrealDB for storage (schema in `database/`, managed with surrealkit),
-Redis for caching, AMQP for inter-module events, OpenTelemetry for tracing, and a
-Bun workspace under `typescript/` sharing one generated API client.
+Redis pub/sub for the operator API's live `Watch*` streams, AMQP for
+inter-module events, OpenTelemetry for tracing, and a Bun workspace under
+`typescript/` sharing one generated API client.
 
 Read [`AGENTS.md`](AGENTS.md) before adding code — it describes exactly how each
 layer is organised. [`TEMPLATE_README.md`](TEMPLATE_README.md) documents the

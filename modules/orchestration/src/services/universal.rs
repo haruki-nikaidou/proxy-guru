@@ -51,10 +51,11 @@ use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::ServerId;
 use crate::entities::surreal::topology::CanvasTopology;
 use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::converge::ensure_switch_safe;
 use crate::services::node::{port_layout, port_rows};
-use crate::services::rollout::DirtyNotifier;
+use crate::services::notify::Notifier;
 use crate::services::server::DEFAULT_POD_PORTS;
 use crate::services::topology::{Index, ProblemKind, TopologyEdit, TopologyProblem, ensure_valid};
 use crate::utils::ids;
@@ -1330,14 +1331,24 @@ pub async fn prepare(
     })
 }
 
-/// Writes a prepared batch and schedules the derivation.
+/// Writes a prepared batch, schedules the derivation and, when the caller names
+/// one, publishes the live event for the edit.
+///
+/// The kind and ids are the caller's because this function does not know what it
+/// is writing: the same batch shape carries a node replacement, an edge
+/// connection and a disconnection. `None` is for callers that publish their own
+/// event (they hold ids this function never sees).
 pub async fn apply(
     db: &SurrealProcessor,
-    notifier: &DirtyNotifier,
+    notifier: &Notifier,
     prepared: Prepared,
+    change: Option<(CanvasChangeKind, Vec<String>)>,
 ) -> Result<(), OrchestrationError> {
     let root = prepared.root.clone();
     db.process(prepared.batch).await?;
     notifier.notify(&root).await;
+    if let Some((kind, ids)) = change {
+        notifier.canvas_changed(&root, kind, ids).await;
+    }
     Ok(())
 }

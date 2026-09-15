@@ -42,12 +42,14 @@ use crate::entities::surreal::view::{
     CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
+use crate::events::live::{LiveMessage, RolloutScope};
 use crate::events::{CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertificatesSignal};
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
     DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
 };
+use crate::services::notify::Notifier;
 use crate::utils::ids::{self, record_key};
 use crate::utils::secret::SecretKey;
 use chrono::{DateTime, Utc};
@@ -66,6 +68,10 @@ pub struct CanvasDeriver {
     pub db: SurrealProcessor,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
+    /// A derivation pass publishes no AMQP event, but it does move every
+    /// server's rollout state, which is what the dashboard's rollout views and
+    /// the node-health streams follow.
+    pub notifier: Notifier,
 }
 
 /// Derives one canvas. The typed input the AMQP consumer and the sweeper share.
@@ -207,9 +213,20 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
             {
                 // Status flips the moment a revision is published, not when the
                 // worker's next report happens to mention it.
-                self.db
+                let rows = self
+                    .db
                     .process(InsertNodeHealthRecords { records: deploying })
                     .await?;
+                self.notifier
+                    .rollout_changed(RolloutScope::Canvas(record_key(&state.root.0)))
+                    .await;
+                if !rows.is_empty() {
+                    self.notifier
+                        .live(LiveMessage::NodeHealth {
+                            records: rows.iter().map(Into::into).collect(),
+                        })
+                        .await;
+                }
                 return Ok(());
             }
             // The tree moved under us: derive the newer state right away rather

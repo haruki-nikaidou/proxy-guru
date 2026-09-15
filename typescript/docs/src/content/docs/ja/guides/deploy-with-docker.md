@@ -1,6 +1,6 @@
 ---
 title: Docker でデプロイ
-description: GHCR のイメージからコントロールプレーンを動かし、surrealkit でスキーマを適用し、SurrealDB と RabbitMQ を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
+description: GHCR のイメージからコントロールプレーンを動かし、surrealkit でスキーマを適用し、SurrealDB、RabbitMQ、Redis を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
 ---
 
 このガイドは、何も入っていないマシンから動作するダッシュボードまで、シングルホストの本番デプロイを通しで
@@ -16,9 +16,9 @@ description: GHCR のイメージからコントロールプレーンを動か�
 
 | コンポーネント | 実行モード | 通信相手 |
 |---|---|---|
-| オペレーター API | `dashboard_grpc` | SurrealDB、RabbitMQ |
-| ワーカー API | `workers_grpc` | SurrealDB、RabbitMQ |
-| 定期ジョブ + 導出フック | `consumer` | SurrealDB、RabbitMQ |
+| オペレーター API | `dashboard_grpc` | SurrealDB、RabbitMQ、Redis |
+| ワーカー API | `workers_grpc` | SurrealDB、RabbitMQ、Redis |
+| 定期ジョブ + 導出フック | `consumer` | SurrealDB、RabbitMQ、Redis |
 | スケジューラー | `cron` | RabbitMQ |
 | ダッシュボード | — | オペレーター API（gRPC） |
 
@@ -27,11 +27,11 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 そのため、ワーカーノード向けの Docker イメージは提供していません。
 :::
 
-状態が存在する場所はちょうど 2 か所です: **SurrealDB**（キャンバス、サーバー、ノード、エッジ、アカウント、
-設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、定期ジョブごとに
-1 本）。コンテナのファイルシステム上には何も保持しないため、すべてのコンテナは使い捨てできます。モジュールの
-スキャフォールディングには Redis が登場しますが、現在のコントロールプレーンは Redis に接続しません —
-Redis サーバーは不要です。
+永続的な状態が存在する場所はちょうど 2 か所です: **SurrealDB**（キャンバス、サーバー、ノード、エッジ、
+アカウント、設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、
+定期ジョブごとに 1 本）。**Redis** は 3 つ目のデータストアであり、唯一何も保持しないものです。単一の pub/sub
+チャンネルで、オペレーター API のライブイベントを master のレプリカ間に運ぶだけで、永続化は一切設定しません。
+コンテナのファイルシステム上には何も保持しないため、すべてのコンテナは使い捨てできます。
 
 サイジングの前に理解しておくべき分割が、2 つのフックモードです。`cron` は時計です: 実行時刻を迎えたジョブごとに
 実行シグナルを 1 件発行するだけで、データベース接続は一切開きません。`consumer` は実際の処理 — 導出フック
@@ -47,6 +47,7 @@ Redis サーバーは不要です。
 | `3000` | ダッシュボード | HTTPS リバースプロキシの背後に置く。直接公開してはいけません。 |
 | `8000` | SurrealDB | **プライベート。** 持っている認証情報は root のみです。 |
 | `5672` | RabbitMQ | **プライベート。** |
+| `6379` | Redis | **プライベート。** 認証情報は一切ありません。アクセス制御はリスナーそのものです。 |
 
 :::caution[gRPC ポートは平文です]
 master の両モードは平文の HTTP/2 で待ち受け、ダッシュボードは `ChannelCredentials.createInsecure()` で
@@ -60,7 +61,7 @@ master の両モードは平文の HTTP/2 で待ち受け、ダッシュボー�
 このガイドの前に **[前提条件](/ja/guides/prerequisites/)** を済ませてください。イメージデプロイの場合、
 そのページから必要なのは: Docker Engine と Compose プラグイン、オペレーターマシン上のこのリポジトリの
 チェックアウト（`database/` 配下のスキーマファイルはイメージとして配布されていません）、`surrealkit`、
-`openssl`、TLS 証明書を持つ DNS 名 — そして SurrealDB と RabbitMQ 自体で、これらは同ページが
+`openssl`、TLS 証明書を持つ DNS 名 — そして SurrealDB、RabbitMQ、Redis 自体で、これらは同ページが
 `/srv/guru/docker-compose.yml` から `/srv/guru/.env` の認証情報とともに起動します。
 
 `manage-tool` CLI もイメージには含まれていませんが、**ビルドは必須ではありません**: `master-v*` タグは
@@ -111,22 +112,28 @@ FRONTEND_VERSION=v0.2.0-beta
 コマンドが本番環境を書き換えてしまいます。
 :::
 
-## 5. SurrealDB と RabbitMQ
+## 5. SurrealDB、RabbitMQ と Redis
 
-両データストア、それらの Compose サービス、および背後にある要件（SurrealDB ≥ 3.2、root 認証情報、永続的な
-RocksDB ストレージ、RabbitMQ はデフォルト vhost で末尾スラッシュ付きの URI）は
-**[前提条件 → SurrealDB と RabbitMQ](/ja/guides/prerequisites/#4-surrealdb-と-rabbitmq)** にまとめられて
-います。master を起動する前に、これらが立ち上がっている必要があります:
+3 つのデータストア、それらの Compose サービス、および背後にある要件（SurrealDB ≥ 3.2、root 認証情報、
+永続的な RocksDB ストレージ、RabbitMQ はデフォルト vhost で末尾スラッシュ付きの URI、Redis は 7.x で
+認証情報も永続化もなし）は
+**[前提条件 → SurrealDB、RabbitMQ と Redis](/ja/guides/prerequisites/#4-surrealdbrabbitmq-と-redis)** に
+まとめられています。master を起動する前に、これらが立ち上がっている必要があります:
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy
+docker compose ps          # surrealdb up, rabbitmq healthy, redis up
 ```
 
-このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 2 つあります: ブローカーは **4 つすべて**の
-master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、証明書更新を
-止めてしまいます — そして master は SurrealDB に **root** としてサインインするため、`/srv/guru/.env` の
-認証情報がセクション 7 の `x-master` アンカーが渡すものになります。
+このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 3 つあります: ブローカーは
+**4 つすべて**の master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、
+証明書更新を止めてしまいます — master は SurrealDB に **root** としてサインインするため、`/srv/guru/.env` の
+認証情報がセクション 7 の `x-master` アンカーが渡すものになり、そして Redis はデータベース接続を開く
+3 つのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
+ストリームへの配信だけで、それ以外は何も止まりません。編集は適用され、キャンバスは導出され、ワーカーは
+設定を受け取り続けます。subscriber は自力で再接続し、すべての watcher にデータベースの再読み込みを求めます。
+同梱のダッシュボードはまだこれらのストリームを利用していないため、現時点では Redis を失ってもブラウザーからは
+まったく見えません。
 
 ## 6. `surrealkit` でスキーマを適用する
 
@@ -157,7 +164,8 @@ sk setup                             # then rollout plan / lint / start / comple
 ## 7. コントロールプレーンを動かす
 
 `guru-master` の*デプロイ*設定は環境変数から来ます: `GURU_WORKER_MODE` がモードを選び、
-`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`GURU_MASTER_KEY` には**デフォルト値がありません**。
+`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`、`GURU_MASTER_KEY` には
+**デフォルト値がありません**。
 オペレーターがインストールごとに調整するもの — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、
 更新ウィンドウ、各定期ジョブの実行間隔 — は代わりにデータベースに置かれるため（手順 8）、レプリカ側で
 環境変数を揃える必要はありません。
@@ -172,8 +180,11 @@ master キーは一度生成し、データベースの認証情報と一緒に�
 ./target/release/manage-tool generate-master-key
 ```
 
+`REDIS_URL` のモードの範囲も master キーと同じです。データベース接続を開く 3 つのモード
+（`dashboard_grpc`、`workers_grpc`、`consumer`）で必須で、`cron` は使いません。
+
 同じ `docker-compose.yml` を拡張します: `x-master` アンカーは `services:` の上に、4 つのサービスは
-その中の `surrealdb` と `rabbitmq` の隣に置きます:
+その中の `surrealdb`、`rabbitmq`、`redis` の隣に置きます:
 
 ```yaml
 x-master: &master
@@ -186,6 +197,7 @@ x-master: &master
     SURREALDB_NAMESPACE: ${GURU_NS}
     SURREALDB_NAME: ${GURU_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
@@ -193,9 +205,11 @@ x-master: &master
       condition: service_started
     rabbitmq:
       condition: service_healthy
+    redis:
+      condition: service_started
 
 services:
-  # ... surrealdb and rabbitmq from section 5 ...
+  # ... surrealdb, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -265,7 +279,7 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバスに再導出のマークを付けます。2 回目の実行は
 拒否されます。
 
-コードから導かれる運用上の注意が 2 つあります:
+コードから導かれる運用上の注意が 3 つあります:
 
 - `consumer` と `cron` モードは、**AMQP 接続が切れると非ゼロで終了します**（クライアントは再接続せず、
   黙って死んだ consumer や、どこにも発行しない時計は、再起動より悪いからです）:
@@ -273,6 +287,11 @@ CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバ�
   これを自己修復にしているのが `restart: unless-stopped` です — 取り除かないでください。
 - イメージは distroless です: シェルも `curl` もありません。シェルを呼び出す Compose の `healthcheck` は
   動きません。代わりに外部から監視してください（`50051`/`50052` への TCP 接続、あるいはログの収集）。
+- Redis は逆の振る舞いをします: subscriber は自力で再接続し（500 ms から倍々で 10 s まで）、そのたびに
+  `live bus connected` をログし、再接続のあとは開いているすべての `Watch*` ストリームにデータベースを
+  読み直させるため、古い状態が残りません。その間にチャンネルが運んでいたものは失われますが、それで
+  構いません — このチャンネルが運ぶのは進行中のイベントであって、状態ではありません。このデプロイで
+  バックアップに値するのは、依然として SurrealDB だけです（セクション 13）。
 
 起動します:
 
@@ -563,27 +582,33 @@ chmod +x guru-worker
 以下を順に実施してください — どれも個別に、はっきりと失敗します:
 
 ```sh
-# 1. Datastores
-docker compose ps                     # surrealdb + rabbitmq healthy
+# 1. データストア
+docker compose ps                     # surrealdb + rabbitmq + redis が healthy
 
-# 2. Schema
-sk status                             # from section 6
-#   → the rollout you applied, [completed]
+# 2. スキーマ
+sk status                             # セクション 6 のもの
+#   → 適用したロールアウトが [completed] になっていること
 
-# 3. Control plane: one banner per mode, and no restart loop
+# 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
 
-# 4. Worker API reachable from a data-plane node's network
+# 4. ワーカー API がデータプレーンノードのネットワークから到達できること
 nc -z <host> 50052 && echo "workers_grpc reachable"
 
-# 5. Dashboard through the proxy (303 to /auth)
+# 5. プロキシ経由のダッシュボード（/auth へ 303）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. Log in with the admin account — this is the only check that exercises
-#    dashboard → operator API → SurrealDB end to end.
+# 6. ライブバス: ダッシュボードレプリカごとに 1 行、起動時と Redis への再接続ごとに
+#    出力されます。オペレーター API の `Watch*` ストリームはここから配信されており、
+#    ダッシュボードはまだそれを利用していないため、バスが健全かどうかを教えてくれるのは
+#    ブラウザーではなく、このログ行です。
+docker compose logs master-dashboard | grep 'live bus connected'
+
+# 7. 管理者アカウントでログインする — ダッシュボード → オペレーター API → SurrealDB を
+#    端から端まで動かすチェックはこれだけです。
 ```
 
-手順 1〜5 が通るのに手順 6 が `Forbidden` で失敗する場合は、セクション 9 のプロキシに関する警告を読み直して
+手順 1〜5 が通るのに手順 7 が `Forbidden` で失敗する場合は、セクション 9 のプロキシに関する警告を読み直して
 ください。
 
 ## 13. アップグレード、バックアップ、ロールバック
@@ -611,7 +636,9 @@ docker compose exec -T surrealdb /surreal export \
 素早いリストア経路が欲しければ `surreal-data` ボリュームのスナップショットも取ってください。RabbitMQ は
 バックアップ不要です: そのキューが保持しているのは編集ヒントと実行シグナルで、どちらもスケジューラーが
 再発行し、世代カウンターが冪等にしてくれます — ただしブローカーは*稼働している*必要があります。止まっている
-あいだは定期ジョブが一切走らないからです。
+あいだは定期ジョブが一切走らないからです。Redis にはバックアップするものが何もありません: ボリュームも、
+AOF も RDB もなく、運んでいるのは進行中のライブイベントだけです。新しい空の Redis で起動し直しても、
+subscriber が再接続した時点で元どおりに動きます。
 
 **ログ。** すべて標準出力への構造化された `tracing` 出力で、`GURU_LOG_LEVEL` は完全な `EnvFilter` 文字列
 （`info`、`warn`、`guru_master=debug,orchestration=debug` など）を受け取ります。いつも使っている Docker の
@@ -629,11 +656,13 @@ docker compose exec -T surrealdb /surreal export \
 | TLS Entry の Pod が `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
 | リレーの Pod が `internal CA not initialised` のまま `invalid_pods` に留まる | `manage-tool orchestration init-ca` を一度実行してください。 |
 | master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。4 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
+| master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` は不要です）。 |
 | `consumer` または `cron` が定期的に再起動する | ブローカー喪失時には想定される挙動です: クライアントは再接続しないのでプロセスが終了し、再起動ポリシーが立て直します。master ではなくブローカーを調べてください。 |
 | クリーンインストール直後に `table does not exist` やトランザクションのキャンセルが起きる | SurrealDB が 3.2 より古いか、スキーマが適用されていません。`surrealkit status` を確認してください。 |
 | `surrealkit` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が接続情報を与えていました。常に `--host/--ns/--db/--user/--pass` を渡してください。 |
 | キャンバスの編集がワーカーに届かない | `consumer` が停止しています: 編集フックと古いキャンバスのスイープの両方を実行するため、これなしでは何も導出されません。`consumer` が起動している場合は `cron` を確認してください — 時計がなければスイープは発火せず、`CanvasDirty` が生きている編集だけが導出されます。 |
 | 定期ジョブが動かなくなる（`Offline` にならない、更新も走らない） | RabbitMQ が停止しているか、`cron` が停止しています。両方必要です: 時計がシグナルを発行し、consumer がそれを実行します。 |
+| `Watch*` ストリームがスナップショットを配信しなくなる（同じ内容を unary API で読むと変更が見える） | Redis が停止しているか、そのストリームを提供している `dashboard_grpc` レプリカから到達できません。そのレプリカのログで `live bus connected` を探してください。編集自体は適用され、導出も走ります。止まっているのはライブ配信だけで、再接続すれば再開します。 |
 
 すべてのフラグと変数については[設定](/ja/reference/configuration/)を、「導出」が実際に何をするのかについては
 [ロールアウトモデル](/ja/reference/rollout/)を参照してください。

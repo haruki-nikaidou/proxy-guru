@@ -3,11 +3,12 @@
 //! Handlers are thin: decode ids and specs, call a service, encode the reply. All
 //! rules live in `services`.
 
-use crate::entities::surreal::canvas::{CanvasEntity, CanvasTree, CanvasUiPosition};
+use crate::entities::surreal::canvas::{CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition};
 use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::dns::DnsProvider;
 use crate::entities::surreal::health::{
+    ListNodeHealthAfter, ListServerHealthHistory as ListServerHealthHistoryRows,
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use crate::entities::surreal::node::{
@@ -20,21 +21,95 @@ use crate::entities::surreal::node::{
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
 use crate::entities::surreal::view::{ConfigSnapshot, ListenProtocol, ListenerCap};
+use crate::events::live::{
+    CanvasChangeKind, LiveMessage, NodeHealthLive, ServerHealthLive, live_time,
+};
+use crate::hooks::live::LiveEvent;
 use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
 use crate::services::config::{self, OrchestrationConfigService};
 use crate::services::dns::{self, DnsProviderService, DnsProviderSummary};
 use crate::services::edge::{self, EdgeService};
 use crate::services::health::{self, HealthService};
+use crate::services::live::{self, LiveService, ViewValue};
 use crate::services::node::{self, NodeService};
-use crate::services::rollout::{self, RolloutService};
+use crate::services::rollout::{self, RolloutService, RolloutStatus};
 use crate::services::server::{self, ServerService};
 use crate::services::topology::{ProblemKind, ProblemSeverity, TopologyProblem};
 use crate::utils::ids;
+use auth::services::session::SessionService;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration as pb;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+
+/// How many events a stream may have queued before the sender waits.
+///
+/// Small on purpose. A canvas or rollout snapshot is a whole picture, so a
+/// client that cannot keep up wants the newest one, not a backlog: the shared
+/// view coalesces while this channel is full, and the stream then sends one
+/// up-to-date snapshot instead of four stale ones.
+const STREAM_CAPACITY: usize = 4;
+
+/// The opening window of a node-health stream when the client sets no `limit`.
+/// Smaller than the history RPC's default: a live view shows recent events, and
+/// anything older is what `ListNodeHealthHistory` is for.
+const DEFAULT_WATCH_NODE_HISTORY: i64 = 50;
+
+/// How many node records one recovery read fetches. The loop pages until a
+/// short page, so this bounds memory per round, not how much a stream can
+/// catch up on.
+const NODE_RECOVERY_PAGE: i64 = 200;
+
+/// How many times a stream's recovery read is retried before it gives up and
+/// ends the stream. The `Resync`/`Lagged` signal that triggered the read is
+/// already consumed, so a swallowed failure would leave the gap open until the
+/// next bus reconnect — which may be hours.
+const RECOVERY_ATTEMPTS: usize = 3;
+const RECOVERY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Runs a database read up to [`RECOVERY_ATTEMPTS`] times, returning the last
+/// error. The closure is re-invoked per attempt because the query owns its
+/// bindings.
+async fn retry_read<T, E, F, Fut>(mut read: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempt = 1;
+    loop {
+        match read().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < RECOVERY_ATTEMPTS => {
+                tracing::warn!(%error, attempt, "a live stream's recovery read failed; retrying");
+                attempt = attempt.saturating_add(1);
+                tokio::time::sleep(RECOVERY_BACKOFF).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// One page of a node-health recovery read, retried.
+async fn refetch_node_health(
+    db: &wakuwaku::surreal::SurrealProcessor,
+    node: &crate::entities::surreal::node::NodeId,
+    after: DateTime<Utc>,
+    after_id: Option<&str>,
+) -> Result<Vec<NodeHealthRecordEntity>, surrealdb::Error> {
+    retry_read(|| {
+        db.process(ListNodeHealthAfter {
+            node: node.clone(),
+            after,
+            after_id: after_id.map(ids::node_health_record_id),
+            limit: NODE_RECOVERY_PAGE,
+        })
+    })
+    .await
+}
 
 #[derive(Clone)]
 pub struct OrchestrationGrpc {
@@ -47,6 +122,75 @@ pub struct OrchestrationGrpc {
     pub dns: DnsProviderService,
     pub certificates: AcmeService,
     pub configs: OrchestrationConfigService,
+    pub live: LiveService,
+    /// Streams re-validate the session that opened them on every keep-alive
+    /// tick: a long-lived stream must not outlive the login behind it.
+    pub sessions: SessionService,
+}
+
+/// A live stream's clock: it paces the keep-alives and re-checks the session.
+struct StreamTicker {
+    keepalive: tokio::time::Interval,
+    sessions: SessionService,
+    session_id: String,
+}
+
+impl StreamTicker {
+    fn new(sessions: SessionService, session_id: String, period: std::time::Duration) -> Self {
+        // `interval` fires immediately; starting one period out does not. The
+        // difference is load-bearing: an immediate tick would race the opening
+        // snapshot and a client could see a keep-alive as its first message.
+        // An unrepresentable instant means "now", which only costs one extra
+        // keep-alive on a clock nobody has.
+        let start = tokio::time::Instant::now()
+            .checked_add(period)
+            .unwrap_or_else(tokio::time::Instant::now);
+        let mut keepalive = tokio::time::interval_at(start, period);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        Self {
+            keepalive,
+            sessions,
+            session_id,
+        }
+    }
+
+    /// Waits for the next tick, then re-authenticates. `Err` ends the stream.
+    ///
+    /// A database failure is *not* an ending: cutting every open dashboard over
+    /// one failed read would turn a blip into a fleet-wide reconnect storm. A
+    /// session that resolves to nothing is, because that is a logout or an
+    /// expiry and the stream has no right to the data any more.
+    async fn tick(&mut self) -> Result<(), Status> {
+        self.keepalive.tick().await;
+        match self
+            .sessions
+            .process(auth::services::session::AuthenticateSession {
+                session_id: self.session_id.clone(),
+            })
+            .await
+        {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(Status::unauthenticated("session ended")),
+            Err(error) => {
+                tracing::warn!(%error, "re-validating a live stream's session failed");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The session id a live stream is tied to.
+///
+/// Read from the metadata rather than the injected identity because the
+/// identity does not carry it. `ViewWorkspace` already refuses a machine
+/// caller, so an API key cannot open a stream and then find no session here.
+fn session_id<T>(request: &Request<T>) -> Result<String, Status> {
+    request
+        .metadata()
+        .get(auth::rpc::middleware::SESSION_ID_METADATA)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| Status::unauthenticated("live streams require a session"))
 }
 
 impl OrchestrationGrpc {
@@ -227,6 +371,112 @@ fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
         not_after: time(certificate.not_after),
         last_error: certificate.last_error.clone().unwrap_or_default(),
         last_attempt_at: time(certificate.last_attempt_at),
+    }
+}
+
+fn contents_to_proto(contents: &CanvasContents) -> pb::GetCanvasReply {
+    pb::GetCanvasReply {
+        canvas: Some(canvas_to_proto(&contents.canvas)),
+        servers: contents.servers.iter().map(server_to_proto).collect(),
+        nodes: contents
+            .nodes
+            .iter()
+            .map(|n| node_to_proto(n, &contents.import_targets))
+            .collect(),
+        edges: contents.edges.iter().map(edge_to_proto).collect(),
+        ancestors: contents.ancestors.iter().map(canvas_to_proto).collect(),
+    }
+}
+
+fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusReply {
+    pb::GetServerRolloutStatusReply {
+        desired: status.desired.as_ref().map(snapshot_to_proto),
+        in_flight: status.in_flight.as_ref().map(snapshot_to_proto),
+        applied: status.applied.as_ref().map(snapshot_to_proto),
+        apply_error: status.apply_error.unwrap_or_default(),
+        derive_error: status.derive_error.unwrap_or_default(),
+        waiting_for_server_ids: status
+            .waiting_for
+            .iter()
+            .map(|id| ids::record_key(&id.0))
+            .collect(),
+        invalid_pods: status
+            .invalid_pods
+            .into_iter()
+            .map(|pod| pb::InvalidPod {
+                node_id: ids::record_key(&pod.node.0),
+                pod_name: pod.pod,
+                listen: pod.listen,
+                error: pod.error,
+            })
+            .collect(),
+        derivation_pending: status.derivation_pending,
+        last_seen_at: status
+            .last_seen_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
+    }
+}
+
+/// What a live canvas snapshot says caused it.
+fn cause_to_proto(cause: Option<&LiveMessage>) -> (i32, Vec<String>) {
+    match cause {
+        Some(LiveMessage::CanvasChanged { kind, ids, .. }) => {
+            (canvas_change_kind_to_proto(*kind), ids.clone())
+        }
+        Some(LiveMessage::ServerHealth { server, .. }) => (
+            pb::CanvasChangeKind::ServerHealthChanged.into(),
+            vec![server.clone()],
+        ),
+        // The opening snapshot, a refresh after a bus reconnect, or a cause the
+        // canvas view does not describe in these terms.
+        _ => (pb::CanvasChangeKind::Unspecified.into(), Vec::new()),
+    }
+}
+
+fn canvas_change_kind_to_proto(kind: CanvasChangeKind) -> i32 {
+    match kind {
+        CanvasChangeKind::CanvasUpdated => pb::CanvasChangeKind::CanvasUpdated,
+        CanvasChangeKind::CanvasDeleted => pb::CanvasChangeKind::CanvasDeleted,
+        CanvasChangeKind::ServerCreated => pb::CanvasChangeKind::ServerCreated,
+        CanvasChangeKind::ServerUpdated => pb::CanvasChangeKind::ServerUpdated,
+        CanvasChangeKind::ServerMoved => pb::CanvasChangeKind::ServerMoved,
+        CanvasChangeKind::ServerDeleted => pb::CanvasChangeKind::ServerDeleted,
+        CanvasChangeKind::ServerIpChanged => pb::CanvasChangeKind::ServerIpChanged,
+        CanvasChangeKind::NodeCreated => pb::CanvasChangeKind::NodeCreated,
+        CanvasChangeKind::NodeReplaced => pb::CanvasChangeKind::NodeReplaced,
+        CanvasChangeKind::NodeMetaUpdated => pb::CanvasChangeKind::NodeMetaUpdated,
+        CanvasChangeKind::NodeRetired => pb::CanvasChangeKind::NodeRetired,
+        CanvasChangeKind::NodeDeleted => pb::CanvasChangeKind::NodeDeleted,
+        CanvasChangeKind::EdgeConnected => pb::CanvasChangeKind::EdgeConnected,
+        CanvasChangeKind::EdgeRetired => pb::CanvasChangeKind::EdgeRetired,
+        CanvasChangeKind::EdgeDeleted => pb::CanvasChangeKind::EdgeDeleted,
+    }
+    .into()
+}
+
+/// A bus health record as the wire type. The live payload carries the same
+/// fields as the row, so the stream never has to read the record back.
+fn server_health_live_to_proto(server: &str, record: &ServerHealthLive) -> pb::ServerHealthRecord {
+    pb::ServerHealthRecord {
+        id: record.id.clone(),
+        server_id: server.to_string(),
+        status: server_health_to_proto(record.status),
+        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
+        upload_bytes: record.upload_bytes,
+        download_bytes: record.download_bytes,
+        current_connections: record.current_connections,
+        max_connections: record.max_connections,
+    }
+}
+
+fn node_health_live_to_proto(record: &NodeHealthLive) -> pb::NodeHealthRecord {
+    pb::NodeHealthRecord {
+        id: record.id.clone(),
+        node_id: record.node.clone(),
+        status: node_health_to_proto(record.status),
+        message: record.message.clone(),
+        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
     }
 }
 
@@ -824,17 +1074,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 canvas: ids::canvas_id(&input.canvas_id),
             })
             .await?;
-        Ok(Response::new(pb::GetCanvasReply {
-            canvas: Some(canvas_to_proto(&contents.canvas)),
-            servers: contents.servers.iter().map(server_to_proto).collect(),
-            nodes: contents
-                .nodes
-                .iter()
-                .map(|n| node_to_proto(n, &contents.import_targets))
-                .collect(),
-            edges: contents.edges.iter().map(edge_to_proto).collect(),
-            ancestors: contents.ancestors.iter().map(canvas_to_proto).collect(),
-        }))
+        Ok(Response::new(contents_to_proto(&contents)))
     }
 
     async fn get_canvas_tree(
@@ -1208,33 +1448,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 server: ids::server_id(&input.server_id),
             })
             .await?;
-        Ok(Response::new(pb::GetServerRolloutStatusReply {
-            desired: status.desired.as_ref().map(snapshot_to_proto),
-            in_flight: status.in_flight.as_ref().map(snapshot_to_proto),
-            applied: status.applied.as_ref().map(snapshot_to_proto),
-            apply_error: status.apply_error.unwrap_or_default(),
-            derive_error: status.derive_error.unwrap_or_default(),
-            waiting_for_server_ids: status
-                .waiting_for
-                .iter()
-                .map(|id| ids::record_key(&id.0))
-                .collect(),
-            invalid_pods: status
-                .invalid_pods
-                .into_iter()
-                .map(|pod| pb::InvalidPod {
-                    node_id: ids::record_key(&pod.node.0),
-                    pod_name: pod.pod,
-                    listen: pod.listen,
-                    error: pod.error,
-                })
-                .collect(),
-            derivation_pending: status.derivation_pending,
-            last_seen_at: status
-                .last_seen_at
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_default(),
-        }))
+        Ok(Response::new(rollout_status_to_proto(status)))
     }
 
     async fn forget_server_applied(
@@ -1446,5 +1660,502 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         Ok(Response::new(pb::SetOrchestrationConfigReply {
             config: Some(config_to_proto(document)?),
         }))
+    }
+
+    type WatchCanvasStream = ReceiverStream<Result<pb::CanvasEvent, Status>>;
+
+    /// A full refreshed snapshot per change, coalesced.
+    ///
+    /// The view behind this is shared by every watcher of the canvas, so N open
+    /// dashboards cost one reload per change. A client that stops reading gets
+    /// fewer, newer snapshots rather than a backlog — which is why there is
+    /// nothing for it to re-request.
+    async fn watch_canvas(
+        &self,
+        request: Request<pb::WatchCanvasRequest>,
+    ) -> Result<Response<Self::WatchCanvasStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let handle = self
+            .live
+            .process(live::WatchCanvas {
+                actor,
+                canvas: ids::canvas_id(&input.canvas_id),
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        tokio::spawn(async move {
+            let mut handle = handle;
+            let ended: Result<(), Status> = async {
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::CanvasEvent {
+                                event: Some(pb::canvas_event::Event::KeepAlive(pb::KeepAlive {})),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        changed = handle.rx.changed() => {
+                            if changed.is_err() {
+                                return Ok(());
+                            }
+                            let value = handle.rx.borrow_and_update().clone();
+                            match value {
+                                ViewValue::Loading => {}
+                                ViewValue::Missing => {
+                                    return Err(Status::not_found("canvas not found"));
+                                }
+                                ViewValue::Ready { state, cause } => {
+                                    let (kind, affected_ids) = cause_to_proto(cause.as_deref());
+                                    let event = pb::CanvasEvent {
+                                        event: Some(pb::canvas_event::Event::Snapshot(
+                                            pb::CanvasSnapshot {
+                                                generation: state
+                                                    .contents
+                                                    .ancestors
+                                                    .first()
+                                                    .unwrap_or(&state.contents.canvas)
+                                                    .generation,
+                                                cause: kind,
+                                                affected_ids,
+                                                contents: Some(contents_to_proto(&state.contents)),
+                                            },
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchRolloutsStream = ReceiverStream<Result<pb::RolloutEvent, Status>>;
+
+    async fn watch_rollouts(
+        &self,
+        request: Request<pb::WatchRolloutsRequest>,
+    ) -> Result<Response<Self::WatchRolloutsStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let handle = self
+            .live
+            .process(live::WatchRollouts {
+                actor,
+                canvas: ids::canvas_id(&input.canvas_id),
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        tokio::spawn(async move {
+            let mut handle = handle;
+            let ended: Result<(), Status> = async {
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::RolloutEvent {
+                                event: Some(pb::rollout_event::Event::KeepAlive(pb::KeepAlive {})),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        changed = handle.rx.changed() => {
+                            if changed.is_err() {
+                                return Ok(());
+                            }
+                            let value = handle.rx.borrow_and_update().clone();
+                            match value {
+                                ViewValue::Loading => {}
+                                ViewValue::Missing => {
+                                    return Err(Status::not_found("canvas not found"));
+                                }
+                                ViewValue::Ready { state, .. } => {
+                                    let event = pb::RolloutEvent {
+                                        event: Some(pb::rollout_event::Event::Snapshot(
+                                            pb::RolloutSnapshot {
+                                                servers: state
+                                                    .servers
+                                                    .iter()
+                                                    .map(|s| pb::ServerRollout {
+                                                        server_id: ids::record_key(&s.server.id.0),
+                                                        canvas_id: ids::record_key(
+                                                            &s.server.canvas.0,
+                                                        ),
+                                                        status: Some(rollout_status_to_proto(
+                                                            s.status.clone(),
+                                                        )),
+                                                    })
+                                                    .collect(),
+                                            },
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchServerHealthStream = ReceiverStream<Result<pb::ServerHealthEvent, Status>>;
+
+    /// A record log, not a view: every accepted report is forwarded once.
+    ///
+    /// `last` is the watermark that makes that true across both paths — a
+    /// duplicate bus message and a post-reconnect refetch are both filtered by
+    /// it. It is a timestamp alone, unlike the node stream's `(time, id)` pair,
+    /// because a server writes at most one `server_health_record` per event: two
+    /// rows for one server can only share a `report_time` if two writes landed in
+    /// the same microsecond, which nothing in the fleet does. The node stream
+    /// needs the pair because one event writes a whole batch at one timestamp.
+    async fn watch_server_health(
+        &self,
+        request: Request<pb::WatchServerHealthRequest>,
+    ) -> Result<Response<Self::WatchServerHealthStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let (since, _) = history_window(&input.since, "")?;
+        let server = ids::server_id(&input.server_id);
+        let server_key = ids::record_key(&server.0);
+        let watch = self
+            .live
+            .process(live::WatchServerHealth {
+                actor,
+                server: server.clone(),
+                since,
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        let db = self.live.db.clone();
+        tokio::spawn(async move {
+            let mut events = watch.events;
+            let mut last = watch
+                .records
+                .last()
+                .map(|record| record.report_time)
+                .unwrap_or(since);
+            let snapshot = pb::ServerHealthEvent {
+                event: Some(pb::server_health_event::Event::Snapshot(
+                    pb::ServerHealthSnapshot {
+                        status: server_health_to_proto(watch.server.health_status),
+                        last_seen_at: watch
+                            .server
+                            .last_seen_at
+                            .map(|t| t.to_rfc3339())
+                            .unwrap_or_default(),
+                        records: watch
+                            .records
+                            .iter()
+                            .map(server_health_record_to_proto)
+                            .collect(),
+                    },
+                )),
+            };
+            let ended: Result<(), Status> = async {
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    return Ok(());
+                }
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::ServerHealthEvent {
+                                event: Some(pb::server_health_event::Event::KeepAlive(
+                                    pb::KeepAlive {},
+                                )),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        received = events.recv() => match received {
+                            Ok(LiveEvent::Message(message)) => {
+                                let LiveMessage::ServerHealth { server: id, record, .. } = &*message
+                                else {
+                                    continue;
+                                };
+                                if *id != server_key {
+                                    continue;
+                                }
+                                let time = live_time(record.report_time_unix_micros);
+                                if time <= last {
+                                    continue;
+                                }
+                                last = time;
+                                let event = pb::ServerHealthEvent {
+                                    event: Some(pb::server_health_event::Event::Record(
+                                        server_health_live_to_proto(&server_key, record),
+                                    )),
+                                };
+                                if tx.send(Ok(event)).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            // The bus may have skipped records; the database has
+                            // them all, so read forward from the watermark.
+                            Ok(LiveEvent::Resync)
+                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                let rows = match retry_read(|| {
+                                    db.process(ListServerHealthHistoryRows {
+                                        server: server.clone(),
+                                        start: last,
+                                        end: Utc::now(),
+                                    })
+                                })
+                                .await
+                                {
+                                    Ok(rows) => rows,
+                                    // The signal that got us here is consumed;
+                                    // swallowing the failure would leave the gap
+                                    // open until the next reconnect, so end the
+                                    // stream and let the client come back.
+                                    Err(error) => {
+                                        return Err(Status::internal(format!(
+                                            "refetching server health failed: {error}"
+                                        )));
+                                    }
+                                };
+                                for record in &rows {
+                                    if record.report_time <= last {
+                                        continue;
+                                    }
+                                    last = record.report_time;
+                                    let event = pb::ServerHealthEvent {
+                                        event: Some(pb::server_health_event::Event::Record(
+                                            server_health_record_to_proto(record),
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                return Ok(());
+                            }
+                        },
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchNodeHealthStream = ReceiverStream<Result<pb::NodeHealthEvent, Status>>;
+
+    /// Node records, newest-first in the snapshot and ascending afterwards.
+    async fn watch_node_health(
+        &self,
+        request: Request<pb::WatchNodeHealthRequest>,
+    ) -> Result<Response<Self::WatchNodeHealthStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let node = ids::node_id(&input.node_id);
+        let node_key = ids::record_key(&node.0);
+        let watch = self
+            .live
+            .process(live::WatchNodeHealth {
+                actor,
+                node: node.clone(),
+                limit: if input.limit == 0 {
+                    DEFAULT_WATCH_NODE_HISTORY
+                } else {
+                    i64::from(input.limit)
+                },
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        let db = self.live.db.clone();
+        tokio::spawn(async move {
+            let mut events = watch.events;
+            // The history comes back newest first, so the cursor is its head.
+            // `(report_time, id)` rather than the timestamp alone: one event
+            // writes a batch of rows that share a timestamp, and the recovery
+            // read pages on this exact tuple.
+            let mut cursor: (DateTime<Utc>, Option<String>) = watch
+                .records
+                .first()
+                .map(|record| (record.report_time, Some(ids::record_key(&record.id.0))))
+                .unwrap_or((DateTime::UNIX_EPOCH, None));
+            let snapshot = pb::NodeHealthEvent {
+                event: Some(pb::node_health_event::Event::Snapshot(
+                    pb::NodeHealthSnapshot {
+                        status: watch
+                            .records
+                            .first()
+                            .map(|record| node_health_to_proto(record.status))
+                            .unwrap_or_else(|| pb::NodeHealthStatus::Unspecified.into()),
+                        records: watch
+                            .records
+                            .iter()
+                            .map(node_health_record_to_proto)
+                            .collect(),
+                    },
+                )),
+            };
+            let ended: Result<(), Status> = async {
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    return Ok(());
+                }
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::NodeHealthEvent {
+                                event: Some(pb::node_health_event::Event::KeepAlive(
+                                    pb::KeepAlive {},
+                                )),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        received = events.recv() => match received {
+                            Ok(LiveEvent::Message(message)) => {
+                                let LiveMessage::NodeHealth { records } = &*message else {
+                                    continue;
+                                };
+                                // Ascending by the same total order the
+                                // recovery read pages on, so a batch that
+                                // arrives in any order cannot advance the
+                                // cursor past one of its own records.
+                                let mut batch: Vec<&NodeHealthLive> =
+                                    records.iter().filter(|r| r.node == node_key).collect();
+                                batch.sort_by(|a, b| {
+                                    (a.report_time_unix_micros, &a.id)
+                                        .cmp(&(b.report_time_unix_micros, &b.id))
+                                });
+                                for record in batch {
+                                    let time = live_time(record.report_time_unix_micros);
+                                    // The whole tuple: one event writes a batch
+                                    // sharing a timestamp, and comparing the
+                                    // time alone would drop all but the first.
+                                    if (time, Some(&record.id)) <= (cursor.0, cursor.1.as_ref()) {
+                                        continue;
+                                    }
+                                    cursor = (time, Some(record.id.clone()));
+                                    let event = pb::NodeHealthEvent {
+                                        event: Some(pb::node_health_event::Event::Record(
+                                            node_health_live_to_proto(record),
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            // The bus may have skipped records. Page forward
+                            // from the cursor until a short page proves there is
+                            // nothing left: a gap wider than one page must not
+                            // leave the older rows behind, which is exactly what
+                            // a newest-first capped read would do.
+                            Ok(LiveEvent::Resync)
+                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                loop {
+                                    let rows = match refetch_node_health(
+                                        &db,
+                                        &node,
+                                        cursor.0,
+                                        cursor.1.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(rows) => rows,
+                                        // Retried already; the signal that got
+                                        // us here is consumed, so carrying on
+                                        // would leave the gap open until the
+                                        // next reconnect. End the stream and let
+                                        // the client come back instead.
+                                        Err(error) => {
+                                            return Err(Status::internal(format!(
+                                                "refetching node health failed: {error}"
+                                            )));
+                                        }
+                                    };
+                                    let short = rows.len() < NODE_RECOVERY_PAGE as usize;
+                                    for record in &rows {
+                                        cursor =
+                                            (record.report_time, Some(ids::record_key(&record.id.0)));
+                                        let event = pb::NodeHealthEvent {
+                                            event: Some(pb::node_health_event::Event::Record(
+                                                node_health_record_to_proto(record),
+                                            )),
+                                        };
+                                        if tx.send(Ok(event)).await.is_err() {
+                                            return Ok(());
+                                        }
+                                    }
+                                    if short {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                return Ok(());
+                            }
+                        },
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }

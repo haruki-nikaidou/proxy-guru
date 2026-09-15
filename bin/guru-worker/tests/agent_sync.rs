@@ -35,7 +35,7 @@ use orchestration::services::canvas::{CanvasService, CreateCanvas};
 use orchestration::services::edge::{Connect, EdgeService};
 use orchestration::services::health::HealthService;
 use orchestration::services::node::{CreateNode, NodeService, ReplaceNodeSpec};
-use orchestration::services::rollout::DirtyNotifier;
+use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::ids;
@@ -173,7 +173,7 @@ async fn serve(
         db: db.clone(),
         hub: hub.clone(),
         lease,
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
     };
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let config = OrchestrationConfig::default();
@@ -182,6 +182,7 @@ async fn serve(
         health: HealthService {
             db: db.clone(),
             config: config.clone(),
+            notifier: Notifier::default(),
         },
         ca: CaService {
             db: db.clone(),
@@ -222,6 +223,7 @@ async fn serve(
         db: db.clone(),
         secrets,
         config,
+        notifier: Notifier::default(),
     };
     let sweeper_token = shutdown.clone();
     tokio::spawn(async move {
@@ -253,21 +255,21 @@ struct Canvas {
 async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::error::Error>> {
     let canvases = CanvasService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
     };
     let servers = ServerService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     let nodes = NodeService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     let edges = EdgeService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
 
@@ -481,7 +483,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
     let taken_port = taken.local_addr()?.port();
     let nodes = NodeService {
         db: master.db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     nodes

@@ -25,6 +25,8 @@ tonic = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 amqprs = { workspace = true }
+# The live dashboard bus: pub/sub between master replicas.
+redis = { workspace = true }
 
 # Shared dependencies
 surrealdb = { workspace = true }

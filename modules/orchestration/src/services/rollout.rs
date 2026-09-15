@@ -1,59 +1,27 @@
-//! Rollout status, config reads, and the dirty-canvas notifier.
+//! Rollout status and config reads.
 
-use crate::entities::surreal::canvas::{CanvasId, FindRootCanvas};
-use crate::entities::surreal::server::{FindServerById, ServerId};
+use crate::entities::surreal::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
+use crate::entities::surreal::server::{FindServerById, ServerEntity, ServerId};
 use crate::entities::surreal::topology::FindCanvasOfServer;
 use crate::entities::surreal::view::{
     ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, InvalidPod,
+    ServerConfigViewEntity,
 };
-use crate::events::CanvasDirty;
+use crate::events::live::RolloutScope;
 use crate::services::OrchestrationError;
+use crate::services::notify::Notifier;
 use crate::utils::ids::record_key;
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
-use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
 use wakuwaku::surreal::SurrealProcessor;
-
-/// Tells the derivation hook that a canvas has pending edits.
-///
-/// Publishing is mandatory in every serving mode: since periodic work became
-/// AMQP-driven, the `derive_stale_canvases` sweep is itself a message from the
-/// broker, so a master with no broker derives nothing at all. `amqp: None` —
-/// and with it `Default` — is for tests that drive `CanvasDeriver` directly
-/// instead of through a consumer, not for a broker-less deployment.
-///
-/// Correctness still lives in the canvas generation counters — the write that
-/// precedes the publish has already bumped the generation, and the hook
-/// re-derives anything whose generation ran ahead of its derivation. That is
-/// why a publish failure is logged and swallowed rather than failing the
-/// operator's edit: what a lost message costs is latency, provided delivery
-/// resumes.
-#[derive(Clone, Default)]
-pub struct DirtyNotifier {
-    pub amqp: Option<AmqpPool>,
-}
-
-impl DirtyNotifier {
-    pub async fn notify(&self, canvas: &CanvasId) {
-        let Some(pool) = &self.amqp else {
-            return;
-        };
-        let event = CanvasDirty {
-            canvas: record_key(&canvas.0),
-        };
-        if let Err(e) = event.send(pool).await {
-            tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once the broker is back");
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct RolloutService {
     pub db: SurrealProcessor,
-    pub notifier: DirtyNotifier,
+    pub notifier: Notifier,
 }
 
 pub struct GetServerConfig {
@@ -131,17 +99,32 @@ impl Processor<GetServerRolloutStatus> for RolloutService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        Ok(RolloutStatus {
-            desired: view.desired,
-            in_flight: view.in_flight,
-            applied: view.applied,
-            apply_error: view.apply_error,
-            derive_error: view.derive_error,
-            invalid_pods: view.invalid_pods,
-            waiting_for: view.waiting_for,
-            derivation_pending: canvas.generation > canvas.derived_generation,
-            last_seen_at: server.last_seen_at,
-        })
+        Ok(rollout_status(view, &canvas, &server))
+    }
+}
+
+/// Assembles one server's rollout status from the three rows it is spread over.
+///
+/// Shared with the shared rollouts view, which reads a whole tree at once: the
+/// mapping has to agree with `GetServerRolloutStatus` field for field, or a
+/// stream would contradict the unary call the dashboard polled before it.
+/// `canvas` must be the *root* of the server's tree — only the root carries a
+/// meaningful generation pair.
+pub(crate) fn rollout_status(
+    view: ServerConfigViewEntity,
+    canvas: &CanvasEntity,
+    server: &ServerEntity,
+) -> RolloutStatus {
+    RolloutStatus {
+        desired: view.desired,
+        in_flight: view.in_flight,
+        applied: view.applied,
+        apply_error: view.apply_error,
+        derive_error: view.derive_error,
+        invalid_pods: view.invalid_pods,
+        waiting_for: view.waiting_for,
+        derivation_pending: canvas.generation > canvas.derived_generation,
+        last_seen_at: server.last_seen_at,
     }
 }
 
@@ -172,6 +155,7 @@ impl Processor<ForgetServerApplied> for RolloutService {
             return Err(OrchestrationError::PermissionDenied);
         }
         let canvas = canvas_of_server(&self.db, &input.server).await?;
+        let server = record_key(&input.server.0);
         self.db
             .process(ForgetServerAppliedRow {
                 server: input.server,
@@ -179,6 +163,9 @@ impl Processor<ForgetServerApplied> for RolloutService {
             })
             .await?;
         self.notifier.notify(&canvas).await;
+        self.notifier
+            .rollout_changed(RolloutScope::Server(server))
+            .await;
         Ok(())
     }
 }

@@ -25,7 +25,7 @@ use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::services::canvas::{CanvasService, CreateCanvas};
 use orchestration::services::edge::{Connect, EdgeService};
 use orchestration::services::node::{CreateNode, NodeService};
-use orchestration::services::rollout::DirtyNotifier;
+use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
@@ -74,14 +74,16 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
             db: db.clone(),
             secrets: SecretKey::from_base64(&SecretKey::generate_base64())?,
             config: Default::default(),
+            notifier: Notifier::default(),
         }),
     )
     .await?;
 
     // Services publish; nothing in this test derives anything itself, and no sweep
     // is running, so only the broker can make the view move.
-    let notifier = DirtyNotifier {
+    let notifier = Notifier {
         amqp: Some(pool.clone()),
+        live: None,
     };
     let canvases = CanvasService {
         db: db.clone(),
@@ -239,6 +241,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
         db: db.clone(),
         secrets: SecretKey::from_base64(&SecretKey::generate_base64())?,
         config: OrchestrationConfig::default(),
+        notifier: Notifier::default(),
     };
     let channel =
         <CanvasDeriver as AmqpMessageProcessor<DeriveStaleCanvasesSignal>>::ensure_queue(&pool)
@@ -252,21 +255,21 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
     // way it would be after a lost `CanvasDirty` or a broker outage.
     let canvases = CanvasService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
     };
     let servers = ServerService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     let nodes = NodeService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     let edges = EdgeService {
         db: db.clone(),
-        notifier: DirtyNotifier::default(),
+        notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
     let canvas = canvases
