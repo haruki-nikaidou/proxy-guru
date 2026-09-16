@@ -41,7 +41,6 @@ use crate::services::OrchestrationError;
 use crate::services::derive::{
     DerivationCertificates, DerivedConfig, certificate_union, derive_server_config,
 };
-use crate::utils::ids::record_key;
 use guru_worker_config::{Config, Forwarding};
 use std::collections::HashSet;
 
@@ -96,11 +95,11 @@ pub fn converge(
         }
     }
 
-    let own_key = record_key(&own.server.0);
+    let own_key = own.server.to_string();
     #[allow(clippy::mutable_key_type)]
     let mut referenced: HashSet<ListenerCap> = HashSet::new();
     for view in views {
-        let is_own = record_key(&view.server.0) == own_key;
+        let is_own = view.server.to_string() == own_key;
         let snapshots = [
             Some(&view.in_flight),
             Some(&view.applied),
@@ -119,7 +118,7 @@ pub fn converge(
 
     let mut merged: Vec<(Forwarding, ForwardingDeps)> = Vec::new();
     let mut waiting: Vec<ServerId> = Vec::new();
-    let mut waiting_keys: HashSet<String> = HashSet::new();
+    let mut waiting_keys: HashSet<ServerId> = HashSet::new();
 
     for (forwarding, deps) in ideal.config.forwardings.into_iter().zip(ideal.forwardings) {
         let unready: Vec<&ListenerCap> = deps
@@ -132,7 +131,7 @@ pub fn converge(
             continue;
         }
         for cap in unready {
-            if waiting_keys.insert(cap.server_key()) {
+            if waiting_keys.insert(cap.server.clone()) {
                 waiting.push(cap.server.clone());
             }
         }
@@ -199,7 +198,7 @@ pub fn converge(
             });
         }
     }
-    waiting.sort_by_key(|s| record_key(&s.0));
+    waiting.sort_by_key(|s| s.to_string());
 
     let (forwardings, deps): (Vec<_>, Vec<_>) = merged.into_iter().unzip();
     let certificates = certificate_union(&deps);

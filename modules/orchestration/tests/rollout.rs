@@ -691,10 +691,9 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener(pool: sqlx::PgPool
     .await?
     .into_iter()
     .find(|e| {
-        [&e.source, &e.target].iter().any(|p| {
-            orchestration::utils::ids::record_key(&p.0)
-                == orchestration::utils::ids::record_key(&f.to_osaka_listen.0)
-        })
+        [&e.source, &e.target]
+            .iter()
+            .any(|p| p.to_string() == f.to_osaka_listen.to_string())
     })
     .ok_or("the relay listen edge must exist")?;
     w.edges

@@ -24,7 +24,6 @@
 //! of at the next poll. The database, not this process, is the source of truth.
 
 use crate::entities::db::view::{ListServerWatchState, ServerWatchState};
-use crate::utils::ids::record_key;
 use base::db::Db;
 use kanau::processor::Processor;
 use std::collections::HashMap;
@@ -209,7 +208,7 @@ impl WatchHub {
     }
 
     pub(crate) fn publish(&self, state: &ServerWatchState) {
-        let key = record_key(&state.id.0);
+        let key = state.id.to_string();
         let fence = WatchFence {
             generation: state.refresh_key_generation,
             epoch: state.watch_epoch,

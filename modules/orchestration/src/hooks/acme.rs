@@ -30,7 +30,6 @@ use crate::events::RenewCertificatesSignal;
 use crate::services::acme::{
     AcmeService, EnsureRequestedCertificates, IssueCertificate, IssueOutcome,
 };
-use crate::utils::ids::record_key;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use wakuwaku::amqp::AmqpMessageProcessor;
@@ -69,7 +68,7 @@ pub async fn renew_due(acme: &AcmeService) {
         }
     };
     for row in due {
-        let id = record_key(&row.id.0);
+        let id = row.id.to_string();
         match acme
             .db
             .process(ClaimCertificateAttempt {

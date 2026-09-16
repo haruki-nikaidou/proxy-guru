@@ -23,7 +23,6 @@ use orchestration::services::edge::Connect;
 use orchestration::services::node::{CreateNode, ReplaceNodeSpec, RetireNode};
 use orchestration::services::server::{AddressOverrides, CreateServer};
 use orchestration::services::topology::ProblemKind;
-use orchestration::utils::ids::record_key;
 
 async fn canvas(w: &World, name: &str) -> Result<CanvasEntity, Box<dyn std::error::Error>> {
     Ok(w.canvases
@@ -171,7 +170,7 @@ async fn creating_and_retiring_an_export_reshapes_the_import_ports(
     assert!(importer.ports.is_empty(), "no exports yet, no ports");
 
     let e1 = create(&w, &sub.id, "e1", export_out()).await?;
-    let e1_key = record_key(&e1.node.id.0);
+    let e1_key = e1.node.id.to_string();
     assert_eq!(
         ports_of(&w, &importer.node.id).await,
         vec![(
@@ -388,7 +387,7 @@ async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_cross
     let sub_out = create(&w, &sub.id, "sub_out", export_out()).await?;
     connect(
         &w,
-        &port_of(&import_subsub, &record_key(&subsub_out.node.id.0)),
+        &port_of(&import_subsub, subsub_out.node.id.as_ref()),
         &port_of(&sub_out, "export"),
     )
     .await?;
@@ -398,7 +397,7 @@ async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_cross
     connect(&w, &port_of(&pod_a, "listen"), &port_of(&entry_a, "listen")).await?;
     connect(
         &w,
-        &port_of(&import_sub, &record_key(&sub_out.node.id.0)),
+        &port_of(&import_sub, sub_out.node.id.as_ref()),
         &port_of(&pod_a, "destination"),
     )
     .await?;

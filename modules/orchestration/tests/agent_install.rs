@@ -16,7 +16,6 @@ use orchestration::services::agent::{
 use orchestration::services::server::{
     GetAgentRelease, IssueServerAgentInstall, RequestAgentUpdate,
 };
-use orchestration::utils::ids::record_key;
 
 /// A world whose config knows the public origin, with one published release.
 async fn published_world(pool: sqlx::PgPool) -> Result<World, Box<dyn std::error::Error>> {
@@ -86,7 +85,7 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server(
     );
     for expected in [
         "GURU_MASTER=https://guru.test",
-        &format!("GURU_SERVER_ID={}", record_key(&a.id.0)),
+        &format!("GURU_SERVER_ID={}", a.id),
         "GURU_UNIT=hk-edge-1",
         "GURU_AGENT_VERSION=0.2.0-beta",
         &format!("GURU_AGENT_SHA256={}", "c".repeat(64)),

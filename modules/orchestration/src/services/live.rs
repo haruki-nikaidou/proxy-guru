@@ -34,7 +34,6 @@ use crate::hooks::live::{LiveBus, LiveEvent};
 use crate::services::OrchestrationError;
 use crate::services::health::DEFAULT_NODE_HISTORY_LIMIT;
 use crate::services::rollout::{RolloutStatus, rollout_status};
-use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
@@ -332,7 +331,7 @@ impl LiveView for CanvasView {
 }
 
 fn collect_tree(tree: &CanvasTree, out: &mut HashSet<String>) {
-    out.insert(record_key(&tree.canvas.id.0));
+    out.insert(tree.canvas.id.to_string());
     for child in &tree.children {
         collect_tree(child, out);
     }
@@ -370,7 +369,7 @@ impl LiveView for RolloutsView {
             } => state
                 .servers
                 .iter()
-                .any(|s| record_key(&s.server.id.0) == *server),
+                .any(|s| s.server.id.to_string() == *server),
             // A server added or deleted changes the set of rows, and an edit
             // moves the tree's generation (`derivation_pending`).
             LiveMessage::CanvasChanged { canvas, .. } => state.tree.contains(canvas),
@@ -393,13 +392,13 @@ impl LiveView for RolloutsView {
                 canvases: topology.canvas_ids(),
             })
             .await?;
-        let mut by_server: HashMap<String, _> = views
+        let mut by_server: HashMap<ServerId, _> = views
             .into_iter()
-            .map(|view| (record_key(&view.server.0), view))
+            .map(|view| (view.server.clone(), view))
             .collect();
         let mut servers = Vec::with_capacity(topology.servers.len());
         for server in &topology.servers {
-            let Some(view) = by_server.remove(&record_key(&server.id.0)) else {
+            let Some(view) = by_server.remove(&server.id) else {
                 // Same call as the deriver makes: a server without its view row
                 // is a broken write, not something to fail a dashboard over.
                 tracing::warn!(server = %server.name, "server has no config view row; skipping it");
@@ -410,11 +409,7 @@ impl LiveView for RolloutsView {
                 server: server.clone(),
             });
         }
-        let tree = topology
-            .canvases
-            .iter()
-            .map(|c| record_key(&c.id.0))
-            .collect();
+        let tree = topology.canvases.iter().map(|c| c.id.to_string()).collect();
         Ok(Some(RolloutsLive { tree, servers }))
     }
 }
@@ -456,7 +451,7 @@ impl Processor<WatchCanvas> for LiveService {
     async fn process(&self, input: WatchCanvas) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ViewWorkspace)?;
         Ok(self.canvases.subscribe(
-            record_key(&input.canvas.0),
+            input.canvas.to_string(),
             CanvasView {
                 canvas: input.canvas,
             },
@@ -476,7 +471,7 @@ impl Processor<WatchRollouts> for LiveService {
     async fn process(&self, input: WatchRollouts) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ViewWorkspace)?;
         Ok(self.rollouts.subscribe(
-            record_key(&input.canvas.0),
+            input.canvas.to_string(),
             RolloutsView {
                 canvas: input.canvas,
             },

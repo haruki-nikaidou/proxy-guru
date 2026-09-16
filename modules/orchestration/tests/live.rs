@@ -41,7 +41,6 @@ use orchestration::services::node::CreateNode;
 use orchestration::services::server::{
     AddressOverrides, CreateServer, IssueServerAgentInstall, MoveServer, RequestAgentUpdate,
 };
-use orchestration::utils::ids::record_key;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -313,7 +312,7 @@ async fn canvas_view_snapshot_then_full_refresh(pool: sqlx::PgPool) -> TestResul
     match cause.expect("a cause") {
         LiveMessage::CanvasChanged { kind, ids, .. } => {
             assert_eq!(*kind, CanvasChangeKind::ServerCreated);
-            assert_eq!(ids, &vec![record_key(&second.0)]);
+            assert_eq!(ids, &vec![second.to_string()]);
         }
         other => panic!("unexpected cause: {other:?}"),
     }
@@ -334,7 +333,7 @@ async fn canvas_view_snapshot_then_full_refresh(pool: sqlx::PgPool) -> TestResul
     match cause.expect("a cause") {
         LiveMessage::CanvasChanged { kind, ids, .. } => {
             assert_eq!(*kind, CanvasChangeKind::ServerMoved);
-            assert_eq!(ids, &vec![record_key(&first.0)]);
+            assert_eq!(ids, &vec![first.to_string()]);
         }
         other => panic!("unexpected cause: {other:?}"),
     }
@@ -395,7 +394,7 @@ async fn agent_state_changes_refresh_the_canvas_view(pool: sqlx::PgPool) -> Test
         match cause.expect("a cause") {
             LiveMessage::CanvasChanged { kind, ids, .. } => {
                 assert_eq!(*kind, CanvasChangeKind::ServerUpdated);
-                assert_eq!(ids, &vec![record_key(&server.0)]);
+                assert_eq!(ids, &vec![server.to_string()]);
             }
             other => panic!("unexpected cause: {other:?}"),
         }
@@ -654,7 +653,7 @@ async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> Te
     let (canvas, server) = wired(&w).await?;
     w.derive(&canvas).await?;
     let agent = register(&w, &server).await?;
-    let server_key = record_key(&server.0);
+    let server_key = server.to_string();
 
     w.health
         .process(RecordHealthReport {
@@ -722,7 +721,7 @@ async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> Te
         panic!("filtered above");
     };
     assert!(status_changed, "an offline flip is a status change");
-    assert_eq!(*event_canvas, record_key(&canvas.0));
+    assert_eq!(*event_canvas, canvas.to_string());
     Ok(())
 }
 
@@ -765,16 +764,14 @@ async fn node_health_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> Tes
             })
             .await?
             .expect("the canvas exists");
-        record_key(
-            &contents
-                .nodes
-                .iter()
-                .find(|n| n.node.name == "web")
-                .unwrap()
-                .node
-                .id
-                .0,
-        )
+        contents
+            .nodes
+            .iter()
+            .find(|n| n.node.name == "web")
+            .unwrap()
+            .node
+            .id
+            .to_string()
     };
     let of_node = |m: &LiveMessage| match m {
         LiveMessage::NodeHealth { records } => records.iter().any(|r| r.node == node_key),
@@ -995,8 +992,8 @@ async fn node_health_recovery_pages_through_identical_timestamps(pool: sqlx::PgP
             .await?;
         let short = rows.len() < PAGE as usize;
         for row in &rows {
-            cursor = (row.report_time, Some(record_key(&row.id.0)));
-            seen.push(record_key(&row.id.0));
+            cursor = (row.report_time, Some(row.id.to_string()));
+            seen.push(row.id.to_string());
         }
         if short {
             break;

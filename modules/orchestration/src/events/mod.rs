@@ -28,7 +28,7 @@ use wakuwaku::interval_job::IntervalJobExecutionSignal;
     Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
 )]
 pub struct CanvasDirty {
-    /// The canvas record key, as `utils::ids::record_key` renders it.
+    /// The canvas id, as text.
     pub canvas: String,
 }
 

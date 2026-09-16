@@ -5,13 +5,12 @@ use crate::entities::db::canvas::{
     DeleteCanvasRow, FindCanvasById, ListCanvases as ListCanvasesRow, LoadCanvasTree,
     UpdateCanvasMeta,
 };
-use crate::entities::db::node::FindImporterOf;
+use crate::entities::db::node::{FindImporterOf, NodeId};
 use crate::entities::db::topology::{LoadCanvasContents, LoadCanvasTopology};
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyProblem, analyze};
-use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
@@ -162,7 +161,7 @@ impl Processor<UpdateCanvas> for CanvasService {
             .canvas_changed(
                 &input.canvas,
                 CanvasChangeKind::CanvasUpdated,
-                vec![record_key(&input.canvas.0)],
+                vec![input.canvas.to_string()],
             )
             .await;
         Ok(canvas)
@@ -201,8 +200,7 @@ impl Processor<DeleteCanvas> for CanvasService {
         {
             return Err(OrchestrationError::Conflict(format!(
                 "canvas is imported by node {} in canvas {}; retire that node first",
-                importer.name,
-                record_key(&importer.canvas.0)
+                importer.name, importer.canvas
             )));
         }
         // The transaction re-checks the import and throws on a race.
@@ -215,7 +213,7 @@ impl Processor<DeleteCanvas> for CanvasService {
             .canvas_changed(
                 &input.canvas,
                 CanvasChangeKind::CanvasDeleted,
-                vec![record_key(&input.canvas.0)],
+                vec![input.canvas.to_string()],
             )
             .await;
         Ok(())
@@ -247,25 +245,19 @@ impl Processor<ValidateCanvas> for CanvasService {
             .await?;
         // A problem on a generated lane is shown on the universal node that
         // generated it: the lane itself is not on the canvas.
-        let group_of: std::collections::HashMap<String, crate::entities::db::node::NodeId> =
-            topology
-                .nodes
-                .iter()
-                .filter_map(|n| {
-                    n.node
-                        .lane
-                        .as_ref()
-                        .map(|lane| (record_key(&n.node.id.0), lane.group.clone()))
-                })
-                .collect();
+        let group_of: std::collections::HashMap<&NodeId, &NodeId> = topology
+            .nodes
+            .iter()
+            .filter_map(|n| n.node.lane.as_ref().map(|lane| (&n.node.id, &lane.group)))
+            .collect();
         let mut problems = analyze(&topology);
         for problem in &mut problems {
             for node in &mut problem.nodes {
-                if let Some(group) = group_of.get(&record_key(&node.0)) {
-                    *node = group.clone();
+                if let Some(group) = group_of.get(node) {
+                    *node = (*group).clone();
                 }
             }
-            problem.nodes.dedup_by_key(|n| record_key(&n.0));
+            problem.nodes.dedup();
         }
         Ok(problems)
     }

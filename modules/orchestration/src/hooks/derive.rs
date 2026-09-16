@@ -48,7 +48,7 @@ use crate::services::derive::{
     DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
 };
 use crate::services::notify::Notifier;
-use crate::utils::ids::{self, record_key};
+use crate::utils::ids;
 use crate::utils::secret::SecretKey;
 use base::db::Db;
 use chrono::{DateTime, Utc};
@@ -170,17 +170,17 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
             }
             let certificates = self.certificates(&state.topology).await?;
 
-            let views_by_server: HashMap<String, &ServerConfigViewEntity> = state
+            let views_by_server: HashMap<&ServerId, &ServerConfigViewEntity> = state
                 .views
                 .iter()
-                .map(|view| (record_key(&view.server.0), view))
+                .map(|view| (&view.server, view))
                 .collect();
 
             let now = Utc::now();
             let mut updates = Vec::with_capacity(state.topology.servers.len());
             let mut deploying = Vec::new();
             for server in &state.topology.servers {
-                let Some(view) = views_by_server.get(&record_key(&server.id.0)) else {
+                let Some(view) = views_by_server.get(&server.id) else {
                     tracing::error!(
                         server = %server.name,
                         "server has no config view row; skipping it"
@@ -219,7 +219,7 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                     .process(InsertNodeHealthRecords { records: deploying })
                     .await?;
                 self.notifier
-                    .rollout_changed(RolloutScope::Canvas(record_key(&state.root.0)))
+                    .rollout_changed(RolloutScope::Canvas(state.root.to_string()))
                     .await;
                 if !rows.is_empty() {
                     self.notifier
@@ -382,7 +382,7 @@ fn deploying_records(
     let Ok(next_config) = Config::from_toml_str(&next.toml) else {
         return;
     };
-    let old_entries: HashMap<String, (Forwarding, &[CertificateRef])> = previous
+    let old_entries: HashMap<&NodeId, (Forwarding, &[CertificateRef])> = previous
         .and_then(|snapshot| {
             let config = Config::from_toml_str(&snapshot.toml).ok()?;
             Some(
@@ -390,14 +390,14 @@ fn deploying_records(
                     .forwardings
                     .into_iter()
                     .zip(&snapshot.forwardings)
-                    .map(|(f, deps)| (record_key(&deps.pod.0), (f, deps.certificates.as_slice())))
+                    .map(|(f, deps)| (&deps.pod, (f, deps.certificates.as_slice())))
                     .collect(),
             )
         })
         .unwrap_or_default();
     for (forwarding, deps) in next_config.forwardings.iter().zip(&next.forwardings) {
         let same = old_entries
-            .get(&record_key(&deps.pod.0))
+            .get(&deps.pod)
             .is_some_and(|(old, refs)| old == forwarding && *refs == deps.certificates);
         if same {
             continue;
@@ -465,10 +465,10 @@ pub async fn rotate_expiring_relay_certificates(
         {
             Ok(Some(_)) => rotated.push(leaf.pod),
             Ok(None) => {
-                tracing::debug!(pod = %record_key(&leaf.pod.0), "relay leaf already rotated by another consumer")
+                tracing::debug!(pod = %leaf.pod.to_string(), "relay leaf already rotated by another consumer")
             }
             Err(e) => {
-                tracing::error!(error = %e, pod = %record_key(&leaf.pod.0), "rotating a relay leaf failed")
+                tracing::error!(error = %e, pod = %leaf.pod.to_string(), "rotating a relay leaf failed")
             }
         }
     }

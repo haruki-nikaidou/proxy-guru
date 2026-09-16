@@ -10,7 +10,6 @@ use crate::entities::db::canvas::CanvasId;
 use crate::events::CanvasDirty;
 use crate::events::live::{CanvasChangeKind, LIVE_CHANNEL, LiveMessage, RolloutScope};
 use crate::hooks::live::LiveBus;
-use crate::utils::ids::record_key;
 use kanau::message::MessageSer;
 use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
 
@@ -55,7 +54,7 @@ impl Notifier {
             return;
         };
         let event = CanvasDirty {
-            canvas: record_key(&canvas.0),
+            canvas: canvas.to_string(),
         };
         if let Err(e) = event.send(pool).await {
             tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once the broker is back");
@@ -99,7 +98,7 @@ impl Notifier {
         ids: Vec<String>,
     ) {
         self.live(LiveMessage::CanvasChanged {
-            canvas: record_key(&canvas.0),
+            canvas: canvas.to_string(),
             kind,
             ids,
         })

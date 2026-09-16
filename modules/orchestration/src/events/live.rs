@@ -19,7 +19,6 @@ use crate::entities::db::certificate::CertificateStatus;
 use crate::entities::db::health::{
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use crate::utils::ids::record_key;
 use chrono::{DateTime, Utc};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
 
@@ -59,7 +58,7 @@ pub enum LiveMessage {
     CanvasChanged {
         canvas: String,
         kind: CanvasChangeKind,
-        /// The records the change is about, as `record_key` renders them.
+        /// The records the change is about, as text.
         ids: Vec<String>,
     },
     /// A server's rollout state (`desired`/`in_flight`/`applied`/errors) or a
@@ -165,7 +164,7 @@ pub struct NodeHealthLive {
 impl From<&ServerHealthRecordEntity> for ServerHealthLive {
     fn from(record: &ServerHealthRecordEntity) -> Self {
         Self {
-            id: record_key(&record.id.0),
+            id: record.id.to_string(),
             status: record.status,
             report_time_unix_micros: record.report_time.timestamp_micros(),
             upload_bytes: record.upload_bytes,
@@ -179,8 +178,8 @@ impl From<&ServerHealthRecordEntity> for ServerHealthLive {
 impl From<&NodeHealthRecordEntity> for NodeHealthLive {
     fn from(record: &NodeHealthRecordEntity) -> Self {
         Self {
-            id: record_key(&record.id.0),
-            node: record_key(&record.node.0),
+            id: record.id.to_string(),
+            node: record.node.to_string(),
             status: record.status,
             message: record.message.clone(),
             report_time_unix_micros: record.report_time.timestamp_micros(),

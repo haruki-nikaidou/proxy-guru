@@ -47,7 +47,7 @@ use crate::entities::db::node::{
     MEMBER_PREFIX, NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig,
     RelayProtocol,
 };
-use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
+use crate::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
 use crate::entities::db::server::ServerId;
 use crate::entities::db::topology::CanvasTopology;
 use crate::entities::db::view::ListServerConfigViewsByCanvases;
@@ -59,7 +59,6 @@ use crate::services::notify::Notifier;
 use crate::services::server::DEFAULT_POD_PORTS;
 use crate::services::topology::{Index, ProblemKind, TopologyEdit, TopologyProblem, ensure_valid};
 use crate::utils::ids;
-use crate::utils::ids::record_key;
 use base::db::Db;
 use kanau::processor::Processor;
 use rand::Rng;
@@ -254,14 +253,14 @@ pub fn initial_ports(spec: &NodeSpec) -> Vec<NewPort> {
 /// on a lane (which may be about to be created).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EndRef {
-    Node { node: String, key: String },
+    Node { node: NodeId, key: String },
     Lane { lane: String, key: String },
 }
 
 impl EndRef {
     fn node(node: &NodeId, key: String) -> Self {
         EndRef::Node {
-            node: record_key(&node.0),
+            node: node.clone(),
             key,
         }
     }
@@ -308,8 +307,8 @@ pub struct DesiredLane {
 /// which lanes must exist, and which generated edges must join them.
 #[derive(Debug, Clone, Default)]
 pub struct Desired {
-    /// Universal node key -> its full port list.
-    pub ports: BTreeMap<String, Vec<NewPort>>,
+    /// Universal node -> its full port list.
+    pub ports: BTreeMap<NodeId, Vec<NewPort>>,
     /// Lane key -> the lane.
     pub lanes: BTreeMap<String, DesiredLane>,
     pub edges: BTreeSet<(EndRef, EndRef)>,
@@ -337,9 +336,9 @@ fn universal_server(node: &NodeWithPorts) -> Option<&ServerId> {
 fn server_name<'a>(index: &Index<'a>, server: &ServerId) -> String {
     index
         .servers
-        .get(&record_key(&server.0))
+        .get(server)
         .map(|s| s.name.clone())
-        .unwrap_or_else(|| record_key(&server.0))
+        .unwrap_or_else(|| server.to_string())
 }
 
 /// The display name of the far side of a bundle: a distribute node's own name,
@@ -366,11 +365,11 @@ const MAX_FANOUT_DEPTH: usize = 64;
 /// Everything the materialisation walks, plus what it produces.
 struct Expansion<'a> {
     index: Index<'a>,
-    universal: BTreeMap<String, &'a NodeWithPorts>,
+    universal: BTreeMap<NodeId, &'a NodeWithPorts>,
     /// Bundle targets of each node, in the order of the ports they leave from
     /// (a distribute node's members, as the operator listed them).
-    outs: BTreeMap<String, Vec<String>>,
-    channels: BTreeMap<String, Channel<'a>>,
+    outs: BTreeMap<NodeId, Vec<NodeId>>,
+    channels: BTreeMap<NodeId, Channel<'a>>,
     desired: Desired,
 }
 
@@ -397,7 +396,7 @@ impl<'a> Expansion<'a> {
         path.split('+')
             .map(|key| {
                 self.universal
-                    .get(key)
+                    .get(&NodeId::from_key(key))
                     .map(|node| source_name(&self.index, node))
                     .unwrap_or_else(|| key.to_string())
             })
@@ -481,7 +480,7 @@ impl<'a> Expansion<'a> {
         depth: usize,
     ) -> Option<EndRef> {
         let (mode, protocol) = distribute_cfg(x)?;
-        let key = record_key(&x.node.id.0);
+        let key = &x.node.id;
         let pod_id = channel.pod.node.id.clone();
         let pod_name = channel.pod.node.name.clone();
         if depth > MAX_FANOUT_DEPTH {
@@ -489,10 +488,10 @@ impl<'a> Expansion<'a> {
         }
         let targets: Vec<&'a NodeWithPorts> = self
             .outs
-            .get(&key)
+            .get(key)
             .into_iter()
             .flatten()
-            .filter_map(|t| self.universal.get(t.as_str()).copied())
+            .filter_map(|t| self.universal.get(t).copied())
             .filter(|t| universal_server(t).is_some() || distribute_cfg(t).is_some())
             .collect();
         if targets.is_empty() {
@@ -509,7 +508,7 @@ impl<'a> Expansion<'a> {
             return None;
         }
         let nested_via = match via {
-            None => key.clone(),
+            None => key.to_string(),
             Some(path) => format!("{path}+{key}"),
         };
         let mut members: Vec<EndRef> = Vec::new();
@@ -557,17 +556,17 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     let mut desired = Desired::default();
 
     // The bundle-capable nodes, keyed, and the bundle graph between them.
-    let mut universal: BTreeMap<String, &NodeWithPorts> = BTreeMap::new();
+    let mut universal: BTreeMap<NodeId, &NodeWithPorts> = BTreeMap::new();
     for node in &topology.nodes {
         if node.node.spec.takes_bundles() {
-            universal.insert(record_key(&node.node.id.0), node);
+            universal.insert(node.node.id.clone(), node);
         }
     }
     // `outs` follows the order of the source ports (a distribute node's members
     // as listed by the operator), `ins` the order of the target ports (an
-    // aggregate node's members); ties by node key.
-    let mut out_edges: BTreeMap<String, BTreeSet<(i64, String)>> = BTreeMap::new();
-    let mut in_edges: BTreeMap<String, BTreeSet<(i64, String)>> = BTreeMap::new();
+    // aggregate node's members); ties by node id.
+    let mut out_edges: BTreeMap<NodeId, BTreeSet<(i64, NodeId)>> = BTreeMap::new();
+    let mut in_edges: BTreeMap<NodeId, BTreeSet<(i64, NodeId)>> = BTreeMap::new();
     for edge in &topology.edges {
         let (Some((source, source_node)), Some((target, target_node))) =
             (index.port(&edge.source), index.port(&edge.target))
@@ -580,8 +579,8 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         if !source_node.node.spec.takes_bundles() || !target_node.node.spec.takes_bundles() {
             continue;
         }
-        let s = record_key(&source_node.node.id.0);
-        let t = record_key(&target_node.node.id.0);
+        let s = source_node.node.id.clone();
+        let t = target_node.node.id.clone();
         out_edges
             .entry(s.clone())
             .or_default()
@@ -589,7 +588,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         in_edges.entry(t).or_default().insert((target.position, s));
     }
     let ordered =
-        |edges: BTreeMap<String, BTreeSet<(i64, String)>>| -> BTreeMap<String, Vec<String>> {
+        |edges: BTreeMap<NodeId, BTreeSet<(i64, NodeId)>>| -> BTreeMap<NodeId, Vec<NodeId>> {
             edges
                 .into_iter()
                 .map(|(k, set)| {
@@ -609,8 +608,8 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     // Channels: a `chan:` port of a distribute node or a universal pod whose
     // edge lands on that pod's `destination`. Anything else on such a port is
     // reported by the checker and carries nothing.
-    let mut channels: BTreeMap<String, Channel<'_>> = BTreeMap::new();
-    let mut own: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut channels: BTreeMap<NodeId, Channel<'_>> = BTreeMap::new();
+    let mut own: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
     for (key, node) in &universal {
         if !matches!(
             node.node.spec,
@@ -625,7 +624,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             let Some(edge) = index.edge_on(p) else {
                 continue;
             };
-            let far = if record_key(&edge.source.0) == record_key(&p.id.0) {
+            let far = if edge.source == p.id {
                 &edge.target
             } else {
                 &edge.source
@@ -635,12 +634,12 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             };
             if far_port.key != "destination"
                 || !matches!(far_node.node.spec, NodeSpec::Pod(_))
-                || record_key(&far_node.node.id.0) != pod_key
+                || far_node.node.id.as_str() != pod_key
             {
                 continue;
             }
             channels.insert(
-                pod_key.to_string(),
+                NodeId::from_key(pod_key),
                 Channel {
                     pod: far_node,
                     ordinal: p.position,
@@ -648,7 +647,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
             );
             own.entry(key.clone())
                 .or_default()
-                .insert(pod_key.to_string());
+                .insert(NodeId::from_key(pod_key));
         }
     }
 
@@ -702,7 +701,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
         if starts_channels {
             for source in ins.get(key).into_iter().flatten() {
                 ports.push(port(
-                    bundle_in_key(source),
+                    bundle_in_key(source.as_str()),
                     PortKind::Bundle,
                     PortDirection::Input,
                     0,
@@ -723,30 +722,30 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     }
 
     // Topological order over the bundle graph (Kahn); what is left is a cycle.
-    let mut indegree: BTreeMap<&str, usize> = universal
+    let mut indegree: BTreeMap<&NodeId, usize> = universal
         .keys()
-        .map(|k| (k.as_str(), ins.get(k).map(Vec::len).unwrap_or(0)))
+        .map(|k| (k, ins.get(k).map(Vec::len).unwrap_or(0)))
         .collect();
-    let mut ready: Vec<&str> = indegree
+    let mut ready: Vec<&NodeId> = indegree
         .iter()
         .filter(|(_, d)| **d == 0)
         .map(|(k, _)| *k)
         .collect();
-    let mut order: Vec<&str> = Vec::new();
+    let mut order: Vec<&NodeId> = Vec::new();
     while let Some(key) = ready.pop() {
         order.push(key);
         for target in outs.get(key).into_iter().flatten() {
-            if let Some(d) = indegree.get_mut(target.as_str()) {
+            if let Some(d) = indegree.get_mut(target) {
                 *d = d.saturating_sub(1);
                 if *d == 0 {
-                    ready.push(target.as_str());
+                    ready.push(target);
                 }
             }
         }
         ready.sort();
         ready.reverse();
     }
-    let cyclic: Vec<&str> = indegree
+    let cyclic: Vec<&NodeId> = indegree
         .iter()
         .filter(|(k, _)| !order.contains(*k))
         .map(|(k, _)| *k)
@@ -768,7 +767,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     }
 
     // What each node carries: its own channels plus everything bundled into it.
-    let mut carried: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut carried: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
     for key in &order {
         let mut set = own.get(*key).cloned().unwrap_or_default();
         for source in ins.get(*key).into_iter().flatten() {
@@ -776,10 +775,10 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                 set.extend(upstream.iter().cloned());
             }
         }
-        carried.insert((*key).to_string(), set);
+        carried.insert((*key).clone(), set);
     }
     // The order outlives the borrows above: the walk below owns the tables.
-    let order: Vec<String> = order.iter().map(|k| (*k).to_string()).collect();
+    let order: Vec<NodeId> = order.into_iter().cloned().collect();
 
     let mut ex = Expansion {
         index,
@@ -793,9 +792,8 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
     // node decides how to join them. A distribute node's own channels start at
     // its `lane:` port; the channels a universal pod passes into a distribute
     // node start at that universal pod's landing side.
-    let mut feeders: BTreeMap<(String, String), Vec<EndRef>> = BTreeMap::new();
+    let mut feeders: BTreeMap<(NodeId, NodeId), Vec<EndRef>> = BTreeMap::new();
     for key in &order {
-        let key: &str = key.as_str();
         let Some(node) = ex.universal.get(key).copied() else {
             continue;
         };
@@ -813,7 +811,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     if let Some(member) = ex.fanout(node, &channel, None, 0) {
                         ex.desired
                             .edges
-                            .insert((member, EndRef::node(&group, lane_key(pod_key))));
+                            .insert((member, EndRef::node(&group, lane_key(pod_key.as_str()))));
                     }
                 }
             }
@@ -823,7 +821,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     .get(key)
                     .into_iter()
                     .flatten()
-                    .find_map(|t| ex.universal.get(t.as_str()).copied());
+                    .find_map(|t| ex.universal.get(t).copied());
                 let own_here = own.get(key).cloned().unwrap_or_default();
                 for pod_key in carried.get(key).into_iter().flatten() {
                     let Some(channel) = ex.channels.get(pod_key) else {
@@ -849,7 +847,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     {
                         ex.desired
                             .edges
-                            .insert((member, EndRef::node(&group, lane_key(pod_key))));
+                            .insert((member, EndRef::node(&group, lane_key(pod_key.as_str()))));
                     }
                     // The landing pods this node holds for the channel: every
                     // upstream hop created its own (in bundle order, they all
@@ -860,8 +858,8 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                         .iter()
                         .filter(|(_, l)| {
                             l.lane.role == LaneRole::Landing
-                                && record_key(&l.lane.group.0) == key
-                                && record_key(&l.lane.channel.0) == *pod_key
+                                && l.lane.group == *key
+                                && l.lane.channel == *pod_key
                         })
                         .map(|(k, _)| k.clone())
                         .collect();
@@ -912,13 +910,13 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                         Some(next) if distribute_cfg(next).is_some() => {
                             // The next tier fans the channel out again, once per
                             // server it arrives from: this one.
-                            if let Some(member) = ex.fanout(next, &channel, Some(key), 0) {
+                            if let Some(member) = ex.fanout(next, &channel, Some(key.as_str()), 0) {
                                 ex.desired.edges.insert((member, feeder));
                             }
                         }
                         Some(aggregate) => {
                             feeders
-                                .entry((record_key(&aggregate.node.id.0), pod_key.clone()))
+                                .entry((aggregate.node.id.clone(), (*pod_key).clone()))
                                 .or_default()
                                 .push(feeder);
                         }
@@ -937,18 +935,18 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                     ports.push(NewPort {
                         kind: PortKind::DeriveDestination,
                         direction: PortDirection::Input,
-                        key: chan_key(pod_key),
+                        key: chan_key(pod_key.as_str()),
                         position: ordinal,
                     });
                     ports.push(NewPort {
                         kind: PortKind::DeriveDestination,
                         direction: PortDirection::Output,
-                        key: lane_key(pod_key),
+                        key: lane_key(pod_key.as_str()),
                         position: ordinal,
                     });
-                    let source = EndRef::node(&group, lane_key(pod_key));
+                    let source = EndRef::node(&group, lane_key(pod_key.as_str()));
                     let mut requests = feeders
-                        .remove(&(key.to_string(), pod_key.clone()))
+                        .remove(&(key.clone(), pod_key.clone()))
                         .unwrap_or_default();
                     requests.sort();
                     match requests.as_slice() {
@@ -979,7 +977,7 @@ pub fn expand(topology: &CanvasTopology) -> Desired {
                         }
                     }
                 }
-                ex.desired.ports.insert(key.to_string(), ports);
+                ex.desired.ports.insert(key.clone(), ports);
             }
             _ => {}
         }
@@ -1024,19 +1022,18 @@ fn landing_protocol(index: &Index<'_>, pod: &NodeWithPorts) -> Option<RelayProto
 /// A port on `server` no pod of the tree listens on yet, from the default
 /// range. `taken` also holds the ports handed out earlier in the same plan.
 fn free_port(
-    taken: &mut HashSet<(String, u16)>,
+    taken: &mut HashSet<(ServerId, u16)>,
     server: &ServerId,
 ) -> Result<u16, OrchestrationError> {
-    let server_key = record_key(&server.0);
     let mut rng = rand::rng();
     for _ in 0..4096 {
         let port = rng.random_range(DEFAULT_POD_PORTS);
-        if taken.insert((server_key.clone(), port)) {
+        if taken.insert((server.clone(), port)) {
             return Ok(port);
         }
     }
     Err(OrchestrationError::Conflict(format!(
-        "no free port left on server {server_key} in {}-{}",
+        "no free port left on server {server} in {}-{}",
         DEFAULT_POD_PORTS.start(),
         DEFAULT_POD_PORTS.end()
     )))
@@ -1084,9 +1081,7 @@ fn spec_differs(current: &NodeSpec, desired: &NodeSpec) -> bool {
         }
         (NodeSpec::LoadBalanceAggregate(_), NodeSpec::LoadBalanceAggregate(_)) => false,
         (NodeSpec::Relay(a), NodeSpec::Relay(b)) => a.protocol != b.protocol,
-        (NodeSpec::Pod(a), NodeSpec::Pod(b)) => {
-            record_key(&a.server.0) != record_key(&b.server.0) || a.port != b.port
-        }
+        (NodeSpec::Pod(a), NodeSpec::Pod(b)) => a.server != b.server || a.port != b.port,
         _ => true,
     }
 }
@@ -1094,12 +1089,10 @@ fn spec_differs(current: &NodeSpec, desired: &NodeSpec) -> bool {
 /// The batch form of a projected port: an existing row, or a port the same
 /// batch creates on an existing node or on a new lane.
 fn port_ref(port: &PortEntity) -> PortRef {
-    let id = record_key(&port.id.0);
-    if !id.starts_with(PENDING_PORT_PREFIX) {
+    if !port.id.as_str().starts_with(PENDING_PORT_PREFIX) {
         return PortRef::existing(port.id.clone());
     }
-    let owner = record_key(&port.owner.0);
-    match owner.strip_prefix(PENDING_LANE_PREFIX) {
+    match port.owner.as_str().strip_prefix(PENDING_LANE_PREFIX) {
         Some(lane) => PortRef::on_lane(lane, &port.key),
         None => PortRef::on_node(port.owner.clone(), &port.key),
     }
@@ -1149,11 +1142,11 @@ pub fn diff(topology: &CanvasTopology, desired: &Desired) -> Result<Plan, Orches
             plan.batch.delete_nodes.push(node.node.id.clone());
         }
     }
-    let mut taken: HashSet<(String, u16)> = topology
+    let mut taken: HashSet<(ServerId, u16)> = topology
         .nodes
         .iter()
         .filter_map(|n| match &n.node.spec {
-            NodeSpec::Pod(cfg) => Some((record_key(&cfg.server.0), cfg.port)),
+            NodeSpec::Pod(cfg) => Some((cfg.server.clone(), cfg.port)),
             _ => None,
         })
         .collect();
@@ -1227,14 +1220,14 @@ pub fn diff(topology: &CanvasTopology, desired: &Desired) -> Result<Plan, Orches
 
     // Edges, against the topology as the edits above leave it.
     let shaped = topology.project(&plan.edits);
-    let lane_of: HashMap<String, String> = shaped
+    let lane_of: HashMap<&NodeId, &str> = shaped
         .nodes
         .iter()
         .filter_map(|n| {
             n.node
                 .lane
                 .as_ref()
-                .map(|lane| (record_key(&n.node.id.0), lane.key.clone()))
+                .map(|lane| (&n.node.id, lane.key.as_str()))
         })
         .collect();
     let by_lane: HashMap<&str, &NodeWithPorts> = shaped
@@ -1242,24 +1235,17 @@ pub fn diff(topology: &CanvasTopology, desired: &Desired) -> Result<Plan, Orches
         .iter()
         .filter_map(|n| n.node.lane.as_ref().map(|lane| (lane.key.as_str(), n)))
         .collect();
-    let by_node: HashMap<String, &NodeWithPorts> = shaped
+    let by_node: HashMap<&NodeId, &NodeWithPorts> =
+        shaped.nodes.iter().map(|n| (&n.node.id, n)).collect();
+    let ports_by_id: HashMap<&PortId, (&PortEntity, &NodeWithPorts)> = shaped
         .nodes
         .iter()
-        .map(|n| (record_key(&n.node.id.0), n))
-        .collect();
-    let ports_by_id: HashMap<String, (&PortEntity, &NodeWithPorts)> = shaped
-        .nodes
-        .iter()
-        .flat_map(|n| n.ports.iter().map(move |p| (record_key(&p.id.0), (p, n))))
+        .flat_map(|n| n.ports.iter().map(move |p| (&p.id, (p, n))))
         .collect();
     let end_of = |port: &PortEntity, owner: &NodeWithPorts| -> EndRef {
-        let node_key = record_key(&owner.node.id.0);
-        match lane_of.get(&node_key) {
+        match lane_of.get(&owner.node.id) {
             Some(lane) => EndRef::lane(lane, &port.key),
-            None => EndRef::Node {
-                node: node_key,
-                key: port.key.clone(),
-            },
+            None => EndRef::node(&owner.node.id, port.key.clone()),
         }
     };
     let managed = |port: &PortEntity, owner: &NodeWithPorts| {
@@ -1268,10 +1254,9 @@ pub fn diff(topology: &CanvasTopology, desired: &Desired) -> Result<Plan, Orches
     };
     let mut current: BTreeMap<(EndRef, EndRef), &EdgeConnectionEntity> = BTreeMap::new();
     for edge in &shaped.edges {
-        let (Some((s, sn)), Some((t, tn))) = (
-            ports_by_id.get(&record_key(&edge.source.0)),
-            ports_by_id.get(&record_key(&edge.target.0)),
-        ) else {
+        let (Some((s, sn)), Some((t, tn))) =
+            (ports_by_id.get(&edge.source), ports_by_id.get(&edge.target))
+        else {
             continue;
         };
         if managed(s, sn) || managed(t, tn) {

@@ -26,7 +26,6 @@ use crate::entities::db::dns::{DnsProvider, DnsProviderEntity, FindDnsProviderBy
 use crate::events::live::LiveMessage;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
-use crate::utils::ids::record_key;
 use crate::utils::secret::{SecretError, SecretKey};
 use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
@@ -614,7 +613,7 @@ impl AcmeService {
     ) {
         self.notifier
             .live(LiveMessage::CertificateChanged {
-                certificate: record_key(&id.0),
+                certificate: id.to_string(),
                 status,
                 not_after_unix_secs: not_after.map(|t| t.timestamp()),
                 error,

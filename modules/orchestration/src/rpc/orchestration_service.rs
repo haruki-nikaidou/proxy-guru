@@ -264,7 +264,7 @@ fn position_or_origin(position: Option<pb::CanvasUiPosition>) -> CanvasUiPositio
 
 fn canvas_to_proto(canvas: &CanvasEntity) -> pb::Canvas {
     pb::Canvas {
-        id: ids::record_key(&canvas.id.0),
+        id: canvas.id.to_string(),
         name: canvas.name.clone(),
         description: canvas.description.clone(),
     }
@@ -300,8 +300,8 @@ fn node_health_to_proto(value: NodeHealthStatus) -> i32 {
 
 fn server_health_record_to_proto(record: &ServerHealthRecordEntity) -> pb::ServerHealthRecord {
     pb::ServerHealthRecord {
-        id: ids::record_key(&record.id.0),
-        server_id: ids::record_key(&record.server.0),
+        id: record.id.to_string(),
+        server_id: record.server.to_string(),
         status: server_health_to_proto(record.status),
         report_time: record.report_time.to_rfc3339(),
         upload_bytes: record.upload_bytes,
@@ -313,8 +313,8 @@ fn server_health_record_to_proto(record: &ServerHealthRecordEntity) -> pb::Serve
 
 fn node_health_record_to_proto(record: &NodeHealthRecordEntity) -> pb::NodeHealthRecord {
     pb::NodeHealthRecord {
-        id: ids::record_key(&record.id.0),
-        node_id: ids::record_key(&record.node.0),
+        id: record.id.to_string(),
+        node_id: record.node.to_string(),
         status: node_health_to_proto(record.status),
         message: record.message.clone(),
         report_time: record.report_time.to_rfc3339(),
@@ -339,7 +339,7 @@ fn dns_provider_from_proto(value: i32) -> Result<DnsProvider, Status> {
 
 fn dns_provider_summary_to_proto(provider: &DnsProviderSummary) -> pb::DnsProvider {
     pb::DnsProvider {
-        id: ids::record_key(&provider.id.0),
+        id: provider.id.to_string(),
         name: provider.name.clone(),
         provider: dns_provider_to_proto(provider.provider),
         account_id: provider.account_id.clone(),
@@ -360,9 +360,9 @@ fn certificate_status_to_proto(value: CertificateStatus) -> i32 {
 fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
     let time = |t: Option<DateTime<Utc>>| t.map(|t| t.to_rfc3339()).unwrap_or_default();
     pb::Certificate {
-        id: ids::record_key(&certificate.id.0),
+        id: certificate.id.to_string(),
         sni: certificate.sni.clone(),
-        dns_provider_id: ids::record_key(&certificate.dns_provider.0),
+        dns_provider_id: certificate.dns_provider.to_string(),
         domain_id: certificate.domain_id.clone(),
         acme_directory: certificate.acme_directory.clone(),
         status: certificate_status_to_proto(certificate.status),
@@ -394,16 +394,12 @@ fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusR
         applied: status.applied.as_ref().map(snapshot_to_proto),
         apply_error: status.apply_error.unwrap_or_default(),
         derive_error: status.derive_error.unwrap_or_default(),
-        waiting_for_server_ids: status
-            .waiting_for
-            .iter()
-            .map(|id| ids::record_key(&id.0))
-            .collect(),
+        waiting_for_server_ids: status.waiting_for.iter().map(|id| id.to_string()).collect(),
         invalid_pods: status
             .invalid_pods
             .into_iter()
             .map(|pod| pb::InvalidPod {
-                node_id: ids::record_key(&pod.node.0),
+                node_id: pod.node.to_string(),
                 pod_name: pod.pod,
                 listen: pod.listen,
                 error: pod.error,
@@ -518,8 +514,8 @@ fn ipv6_from_proto(value: i32) -> Result<ServerIpv6Resolve, Status> {
 
 fn server_to_proto(server: &ServerEntity) -> pb::Server {
     pb::Server {
-        id: ids::record_key(&server.id.0),
-        canvas_id: ids::record_key(&server.canvas.0),
+        id: server.id.to_string(),
+        canvas_id: server.canvas.to_string(),
         name: server.name.clone(),
         icon: server.icon.clone(),
         comment: server.comment.clone(),
@@ -664,8 +660,8 @@ fn relay_protocol_from_proto(protocol: i32) -> Result<RelayProtocol, Status> {
 fn lane_to_proto(lane: &Lane) -> pb::Lane {
     pb::Lane {
         key: lane.key.clone(),
-        group_node_id: ids::record_key(&lane.group.0),
-        channel_pod_id: ids::record_key(&lane.channel.0),
+        group_node_id: lane.group.to_string(),
+        channel_pod_id: lane.channel.to_string(),
         role: match lane.role {
             LaneRole::Distribute => pb::LaneRole::LaneDistribute,
             LaneRole::Relay => pb::LaneRole::LaneRelay,
@@ -676,15 +672,15 @@ fn lane_to_proto(lane: &Lane) -> pb::Lane {
         source_node_id: lane
             .source
             .as_ref()
-            .map(|s| ids::record_key(&s.0))
+            .map(|s| s.to_string())
             .unwrap_or_default(),
     }
 }
 
 fn port_to_proto(port: &PortEntity) -> pb::Port {
     pb::Port {
-        id: ids::record_key(&port.id.0),
-        node_id: ids::record_key(&port.owner.0),
+        id: port.id.to_string(),
+        node_id: port.owner.to_string(),
         kind: port_kind_to_proto(port.kind),
         direction: match port.direction {
             PortDirection::Input => pb::PortDirection::PortInput,
@@ -721,7 +717,7 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
     use pb::node_spec::Spec;
     let spec = match spec {
         NodeSpec::Pod(cfg) => Spec::Pod(pb::PodConfig {
-            server_id: ids::record_key(&cfg.server.0),
+            server_id: cfg.server.to_string(),
             port: u32::from(cfg.port),
             bind_ip: cfg.bind_ip.clone().unwrap_or_default(),
             advertise_ip: cfg.advertise_ip.clone().unwrap_or_default(),
@@ -730,7 +726,7 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
             receive_proxy_protocol: proxy_to_proto(cfg.receive_proxy_protocol),
             tls: cfg.tls.as_ref().map(|tls| pb::TlsConfig {
                 sni: tls.sni.clone(),
-                dns_provider_id: ids::record_key(&tls.dns_provider.0),
+                dns_provider_id: tls.dns_provider.to_string(),
                 domain_id: tls.domain_id.clone(),
                 acme_directory: tls.acme_directory.clone(),
             }),
@@ -757,11 +753,11 @@ fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
             })
         }
         NodeSpec::UniversalPod(cfg) => Spec::UniversalPod(pb::UniversalPodConfig {
-            server_id: ids::record_key(&cfg.server.0),
+            server_id: cfg.server.to_string(),
         }),
 
         NodeSpec::CanvasImport(cfg) => Spec::CanvasImport(pb::CanvasImportConfig {
-            canvas_id: ids::record_key(&cfg.canvas.0),
+            canvas_id: cfg.canvas.to_string(),
         }),
         NodeSpec::CanvasExport(cfg) => Spec::CanvasExport(pb::CanvasExportConfig {
             kind: port_kind_to_proto(cfg.kind),
@@ -907,17 +903,17 @@ fn node_row_to_proto(
 ) -> pb::Node {
     let import_target = match &node.spec {
         NodeSpec::CanvasImport(cfg) => {
-            let key = ids::record_key(&cfg.canvas.0);
+            let key = cfg.canvas.to_string();
             import_targets
                 .iter()
-                .find(|c| ids::record_key(&c.id.0) == key)
+                .find(|c| c.id.to_string() == key)
                 .map(canvas_to_proto)
         }
         _ => None,
     };
     pb::Node {
-        id: ids::record_key(&node.id.0),
-        canvas_id: ids::record_key(&node.canvas.0),
+        id: node.id.to_string(),
+        canvas_id: node.canvas.to_string(),
         name: node.name.clone(),
         comment: node.comment.clone(),
         spec: Some(spec_to_proto(&node.spec)),
@@ -941,9 +937,9 @@ fn tree_to_proto(tree: &CanvasTree) -> pb::CanvasTreeNode {
 
 fn edge_to_proto(edge: &EdgeConnectionEntity) -> pb::Edge {
     pb::Edge {
-        id: ids::record_key(&edge.id.0),
-        source_port_id: ids::record_key(&edge.source.0),
-        target_port_id: ids::record_key(&edge.target.0),
+        id: edge.id.to_string(),
+        source_port_id: edge.source.to_string(),
+        target_port_id: edge.target.to_string(),
     }
 }
 
@@ -1006,21 +1002,9 @@ fn problem_to_proto(problem: &TopologyProblem) -> pb::Problem {
         }
         .into(),
         message: problem.message.clone(),
-        node_ids: problem
-            .nodes
-            .iter()
-            .map(|n| ids::record_key(&n.0))
-            .collect(),
-        edge_ids: problem
-            .edges
-            .iter()
-            .map(|e| ids::record_key(&e.0))
-            .collect(),
-        port_ids: problem
-            .ports
-            .iter()
-            .map(|p| ids::record_key(&p.0))
-            .collect(),
+        node_ids: problem.nodes.iter().map(|n| n.to_string()).collect(),
+        edge_ids: problem.edges.iter().map(|e| e.to_string()).collect(),
+        port_ids: problem.ports.iter().map(|p| p.to_string()).collect(),
     }
 }
 
@@ -1878,10 +1862,8 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                                     .servers
                                                     .iter()
                                                     .map(|s| pb::ServerRollout {
-                                                        server_id: ids::record_key(&s.server.id.0),
-                                                        canvas_id: ids::record_key(
-                                                            &s.server.canvas.0,
-                                                        ),
+                                                        server_id: s.server.id.to_string(),
+                                                        canvas_id: s.server.canvas.to_string(),
                                                         status: Some(rollout_status_to_proto(
                                                             s.status.clone(),
                                                         )),
@@ -1927,7 +1909,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         let input = request.into_inner();
         let (since, _) = history_window(&input.since, "")?;
         let server = ids::server_id(&input.server_id);
-        let server_key = ids::record_key(&server.0);
+        let server_key = server.to_string();
         let watch = self
             .live
             .process(live::WatchServerHealth {
@@ -2073,7 +2055,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         let session = session_id(&request)?;
         let input = request.into_inner();
         let node = ids::node_id(&input.node_id);
-        let node_key = ids::record_key(&node.0);
+        let node_key = node.to_string();
         let watch = self
             .live
             .process(live::WatchNodeHealth {
@@ -2102,7 +2084,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             let mut cursor: (DateTime<Utc>, Option<String>) = watch
                 .records
                 .first()
-                .map(|record| (record.report_time, Some(ids::record_key(&record.id.0))))
+                .map(|record| (record.report_time, Some(record.id.to_string())))
                 .unwrap_or((DateTime::UNIX_EPOCH, None));
             let snapshot = pb::NodeHealthEvent {
                 event: Some(pb::node_health_event::Event::Snapshot(
@@ -2203,7 +2185,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                     let short = rows.len() < NODE_RECOVERY_PAGE as usize;
                                     for record in &rows {
                                         cursor =
-                                            (record.report_time, Some(ids::record_key(&record.id.0)));
+                                            (record.report_time, Some(record.id.to_string()));
                                         let event = pb::NodeHealthEvent {
                                             event: Some(pb::node_health_event::Event::Record(
                                                 node_health_record_to_proto(record),

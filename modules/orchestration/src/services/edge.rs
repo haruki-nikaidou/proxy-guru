@@ -25,7 +25,6 @@ use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::universal;
 use crate::utils::ids;
-use crate::utils::ids::record_key;
 use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -60,14 +59,14 @@ fn port_in<'a>(
     topology: &'a CanvasTopology,
     port: &PortId,
 ) -> Result<(&'a PortEntity, &'a NodeWithPorts), OrchestrationError> {
-    let key = record_key(&port.0);
+    let key = port.to_string();
     topology
         .nodes
         .iter()
         .find_map(|n| {
             n.ports
                 .iter()
-                .find(|p| record_key(&p.id.0) == key)
+                .find(|p| p.id.to_string() == key)
                 .map(|p| (p, n))
         })
         .ok_or(OrchestrationError::NotFound)
@@ -185,7 +184,7 @@ impl Processor<Connect> for EdgeService {
             .canvas_changed(
                 &topology.root,
                 CanvasChangeKind::EdgeConnected,
-                vec![record_key(&edge.id.0)],
+                vec![edge.id.to_string()],
             )
             .await;
         Ok(edge)
@@ -219,11 +218,11 @@ impl ConnectEnd {
         match self {
             ConnectEnd::Port(port) => port_in(topology, port).map(|(_, n)| n),
             ConnectEnd::Handle { node, .. } => {
-                let key = record_key(&node.0);
+                let key = node.to_string();
                 topology
                     .nodes
                     .iter()
-                    .find(|n| record_key(&n.node.id.0) == key)
+                    .find(|n| n.node.id.to_string() == key)
                     .ok_or(OrchestrationError::NotFound)
             }
         }
@@ -275,11 +274,11 @@ fn as_new_ports(ports: &[PortEntity]) -> Vec<NewPort> {
 }
 
 fn has_edge(topology: &CanvasTopology, port: &PortEntity) -> bool {
-    let key = record_key(&port.id.0);
+    let key = port.id.to_string();
     topology
         .edges
         .iter()
-        .any(|e| record_key(&e.source.0) == key || record_key(&e.target.0) == key)
+        .any(|e| e.source.to_string() == key || e.target.to_string() == key)
 }
 
 /// A bundle port carries one bundle.
@@ -339,7 +338,7 @@ impl Processor<ConnectUniversal> for EdgeService {
                         "a channel starts at the destination of a pod".into(),
                     ));
                 }
-                let pod = record_key(&owner.node.id.0);
+                let pod = owner.node.id.to_string();
                 let ordinal = universal::next_ordinal(&topology);
                 let mut ports = as_new_ports(&source.ports);
                 if ports.iter().any(|p| p.key == universal::chan_key(&pod)) {
@@ -392,7 +391,7 @@ impl Processor<ConnectUniversal> for EdgeService {
                     ));
                 }
                 ensure_bundle_free(&topology, out_port, owner)?;
-                let source_key = record_key(&source.node.id.0);
+                let source_key = source.node.id.to_string();
                 let in_key = universal::bundle_in_key(&source_key);
                 if target.ports.iter().any(|p| p.key == in_key) {
                     return Err(OrchestrationError::Conflict(
@@ -443,16 +442,10 @@ impl Processor<ConnectUniversal> for EdgeService {
                         "this member already takes a bundle; disconnect it first".into(),
                     ));
                 }
-                let source_key = record_key(&source.node.id.0);
+                let source_key = source.node.id.to_string();
                 let already = topology.edges.iter().any(|e| {
-                    let from_source = source
-                        .ports
-                        .iter()
-                        .any(|p| record_key(&p.id.0) == record_key(&e.source.0));
-                    let into_target = taker
-                        .ports
-                        .iter()
-                        .any(|p| record_key(&p.id.0) == record_key(&e.target.0));
+                    let from_source = source.ports.iter().any(|p| p.id == e.source);
+                    let into_target = taker.ports.iter().any(|p| p.id == e.target);
                     from_source && into_target
                 });
                 if already {
@@ -480,7 +473,7 @@ impl Processor<ConnectUniversal> for EdgeService {
                 ));
             }
         };
-        if record_key(&out.node.node.id.0) == record_key(&inp.node.node.id.0) {
+        if out.node.node.id == inp.node.node.id {
             return Err(OrchestrationError::Invalid(
                 "a node cannot be bundled to itself".into(),
             ));
@@ -524,7 +517,11 @@ impl Processor<ConnectUniversal> for EdgeService {
             },
         });
         let port_ref = |port: &PortEntity| {
-            if record_key(&port.id.0).starts_with(universal::PENDING_PORT_PREFIX) {
+            if port
+                .id
+                .to_string()
+                .starts_with(universal::PENDING_PORT_PREFIX)
+            {
                 PortRef::on_node(port.owner.clone(), &port.key)
             } else {
                 PortRef::existing(port.id.clone())
@@ -560,7 +557,7 @@ impl Processor<ConnectUniversal> for EdgeService {
             .canvas_changed(
                 &topology.root,
                 CanvasChangeKind::EdgeConnected,
-                vec![record_key(&edge.id.0)],
+                vec![edge.id.to_string()],
             )
             .await;
         Ok(edge)
@@ -624,10 +621,7 @@ impl Processor<Disconnect> for EdgeService {
                 &self.db,
                 &self.notifier,
                 prepared,
-                Some((
-                    CanvasChangeKind::EdgeRetired,
-                    vec![record_key(&input.edge.0)],
-                )),
+                Some((CanvasChangeKind::EdgeRetired, vec![input.edge.to_string()])),
             )
             .await;
         }
@@ -641,7 +635,7 @@ impl Processor<Disconnect> for EdgeService {
             .await?;
         ensure_switch_safe(&projected, &views, &self.config)?;
 
-        let edge = record_key(&input.edge.0);
+        let edge = input.edge.to_string();
         self.db
             .process(DeleteEdgeRow {
                 id: input.edge,
@@ -680,8 +674,8 @@ impl Processor<ForceDisconnect> for EdgeService {
             .await?
             .ok_or(OrchestrationError::NotFound)?;
         let canvas = canvas_of_port(&self.db, &edge.source).await?;
-        tracing::info!(edge = %record_key(&edge.id.0), "force-deleting edge");
-        let id = record_key(&input.edge.0);
+        tracing::info!(edge = %edge.id.to_string(), "force-deleting edge");
+        let id = input.edge.to_string();
         self.db
             .process(DeleteEdgeRow {
                 id: input.edge,

@@ -465,7 +465,7 @@ fn a_secure_relay_needs_the_internal_ca_on_both_ends() {
         let topology = b.build();
         let relay_pods: Vec<String> = relay_tls_pods(&topology)
             .iter()
-            .map(|p| ids::record_key(&p.0))
+            .map(|p| p.to_string())
             .collect();
         assert_eq!(
             relay_pods,
@@ -826,7 +826,7 @@ fn a_boundary_that_is_not_wired_through_invalidates_only_its_pod() {
     // inside `subsub`, while `shallow` on the other server is untouched.
     topology
         .edges
-        .retain(|e| ids::record_key(&e.id.0) != "exit_deep-destination->subsub_out-export");
+        .retain(|e| e.id.to_string() != "exit_deep-destination->subsub_out-export");
     let result = derive(&topology, &a).unwrap();
     assert!(result.config.forwardings.is_empty());
     let [invalid] = result.invalid.as_slice() else {

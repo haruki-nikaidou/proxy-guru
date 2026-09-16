@@ -10,7 +10,6 @@ use crate::entities::db::view::{
 use crate::events::live::RolloutScope;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
-use crate::utils::ids::record_key;
 use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -155,7 +154,7 @@ impl Processor<ForgetServerApplied> for RolloutService {
             return Err(OrchestrationError::PermissionDenied);
         }
         let canvas = canvas_of_server(&self.db, &input.server).await?;
-        let server = record_key(&input.server.0);
+        let server = input.server.to_string();
         self.db
             .process(ForgetServerAppliedRow {
                 server: input.server,

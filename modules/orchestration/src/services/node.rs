@@ -16,7 +16,7 @@ use crate::entities::db::node::{
     LoadBalanceMember, MEMBER_PREFIX, NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts,
     PENDING_EXPORT_KEY, UpdateNodeMetaRow, UpdateNodeSpecRow,
 };
-use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
+use crate::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
 use crate::entities::db::topology::{CanvasTopology, LoadCanvasTopology};
 use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::CanvasChangeKind;
@@ -26,12 +26,12 @@ use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::universal::{self, PENDING_PORT_PREFIX};
 use crate::utils::ids;
-use crate::utils::ids::record_key;
 use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
 use kanau::processor::Processor;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct NodeService {
@@ -70,14 +70,14 @@ pub fn import_port_layout(exports: &[&NodeEntity]) -> Vec<NewPort> {
             _ => None,
         })
         .collect();
-    exports.sort_by_cached_key(|(node, _, _)| (node.position.y, record_key(&node.id.0)));
+    exports.sort_by_cached_key(|(node, _, _)| (node.position.y, node.id.to_string()));
     exports
         .into_iter()
         .enumerate()
         .map(|(rank, (node, kind, direction))| NewPort {
             kind,
             direction: mirror(export_port_direction(direction)),
-            key: record_key(&node.id.0),
+            key: node.id.to_string(),
             position: rank as i64,
         })
         .collect()
@@ -85,9 +85,9 @@ pub fn import_port_layout(exports: &[&NodeEntity]) -> Vec<NewPort> {
 
 /// The import node targeting `canvas` in `topology`, if any.
 fn importer_of<'a>(topology: &'a CanvasTopology, canvas: &CanvasId) -> Option<&'a NodeWithPorts> {
-    let key = record_key(&canvas.0);
+    let key = canvas.to_string();
     topology.nodes.iter().find(
-        |n| matches!(&n.node.spec, NodeSpec::CanvasImport(cfg) if record_key(&cfg.canvas.0) == key),
+        |n| matches!(&n.node.spec, NodeSpec::CanvasImport(cfg) if cfg.canvas.to_string() == key),
     )
 }
 
@@ -109,11 +109,11 @@ pub fn import_sync_for(
 /// The projection of an [`ImportSync`]: the importer's ports after the sync,
 /// keeping the row id of every key that survives so its edges stay attached.
 fn reshape_edit(topology: &CanvasTopology, sync: &ImportSync) -> Option<TopologyEdit> {
-    let key = record_key(&sync.node.0);
+    let key = sync.node.to_string();
     let importer = topology
         .nodes
         .iter()
-        .find(|n| record_key(&n.node.id.0) == key)?;
+        .find(|n| n.node.id.to_string() == key)?;
     Some(TopologyEdit::ReshapePorts {
         node: sync.node.clone(),
         ports: port_rows(&importer.node.id, &importer.ports, &sync.ports),
@@ -122,12 +122,12 @@ fn reshape_edit(topology: &CanvasTopology, sync: &ImportSync) -> Option<Topology
 
 /// The export nodes of `canvas` in `topology`.
 fn exports_of<'a>(topology: &'a CanvasTopology, canvas: &CanvasId) -> Vec<&'a NodeEntity> {
-    let key = record_key(&canvas.0);
+    let key = canvas.to_string();
     topology
         .nodes
         .iter()
         .map(|n| &n.node)
-        .filter(|n| record_key(&n.canvas.0) == key && matches!(n.spec, NodeSpec::CanvasExport(_)))
+        .filter(|n| n.canvas.to_string() == key && matches!(n.spec, NodeSpec::CanvasExport(_)))
         .collect()
 }
 
@@ -365,7 +365,7 @@ pub(crate) fn port_rows(
     existing: &[PortEntity],
     ports: &[NewPort],
 ) -> Vec<PortEntity> {
-    let owner_key = record_key(&owner.0);
+    let owner_key = owner.to_string();
     ports
         .iter()
         .map(|p| PortEntity {
@@ -453,16 +453,13 @@ async fn ensure_tls_valid(db: &Db, spec: &mut NodeSpec) -> Result<(), Orchestrat
         .await?;
     let conflicting = rows.iter().find(|row| {
         (tls.acme_directory.is_empty() || row.acme_directory == tls.acme_directory)
-            && (record_key(&row.dns_provider.0) != record_key(&tls.dns_provider.0)
-                || row.domain_id != tls.domain_id)
+            && (row.dns_provider != tls.dns_provider || row.domain_id != tls.domain_id)
     });
     if let Some(row) = conflicting {
         return Err(OrchestrationError::Invalid(format!(
             "tls: certificate for {} is already issued through dns provider {} / domain {}; \
              every Entry sharing an sni must use the same provider and domain",
-            tls.sni,
-            record_key(&row.dns_provider.0),
-            row.domain_id
+            tls.sni, row.dns_provider, row.domain_id
         )));
     }
     Ok(())
@@ -518,11 +515,11 @@ impl Processor<CreateNode> for NodeService {
         let mut target_fence: Option<CanvasFence> = None;
         let ports = match &input.spec {
             NodeSpec::CanvasImport(cfg) => {
-                let target_key = record_key(&cfg.canvas.0);
+                let target_key = cfg.canvas.to_string();
                 let in_tree = topology
                     .canvases
                     .iter()
-                    .any(|c| record_key(&c.id.0) == target_key);
+                    .any(|c| c.id.to_string() == target_key);
                 if !in_tree {
                     let target = self
                         .db
@@ -599,7 +596,7 @@ impl Processor<CreateNode> for NodeService {
             })
             .await?;
         self.notifier.notify(&topology.root).await;
-        let ids = vec![record_key(&created.node.id.0)];
+        let ids = vec![created.node.id.to_string()];
         self.notifier
             .canvas_changed(&topology.root, CanvasChangeKind::NodeCreated, ids.clone())
             .await;
@@ -688,18 +685,14 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         // to it. The projection mirrors that: kept keys reuse the existing port id,
         // so the edges below re-attach to exactly the rows the write will keep.
         let port_rows = port_rows(&old.node.id, &old.ports, &ports);
-        let kept: Vec<String> = port_rows.iter().map(|p| record_key(&p.id.0)).collect();
+        let kept: HashSet<&PortId> = port_rows.iter().map(|p| &p.id).collect();
         let mut carried = Vec::new();
         for edge in &topology.edges {
             for port in [&edge.source, &edge.target] {
-                let Some(old_port) = old
-                    .ports
-                    .iter()
-                    .find(|p| record_key(&p.id.0) == record_key(&port.0))
-                else {
+                let Some(old_port) = old.ports.iter().find(|p| p.id == *port) else {
                     continue;
                 };
-                if !kept.contains(&record_key(&old_port.id.0)) {
+                if !kept.contains(&old_port.id) {
                     return Err(OrchestrationError::Conflict(
                         "disconnect edges on removed ports first".into(),
                     ));
@@ -719,10 +712,10 @@ impl Processor<ReplaceNodeSpec> for NodeService {
         };
         let import_sync = match &input.spec {
             NodeSpec::CanvasExport(_) => {
-                let own = record_key(&node.id.0);
+                let own = node.id.to_string();
                 let mut exports: Vec<&NodeEntity> = exports_of(&topology, &canvas)
                     .into_iter()
-                    .filter(|n| record_key(&n.id.0) != own)
+                    .filter(|n| n.id.to_string() != own)
                     .collect();
                 exports.push(&node);
                 import_sync_for(&topology, &canvas, &exports)
@@ -770,10 +763,7 @@ impl Processor<ReplaceNodeSpec> for NodeService {
                 &self.db,
                 &self.notifier,
                 prepared,
-                Some((
-                    CanvasChangeKind::NodeReplaced,
-                    vec![record_key(&input.node.0)],
-                )),
+                Some((CanvasChangeKind::NodeReplaced, vec![input.node.to_string()])),
             )
             .await?;
             return self
@@ -803,7 +793,7 @@ impl Processor<ReplaceNodeSpec> for NodeService {
             .canvas_changed(
                 &topology.root,
                 CanvasChangeKind::NodeReplaced,
-                vec![record_key(&input.node.0)],
+                vec![input.node.to_string()],
             )
             .await;
         Ok(updated)
@@ -820,11 +810,7 @@ fn ensure_lane_edit_allowed(
         return Ok(());
     };
     match (&old.node.spec, spec) {
-        (NodeSpec::Pod(current), NodeSpec::Pod(next))
-            if record_key(&current.server.0) == record_key(&next.server.0) =>
-        {
-            Ok(())
-        }
+        (NodeSpec::Pod(current), NodeSpec::Pod(next)) if current.server == next.server => Ok(()),
         (NodeSpec::Pod(_), NodeSpec::Pod(_)) => Err(OrchestrationError::Conflict(
             "a landing pod stays on its server; only its port and addresses can change".into(),
         )),
@@ -874,10 +860,10 @@ impl Processor<UpdateNodeMeta> for NodeService {
                     position,
                     ..old.clone()
                 };
-                let own = record_key(&old.id.0);
+                let own = old.id.to_string();
                 let mut exports: Vec<&NodeEntity> = exports_of(&topology, &canvas)
                     .into_iter()
-                    .filter(|n| record_key(&n.id.0) != own)
+                    .filter(|n| n.id.to_string() != own)
                     .collect();
                 exports.push(&moved);
                 fence = topology.fence();
@@ -911,7 +897,7 @@ impl Processor<UpdateNodeMeta> for NodeService {
             .canvas_changed(
                 &canvas,
                 CanvasChangeKind::NodeMetaUpdated,
-                vec![record_key(&input.node.0)],
+                vec![input.node.to_string()],
             )
             .await;
         Ok(NodeWithPorts {
@@ -942,10 +928,10 @@ fn retirement(topology: &CanvasTopology, node: &NodeEntity) -> Retirement {
             edits,
         },
         NodeSpec::CanvasExport(_) => {
-            let own = record_key(&node.id.0);
+            let own = node.id.to_string();
             let exports: Vec<&NodeEntity> = exports_of(topology, &node.canvas)
                 .into_iter()
-                .filter(|n| record_key(&n.id.0) != own)
+                .filter(|n| n.id.to_string() != own)
                 .collect();
             let import_sync = import_sync_for(topology, &node.canvas, &exports);
             if let Some(sync) = &import_sync
@@ -979,7 +965,7 @@ impl NodeService {
         fence: Option<CanvasFence>,
     ) -> Result<(), OrchestrationError> {
         let frees = retirement.frees_canvas.clone();
-        let ids = vec![record_key(&node.id.0)];
+        let ids = vec![node.id.to_string()];
         self.db
             .process(DeleteNodeRow {
                 id: node.id,
@@ -1056,10 +1042,7 @@ impl Processor<RetireNode> for NodeService {
                     &self.db,
                     &self.notifier,
                     prepared,
-                    Some((
-                        CanvasChangeKind::NodeRetired,
-                        vec![record_key(&input.node.0)],
-                    )),
+                    Some((CanvasChangeKind::NodeRetired, vec![input.node.to_string()])),
                 )
                 .await;
             }
@@ -1100,16 +1083,16 @@ fn ensure_retire_allowed(
             "a universal pod goes with its server; delete the server instead".into(),
         )),
         NodeSpec::LoadBalanceDistribute(_) | NodeSpec::LoadBalanceAggregate(_) => {
-            let key = record_key(&node.id.0);
+            let key = node.id.to_string();
             let ports: std::collections::HashSet<String> = topology
                 .nodes
                 .iter()
-                .filter(|n| record_key(&n.node.id.0) == key)
+                .filter(|n| n.node.id.to_string() == key)
                 .flat_map(|n| n.ports.iter().filter(|p| universal::is_on_demand(p)))
-                .map(|p| record_key(&p.id.0))
+                .map(|p| p.id.to_string())
                 .collect();
             let wired = topology.edges.iter().any(|e| {
-                ports.contains(&record_key(&e.source.0)) || ports.contains(&record_key(&e.target.0))
+                ports.contains(&e.source.to_string()) || ports.contains(&e.target.to_string())
             });
             if wired {
                 return Err(OrchestrationError::Conflict(

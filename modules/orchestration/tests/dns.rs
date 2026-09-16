@@ -25,7 +25,6 @@ use orchestration::services::acme::{
 use orchestration::services::dns::{
     CreateDnsProvider, DeleteDnsProvider, DnsProviderSummary, ListDnsProviders, UpdateDnsProvider,
 };
-use orchestration::utils::ids::record_key;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -111,7 +110,7 @@ async fn mark_failed(w: &World, cert: &CertificateEntity, error: &str) {
 }
 
 fn keys(rows: &[CertificateEntity]) -> Vec<String> {
-    let mut out: Vec<String> = rows.iter().map(|r| record_key(&r.id.0)).collect();
+    let mut out: Vec<String> = rows.iter().map(|r| r.id.to_string()).collect();
     out.sort();
     out
 }

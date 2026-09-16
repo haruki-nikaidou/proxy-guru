@@ -23,7 +23,7 @@ use crate::entities::db::certificate::{ListCertificatesByIds, TouchCanvases};
 use crate::entities::db::node::{ListCanvasesWithRelayTls, NodeId};
 use crate::entities::db::view::{CertificateKind, CertificateRef};
 use crate::services::OrchestrationError;
-use crate::utils::ids::{self, record_key};
+use crate::utils::ids;
 use crate::utils::secret::SecretKey;
 use base::db::Db;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -194,9 +194,9 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 pods: input.pods.clone(),
             })
             .await?;
-        let mut by_pod: HashMap<String, RelayCertificateEntity> = existing
+        let mut by_pod: HashMap<NodeId, RelayCertificateEntity> = existing
             .into_iter()
-            .map(|leaf| (record_key(&leaf.pod.0), leaf))
+            .map(|leaf| (leaf.pod.clone(), leaf))
             .collect();
 
         let now = Utc::now();
@@ -210,8 +210,7 @@ impl Processor<EnsureRelayCertificates> for CaService {
         let mut leaves = Vec::with_capacity(input.pods.len());
         for pod in input.pods {
             let sni = relay_sni(&pod);
-            let pod_key = record_key(&pod.0);
-            let expected_version = match by_pod.remove(&pod_key) {
+            let expected_version = match by_pod.remove(&pod) {
                 // Still the right SNI and outside the renewal window: untouched.
                 Some(leaf) if leaf.sni == sni && leaf.not_after > renew_at => {
                     leaves.push(leaf);
@@ -246,16 +245,18 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 // instead of issuing a second one.
                 None if expected_version.is_some() => {
                     tracing::debug!(
-                        pod = %pod_key,
+                        pod = %pod,
                         "another writer replaced this relay leaf first; using its row"
                     );
                     self.db
-                        .process(ListRelayCertificatesByPods { pods: vec![pod] })
+                        .process(ListRelayCertificatesByPods {
+                            pods: vec![pod.clone()],
+                        })
                         .await?
                         .pop()
                         .ok_or_else(|| {
                             OrchestrationError::Conflict(format!(
-                                "the relay certificate of pod {pod_key} was deleted while it was being replaced"
+                                "the relay certificate of pod {pod} was deleted while it was being replaced"
                             ))
                         })?
                 }
@@ -430,11 +431,10 @@ impl Processor<BundleCertificates<'_>> for CaService {
             else {
                 return Err(OrchestrationError::Certificate(format!(
                     "certificate {} for {} is referenced but not issued",
-                    record_key(&certificate.id.0),
-                    certificate.sni
+                    certificate.id, certificate.sni
                 )));
             };
-            let (chain_path, key_path) = acme_cert_paths(&record_key(&certificate.id.0));
+            let (chain_path, key_path) = acme_cert_paths(certificate.id.as_ref());
             files.push(CertificateFile {
                 path: chain_path,
                 pem: full_chain.clone(),
@@ -449,7 +449,7 @@ impl Processor<BundleCertificates<'_>> for CaService {
             .process(ListRelayCertificatesByIds { ids: relay_ids })
             .await?
         {
-            let (chain_path, key_path) = relay_cert_paths(&record_key(&leaf.pod.0));
+            let (chain_path, key_path) = relay_cert_paths(leaf.pod.as_ref());
             files.push(CertificateFile {
                 path: chain_path,
                 pem: leaf.certificate_pem,

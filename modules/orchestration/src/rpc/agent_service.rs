@@ -138,7 +138,7 @@ impl WorkerAgentGrpc {
         // happens here, because only the stream knows a worker is listening.
         self.agents
             .notifier
-            .rollout_changed(RolloutScope::Server(ids::record_key(&server.0)))
+            .rollout_changed(RolloutScope::Server(server.to_string()))
             .await;
         let needs_ca = Config::from_toml_str(&snapshot.toml)
             .map_err(|e| Status::internal(format!("stored revision does not parse: {e}")))?
@@ -260,7 +260,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
             epoch: server.watch_epoch,
         };
 
-        let server_key = ids::record_key(&server.id.0);
+        let server_key = server.id.to_string();
         let Some(subscription) = self.hub.subscribe(&server_key, fence) else {
             // Our claim already lost to a newer one; the release is a no-op unless we
             // are somehow still the row's owner.

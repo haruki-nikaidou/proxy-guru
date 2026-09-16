@@ -140,7 +140,7 @@ fn edges_may_not_cross_canvases() {
     let mut topology = b.build();
     topology
         .edges
-        .retain(|e| ids::record_key(&e.id.0) != "exit-destination->pod-destination");
+        .retain(|e| e.id.to_string() != "exit-destination->pod-destination");
     let problems = analyze(&topology);
     assert!(errors(&problems).contains(&ProblemKind::EdgeCrossCanvas));
 }

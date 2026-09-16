@@ -22,7 +22,6 @@ use crate::services::OrchestrationError;
 use crate::services::health::{NodeVerdicts, ParsedSnapshot, SnapshotEntry, parse_snapshot};
 use crate::services::notify::Notifier;
 use crate::services::watch::{SessionLease, WatchHub};
-use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_refresh_key, sha256_hex};
@@ -111,7 +110,7 @@ impl Processor<RegisterWorker> for AgentService {
         // version means it landed, a guard rollback means it did not.
         if let Some(error) = &input.last_update_error {
             tracing::warn!(
-                server = %record_key(&server.id.0),
+                server = %server.id.to_string(),
                 error,
                 "worker reported a rolled-back self-update"
             );
@@ -127,7 +126,7 @@ impl Processor<RegisterWorker> for AgentService {
         }
 
         self.hub
-            .supersede(&record_key(&server.id.0), rotated.refresh_key_generation);
+            .supersede(server.id.as_ref(), rotated.refresh_key_generation);
         self.notifier.notify(&server.canvas).await;
         // A registration reconciles what the worker runs and clears `in_flight`,
         // and it may have brought a new observed address with it.
@@ -135,11 +134,11 @@ impl Processor<RegisterWorker> for AgentService {
             .canvas_changed(
                 &server.canvas,
                 CanvasChangeKind::ServerIpChanged,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         self.notifier
-            .rollout_changed(RolloutScope::Server(record_key(&server.id.0)))
+            .rollout_changed(RolloutScope::Server(server.id.to_string()))
             .await;
         Ok(secret)
     }
@@ -181,7 +180,7 @@ impl AgentService {
                     // the log tells them apart, the caller is not told.
                     found => {
                         tracing::warn!(
-                            server = %record_key(&server_id.0),
+                            server = %server_id.to_string(),
                             known = found.is_some(),
                             "agent key refused at registration"
                         );
@@ -224,7 +223,7 @@ impl Processor<PollAgentUpdate> for AgentService {
         if server.refresh_key_generation != input.agent.generation {
             return Err(OrchestrationError::PermissionDenied);
         }
-        let key = record_key(&server.id.0);
+        let key = server.id.to_string();
         // A failure ends the request; the operator reads why and asks again.
         if let Some(error) = input.last_error {
             tracing::warn!(server = %key, %error, "worker reported a failed self-update");
@@ -291,7 +290,7 @@ impl AgentService {
             .canvas_changed(
                 &server.canvas,
                 CanvasChangeKind::ServerUpdated,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         Ok(())
@@ -436,7 +435,7 @@ impl Processor<AckConfig> for AgentService {
             })
             .await?;
         self.notifier.notify(&server.canvas).await;
-        let server_key = record_key(&server.id.0);
+        let server_key = server.id.to_string();
         self.notifier
             .rollout_changed(RolloutScope::Server(server_key.clone()))
             .await;
@@ -451,7 +450,7 @@ impl Processor<AckConfig> for AgentService {
             self.notifier
                 .live(LiveMessage::ServerHealth {
                     server: server_key,
-                    canvas: record_key(&write.canvas.0),
+                    canvas: write.canvas.to_string(),
                     record: (&write.record).into(),
                     status_changed: write.previous_status != write.record.status,
                 })

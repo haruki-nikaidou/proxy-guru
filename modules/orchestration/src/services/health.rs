@@ -25,7 +25,6 @@ use crate::events::live::{CanvasChangeKind, LiveMessage};
 use crate::services::OrchestrationError;
 use crate::services::agent::{AgentIdentity, PodResult};
 use crate::services::notify::Notifier;
-use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
@@ -54,8 +53,8 @@ impl HealthService {
     async fn publish(&self, server: &ServerId, write: &HealthWrite) {
         self.notifier
             .live(LiveMessage::ServerHealth {
-                server: record_key(&server.0),
-                canvas: record_key(&write.canvas.0),
+                server: server.to_string(),
+                canvas: write.canvas.to_string(),
                 record: (&write.record).into(),
                 status_changed: write.previous_status != write.record.status,
             })
@@ -209,7 +208,7 @@ impl Processor<RecordHealthReport> for HealthService {
                     .canvas_changed(
                         &server.canvas,
                         CanvasChangeKind::ServerIpChanged,
-                        vec![record_key(&server_id.0)],
+                        vec![server_id.to_string()],
                     )
                     .await;
             }
@@ -257,7 +256,7 @@ fn server_status(
 /// gets exactly one row per event.
 #[derive(Default)]
 pub(crate) struct NodeVerdicts<'a> {
-    verdicts: HashMap<String, (&'a NodeId, NodeHealthStatus, &'a str)>,
+    verdicts: HashMap<&'a NodeId, (NodeHealthStatus, &'a str)>,
 }
 
 impl<'a> NodeVerdicts<'a> {
@@ -265,20 +264,20 @@ impl<'a> NodeVerdicts<'a> {
     pub fn record(&mut self, deps: &'a ForwardingDeps, status: NodeHealthStatus, message: &'a str) {
         for node in std::iter::once(&deps.pod).chain(&deps.nodes) {
             self.verdicts
-                .entry(record_key(&node.0))
+                .entry(node)
                 .and_modify(|current| {
-                    if severity(status) > severity(current.1) {
-                        *current = (node, status, message);
+                    if severity(status) > severity(current.0) {
+                        *current = (status, message);
                     }
                 })
-                .or_insert((node, status, message));
+                .or_insert((status, message));
         }
     }
 
     pub fn into_records(self, now: DateTime<Utc>) -> Vec<NewNodeHealthRecord> {
         self.verdicts
-            .into_values()
-            .map(|(node, status, message)| NewNodeHealthRecord {
+            .into_iter()
+            .map(|(node, (status, message))| NewNodeHealthRecord {
                 node: node.clone(),
                 status,
                 message: message.to_string(),

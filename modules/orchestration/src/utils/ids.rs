@@ -1,7 +1,8 @@
-//! Row id ↔ wire string conversion.
+//! Wire string → typed row id.
 //!
-//! Ids cross the gRPC boundary as the bare key, so every decode in the RPC layer
-//! funnels through here instead of being reinvented per handler.
+//! Ids cross the gRPC boundary as bare text, so every decode funnels through
+//! here instead of being reinvented per handler. The other direction needs no
+//! helper: an id is `Display`.
 
 use crate::entities::db::ca::RelayCertificateId;
 use crate::entities::db::canvas::CanvasId;
@@ -12,15 +13,6 @@ use crate::entities::db::health::{NodeHealthRecordId, ServerHealthRecordId};
 use crate::entities::db::node::NodeId;
 use crate::entities::db::port::PortId;
 use crate::entities::db::server::ServerId;
-
-/// The bare key of an id, as sent on the wire.
-///
-/// Transitional: with text ids this is an identity copy of `id.0`, and new code
-/// writes `id.to_string()` or compares ids directly. Kept so the call sites that
-/// predate the PostgreSQL move compile unchanged until they are swept.
-pub fn record_key(key: &str) -> String {
-    key.to_owned()
-}
 
 macro_rules! decoder {
     ($name:ident, $ty:ident) => {

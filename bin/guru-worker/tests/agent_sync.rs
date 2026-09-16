@@ -40,7 +40,6 @@ use orchestration::services::node::{CreateNode, NodeService, ReplaceNodeSpec};
 use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
-use orchestration::utils::ids;
 use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::orchestration_agent::worker_agent_client::WorkerAgentClient;
 use rpguru_sdk::orchestration_agent::worker_agent_server::{WorkerAgent, WorkerAgentServer};
@@ -411,7 +410,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
         AgentOptions {
             master: format!("http://{}", master.addr),
             api_key: api_key.clone(),
-            server_id: ids::record_key(&canvas.server.0),
+            server_id: canvas.server.to_string(),
             state_dir: state_dir.clone(),
             applied_revision: Arc::new(AtomicI64::new(0)),
             health_interval: Duration::from_millis(200),
@@ -636,7 +635,7 @@ async fn a_heartbeating_stream_keeps_its_session_against_a_second_worker(
     };
     let (master, api_key) = boot_master(pool, lease).await?;
     let canvas = build_canvas(&master.db).await?;
-    let server_key = ids::record_key(&canvas.server.0);
+    let server_key = canvas.server.to_string();
 
     let mut client = within(
         "a channel to the master",
@@ -684,7 +683,7 @@ async fn an_ended_stream_hands_the_session_back_at_once(pool: sqlx::PgPool) -> T
     let lease = SessionLease::default();
     let (master, api_key) = boot_master(pool, lease).await?;
     let canvas = build_canvas(&master.db).await?;
-    let server_key = ids::record_key(&canvas.server.0);
+    let server_key = canvas.server.to_string();
 
     let mut client = within(
         "a channel to the master",
@@ -737,7 +736,7 @@ async fn an_ended_stream_hands_the_session_back_at_once(pool: sqlx::PgPool) -> T
 async fn a_newer_stream_fences_the_previous_one(pool: sqlx::PgPool) -> TestResult {
     let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
-    let server_key = ids::record_key(&canvas.server.0);
+    let server_key = canvas.server.to_string();
 
     let mut client = within(
         "a channel to the master",
@@ -770,7 +769,7 @@ async fn a_newer_stream_fences_the_previous_one(pool: sqlx::PgPool) -> TestResul
 async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestResult {
     let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
-    let server_key = ids::record_key(&canvas.server.0);
+    let server_key = canvas.server.to_string();
 
     let mut client = within(
         "a channel to the master",
@@ -803,7 +802,7 @@ async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestRe
 async fn a_refresh_key_survives_a_master_restart(pool: sqlx::PgPool) -> TestResult {
     let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
-    let server_key = ids::record_key(&canvas.server.0);
+    let server_key = canvas.server.to_string();
 
     let mut client = within(
         "a channel to the master",

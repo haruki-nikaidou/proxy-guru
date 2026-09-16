@@ -31,7 +31,6 @@ use orchestration::services::node::{CreateNode, ReplaceNodeSpec, RetireNode};
 use orchestration::services::server::{AddressOverrides, CreateServer, DeleteServer};
 use orchestration::services::topology::{ProblemKind, ProblemSeverity};
 use orchestration::services::universal;
-use orchestration::utils::ids::record_key;
 use std::collections::BTreeMap;
 
 // --- fixture -----------------------------------------------------------------
@@ -89,11 +88,11 @@ async fn create(w: &World, canvas: &CanvasId, name: &str, spec: NodeSpec) -> Nod
 
 async fn universal_pod_of(w: &World, canvas: &CanvasId, server: &ServerId) -> NodeWithPorts {
     let topology = topology(w, canvas).await;
-    let key = record_key(&server.0);
+    let key = server.to_string();
     topology
         .nodes
         .into_iter()
-        .find(|n| matches!(&n.node.spec, NodeSpec::UniversalPod(cfg) if record_key(&cfg.server.0) == key))
+        .find(|n| matches!(&n.node.spec, NodeSpec::UniversalPod(cfg) if cfg.server.to_string() == key))
         .expect("every server has a universal pod")
 }
 
@@ -145,11 +144,11 @@ async fn bundle(w: &World, from: &NodeWithPorts, to: &NodeWithPorts) -> EdgeConn
     let to = reload(w, &to.node.id).await;
     let topology = topology(w, &from.node.canvas).await;
     let used = |port: &PortEntity| {
-        let key = record_key(&port.id.0);
+        let key = port.id.to_string();
         topology
             .edges
             .iter()
-            .any(|e| record_key(&e.source.0) == key || record_key(&e.target.0) == key)
+            .any(|e| e.source.to_string() == key || e.target.to_string() == key)
     };
     let mut outs: Vec<&PortEntity> = from
         .ports
@@ -298,7 +297,7 @@ async fn picture(w: &World) -> Picture {
     bundle(w, &up2, &ua).await;
     let ua = reload(w, &ua.node.id).await;
     for (p, e) in [(&p0, &e0), (&p1, &e1)] {
-        let chan = port_of(&ua, &universal::chan_key(&record_key(&p.node.id.0)));
+        let chan = port_of(&ua, &universal::chan_key(p.node.id.as_ref()));
         connect(w, &port_of(e, "destination"), &chan).await;
     }
     Picture {
@@ -354,7 +353,7 @@ fn landing_ports(lanes: &BTreeMap<String, NodeWithPorts>) -> BTreeMap<String, u1
 fn ids_of(lanes: &BTreeMap<String, NodeWithPorts>) -> BTreeMap<String, String> {
     lanes
         .iter()
-        .map(|(k, n)| (k.clone(), record_key(&n.node.id.0)))
+        .map(|(k, n)| (k.clone(), n.node.id.to_string()))
         .collect()
 }
 
@@ -386,13 +385,11 @@ async fn assert_clean_but(w: &World, canvas: &CanvasId, allowed: &[ProblemKind])
 }
 
 fn edges_touching(topology: &CanvasTopology, node: &NodeWithPorts) -> Vec<EdgeConnectionEntity> {
-    let ports: Vec<String> = node.ports.iter().map(|p| record_key(&p.id.0)).collect();
+    let ports: Vec<String> = node.ports.iter().map(|p| p.id.to_string()).collect();
     topology
         .edges
         .iter()
-        .filter(|e| {
-            ports.contains(&record_key(&e.source.0)) || ports.contains(&record_key(&e.target.0))
-        })
+        .filter(|e| ports.contains(&e.source.to_string()) || ports.contains(&e.target.to_string()))
         .cloned()
         .collect()
 }
@@ -426,11 +423,11 @@ async fn the_picture_expands_into_lanes(pool: sqlx::PgPool) -> TestResult {
     // Landing pods sit on the transit servers, two per server, distinct ports.
     let ports = landing_ports(&lanes);
     for server in [&p.hk1, &p.hk2] {
-        let key = record_key(&server.0);
+        let key = server.to_string();
         let mine: Vec<u16> = lanes
             .values()
             .filter_map(|n| match &n.node.spec {
-                NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == key => Some(cfg.port),
+                NodeSpec::Pod(cfg) if cfg.server.to_string() == key => Some(cfg.port),
                 _ => None,
             })
             .collect();
@@ -440,8 +437,8 @@ async fn the_picture_expands_into_lanes(pool: sqlx::PgPool) -> TestResult {
     }
     assert_eq!(ports.len(), 4);
 
-    let p0 = record_key(&p.p0.node.id.0);
-    let p1 = record_key(&p.p1.node.id.0);
+    let p0 = p.p0.node.id.to_string();
+    let p1 = p.p1.node.id.to_string();
     let ud_chan0 =
         p.ud.ports
             .iter()
@@ -494,7 +491,7 @@ async fn unrelated_edits_keep_lane_identity(pool: sqlx::PgPool) -> TestResult {
     let exit_edge = edges_touching(&topology, &p.e1).into_iter().next().unwrap();
     disconnect(&w, &exit_edge).await?;
     let ua = reload(&w, &p.ua.node.id).await;
-    let chan = port_of(&ua, &universal::chan_key(&record_key(&p.p1.node.id.0)));
+    let chan = port_of(&ua, &universal::chan_key(p.p1.node.id.as_ref()));
     connect(&w, &port_of(&p.e1, "destination"), &chan).await;
 
     let after = lanes(&w, &p.canvas).await;
@@ -620,12 +617,7 @@ async fn disconnects_shrink_the_expansion(pool: sqlx::PgPool) -> TestResult {
     let topology = topology(&w, &p.canvas).await;
     let ud_to_hk2 = edges_touching(&topology, &p.ud)
         .into_iter()
-        .find(|e| {
-            p.up2
-                .ports
-                .iter()
-                .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
-        })
+        .find(|e| p.up2.ports.iter().any(|x| x.id == e.target))
         .expect("the bundle to hk2");
     disconnect(&w, &ud_to_hk2).await?;
     let lanes_now = lanes(&w, &p.canvas).await;
@@ -641,11 +633,11 @@ async fn disconnects_shrink_the_expansion(pool: sqlx::PgPool) -> TestResult {
         0,
         "one feeder: direct"
     );
-    let hk2 = record_key(&p.hk2.0);
+    let hk2 = p.hk2.to_string();
     assert!(
-        lanes_now.values().all(
-            |n| !matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2)
-        )
+        lanes_now
+            .values()
+            .all(|n| !matches!(&n.node.spec, NodeSpec::Pod(cfg) if cfg.server.to_string() == hk2))
     );
     let ud = reload(&w, &p.ud.node.id).await;
     assert_eq!(ud.ports.len(), 6, "the member stays, unwired");
@@ -656,19 +648,15 @@ async fn disconnects_shrink_the_expansion(pool: sqlx::PgPool) -> TestResult {
     let topology = self::topology(&w, &p.canvas).await;
     let chan0 = edges_touching(&topology, &p.p0)
         .into_iter()
-        .find(|e| {
-            p.ud.ports
-                .iter()
-                .any(|x| record_key(&x.id.0) == record_key(&e.source.0))
-        })
+        .find(|e| p.ud.ports.iter().any(|x| x.id == e.source))
         .expect("the channel edge of p0");
     disconnect(&w, &chan0).await?;
     let lanes_now = lanes(&w, &p.canvas).await;
-    let p0 = record_key(&p.p0.node.id.0);
+    let p0 = p.p0.node.id.to_string();
     assert!(
         lanes_now
             .values()
-            .all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p0)
+            .all(|n| n.node.lane.as_ref().unwrap().channel.to_string() != p0)
     );
     assert_eq!(
         lanes_now.len(),
@@ -699,11 +687,11 @@ async fn retiring_a_channel_pod_retires_its_lanes(pool: sqlx::PgPool) -> TestRes
         .await?;
     let lanes_now = lanes(&w, &p.canvas).await;
     assert_eq!(lanes_now.len(), 6);
-    let p1 = record_key(&p.p1.node.id.0);
+    let p1 = p.p1.node.id.to_string();
     assert!(
         lanes_now
             .values()
-            .all(|n| record_key(&n.node.lane.as_ref().unwrap().channel.0) != p1)
+            .all(|n| n.node.lane.as_ref().unwrap().channel.to_string() != p1)
     );
     assert_clean(&w, &p.canvas).await;
     Ok(())
@@ -829,7 +817,7 @@ async fn handle_connects_are_checked(pool: sqlx::PgPool) -> TestResult {
             ConnectEnd::Port(port_of(&up3, universal::BUNDLE_OUT)),
             ConnectEnd::Port(port_of(
                 &p.up1,
-                &universal::bundle_in_key(&record_key(&p.ud.node.id.0)),
+                &universal::bundle_in_key(p.ud.node.id.as_ref()),
             )),
         )
         .await,
@@ -959,7 +947,7 @@ async fn universal_pods_chain(pool: sqlx::PgPool) -> TestResult {
     assert!(
         ua.ports
             .iter()
-            .any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0)))
+            .any(|x| x.key == universal::chan_key(p0.node.id.as_ref()))
     );
     // A cycle is refused outright.
     let up2 = reload(&w, &up2.node.id).await;
@@ -1348,7 +1336,7 @@ async fn a_thin_line_lands_a_channel_on_one_server(pool: sqlx::PgPool) -> TestRe
     assert!(
         up.ports
             .iter()
-            .any(|x| x.key == universal::chan_key(&record_key(&p0.node.id.0)))
+            .any(|x| x.key == universal::chan_key(p0.node.id.as_ref()))
     );
     let found = problems(&w, &canvas).await;
     assert!(
@@ -1364,7 +1352,7 @@ async fn a_thin_line_lands_a_channel_on_one_server(pool: sqlx::PgPool) -> TestRe
     connect(
         &w,
         &port_of(&exit0, "destination"),
-        &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0))),
+        &port_of(&ua, &universal::chan_key(p0.node.id.as_ref())),
     )
     .await;
     assert_clean(&w, &canvas).await;
@@ -1376,7 +1364,7 @@ async fn a_thin_line_lands_a_channel_on_one_server(pool: sqlx::PgPool) -> TestRe
     assert_eq!(applied.forwardings[0].points_at.len(), 1);
     assert_eq!(
         applied.forwardings[0].points_at[0].server_key(),
-        record_key(&hk.0)
+        hk.to_string()
     );
     assert_eq!(
         applied.forwardings[0].points_at[0].protocol,
@@ -1400,11 +1388,7 @@ async fn a_second_tier_fans_out_per_upstream_server(pool: sqlx::PgPool) -> TestR
     for up in [&p.up1, &p.up2] {
         let out = edges_touching(&topology_now, up)
             .into_iter()
-            .find(|e| {
-                p.ua.ports
-                    .iter()
-                    .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
-            })
+            .find(|e| p.ua.ports.iter().any(|x| x.id == e.target))
             .expect("bundle into the aggregate node");
         disconnect(&w, &out).await?;
     }
@@ -1434,7 +1418,7 @@ async fn a_second_tier_fans_out_per_upstream_server(pool: sqlx::PgPool) -> TestR
     bundle(&w, &up4, &reload(&w, &p.ua.node.id).await).await;
     let ua = reload(&w, &p.ua.node.id).await;
     for (pod, e) in [(&p.p0, &p.e0), (&p.p1, &p.e1)] {
-        let chan = port_of(&ua, &universal::chan_key(&record_key(&pod.node.id.0)));
+        let chan = port_of(&ua, &universal::chan_key(pod.node.id.as_ref()));
         let topology_now = topology(&w, &p.canvas).await;
         if edges_touching(&topology_now, e).is_empty() {
             connect(&w, &port_of(e, "destination"), &chan).await;
@@ -1459,10 +1443,7 @@ async fn a_second_tier_fans_out_per_upstream_server(pool: sqlx::PgPool) -> TestR
         .values()
         .filter(|n| {
             matches!(n.node.spec, NodeSpec::Relay(_))
-                && n.node
-                    .lane
-                    .as_ref()
-                    .is_some_and(|l| record_key(&l.group.0) == record_key(&ud2.node.id.0))
+                && n.node.lane.as_ref().is_some_and(|l| l.group == ud2.node.id)
         })
         .count();
     assert_eq!(
@@ -1597,7 +1578,7 @@ async fn nested_distribute_nodes_nest_strategies(pool: sqlx::PgPool) -> TestResu
     connect(
         &w,
         &port_of(&exit0, "destination"),
-        &port_of(&ua, &universal::chan_key(&record_key(&p0.node.id.0))),
+        &port_of(&ua, &universal::chan_key(p0.node.id.as_ref())),
     )
     .await;
     assert_clean(&w, &canvas).await;
@@ -1652,11 +1633,7 @@ async fn bundles_and_thin_lines_add_up(pool: sqlx::PgPool) -> TestResult {
     for up in [&p.up1] {
         let out = edges_touching(&topology_now, up)
             .into_iter()
-            .find(|e| {
-                p.ua.ports
-                    .iter()
-                    .any(|x| record_key(&x.id.0) == record_key(&e.target.0))
-            })
+            .find(|e| p.ua.ports.iter().any(|x| x.id == e.target))
             .expect("bundle into the aggregate node");
         disconnect(&w, &out).await?;
     }
@@ -1693,10 +1670,10 @@ async fn bundles_and_thin_lines_add_up(pool: sqlx::PgPool) -> TestResult {
     )
     .await;
     let lanes_now = lanes(&w, &p.canvas).await;
-    let hk2 = record_key(&p.hk2.0);
+    let hk2 = p.hk2.to_string();
     let on_hk2 = lanes_now
         .values()
-        .filter(|n| matches!(&n.node.spec, NodeSpec::Pod(cfg) if record_key(&cfg.server.0) == hk2))
+        .filter(|n| matches!(&n.node.spec, NodeSpec::Pod(cfg) if cfg.server.to_string() == hk2))
         .count();
     // Two channels from the first tier (direct from `fan`) plus the same two
     // via hk1 and tier-2, plus the third drawn into tier-2.
@@ -1706,7 +1683,7 @@ async fn bundles_and_thin_lines_add_up(pool: sqlx::PgPool) -> TestResult {
     assert!(
         ud2.ports
             .iter()
-            .any(|x| x.key == universal::chan_key(&record_key(&p2.node.id.0)))
+            .any(|x| x.key == universal::chan_key(p2.node.id.as_ref()))
     );
     Ok(())
 }

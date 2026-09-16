@@ -351,10 +351,7 @@ async fn init_ca(db: Db) -> Result<(), Box<dyn std::error::Error>> {
     };
     print!("{}", init.certificate_pem);
     for canvas in &init.touched_canvases {
-        eprintln!(
-            "canvas {} marked for re-derivation",
-            orchestration::utils::ids::record_key(&canvas.0)
-        );
+        eprintln!("canvas {} marked for re-derivation", canvas);
     }
     Ok(())
 }

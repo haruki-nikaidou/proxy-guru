@@ -216,11 +216,7 @@ impl Builder {
     /// Switches the builder to `key`, adding the canvas on first use.
     pub fn canvas(&mut self, key: &str) -> CanvasId {
         let id = ids::canvas_id(key);
-        if !self
-            .canvases
-            .iter()
-            .any(|c| ids::record_key(&c.id.0) == key)
-        {
+        if !self.canvases.iter().any(|c| c.id.to_string() == key) {
             self.canvases.push(stub_canvas(key));
         }
         self.current = id.clone();
@@ -267,11 +263,11 @@ impl Builder {
     /// `key` is ignored (kept so existing call sites read unchanged).
     pub fn ip(&mut self, _key: &str, server: &ServerId, ip: &str) -> ServerId {
         let is_v4 = ip.parse::<std::net::Ipv4Addr>().is_ok();
-        let server_key = ids::record_key(&server.0);
+        let server_key = server.to_string();
         if let Some(row) = self
             .servers
             .iter_mut()
-            .find(|s| ids::record_key(&s.id.0) == server_key)
+            .find(|s| s.id.to_string() == server_key)
         {
             if is_v4 {
                 row.override_v4 = Some(ip.to_string());
@@ -349,11 +345,7 @@ impl Builder {
 
     /// Connects two ports verbatim, for the direction/kind violation tests.
     pub fn connect_raw(&mut self, source: PortId, target: PortId) -> EdgeConnectionId {
-        let id = ids::edge_id(&format!(
-            "{}->{}",
-            ids::record_key(&source.0),
-            ids::record_key(&target.0)
-        ));
+        let id = ids::edge_id(&format!("{}->{}", source, target));
         self.edges.push(EdgeConnectionEntity {
             id: id.clone(),
             source,

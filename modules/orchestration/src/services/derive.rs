@@ -28,7 +28,6 @@ use crate::entities::db::view::{
 };
 use crate::services::ca::{CA_FILE, acme_cert_paths, relay_cert_paths};
 use crate::services::topology::Index;
-use crate::utils::ids::record_key;
 use guru_worker_config::{
     Config, Forwarding, ForwardingTo, KeepAlive, ListenAs, LoadBalanceGroup, LogConfig, RelayHost,
     RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
@@ -150,8 +149,8 @@ pub fn relay_tls_pods(topology: &CanvasTopology) -> Vec<NodeId> {
         .filter(|pod| matches!(pod.node.spec, NodeSpec::Pod(_)))
         .map(|pod| pod.node.id.clone())
         .collect();
-    pods.sort_by_key(|pod| record_key(&pod.0));
-    pods.dedup_by_key(|pod| record_key(&pod.0));
+    pods.sort_by_key(|pod| pod.to_string());
+    pods.dedup_by_key(|pod| pod.to_string());
     pods
 }
 
@@ -176,11 +175,11 @@ pub fn derive_server_config(
     certificates: &DerivationCertificates,
     config: &OrchestrationConfig,
 ) -> Result<DerivedConfig, DeriveError> {
-    let server_key = record_key(&server.0);
+    let server_key = server.to_string();
     let server_row = topology
         .servers
         .iter()
-        .find(|s| record_key(&s.id.0) == server_key)
+        .find(|s| s.id.to_string() == server_key)
         .ok_or_else(|| DeriveError::UnknownServer {
             server: server_key.clone(),
         })?;
@@ -195,7 +194,7 @@ pub fn derive_server_config(
         .iter()
         .filter(|n| matches!(n.node.spec, NodeSpec::Pod(_)))
         .collect();
-    pods.sort_by_key(|n| record_key(&n.node.id.0));
+    pods.sort_by_key(|n| n.node.id.to_string());
 
     for pod in pods {
         let NodeSpec::Pod(cfg) = &pod.node.spec else {
@@ -203,7 +202,7 @@ pub fn derive_server_config(
         };
         // The pod's server link is its attribution; the schema guarantees it
         // resolves, so a pod on another server is simply not this server's.
-        if record_key(&cfg.server.0) != server_key {
+        if cfg.server.to_string() != server_key {
             continue;
         }
         let (Some(listen_port), Some(destination_port)) = (
@@ -320,8 +319,8 @@ fn derive_pod(
     forwarding.validate()?;
     // A node reached through several load-balance members appears once: node
     // health writes one row per node per report.
-    nodes.sort_by_key(|n| record_key(&n.0));
-    nodes.dedup_by_key(|n| record_key(&n.0));
+    nodes.sort_by_key(|n| n.to_string());
+    nodes.dedup_by_key(|n| n.to_string());
     let deps = ForwardingDeps {
         pod: pod.node.id.clone(),
         serves: ListenerCap {
@@ -360,7 +359,7 @@ fn derive_listen(
                     let directory = config.acme_directory(&tls.acme_directory);
                     let key = match certificates.acme_for(&tls.sni, directory) {
                         Some(c) if c.is_issued() => {
-                            let key = record_key(&c.id.0);
+                            let key = c.id.to_string();
                             refs.push(CertificateRef {
                                 kind: CertificateKind::Acme,
                                 key: key.clone(),
@@ -401,7 +400,7 @@ fn derive_listen(
                 match certificates.relay_for(&pod.node.id) {
                     Some(leaf) => refs.push(CertificateRef {
                         kind: CertificateKind::Relay,
-                        key: record_key(&leaf.id.0),
+                        key: leaf.id.to_string(),
                         version: leaf.version,
                     }),
                     None if certificates.assume_issued => {}
@@ -411,7 +410,7 @@ fn derive_listen(
                         });
                     }
                 }
-                let host = tls_host(relay_cert_paths(&record_key(&pod.node.id.0)));
+                let host = tls_host(relay_cert_paths(pod.node.id.as_ref()));
                 Ok(match relay.protocol {
                     EntityRelayProtocol::Quic => (
                         ListenAs::Relay(RelayHost::Quic(host)),
@@ -463,7 +462,7 @@ fn derive_destination(
     nodes: &mut Vec<NodeId>,
     certificates: &DerivationCertificates,
 ) -> Result<ForwardingTo, DeriveError> {
-    let key = record_key(&node.node.id.0);
+    let key = node.node.id.to_string();
     if visited.contains(&key) {
         return Err(DeriveError::Cycle {
             node: node.node.name.clone(),
@@ -472,142 +471,141 @@ fn derive_destination(
     visited.push(key);
     nodes.push(node.node.id.clone());
 
-    let result = match &node.node.spec {
-        NodeSpec::Exit(cfg) => ForwardingTo::Exit {
-            destination: Remote::parse(&cfg.destination).map_err(|_| {
-                DeriveError::InvalidDestination {
-                    node: node.node.name.clone(),
-                    destination: cfg.destination.clone(),
-                }
-            })?,
-            send_proxy_protocol: cfg.pass_proxy_protocol.map(Into::into),
-        },
-        NodeSpec::Relay(cfg) => {
-            let (protocol, listen_protocol) = match cfg.protocol {
-                EntityRelayProtocol::TcpRaw => (RelayProtocol::Tcp, ListenProtocol::RelayTcp),
-                EntityRelayProtocol::TcpTls => {
-                    (RelayProtocol::TlsOverTcp, ListenProtocol::RelayTls)
-                }
-                EntityRelayProtocol::Quic => (RelayProtocol::Quic, ListenProtocol::RelayQuic),
-            };
-            // The dialer verifies the relay's leaf against the internal CA, so
-            // without one there is nothing it could trust.
-            if protocol != RelayProtocol::Tcp && !certificates.ca_usable() {
-                return Err(DeriveError::RelayCaMissing {
-                    node: node.node.name.clone(),
-                });
-            }
-            // The relay dials the pod feeding its listen side.
-            let listen_port = index.port_by_key(node, "listen");
-            let pod = listen_port.and_then(|p| index.peer(p));
-            let Some(pod) = pod else {
-                return Err(DeriveError::RelayWithoutPod {
-                    node: node.node.name.clone(),
-                });
-            };
-            let NodeSpec::Pod(pod_cfg) = &pod.node.spec else {
-                return Err(DeriveError::RelayWithoutPod {
-                    node: node.node.name.clone(),
-                });
-            };
-            let far_key = record_key(&pod_cfg.server.0);
-            let far = index
-                .servers
-                .get(&far_key)
-                .ok_or_else(|| DeriveError::UnknownServer {
-                    server: far_key.clone(),
-                })?;
-            // The override says *how* to reach the pod; the pod's identity
-            // (server, port, protocol) is what identifies the listener we depend
-            // on, whatever address it is dialed on today.
-            points_at.push(ListenerCap {
-                server: pod_cfg.server.clone(),
-                port: i64::from(pod_cfg.port),
-                protocol: listen_protocol,
-            });
-            let host = match &cfg.override_ip_address {
-                Some(host) => host.clone(),
-                None => {
-                    let advertised = pod_cfg.advertise_ip().map_err(|value| {
-                        DeriveError::InvalidAdvertiseIp {
-                            node: pod.node.name.clone(),
-                            value,
-                        }
-                    })?;
-                    advertised
-                        .or_else(|| far.effective_address().map(|(address, _)| address))
-                        .ok_or_else(|| DeriveError::ServerNoAddress {
-                            server: far.name.clone(),
-                        })?
-                        .to_string()
-                }
-            };
-            let port = cfg.override_port.unwrap_or(pod_cfg.port);
-            // An IP literal becomes a socket address directly: an unbracketed IPv6
-            // host would otherwise round-trip through `Remote::parse` as a domain
-            // name and be handed to the worker's resolver. `override_ip_address` is
-            // a free-form string, so a genuine hostname still takes the parse path.
-            let destination = match host.parse::<IpAddr>() {
-                Ok(address) => Remote::Address(SocketAddr::new(address, port)),
-                Err(_) => Remote::parse(&format!("{host}:{port}")).map_err(|_| {
+    let result =
+        match &node.node.spec {
+            NodeSpec::Exit(cfg) => ForwardingTo::Exit {
+                destination: Remote::parse(&cfg.destination).map_err(|_| {
                     DeriveError::InvalidDestination {
                         node: node.node.name.clone(),
-                        destination: format!("{host}:{port}"),
+                        destination: cfg.destination.clone(),
                     }
                 })?,
-            };
-            let sni = (protocol != RelayProtocol::Tcp).then(|| relay_sni(&pod.node.id));
-            ForwardingTo::Relay {
-                protocol,
-                destination,
-                sni,
-            }
-        }
-        NodeSpec::LoadBalanceDistribute(cfg) => {
-            let mut members = smallvec::SmallVec::new();
-            for port in inputs_in_order(node) {
-                let Some(member) = index.peer(port) else {
-                    continue; // unconnected members are skipped
+                send_proxy_protocol: cfg.pass_proxy_protocol.map(Into::into),
+            },
+            NodeSpec::Relay(cfg) => {
+                let (protocol, listen_protocol) = match cfg.protocol {
+                    EntityRelayProtocol::TcpRaw => (RelayProtocol::Tcp, ListenProtocol::RelayTcp),
+                    EntityRelayProtocol::TcpTls => {
+                        (RelayProtocol::TlsOverTcp, ListenProtocol::RelayTls)
+                    }
+                    EntityRelayProtocol::Quic => (RelayProtocol::Quic, ListenProtocol::RelayQuic),
                 };
-                members.push(derive_destination(
-                    index,
-                    member,
-                    visited,
-                    points_at,
-                    nodes,
-                    certificates,
-                )?);
-            }
-            ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
-                strategy: cfg.mode.into(),
-                members,
-            }))
-        }
-        NodeSpec::LoadBalanceAggregate(_) => {
-            let port = inputs_in_order(node).into_iter().next().ok_or_else(|| {
-                DeriveError::UnsupportedSpec {
-                    node: node.node.name.clone(),
+                // The dialer verifies the relay's leaf against the internal CA, so
+                // without one there is nothing it could trust.
+                if protocol != RelayProtocol::Tcp && !certificates.ca_usable() {
+                    return Err(DeriveError::RelayCaMissing {
+                        node: node.node.name.clone(),
+                    });
                 }
-            })?;
-            let Some(source) = index.peer(port) else {
+                // The relay dials the pod feeding its listen side.
+                let listen_port = index.port_by_key(node, "listen");
+                let pod = listen_port.and_then(|p| index.peer(p));
+                let Some(pod) = pod else {
+                    return Err(DeriveError::RelayWithoutPod {
+                        node: node.node.name.clone(),
+                    });
+                };
+                let NodeSpec::Pod(pod_cfg) = &pod.node.spec else {
+                    return Err(DeriveError::RelayWithoutPod {
+                        node: node.node.name.clone(),
+                    });
+                };
+                let far = index.servers.get(&pod_cfg.server).ok_or_else(|| {
+                    DeriveError::UnknownServer {
+                        server: pod_cfg.server.to_string(),
+                    }
+                })?;
+                // The override says *how* to reach the pod; the pod's identity
+                // (server, port, protocol) is what identifies the listener we depend
+                // on, whatever address it is dialed on today.
+                points_at.push(ListenerCap {
+                    server: pod_cfg.server.clone(),
+                    port: i64::from(pod_cfg.port),
+                    protocol: listen_protocol,
+                });
+                let host = match &cfg.override_ip_address {
+                    Some(host) => host.clone(),
+                    None => {
+                        let advertised = pod_cfg.advertise_ip().map_err(|value| {
+                            DeriveError::InvalidAdvertiseIp {
+                                node: pod.node.name.clone(),
+                                value,
+                            }
+                        })?;
+                        advertised
+                            .or_else(|| far.effective_address().map(|(address, _)| address))
+                            .ok_or_else(|| DeriveError::ServerNoAddress {
+                                server: far.name.clone(),
+                            })?
+                            .to_string()
+                    }
+                };
+                let port = cfg.override_port.unwrap_or(pod_cfg.port);
+                // An IP literal becomes a socket address directly: an unbracketed IPv6
+                // host would otherwise round-trip through `Remote::parse` as a domain
+                // name and be handed to the worker's resolver. `override_ip_address` is
+                // a free-form string, so a genuine hostname still takes the parse path.
+                let destination = match host.parse::<IpAddr>() {
+                    Ok(address) => Remote::Address(SocketAddr::new(address, port)),
+                    Err(_) => Remote::parse(&format!("{host}:{port}")).map_err(|_| {
+                        DeriveError::InvalidDestination {
+                            node: node.node.name.clone(),
+                            destination: format!("{host}:{port}"),
+                        }
+                    })?,
+                };
+                let sni = (protocol != RelayProtocol::Tcp).then(|| relay_sni(&pod.node.id));
+                ForwardingTo::Relay {
+                    protocol,
+                    destination,
+                    sni,
+                }
+            }
+            NodeSpec::LoadBalanceDistribute(cfg) => {
+                let mut members = smallvec::SmallVec::new();
+                for port in inputs_in_order(node) {
+                    let Some(member) = index.peer(port) else {
+                        continue; // unconnected members are skipped
+                    };
+                    members.push(derive_destination(
+                        index,
+                        member,
+                        visited,
+                        points_at,
+                        nodes,
+                        certificates,
+                    )?);
+                }
+                ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
+                    strategy: cfg.mode.into(),
+                    members,
+                }))
+            }
+            NodeSpec::LoadBalanceAggregate(_) => {
+                let port = inputs_in_order(node).into_iter().next().ok_or_else(|| {
+                    DeriveError::UnsupportedSpec {
+                        node: node.node.name.clone(),
+                    }
+                })?;
+                let Some(source) = index.peer(port) else {
+                    return Err(DeriveError::UnsupportedSpec {
+                        node: node.node.name.clone(),
+                    });
+                };
+                derive_destination(index, source, visited, points_at, nodes, certificates)?
+            }
+            // Boundary nodes and universal pods are never reached: `Index::peer`
+            // resolves through the former and stops at the latter's bundles.
+            NodeSpec::Pod(_)
+            | NodeSpec::Entry(_)
+            | NodeSpec::CanvasImport(_)
+            | NodeSpec::CanvasExport(_)
+            | NodeSpec::UniversalPod(_) => {
                 return Err(DeriveError::UnsupportedSpec {
                     node: node.node.name.clone(),
                 });
-            };
-            derive_destination(index, source, visited, points_at, nodes, certificates)?
-        }
-        // Boundary nodes and universal pods are never reached: `Index::peer`
-        // resolves through the former and stops at the latter's bundles.
-        NodeSpec::Pod(_)
-        | NodeSpec::Entry(_)
-        | NodeSpec::CanvasImport(_)
-        | NodeSpec::CanvasExport(_)
-        | NodeSpec::UniversalPod(_) => {
-            return Err(DeriveError::UnsupportedSpec {
-                node: node.node.name.clone(),
-            });
-        }
-    };
+            }
+        };
 
     visited.pop();
     Ok(result)

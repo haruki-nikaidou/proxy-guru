@@ -27,7 +27,6 @@ use crate::services::node::port_layout;
 use crate::services::notify::Notifier;
 use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::{OrchestrationError, rollout};
-use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_server_agent_key, sha256_hex};
@@ -180,7 +179,7 @@ impl Processor<CreateServer> for ServerService {
             .canvas_changed(
                 &input.canvas,
                 CanvasChangeKind::ServerCreated,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         Ok(server)
@@ -257,7 +256,7 @@ impl Processor<UpdateServer> for ServerService {
             .canvas_changed(
                 &canvas,
                 CanvasChangeKind::ServerUpdated,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         Ok(server)
@@ -365,7 +364,7 @@ impl Processor<IssueServerAgentInstall> for ServerService {
         let unit = input
             .unit
             .or_else(|| server.agent_unit.clone())
-            .unwrap_or_else(|| default_agent_unit(&server.name, &record_key(&server.id.0)));
+            .unwrap_or_else(|| default_agent_unit(&server.name, server.id.as_ref()));
 
         let secret = generate_server_agent_key();
         let server = self
@@ -377,14 +376,14 @@ impl Processor<IssueServerAgentInstall> for ServerService {
                 now: Utc::now(),
             })
             .await?;
-        tracing::info!(server = %record_key(&server.id.0), unit, "issued a server agent key");
+        tracing::info!(server = %server.id.to_string(), unit, "issued a server agent key");
         // No dirty hint: the key digest and unit name feed nothing derived, but
         // the panel shows the unit and when a key was last issued.
         self.notifier
             .canvas_changed(
                 &server.canvas,
                 CanvasChangeKind::ServerUpdated,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         let command =
@@ -413,7 +412,7 @@ fn render_install_command(
     let master = config.agent_public_base_url.trim().trim_end_matches('/');
     let mut env = vec![
         format!("GURU_MASTER={master}"),
-        format!("GURU_SERVER_ID={}", record_key(&server.id.0)),
+        format!("GURU_SERVER_ID={}", server.id.to_string()),
         format!("GURU_UNIT={unit}"),
         format!("GURU_AGENT_VERSION={}", release.version),
         format!("GURU_AGENT_SHA256={}", release.sha256),
@@ -484,7 +483,7 @@ impl Processor<RequestAgentUpdate> for ServerService {
             )));
         }
         tracing::info!(
-            server = %record_key(&server.id.0),
+            server = %server.id.to_string(),
             from = running,
             to = %release.version,
             "update requested"
@@ -500,7 +499,7 @@ impl Processor<RequestAgentUpdate> for ServerService {
             .canvas_changed(
                 &server.canvas,
                 CanvasChangeKind::ServerUpdated,
-                vec![record_key(&server.id.0)],
+                vec![server.id.to_string()],
             )
             .await;
         Ok(server)
@@ -564,7 +563,7 @@ impl Processor<MoveServer> for ServerService {
             .canvas_changed(
                 &row.canvas,
                 CanvasChangeKind::ServerMoved,
-                vec![record_key(&input.server.0)],
+                vec![input.server.to_string()],
             )
             .await;
         Ok(())
@@ -589,12 +588,12 @@ impl Processor<DeleteServer> for ServerService {
                 canvas: canvas.clone(),
             })
             .await?;
-        let server_key = record_key(&input.server.0);
+        let server_key = input.server.to_string();
         let mine: Vec<&crate::entities::db::node::NodeWithPorts> = topology
             .nodes
             .iter()
             .filter(|node| match &node.node.spec {
-                NodeSpec::Pod(cfg) => record_key(&cfg.server.0) == server_key,
+                NodeSpec::Pod(cfg) => cfg.server.to_string() == server_key,
                 _ => false,
             })
             .collect();
@@ -604,11 +603,11 @@ impl Processor<DeleteServer> for ServerService {
             .iter()
             .filter_map(|node| node.node.lane.as_ref())
             .map(|lane| {
-                let key = record_key(&lane.channel.0);
+                let key = lane.channel.to_string();
                 topology
                     .nodes
                     .iter()
-                    .find(|n| record_key(&n.node.id.0) == key)
+                    .find(|n| n.node.id.to_string() == key)
                     .map(|n| n.node.name.clone())
                     .unwrap_or(key)
             })
@@ -630,12 +629,12 @@ impl Processor<DeleteServer> for ServerService {
         let universal_ports: std::collections::HashSet<String> = topology
             .nodes
             .iter()
-            .filter(|node| matches!(&node.node.spec, NodeSpec::UniversalPod(cfg) if record_key(&cfg.server.0) == server_key))
-            .flat_map(|node| node.ports.iter().map(|p| record_key(&p.id.0)))
+            .filter(|node| matches!(&node.node.spec, NodeSpec::UniversalPod(cfg) if cfg.server.to_string() == server_key))
+            .flat_map(|node| node.ports.iter().map(|p| p.id.to_string()))
             .collect();
         if topology.edges.iter().any(|e| {
-            universal_ports.contains(&record_key(&e.source.0))
-                || universal_ports.contains(&record_key(&e.target.0))
+            universal_ports.contains(&e.source.to_string())
+                || universal_ports.contains(&e.target.to_string())
         }) {
             return Err(OrchestrationError::Conflict(
                 "server's universal pod is still bundled; disconnect its bundles first".into(),
@@ -654,7 +653,7 @@ impl Processor<DeleteServer> for ServerService {
             .canvas_changed(
                 &canvas,
                 CanvasChangeKind::ServerDeleted,
-                vec![record_key(&input.server.0)],
+                vec![input.server.to_string()],
             )
             .await;
         Ok(())

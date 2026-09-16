@@ -35,7 +35,6 @@ use orchestration::services::canvas as canvas_service;
 use orchestration::services::edge::Connect;
 use orchestration::services::node::CreateNode;
 use orchestration::services::server::{AddressOverrides, CreateServer};
-use orchestration::utils::ids::record_key;
 use x509_parser::prelude::*;
 
 fn parse_pem(pem: &str) -> Vec<u8> {
@@ -252,12 +251,12 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) ->
     let refs = vec![
         CertificateRef {
             kind: CertificateKind::Acme,
-            key: record_key(&certificate.id.0),
+            key: certificate.id.to_string(),
             version: 1,
         },
         CertificateRef {
             kind: CertificateKind::Relay,
-            key: record_key(&leaf.id.0),
+            key: leaf.id.to_string(),
             version: leaf.version,
         },
     ];
@@ -267,11 +266,8 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) ->
             ca: true,
         })
         .await?;
-    let acme_key = format!("certs/acme/{}/key.pem", record_key(&certificate.id.0));
-    let acme_chain = format!(
-        "certs/acme/{}/full_chain.pem",
-        record_key(&certificate.id.0)
-    );
+    let acme_key = format!("certs/acme/{}/key.pem", certificate.id);
+    let acme_chain = format!("certs/acme/{}/full_chain.pem", certificate.id);
     let expected = vec![
         CertificateFile {
             path: acme_chain,
@@ -532,9 +528,9 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert_eq!(
         ca.touched_canvases
             .iter()
-            .map(|c| record_key(&c.0))
+            .map(|c| c.to_string())
             .collect::<Vec<_>>(),
-        [record_key(&f.canvas.0)]
+        [f.canvas.to_string()]
     );
     w.derive(&f.canvas).await?;
     let leaf = leaf_of(&w, &f.osaka_hop.node.id).await;
@@ -542,7 +538,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert_leaf_signed_by(&leaf.certificate_pem, &ca.certificate_pem, &leaf.sni);
     let relay_ref = CertificateRef {
         kind: CertificateKind::Relay,
-        key: record_key(&leaf.id.0),
+        key: leaf.id.to_string(),
         version: 1,
     };
 
@@ -551,7 +547,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert_eq!(desired.revision, 2);
     assert_eq!(desired.certificates, vec![relay_ref.clone()]);
     assert_eq!(desired.forwardings[0].certificates, vec![relay_ref.clone()]);
-    let osaka_key = record_key(&f.osaka_hop.node.id.0);
+    let osaka_key = f.osaka_hop.node.id.to_string();
     assert!(
         desired
             .toml
@@ -569,9 +565,9 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
         tokyo
             .waiting_for
             .iter()
-            .map(|s| record_key(&s.0))
+            .map(|s| s.to_string())
             .collect::<Vec<_>>(),
-        [record_key(&f.osaka.0)]
+        [f.osaka.to_string()]
     );
     ack_current(&w, &f.osaka).await?;
     w.derive(&f.canvas).await?;
@@ -732,7 +728,7 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
     w.derive(&f.canvas).await?;
     let tokyo = w.view(&f.tokyo).await?;
     let desired = tokyo.desired.as_ref().expect("tokyo publishes");
-    let cert_key = record_key(&certificate.id.0);
+    let cert_key = certificate.id.to_string();
     assert!(
         desired.toml.contains(&format!(
             "full_chain = \"certs/acme/{cert_key}/full_chain.pem\""
@@ -759,7 +755,7 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
         &desired.forwardings[0]
             .nodes
             .iter()
-            .find(|n| record_key(&n.0) != record_key(&f.entry.node.id.0))
+            .find(|n| **n != f.entry.node.id)
             .cloned()
             .expect("the relay node"),
     )
