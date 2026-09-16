@@ -18,7 +18,7 @@ use orchestration::entities::surreal::node::{
     EntryConfig, ExitConfig, LoadBalanceAggregateConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
 use orchestration::entities::surreal::server::{
-    FindServerById, ServerEntity, ServerId, ServerIpv6Resolve,
+    FindServerById, RenewServerWatchSession, ServerEntity, ServerId, ServerIpv6Resolve,
 };
 use orchestration::entities::surreal::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::SweepLivenessSignal;
@@ -829,6 +829,15 @@ async fn silence_past_the_threshold_marks_the_server_offline() -> TestResult {
         .last_health_report_at
         .unwrap();
     let threshold = w.health.config.health_offline_after();
+    let held = server_row(&w, &f.server).await;
+    assert!(
+        held.session_lease_until.is_some(),
+        "registering took the lease"
+    );
+    assert!(
+        register(&w, &f.server).await.is_err(),
+        "a second worker is refused while the session is live"
+    );
 
     let before = reported_at + threshold - TimeDelta::seconds(1);
     assert!(
@@ -837,10 +846,10 @@ async fn silence_past_the_threshold_marks_the_server_offline() -> TestResult {
             .await?
             .is_empty()
     );
-    assert_eq!(
-        server_row(&w, &f.server).await.health_status,
-        ServerHealthStatus::Online
-    );
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Online);
+    assert_eq!(row.session_lease_until, held.session_lease_until);
+    assert_eq!(row.watch_epoch, held.watch_epoch);
 
     let after = reported_at + threshold + TimeDelta::seconds(1);
     let flipped = w.health.process(SweepLiveness { now: after }).await?;
@@ -855,6 +864,28 @@ async fn silence_past_the_threshold_marks_the_server_offline() -> TestResult {
         Some(reported_at),
         "only a report advances the report time"
     );
+    // Going offline hands the watch session back: the stream that held it (a
+    // zombie behind a proxy, say) is fenced out, and the next registration —
+    // the worker's replacement, or the worker itself after a restart — is
+    // accepted at once instead of being refused for as long as that stream
+    // keeps renewing.
+    assert_eq!(row.session_lease_until, None, "the lease is dropped");
+    assert_eq!(row.watch_epoch, held.watch_epoch + 1, "the epoch moves");
+    let now = Utc::now();
+    assert!(
+        !w.db
+            .process(RenewServerWatchSession {
+                server: f.server.clone(),
+                generation: agent.generation,
+                epoch: held.watch_epoch,
+                now,
+                lease_until: now + TimeDelta::seconds(30),
+            })
+            .await?,
+        "the stream that held the lease cannot renew it"
+    );
+    let successor = register(&w, &f.server).await?;
+    assert_eq!(successor.generation, agent.generation + 1);
     let history = server_history(&w, &f.server).await;
     let last = history.last().unwrap();
     assert_eq!(last.status, ServerHealthStatus::Offline);
@@ -877,15 +908,16 @@ async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors() ->
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
     record(&w, &agent, vec![ok("web"), ok("api")]).await?;
 
+    let held = server_row(&w, &f.server).await;
     let stale = MarkServerOffline {
         server: f.server.clone(),
         generation: Some(agent.generation - 1),
     };
     assert!(!w.health.process(stale).await?);
-    assert_eq!(
-        server_row(&w, &f.server).await.health_status,
-        ServerHealthStatus::Online
-    );
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Online);
+    assert_eq!(row.session_lease_until, held.session_lease_until);
+    assert_eq!(row.watch_epoch, held.watch_epoch);
 
     assert!(
         w.health
@@ -895,10 +927,13 @@ async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors() ->
             })
             .await?
     );
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Offline);
     assert_eq!(
-        server_row(&w, &f.server).await.health_status,
-        ServerHealthStatus::Offline
+        row.session_lease_until, None,
+        "the stream's end frees the server"
     );
+    assert_eq!(row.watch_epoch, held.watch_epoch + 1);
     assert!(
         !w.health
             .process(MarkServerOffline {

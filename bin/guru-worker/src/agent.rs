@@ -15,6 +15,7 @@ use rpguru_sdk::orchestration_agent::{
     ReportedAddresses, WatchConfigRequest, worker_agent_client::WorkerAgentClient,
 };
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -51,6 +52,9 @@ pub struct AgentOptions {
     /// What the start guard recorded about the last update on this host, sent
     /// with the next successful registration and then forgotten.
     pub last_update_error: parking_lot::Mutex<Option<String>>,
+    /// How long one unary call (`Register`, `AckConfig`, `PollAgentUpdate`) may
+    /// wait for its answer; [`UNARY_TIMEOUT`] outside tests.
+    pub unary_timeout: Duration,
 }
 
 /// What this build registers as; the master shows it next to the server and
@@ -66,6 +70,34 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// silent `WatchConfig` stream hiding a dead link for hours.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The bound on one unary call. A master (or a proxy in front of it) that takes a
+/// request and never answers it must not park the caller forever: an `AckConfig`
+/// that hangs would stop the config stream being read, a `PollAgentUpdate` that
+/// hangs used to stop every health report. Well above any honest round trip.
+pub const UNARY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// One unary call, bounded. The error names the call so the session log says which
+/// one the master swallowed.
+async fn bounded<T>(
+    limit: Duration,
+    what: &str,
+    call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+) -> Result<tonic::Response<T>, BoxError> {
+    match tokio::time::timeout(limit, call).await {
+        Ok(reply) => Ok(reply?),
+        Err(_) => Err(format!("{what}: no answer within {}s", limit.as_secs()).into()),
+    }
+}
+
+/// Aborts the task when dropped. A session's side tasks must die with the session:
+/// a detached task stuck inside an `.await` never sees a cancellation token.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// The channel builder for `--master`. `http://` is plaintext h2c, unchanged. `https://`
 /// verifies the peer against the system roots with SNI taken from the URI host, so a
@@ -145,7 +177,9 @@ async fn session(
     register
         .metadata_mut()
         .insert("x-api-key", opts.api_key.parse()?);
-    let reply = client.register(register).await?.into_inner();
+    let reply = bounded(opts.unary_timeout, "Register", client.register(register))
+        .await?
+        .into_inner();
     // Delivered; a registration that failed keeps it for the next attempt.
     opts.last_update_error.lock().take();
     let refresh_key: MetadataValue<Ascii> = reply.refresh_key.parse()?;
@@ -181,9 +215,11 @@ async fn session(
     // The health stream lives exactly as long as this session: the guard cancels it on
     // every way out of here, and its ending — the master closing it, or the session
     // key being rotated away — ends the session so the next one reconnects both.
+    // Cancellation is cooperative, so both side tasks are also aborted on the way
+    // out: one stuck inside a call it will never return from must not outlive us.
     let health_token = CancellationToken::new();
     let _health_guard = health_token.clone().drop_guard();
-    let mut health = tokio::spawn(report_health(
+    let mut health = AbortOnDrop(tokio::spawn(report_health(
         client.clone(),
         refresh_key.clone(),
         health_interval,
@@ -191,14 +227,22 @@ async fn session(
         opts.applied_revision.clone(),
         opts.sources.clone(),
         discovered,
+        health_token.clone(),
+    )));
+    // Update polls are the health task's business no longer: one that the master
+    // never answers used to freeze every report behind it.
+    let _updates = AbortOnDrop(tokio::spawn(poll_updates(
+        client.clone(),
+        refresh_key.clone(),
         update,
+        opts.unary_timeout,
         health_token,
-    ));
+    )));
 
     loop {
         let message = tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            ended = &mut health => {
+            ended = &mut health.0 => {
                 return Err(match ended {
                     Ok(Ok(())) => "health stream ended".into(),
                     Ok(Err(e)) => format!("health stream: {e}").into(),
@@ -241,7 +285,9 @@ async fn session(
         });
         ack.metadata_mut()
             .insert("x-refresh-key", refresh_key.clone());
-        client.ack_config(ack).await?;
+        // A swallowed ack ends the session: the next registration reports the running
+        // revision, which the master records as applied.
+        bounded(opts.unary_timeout, "AckConfig", client.ack_config(ack)).await?;
         if applied {
             // Registering proves nothing: the session is healthy only once a revision
             // has been applied and the master has taken the ack. Resetting any earlier
@@ -331,8 +377,11 @@ async fn apply_revision(
 }
 
 /// Streams one `HealthReport` per interval until `token` is cancelled or the master
-/// ends the stream. The first report goes out at once. On its own, slower cadence
-/// it also asks the master for updates and installs the one it is given.
+/// ends the stream. The first report goes out at once.
+///
+/// Nothing in this loop may wait on the master: a report is handed to the stream
+/// and the loop moves on, so a master that stops answering is noticed by the stream
+/// ending, never by a report that cannot be sent.
 #[allow(clippy::too_many_arguments)]
 async fn report_health(
     mut client: WorkerAgentClient<Channel>,
@@ -342,12 +391,8 @@ async fn report_health(
     applied_revision: Arc<AtomicI64>,
     sources: Sources,
     mut last_addresses: Discovered,
-    update: UpdateOptions,
     token: CancellationToken,
 ) -> Result<(), BoxError> {
-    // The streaming call below borrows `client` for the whole session; the update
-    // poll needs its own handle (a clone shares the connection).
-    let mut poller = client.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<HealthReport>(1);
     let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
     request
@@ -364,11 +409,6 @@ async fn report_health(
     address_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     address_ticker.tick().await; // the immediate first tick was covered by Register
     let mut pending_addresses: Option<ReportedAddresses> = None;
-    // Update polls are spread so a fleet restarted together does not ask in
-    // lockstep; the immediate first tick is skipped, registration just happened.
-    let mut update_ticker = tokio::time::interval(jitter(update.poll));
-    update_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    update_ticker.tick().await;
     // The first report that gets through proves this binary: it runs, connects
     // and authenticates, so a swap that installed it is confirmed.
     let mut confirmed = false;
@@ -385,20 +425,6 @@ async fn report_health(
                 if discovered != last_addresses {
                     pending_addresses = Some(discovered.to_proto());
                     last_addresses = discovered;
-                }
-            }
-            _ = update_ticker.tick() => {
-                if let Some(plan) = poll_update(&mut poller, &refresh_key, None).await {
-                    tracing::info!(from = VERSION, to = %plan.version, "update offered; installing");
-                    match update::apply(&plan, &update).await {
-                        Ok(()) => update.done.notify_one(),
-                        Err(error) => {
-                            tracing::error!(to = %plan.version, %error, "update failed");
-                            // Reported at once, so the dashboard shows why without
-                            // waiting a poll interval.
-                            poll_update(&mut poller, &refresh_key, Some(error)).await;
-                        }
-                    }
                 }
             }
             _ = ticker.tick() => {
@@ -433,13 +459,50 @@ async fn report_health(
     }
 }
 
+/// Asks the master for updates on its own, slower cadence and installs the one it
+/// is given, until `token` is cancelled. Its own task, so a poll the master sits on
+/// delays nothing else; `timeout` bounds each poll so it cannot sit forever either.
+async fn poll_updates(
+    mut client: WorkerAgentClient<Channel>,
+    refresh_key: MetadataValue<Ascii>,
+    update: UpdateOptions,
+    timeout: Duration,
+    token: CancellationToken,
+) {
+    // Update polls are spread so a fleet restarted together does not ask in
+    // lockstep; the immediate first tick is skipped, registration just happened.
+    let mut ticker = tokio::time::interval(jitter(update.poll));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => return,
+            _ = ticker.tick() => {}
+        }
+        let Some(plan) = poll_update(&mut client, &refresh_key, None, timeout).await else {
+            continue;
+        };
+        tracing::info!(from = VERSION, to = %plan.version, "update offered; installing");
+        match update::apply(&plan, &update).await {
+            Ok(()) => update.done.notify_one(),
+            Err(error) => {
+                tracing::error!(to = %plan.version, %error, "update failed");
+                // Reported at once, so the dashboard shows why without waiting a
+                // poll interval.
+                poll_update(&mut client, &refresh_key, Some(error), timeout).await;
+            }
+        }
+    }
+}
+
 /// One `PollAgentUpdate`: reports `last_error` if there is one, and returns the
 /// update the master wants installed — never the running version, and nothing
-/// when the call fails (the next tick asks again).
+/// when the call fails or takes longer than `timeout` (the next tick asks again).
 async fn poll_update(
     client: &mut WorkerAgentClient<Channel>,
     refresh_key: &MetadataValue<Ascii>,
     last_error: Option<String>,
+    timeout: Duration,
 ) -> Option<UpdatePlan> {
     let mut request = tonic::Request::new(PollAgentUpdateRequest {
         last_error: last_error.unwrap_or_default(),
@@ -447,7 +510,13 @@ async fn poll_update(
     request
         .metadata_mut()
         .insert("x-refresh-key", refresh_key.clone());
-    match client.poll_agent_update(request).await {
+    match bounded(
+        timeout,
+        "PollAgentUpdate",
+        client.poll_agent_update(request),
+    )
+    .await
+    {
         Ok(reply) => reply
             .into_inner()
             .update
@@ -457,8 +526,8 @@ async fn poll_update(
                 url: update.url,
                 sha256: update.sha256,
             }),
-        Err(status) => {
-            tracing::warn!(error = %status, "update poll failed");
+        Err(error) => {
+            tracing::warn!(%error, "update poll failed");
             None
         }
     }

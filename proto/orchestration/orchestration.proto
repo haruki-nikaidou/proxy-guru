@@ -309,6 +309,10 @@ message Server {
   string agent_update_error = 17;
   // When the server's own agent key was issued; empty when it has none.
   string agent_key_issued_at = 18;
+  // When the worker's last health report was accepted; empty until one is.
+  // `last_seen_at` also moves with the config stream's heartbeat, which the
+  // master keeps up on its own timer, so this is what "online" is judged on.
+  string last_health_report_at = 19;
 }
 message Canvas {
   string id = 1;

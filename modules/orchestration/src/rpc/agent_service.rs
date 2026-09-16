@@ -26,6 +26,25 @@ use tonic::{Request, Response, Status};
 use wakuwaku::surreal::SurrealProcessor;
 
 const STREAM_CAPACITY: usize = 4;
+/// The bound on one unary handler's service call. The database client can leave a
+/// request pending forever (its socket reconnected underneath it); a worker
+/// waiting on such a call must get an answer it can retry on, not silence.
+const UNARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// One service call, bounded: `UNAVAILABLE` names the call when it does not answer
+/// in time, which the worker treats like any failed call.
+async fn bounded<T>(
+    what: &str,
+    call: impl std::future::Future<Output = Result<T, crate::services::OrchestrationError>>,
+) -> Result<T, Status> {
+    match tokio::time::timeout(UNARY_TIMEOUT, call).await {
+        Ok(result) => Ok(result?),
+        Err(_) => {
+            tracing::warn!(call = what, "service call timed out; answering UNAVAILABLE");
+            Err(Status::unavailable(format!("{what} timed out")))
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct WorkerAgentGrpc {
@@ -189,9 +208,9 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         let credential = register_credential(&request)?;
         let observed = peer_address(&request, self.health.config.trust_proxy_address_headers);
         let input = request.into_inner();
-        let refresh_key = self
-            .agents
-            .process(RegisterWorker {
+        let refresh_key = bounded(
+            "Register",
+            self.agents.process(RegisterWorker {
                 credential,
                 server_id: ids::server_id(&input.server_id),
                 running_revision: input.running_revision,
@@ -200,8 +219,9 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 agent_version: non_empty(input.agent_version),
                 agent_arch: non_empty(input.agent_arch),
                 last_update_error: non_empty(input.last_update_error),
-            })
-            .await?;
+            }),
+        )
+        .await?;
         Ok(Response::new(pb::RegisterReply {
             refresh_key,
             health_report_interval_secs: u32::try_from(
@@ -329,14 +349,16 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
     ) -> Result<Response<pb::AckConfigReply>, Status> {
         let agent = agent_from_request(&request)?;
         let input = request.into_inner();
-        self.agents
-            .process(AckConfig {
+        bounded(
+            "AckConfig",
+            self.agents.process(AckConfig {
                 agent,
                 revision: input.revision,
                 error: input.error,
                 pods: input.pods.into_iter().map(pod_result).collect(),
-            })
-            .await?;
+            }),
+        )
+        .await?;
         Ok(Response::new(pb::AckConfigReply {}))
     }
 
@@ -346,13 +368,14 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
     ) -> Result<Response<pb::PollAgentUpdateReply>, Status> {
         let agent = agent_from_request(&request)?;
         let input = request.into_inner();
-        let update = self
-            .agents
-            .process(PollAgentUpdate {
+        let update = bounded(
+            "PollAgentUpdate",
+            self.agents.process(PollAgentUpdate {
                 agent,
                 last_error: non_empty(input.last_error),
-            })
-            .await?;
+            }),
+        )
+        .await?;
         Ok(Response::new(pb::PollAgentUpdateReply {
             update: update.map(|update| pb::AgentUpdate {
                 version: update.version,
@@ -366,14 +389,28 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
     /// is the worker going away. The Offline mark is fenced on this session's
     /// generation, so a stream outlived by a re-registration cannot clobber the
     /// successor's status.
+    ///
+    /// A stream that stays open but falls silent past the offline threshold is
+    /// ended here too: a worker whose reporting stalled gets a failed call to
+    /// restart its session on, instead of a stream that looks fine to it forever.
     async fn report_health(
         &self,
         request: Request<tonic::Streaming<pb::HealthReport>>,
     ) -> Result<Response<pb::ReportHealthReply>, Status> {
         let agent = agent_from_request(&request)?;
         let mut reports = request.into_inner();
+        let silence = self.health.config.health_offline_after();
         let ended = loop {
-            match reports.message().await {
+            let next = match tokio::time::timeout(silence, reports.message()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    break Err(Status::deadline_exceeded(format!(
+                        "no health report within {}s",
+                        silence.as_secs()
+                    )));
+                }
+            };
+            match next {
                 Ok(Some(report)) => {
                     let recorded = self
                         .health

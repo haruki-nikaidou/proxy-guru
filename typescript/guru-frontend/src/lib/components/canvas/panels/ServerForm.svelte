@@ -744,7 +744,7 @@ const forget = () =>
 			{serverHealthLabel(server.healthStatus)}
 		</Badge>
 		<span class="truncate">
-			{m.editor_server_last_seen()}: {formatTimestamp(server.lastSeenAt)}
+			{m.editor_server_last_seen()}: {formatTimestamp(server.lastHealthReportAt)}
 		</span>
 	</div>
 

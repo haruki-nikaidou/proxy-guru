@@ -82,8 +82,11 @@ const channelOf = (podId: string) => data.channels[podId];
 			· <span class="font-mono">{data.server.addresses.reportedCountry}</span>
 		{/if}
 	</p>
+	<!-- The health report time, not `lastSeenAt`: the latter also moves with the
+	     config stream's heartbeat, which the master keeps up on its own timer, so
+	     it can read "5 s ago" on a server that is offline. -->
 	<p class="px-3 text-xs text-muted-foreground">
-		{m.editor_server_last_seen()}: {formatTimestamp(data.server.lastSeenAt)}{silent
+		{m.editor_server_last_seen()}: {formatTimestamp(data.server.lastHealthReportAt)}{silent
 			? ` · ${silent}`
 			: ''}{data.server.agentVersion ? ` · v${data.server.agentVersion}` : ''}
 	</p>

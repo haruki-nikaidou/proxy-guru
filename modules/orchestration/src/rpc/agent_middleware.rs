@@ -14,6 +14,11 @@ use tonic::codegen::{BoxFuture, Service};
 
 /// Metadata key carrying a worker's dynamic refresh key.
 pub const REFRESH_KEY_METADATA: &str = "x-refresh-key";
+/// How long resolving the key may take. The database client can leave a lookup
+/// pending forever after its socket reconnects; a request must not hang on that,
+/// so past this the call proceeds anonymous and the handler answers
+/// `UNAUTHENTICATED`, which the worker retries.
+const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct AgentLayer {
@@ -68,10 +73,17 @@ where
                 .get(REFRESH_KEY_METADATA)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
-            if let Some(secret) = secret
-                && let Ok(Some(identity)) = agents.process(AuthenticateRefreshKey { secret }).await
-            {
-                req.extensions_mut().insert(identity);
+            if let Some(secret) = secret {
+                let lookup = agents.process(AuthenticateRefreshKey { secret });
+                match tokio::time::timeout(AUTH_TIMEOUT, lookup).await {
+                    Ok(Ok(Some(identity))) => {
+                        req.extensions_mut().insert(identity);
+                    }
+                    Ok(_) => {}
+                    Err(_) => tracing::warn!(
+                        "resolving a refresh key timed out; the request proceeds anonymous"
+                    ),
+                }
             }
             inner.call(req).await
         })

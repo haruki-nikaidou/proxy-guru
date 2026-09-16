@@ -532,6 +532,10 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
             .last_seen_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_default(),
+        last_health_report_at: server
+            .last_health_report_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
         health_status: server_health_to_proto(server.health_status),
         addresses: Some(addresses_to_proto(server)),
         agent_version: server.agent_version.clone().unwrap_or_default(),

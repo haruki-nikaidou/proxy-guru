@@ -206,6 +206,7 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
             self_update: !cli.no_self_update,
             update_done: update_done.clone(),
             last_update_error: parking_lot::Mutex::new(update::take_failed()),
+            unary_timeout: agent::UNARY_TIMEOUT,
         },
         sup.clone(),
         shutdown.clone(),

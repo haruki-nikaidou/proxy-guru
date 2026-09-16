@@ -50,7 +50,7 @@ use rpguru_sdk::orchestration_agent::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicI64;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -427,6 +427,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestRe
             self_update: false,
             update_done: Default::default(),
             last_update_error: Default::default(),
+            unary_timeout: Duration::from_secs(5),
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -865,6 +866,48 @@ struct FakeMaster {
     health: mpsc::UnboundedSender<HealthReport>,
     /// Keeps every config stream open: a closed stream would end the worker's session.
     streams: parking_lot::Mutex<Vec<mpsc::Sender<Result<ConfigRevision, Status>>>>,
+    /// Every `Register` seen; a worker that gives a session up shows here.
+    registrations: Arc<AtomicUsize>,
+    /// A master that takes these calls and never answers them — what a lost
+    /// database answer looks like from the worker's side.
+    hang_polls: bool,
+    hang_acks: bool,
+}
+
+impl FakeMaster {
+    fn new(
+        revision: ConfigRevision,
+        acks: mpsc::UnboundedSender<AckConfigRequest>,
+        health: mpsc::UnboundedSender<HealthReport>,
+    ) -> Self {
+        Self {
+            revision,
+            acks,
+            health,
+            streams: parking_lot::Mutex::default(),
+            registrations: Arc::default(),
+            hang_polls: false,
+            hang_acks: false,
+        }
+    }
+
+    /// Serves this master on a free port until the returned token is cancelled.
+    async fn serve(self) -> Result<(SocketAddr, CancellationToken), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(WorkerAgentServer::new(self))
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async move { token.cancelled().await },
+                )
+                .await;
+        });
+        Ok((addr, shutdown))
+    }
 }
 
 #[tonic::async_trait]
@@ -873,6 +916,7 @@ impl WorkerAgent for FakeMaster {
         &self,
         _: Request<RegisterRequest>,
     ) -> Result<Response<RegisterReply>, Status> {
+        self.registrations.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(RegisterReply {
             refresh_key: "fake".to_string(),
             health_report_interval_secs: 0,
@@ -886,6 +930,9 @@ impl WorkerAgent for FakeMaster {
         &self,
         _: Request<PollAgentUpdateRequest>,
     ) -> Result<Response<PollAgentUpdateReply>, Status> {
+        if self.hang_polls {
+            std::future::pending::<()>().await;
+        }
         Ok(Response::new(PollAgentUpdateReply { update: None }))
     }
 
@@ -908,6 +955,9 @@ impl WorkerAgent for FakeMaster {
         request: Request<AckConfigRequest>,
     ) -> Result<Response<AckConfigReply>, Status> {
         let _ = self.acks.send(request.into_inner());
+        if self.hang_acks {
+            std::future::pending::<()>().await;
+        }
         Ok(Response::new(AckConfigReply {}))
     }
 
@@ -968,25 +1018,9 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
 
     let (acks_tx, mut acks) = mpsc::unbounded_channel();
     let (health_tx, mut health) = mpsc::unbounded_channel();
-    let master = FakeMaster {
-        revision,
-        acks: acks_tx,
-        health: health_tx,
-        streams: parking_lot::Mutex::default(),
-    };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let master_addr = listener.local_addr()?;
-    let master_shutdown = CancellationToken::new();
-    let token = master_shutdown.clone();
-    tokio::spawn(async move {
-        let _ = tonic::transport::Server::builder()
-            .add_service(WorkerAgentServer::new(master))
-            .serve_with_incoming_shutdown(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
-                async move { token.cancelled().await },
-            )
-            .await;
-    });
+    let (master_addr, master_shutdown) = FakeMaster::new(revision, acks_tx, health_tx)
+        .serve()
+        .await?;
 
     let state_dir = std::env::temp_dir().join(format!("guru-worker-certs-{}", free_port()));
     let _ = std::fs::remove_dir_all(&state_dir);
@@ -1007,6 +1041,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
             self_update: false,
             update_done: Default::default(),
             last_update_error: Default::default(),
+            unary_timeout: Duration::from_secs(5),
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -1068,5 +1103,155 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
     master_shutdown.cancel();
     sup.lock().await.shutdown_all();
     let _ = std::fs::remove_dir_all(&state_dir);
+    Ok(())
+}
+
+/// One raw TCP forwarding to a dead destination: enough for a worker to apply,
+/// ack and report on, without certificates.
+fn raw_revision(revision: i64) -> Result<ConfigRevision, Box<dyn std::error::Error>> {
+    let cfg = Config {
+        ipv6_resolve: Ipv6Resolve::Tolerated,
+        log: LogConfig::default(),
+        relay_ca: None,
+        keepalive: KeepAlive::default(),
+        forwardings: vec![Forwarding {
+            tag: "edge".to_string(),
+            listen: format!("127.0.0.1:{}", free_port()).parse()?,
+            receive_proxy_protocol: None,
+            listen_as: ListenAs::Raw,
+            to: ForwardingTo::Exit {
+                destination: Remote::parse("127.0.0.1:9")?,
+                send_proxy_protocol: None,
+            },
+        }],
+    };
+    Ok(ConfigRevision {
+        revision,
+        toml: cfg.to_toml_string()?,
+        files: Vec::new(),
+    })
+}
+
+/// A worker against a fake master, with the per-test knobs that matter here.
+struct FakeRun {
+    sup: Arc<Mutex<Supervisor>>,
+    shutdown: CancellationToken,
+    task: tokio::task::JoinHandle<Result<(), guru_worker::BoxError>>,
+    master_shutdown: CancellationToken,
+    state_dir: std::path::PathBuf,
+}
+
+impl FakeRun {
+    async fn start(
+        master: FakeMaster,
+        update_poll: Duration,
+        unary_timeout: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (master_addr, master_shutdown) = master.serve().await?;
+        let state_dir = std::env::temp_dir().join(format!("guru-worker-fake-{}", free_port()));
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let sup = Arc::new(Mutex::new(Supervisor::new()));
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(agent::run(
+            AgentOptions {
+                master: format!("http://{master_addr}"),
+                api_key: "unused".to_string(),
+                server_id: "edge-server".to_string(),
+                state_dir: state_dir.clone(),
+                applied_revision: Arc::new(AtomicI64::new(0)),
+                health_interval: Duration::from_millis(100),
+                sources: guru_worker::addresses::Sources::none(),
+                update_poll,
+                self_update: false,
+                update_done: Default::default(),
+                last_update_error: Default::default(),
+                unary_timeout,
+            },
+            sup.clone(),
+            shutdown.clone(),
+        ));
+        Ok(Self {
+            sup,
+            shutdown,
+            task,
+            master_shutdown,
+            state_dir,
+        })
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        let _ = within("the agent task to stop", self.task).await;
+        self.master_shutdown.cancel();
+        self.sup.lock().await.shutdown_all();
+        let _ = std::fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+/// The failure seen on the live fleet: the master authenticated an update poll
+/// and never answered it, and the worker's health reports stopped with it —
+/// the poll used to sit in the same loop as the reports. Now it is its own
+/// task, and bounded, so the reports never notice.
+#[tokio::test]
+async fn a_poll_the_master_never_answers_does_not_stall_health_reports() -> TestResult {
+    let (acks_tx, _acks) = mpsc::unbounded_channel();
+    let (health_tx, mut health) = mpsc::unbounded_channel();
+    let mut master = FakeMaster::new(raw_revision(3)?, acks_tx, health_tx);
+    master.hang_polls = true;
+    let registrations = master.registrations.clone();
+    // Polls every 100 ms, each hanging for good on the master's side; the timeout
+    // is well past the test's horizon so the hang itself is what is exercised.
+    let run = FakeRun::start(master, Duration::from_millis(100), Duration::from_secs(60)).await?;
+
+    let first = within("the first report", health.recv())
+        .await
+        .expect("a report arrives");
+    assert_eq!(first.running_revision, 3);
+    // Twenty more reports: two seconds of a loop that used to freeze at the
+    // first poll, a tenth of a second in.
+    for _ in 0..20 {
+        within("the next report", health.recv())
+            .await
+            .expect("reports keep coming");
+    }
+    assert_eq!(
+        registrations.load(Ordering::SeqCst),
+        1,
+        "the session itself was never given up"
+    );
+    run.stop().await;
+    Ok(())
+}
+
+/// The other failure seen live: an ack the master never answered left the
+/// worker's main loop waiting on it, so no later revision was ever read. Now
+/// the ack is bounded and its failure ends the session, whose replacement
+/// registers again — reporting the running revision, which the master records
+/// as applied.
+#[tokio::test]
+async fn an_ack_the_master_never_answers_ends_the_session() -> TestResult {
+    let (acks_tx, mut acks) = mpsc::unbounded_channel();
+    let (health_tx, _health) = mpsc::unbounded_channel();
+    let mut master = FakeMaster::new(raw_revision(4)?, acks_tx, health_tx);
+    master.hang_acks = true;
+    let registrations = master.registrations.clone();
+    let run = FakeRun::start(master, Duration::from_secs(60), Duration::from_millis(300)).await?;
+
+    let ack = within("the first ack", acks.recv())
+        .await
+        .expect("an ack arrives");
+    assert_eq!(ack.revision, 4);
+    assert_eq!(ack.error, None);
+    // The ack times out, the session ends, and after its backoff the worker
+    // registers again and acks the revision it is handed once more.
+    let second = within("the second ack", acks.recv())
+        .await
+        .expect("the replacement session acks again");
+    assert_eq!(second.revision, 4);
+    assert!(
+        registrations.load(Ordering::SeqCst) >= 2,
+        "the replacement session registered"
+    );
+    run.stop().await;
     Ok(())
 }

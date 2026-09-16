@@ -1197,6 +1197,12 @@ export interface Server {
   agentUpdateError: string;
   /** When the server's own agent key was issued; empty when it has none. */
   agentKeyIssuedAt: string;
+  /**
+   * When the worker's last health report was accepted; empty until one is.
+   * `last_seen_at` also moves with the config stream's heartbeat, which the
+   * master keeps up on its own timer, so this is what "online" is judged on.
+   */
+  lastHealthReportAt: string;
 }
 
 export interface Canvas {
@@ -4004,6 +4010,7 @@ function createBaseServer(): Server {
     agentUpdateRequested: "",
     agentUpdateError: "",
     agentKeyIssuedAt: "",
+    lastHealthReportAt: "",
   };
 }
 
@@ -4059,6 +4066,9 @@ export const Server: MessageFns<Server> = {
     }
     if (message.agentKeyIssuedAt !== "") {
       writer.uint32(146).string(message.agentKeyIssuedAt);
+    }
+    if (message.lastHealthReportAt !== "") {
+      writer.uint32(154).string(message.lastHealthReportAt);
     }
     return writer;
   },
@@ -4206,6 +4216,14 @@ export const Server: MessageFns<Server> = {
           message.agentKeyIssuedAt = reader.string();
           continue;
         }
+        case 19: {
+          if (tag !== 154) {
+            break;
+          }
+
+          message.lastHealthReportAt = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4278,6 +4296,11 @@ export const Server: MessageFns<Server> = {
         : isSet(object.agent_key_issued_at)
         ? globalThis.String(object.agent_key_issued_at)
         : "",
+      lastHealthReportAt: isSet(object.lastHealthReportAt)
+        ? globalThis.String(object.lastHealthReportAt)
+        : isSet(object.last_health_report_at)
+        ? globalThis.String(object.last_health_report_at)
+        : "",
     };
   },
 
@@ -4334,6 +4357,9 @@ export const Server: MessageFns<Server> = {
     if (message.agentKeyIssuedAt !== "") {
       obj.agentKeyIssuedAt = message.agentKeyIssuedAt;
     }
+    if (message.lastHealthReportAt !== "") {
+      obj.lastHealthReportAt = message.lastHealthReportAt;
+    }
     return obj;
   },
 
@@ -4363,6 +4389,7 @@ export const Server: MessageFns<Server> = {
     message.agentUpdateRequested = object.agentUpdateRequested ?? "";
     message.agentUpdateError = object.agentUpdateError ?? "";
     message.agentKeyIssuedAt = object.agentKeyIssuedAt ?? "";
+    message.lastHealthReportAt = object.lastHealthReportAt ?? "";
     return message;
   },
 };

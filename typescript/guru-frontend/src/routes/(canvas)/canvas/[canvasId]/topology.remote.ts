@@ -534,6 +534,7 @@ const toServer = (
 	ipv6Resolve: toIpv6(server.ipv6Resolve),
 	logLevel: server.logLevel,
 	lastSeenAt: server.lastSeenAt,
+	lastHealthReportAt: server.lastHealthReportAt,
 	healthStatus: toServerHealth(server.healthStatus),
 	addresses: toAddresses(server.addresses),
 	agentVersion: server.agentVersion,

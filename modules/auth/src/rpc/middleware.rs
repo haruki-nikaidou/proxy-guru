@@ -21,6 +21,10 @@ use crate::services::{ApiKeyService, AuthenticateApiKey, AuthenticateSession, Se
 pub const SESSION_ID_METADATA: &str = "x-session-id";
 /// Metadata key carrying a machine API-key secret.
 pub const API_KEY_METADATA: &str = "x-api-key";
+/// How long resolving a credential may take. The database client can leave a
+/// lookup pending forever after its socket reconnects; past this the request
+/// proceeds without an identity and the handler answers `UNAUTHENTICATED`.
+const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Tower layer that authenticates requests and injects an [`Identity`] extension.
 #[derive(Clone)]
@@ -78,20 +82,31 @@ where
         Box::pin(async move {
             let session_id = header(&req, SESSION_ID_METADATA);
             let api_key = header(&req, API_KEY_METADATA);
-            let identity = if let Some(session_id) = session_id {
-                sessions
-                    .process(AuthenticateSession { session_id })
-                    .await
-                    .ok()
-                    .flatten()
-            } else if let Some(secret) = api_key {
-                api_keys
-                    .process(AuthenticateApiKey { secret })
-                    .await
-                    .ok()
-                    .flatten()
-            } else {
-                None
+            let lookup = async {
+                if let Some(session_id) = session_id {
+                    sessions
+                        .process(AuthenticateSession { session_id })
+                        .await
+                        .ok()
+                        .flatten()
+                } else if let Some(secret) = api_key {
+                    api_keys
+                        .process(AuthenticateApiKey { secret })
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            };
+            let identity = match tokio::time::timeout(AUTH_TIMEOUT, lookup).await {
+                Ok(identity) => identity,
+                Err(_) => {
+                    tracing::warn!(
+                        "resolving a credential timed out; the request proceeds anonymous"
+                    );
+                    None
+                }
             };
             if let Some(identity) = identity {
                 req.extensions_mut().insert(identity);

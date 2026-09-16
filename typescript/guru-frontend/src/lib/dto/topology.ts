@@ -234,7 +234,10 @@ export type ServerDto = {
 	y: number;
 	ipv6Resolve: Ipv6ResolveName;
 	logLevel: string;
+	/** Advanced by the config stream's heartbeat as well as by health reports. */
 	lastSeenAt: string;
+	/** When the worker's last health report was accepted; empty until one is. */
+	lastHealthReportAt: string;
 	healthStatus: ServerHealthStatusName;
 	addresses: ServerAddressesDto;
 	/** The worker build the last registration reported; empty until one does. */

@@ -347,6 +347,11 @@ fn node_records(
 /// threshold. `generation` set means "only if the server still belongs to this
 /// session": a stream that lost its server to a re-registration must not mark
 /// the successor's server offline. Already `Offline` is a no-op.
+///
+/// Going offline also releases the watch session (lease dropped, epoch bumped):
+/// the worker's config stream ends and its next registration is accepted at
+/// once, instead of being refused for as long as a stream the master cannot tell
+/// is dead keeps renewing the lease.
 pub struct MarkServerOffline {
     pub server: ServerId,
     pub generation: Option<i64>,
@@ -375,7 +380,8 @@ impl Processor<MarkServerOffline> for HealthService {
 }
 
 /// One liveness sweep: every server that has not reported within
-/// `health_offline_after()` (or never did) goes `Offline`.
+/// `health_offline_after()` (or never did) goes `Offline`, and hands its watch
+/// session back (see [`MarkServerOffline`]).
 pub struct SweepLiveness {
     pub now: DateTime<Utc>,
 }

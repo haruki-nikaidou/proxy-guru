@@ -1,7 +1,13 @@
 -- Statement 0 is BEGIN; the RETURN is statement 4.
+-- Going offline also hands the watch session back: the lease is dropped so the
+-- next `Register` is accepted at once, and the epoch moves so the stream that
+-- held it — possibly a zombie behind a proxy that never noticed its worker die —
+-- fails its next renew and ends. Any other status leaves both alone.
 BEGIN TRANSACTION;
 LET $before = (SELECT VALUE health_status FROM ONLY $server);
-LET $matched = UPDATE $server SET health_status = $status
+LET $matched = UPDATE $server SET health_status = $status,
+    session_lease_until = IF $status = 'offline' { NONE } ELSE { session_lease_until },
+    watch_epoch = IF $status = 'offline' { watch_epoch + 1 } ELSE { watch_epoch }
     WHERE health_status != $status
       AND ($generation = NONE OR refresh_key_generation = $generation)
     RETURN AFTER;

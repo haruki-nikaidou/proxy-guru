@@ -176,6 +176,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SURREALDB_NAME (or pass --namespace and --database)"
             .into());
     };
+    // One WebSocket to the database for the whole process. The SDK (3.2.x)
+    // reconnects it on its own but never fails the requests that were in flight
+    // when the socket dropped (its router cites surrealdb/surrealdb#7037): they
+    // hang for good. Every place a worker or a dashboard waits on such a call
+    // bounds it — the auth layers, the unary agent handlers — so a lost answer
+    // costs one retried call, not a stuck worker.
     let db = surrealdb::engine::any::connect(&cli.address).await?;
     db.signin(Root {
         username: cli.username.clone(),
@@ -362,9 +368,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // `AuthLayer` is required here too: `Register` authenticates with an
             // operator API key before any refresh key exists.
             //
-            // Keepalive is load-bearing: a worker that dies without closing its TCP
-            // connection would otherwise keep renewing its session lease and lock
-            // its replacement out of `Register`.
+            // Keepalive catches a worker that dies without closing its TCP
+            // connection when the master faces it directly. Behind the documented
+            // TLS-terminating proxy the pings are answered by the proxy, so the
+            // lease also lets go whenever the health pipeline marks the server
+            // offline (`set_server_health_status.surql`).
             let serving = Server::builder()
                 .http2_keepalive_interval(Some(lease.heartbeat))
                 .http2_keepalive_timeout(Some(lease.heartbeat))
