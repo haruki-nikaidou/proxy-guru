@@ -29,6 +29,16 @@ fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
+/// How stale a session's recorded activity may get before it is written again.
+///
+/// The idle deadline is a week. Recording activity to the second would mean a
+/// write on every request, all of one operator's requests to the same row —
+/// contention by construction, and what took the dashboard down on 2026-09-16
+/// the moment the database transport stopped serialising them by accident.
+/// With a minute of slack a session is written at most once a minute and
+/// expires at most a minute earlier than the deadline says.
+const ACTIVITY_SLACK: Duration = Duration::minutes(1);
+
 /// Session operations for human callers.
 #[derive(Clone)]
 pub struct SessionService {
@@ -89,7 +99,7 @@ impl Processor<Login> for SessionService {
     }
 }
 
-/// Resolve a session id into an [`Identity`], sliding its idle expiry.
+/// Resolve a session id into an [`Identity`], sliding its idle expiry when it is due.
 pub struct AuthenticateSession {
     pub session_id: String,
 }
@@ -130,12 +140,21 @@ impl Processor<AuthenticateSession> for SessionService {
             Some(account) => account,
             None => return Ok(None),
         };
-        self.db
-            .process(UpdateSession {
-                id: input.session_id,
-                last_active_at: now,
-            })
-            .await?;
+        // The decision is made: the session exists, is not idle, and its account
+        // is still there. Sliding the deadline is bookkeeping, done only once the
+        // record is stale, and a refused write is a log line rather than a denied
+        // request — at worst the session expires `ACTIVITY_SLACK` early.
+        if now.signed_duration_since(session.last_active_at) > ACTIVITY_SLACK
+            && let Err(error) = self
+                .db
+                .process(UpdateSession {
+                    id: input.session_id,
+                    last_active_at: now,
+                })
+                .await
+        {
+            tracing::warn!(%error, "could not slide the session's idle expiry");
+        }
         Ok(Some(Identity {
             account_id: account.id,
             role: account.role,

@@ -7,6 +7,7 @@
 
 use auth::config::AuthConfig;
 use auth::entities::surreal::account::{AccountRole, CreateAccount};
+use auth::entities::surreal::session::FindSessionById;
 use auth::services::account::{
     AccountService, ChangeOwnPassword, ChangePasswordResult, RegisterAccount, RegisterResult,
     SetAccountRole,
@@ -263,5 +264,95 @@ async fn full_auth_flow() -> TestResult {
         LoginResult::Success(_)
     ));
 
+    Ok(())
+}
+
+/// Authenticating slides the idle deadline, but records the slide only once it
+/// is stale: a burst of requests on one session must not be a burst of writes
+/// to one row.
+#[tokio::test]
+async fn activity_is_recorded_once_per_slack_not_once_per_request() -> TestResult {
+    let (sp, _accounts, sessions, _api_keys) = setup().await?;
+    let hasher = Argon2PasswordAlgorithm::default();
+    sp.process(CreateAccount {
+        email: "op@example.com".to_string(),
+        password_hash: hasher.hash_password("pw")?,
+        role: AccountRole::Maintainer,
+    })
+    .await?;
+    let LoginResult::Success(token) = sessions
+        .process(Login {
+            email: "op@example.com".to_string(),
+            password: "pw".to_string(),
+            user_agent: "test-agent".to_string(),
+        })
+        .await?
+    else {
+        panic!("login should succeed");
+    };
+    let recorded = |sp: &Db, token: &str| {
+        let sp = sp.clone();
+        let token = token.to_string();
+        async move {
+            sp.process(FindSessionById { session_id: token })
+                .await
+                .map(|s| s.expect("session row exists").last_active_at)
+        }
+    };
+    let at_login = recorded(&sp, &token).await?;
+
+    // Fresh record: authenticating a few times in a row writes nothing.
+    for _ in 0..3 {
+        assert!(
+            sessions
+                .process(AuthenticateSession {
+                    session_id: token.clone(),
+                })
+                .await?
+                .is_some()
+        );
+    }
+    assert_eq!(recorded(&sp, &token).await?, at_login);
+
+    // Stale record: the next authentication brings it forward.
+    let backdated = at_login - chrono::Duration::minutes(5);
+    sp.raw()
+        .query("UPDATE type::record('auth_session', $id) SET last_active_at = $at")
+        .bind(("id", token.clone()))
+        .bind(("at", backdated))
+        .await?
+        .check()?;
+    assert!(
+        sessions
+            .process(AuthenticateSession {
+                session_id: token.clone(),
+            })
+            .await?
+            .is_some()
+    );
+    assert!(recorded(&sp, &token).await? > backdated);
+
+    // Idle past the deadline: rejected, and the row is gone.
+    let expired =
+        at_login - chrono::Duration::seconds(AuthConfig::default().session_idle_ttl_secs + 1);
+    sp.raw()
+        .query("UPDATE type::record('auth_session', $id) SET last_active_at = $at")
+        .bind(("id", token.clone()))
+        .bind(("at", expired))
+        .await?
+        .check()?;
+    assert!(
+        sessions
+            .process(AuthenticateSession {
+                session_id: token.clone(),
+            })
+            .await?
+            .is_none()
+    );
+    assert!(
+        sp.process(FindSessionById { session_id: token })
+            .await?
+            .is_none()
+    );
     Ok(())
 }

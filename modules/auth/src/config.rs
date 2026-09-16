@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct AuthConfig {
     /// How long a session may sit idle (no activity) before it is treated as
-    /// expired and rejected, in seconds. Sessions slide on each authenticated
-    /// request.
+    /// expired and rejected, in seconds. Use slides the deadline; the slide is
+    /// recorded at most once a minute (`services::session::ACTIVITY_SLACK`).
     pub session_idle_ttl_secs: i64,
 }
 
