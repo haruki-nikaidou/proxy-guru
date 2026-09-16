@@ -1,24 +1,6 @@
 name: guru
 
 services:
-  surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
-    container_name: guru-surrealdb
-    restart: unless-stopped
-    # The image runs as `nonroot`, which cannot write the root-owned ./data/db.
-    user: root
-    command:
-      - start
-      - --user
-      - ${SURREALDB_USER}
-      - --pass
-      - ${SURREALDB_PASSWORD}
-      - rocksdb:/data/guru.db
-    volumes:
-      - ./data/db:/data
-    ports:
-      - "127.0.0.1:8000:8000"
-
   postgres:
     image: postgres:18.6-alpine
     container_name: guru-postgres
