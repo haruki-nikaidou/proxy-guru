@@ -107,13 +107,15 @@ impl Pacer {
         }
 
         let elapsed_rtts = time_elapsed.as_secs_f64() / smoothed_rtt.as_secs_f64();
-        let new_tokens = window as f64 * 1.25 * elapsed_rtts;
-        self.tokens = self
-            .tokens
-            .saturating_add(new_tokens as _)
-            .min(self.capacity);
+        let new_tokens = (window as f64 * 1.25 * elapsed_rtts) as u64;
+        self.tokens = self.tokens.saturating_add(new_tokens).min(self.capacity);
 
-        self.prev = now;
+        // guru patch, from upstream: polled faster than a whole byte accrues, the
+        // truncation above yields nothing — advancing `prev` anyway would throw
+        // that time away and the bucket would never refill.
+        if new_tokens > 0 {
+            self.prev = now;
+        }
 
         // if we can already send a packet, there is no need for delay
         if self.tokens >= bytes_to_send {
@@ -195,18 +197,18 @@ mod tests {
         let rtt = Duration::from_micros(400);
 
         assert!(
-            Pacer::new(rtt, 30000, 1500, new_instant)
-                .delay(Duration::from_micros(0), 0, 1500, 1, old_instant)
+            Pacer::new(rtt, 30000, 1500, None, new_instant)
+                .delay(Duration::from_micros(0), 0, 1500, 1, None, old_instant)
                 .is_none()
         );
         assert!(
-            Pacer::new(rtt, 30000, 1500, new_instant)
-                .delay(Duration::from_micros(0), 1600, 1500, 1, old_instant)
+            Pacer::new(rtt, 30000, 1500, None, new_instant)
+                .delay(Duration::from_micros(0), 1600, 1500, 1, None, old_instant)
                 .is_none()
         );
         assert!(
-            Pacer::new(rtt, 30000, 1500, new_instant)
-                .delay(Duration::from_micros(0), 1500, 1500, 3000, old_instant)
+            Pacer::new(rtt, 30000, 1500, None, new_instant)
+                .delay(Duration::from_micros(0), 1500, 1500, 3000, None, old_instant)
                 .is_none()
         );
     }
@@ -218,18 +220,18 @@ mod tests {
         let rtt = Duration::from_millis(50);
         let now = Instant::now();
 
-        let pacer = Pacer::new(rtt, window, mtu, now);
+        let pacer = Pacer::new(rtt, window, mtu, None, now);
         assert_eq!(
             pacer.capacity,
             (window as u128 * BURST_INTERVAL_NANOS / rtt.as_nanos()) as u64
         );
         assert_eq!(pacer.tokens, pacer.capacity);
 
-        let pacer = Pacer::new(Duration::from_millis(0), window, mtu, now);
+        let pacer = Pacer::new(Duration::from_millis(0), window, mtu, None, now);
         assert_eq!(pacer.capacity, MAX_BURST_SIZE * mtu as u64);
         assert_eq!(pacer.tokens, pacer.capacity);
 
-        let pacer = Pacer::new(rtt, 1, mtu, now);
+        let pacer = Pacer::new(rtt, 1, mtu, None, now);
         assert_eq!(pacer.capacity, MIN_BURST_SIZE * mtu as u64);
         assert_eq!(pacer.tokens, pacer.capacity);
     }
@@ -241,7 +243,7 @@ mod tests {
         let rtt = Duration::from_millis(50);
         let now = Instant::now();
 
-        let mut pacer = Pacer::new(rtt, window, mtu, now);
+        let mut pacer = Pacer::new(rtt, window, mtu, None, now);
         assert_eq!(
             pacer.capacity,
             (window as u128 * BURST_INTERVAL_NANOS / rtt.as_nanos()) as u64
@@ -249,27 +251,27 @@ mod tests {
         assert_eq!(pacer.tokens, pacer.capacity);
         let initial_tokens = pacer.tokens;
 
-        pacer.delay(rtt, mtu as u64, mtu, window * 2, now);
+        pacer.delay(rtt, mtu as u64, mtu, window * 2, None, now);
         assert_eq!(
             pacer.capacity,
             (2 * window as u128 * BURST_INTERVAL_NANOS / rtt.as_nanos()) as u64
         );
         assert_eq!(pacer.tokens, initial_tokens);
 
-        pacer.delay(rtt, mtu as u64, mtu, window / 2, now);
+        pacer.delay(rtt, mtu as u64, mtu, window / 2, None, now);
         assert_eq!(
             pacer.capacity,
             (window as u128 / 2 * BURST_INTERVAL_NANOS / rtt.as_nanos()) as u64
         );
         assert_eq!(pacer.tokens, initial_tokens / 2);
 
-        pacer.delay(rtt, mtu as u64, mtu * 2, window, now);
+        pacer.delay(rtt, mtu as u64, mtu * 2, window, None, now);
         assert_eq!(
             pacer.capacity,
             (window as u128 * BURST_INTERVAL_NANOS / rtt.as_nanos()) as u64
         );
 
-        pacer.delay(rtt, mtu as u64, 20_000, window, now);
+        pacer.delay(rtt, mtu as u64, 20_000, window, None, now);
         assert_eq!(pacer.capacity, 20_000_u64 * MIN_BURST_SIZE);
     }
 
@@ -280,12 +282,12 @@ mod tests {
         let rtt = Duration::from_millis(50);
         let old_instant = Instant::now();
 
-        let mut pacer = Pacer::new(rtt, window, mtu, old_instant);
+        let mut pacer = Pacer::new(rtt, window, mtu, None, old_instant);
         let packet_capacity = pacer.capacity / mtu as u64;
 
         for _ in 0..packet_capacity {
             assert_eq!(
-                pacer.delay(rtt, mtu as u64, mtu, window, old_instant),
+                pacer.delay(rtt, mtu as u64, mtu, window, None, old_instant),
                 None,
                 "When capacity is available packets should be sent immediately"
             );
@@ -297,7 +299,7 @@ mod tests {
 
         assert_eq!(
             pacer
-                .delay(rtt, mtu as u64, mtu, window, old_instant)
+                .delay(rtt, mtu as u64, mtu, window, None, old_instant)
                 .expect("Send must be delayed")
                 .duration_since(old_instant),
             pace_duration
@@ -310,6 +312,7 @@ mod tests {
                 mtu as u64,
                 mtu,
                 window,
+                None,
                 old_instant + pace_duration / 2
             ),
             None
@@ -318,7 +321,7 @@ mod tests {
 
         for _ in 0..packet_capacity / 2 {
             assert_eq!(
-                pacer.delay(rtt, mtu as u64, mtu, window, old_instant),
+                pacer.delay(rtt, mtu as u64, mtu, window, None, old_instant),
                 None,
                 "When capacity is available packets should be sent immediately"
             );
@@ -333,6 +336,7 @@ mod tests {
                 mtu as u64,
                 mtu,
                 window,
+                None,
                 old_instant + pace_duration * 3 / 2
             ),
             None

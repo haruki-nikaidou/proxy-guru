@@ -9,7 +9,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use crate::range_set::RangeSet;
 
 /// Helper to assemble unordered stream frames into an ordered stream
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Assembler {
     state: State,
     data: BinaryHeap<Buffer>,
@@ -22,6 +22,23 @@ pub(super) struct Assembler {
     /// aka the stream offset.
     bytes_read: u64,
     end: u64,
+    /// Cap on the number of distinct spans, from the stream's receive window.
+    /// guru patch, see `vendor/quinn-proto/PATCH.md`.
+    max_chunks: usize,
+}
+
+impl Default for Assembler {
+    fn default() -> Self {
+        Self {
+            state: State::default(),
+            data: BinaryHeap::new(),
+            buffered: 0,
+            allocated: 0,
+            bytes_read: 0,
+            end: 0,
+            max_chunks: MIN_MAX_CHUNKS,
+        }
+    }
 }
 
 impl Assembler {
@@ -29,10 +46,17 @@ impl Assembler {
         Self::default()
     }
 
+    /// Sizes the span cap for a stream whose receive window is `window` bytes.
+    pub(super) fn set_window(&mut self, window: u64) {
+        self.max_chunks = chunk_limit(window);
+    }
+
     /// Reset to the initial state
     pub(super) fn reinit(&mut self) {
         let old_data = mem::take(&mut self.data);
+        let max_chunks = self.max_chunks;
         *self = Self::default();
+        self.max_chunks = max_chunks;
         self.data = old_data;
         self.data.clear();
     }
@@ -209,10 +233,10 @@ impl Assembler {
         // balance between defragmentation overhead and over-allocation.
         let threshold = 32768.max(buffered * 3 / 2);
         // Small gapped frames hold over-allocation below the threshold, so bound the count too.
-        if over_allocation > threshold || self.data.len() > COMPACT_THRESHOLD {
+        if over_allocation > threshold || self.data.len() > self.max_chunks.saturating_mul(2) {
             self.defragment();
             // ngtcp2 uses a threshold of 4000 -- try to be a little more conservative?
-            if self.data.len() > MAX_CHUNKS {
+            if self.data.len() > self.max_chunks {
                 return Err(TooManyChunks);
             }
         }
@@ -351,21 +375,70 @@ pub struct IllegalOrderedRead;
 #[derive(Debug)]
 pub(crate) struct TooManyChunks;
 
-/// Bound on the number of distinct spans kept for a stream
+/// Floor on the number of distinct spans kept for a stream.
 ///
-/// Independent of how much memory those spans over-allocate. A frame is rejected only
-/// if compaction cannot get the count back down to this.
-const MAX_CHUNKS: usize = 1024;
+/// guru patch (see `vendor/quinn-proto/PATCH.md`): upstream caps every stream at a
+/// flat 1024 spans, which suits a congestion controller that slows down when it
+/// loses packets. A fixed-rate one does not: it keeps twice the bandwidth-delay
+/// product in flight and answers loss by sending more, so on a lossy path the
+/// receiver holds hundreds of holes at once and reaches 1024 within seconds. The
+/// stream then dies with an internal error, which on the wire looks exactly like
+/// the path itself failing.
+///
+/// Each hole costs one span, and a peer cannot leave more holes than its receive
+/// window has room for packets, so the cap is derived from that window — the same
+/// number that already bounds how much the receiver buffers. A peer flooding tiny
+/// gapped frames is still bounded, to `window / MIN_SPAN_SPACING` spans, whose
+/// bookkeeping is a few percent of the window itself. quinn's own default window
+/// yields a cap within a rounding error of upstream's 1024, so a connection nobody
+/// tuned behaves exactly as before.
+const MIN_MAX_CHUNKS: usize = 1024;
 
-/// Chunk count past which `insert` compacts before deciding whether to reject
-///
-/// Above `MAX_CHUNKS` so a flood of mergeable frames cannot force a defragmentation
-/// per frame.
-const COMPACT_THRESHOLD: usize = 2 * MAX_CHUNKS;
+/// Bytes of receive window that earn one more span: one full-size packet.
+const MIN_SPAN_SPACING: u64 = 1200;
+
+/// Hard ceiling, so a preposterous window cannot ask for unbounded bookkeeping.
+const MAX_MAX_CHUNKS: usize = 1 << 20;
+
+/// The span cap for a stream whose receive window is `window` bytes.
+fn chunk_limit(window: u64) -> usize {
+    usize::try_from(window / MIN_SPAN_SPACING)
+        .unwrap_or(MAX_MAX_CHUNKS)
+        .clamp(MIN_MAX_CHUNKS, MAX_MAX_CHUNKS)
+}
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// What a default-window assembler compacts at.
+    const COMPACT_THRESHOLD: usize = 2 * MIN_MAX_CHUNKS;
+
+    /// guru patch: the span cap tracks the receive window, and an untuned
+    /// connection keeps upstream's limit.
+    #[test]
+    fn span_cap_follows_the_window() {
+        assert_eq!(chunk_limit(0), MIN_MAX_CHUNKS, "no window: the floor");
+        // quinn's own default stream window is within a rounding error of 1024.
+        let default_window = chunk_limit(1_250_000);
+        assert!(
+            (MIN_MAX_CHUNKS..MIN_MAX_CHUNKS + 100).contains(&default_window),
+            "an untuned connection keeps upstream's limit, got {default_window}"
+        );
+        // A window sized for a fixed-rate sender earns one span per packet.
+        assert_eq!(chunk_limit(64 * 1024 * 1024), 55_924);
+        assert_eq!(chunk_limit(u64::MAX), MAX_MAX_CHUNKS, "ceiling holds");
+
+        let mut assembler = Assembler::new();
+        assembler.set_window(64 * 1024 * 1024);
+        // One-byte frames every other byte: far past upstream's flat cap, held
+        // by the window's.
+        for i in 0..(MIN_MAX_CHUNKS as u64 * 4) {
+            assembler
+                .insert(i * 2, Bytes::from_static(b"0"), 1)
+                .expect("a wide window tolerates many holes");
+        }
+    }
     use assert_matches::assert_matches;
 
     #[test]
@@ -684,7 +757,7 @@ mod test {
         // Withhold offset 0 so an ordered reader can never drain anything.
         let mut offset = 1u64;
         let mut result = Ok(());
-        for _ in 0..(MAX_CHUNKS * 8) {
+        for _ in 0..(MIN_MAX_CHUNKS * 8) {
             result = x.insert(offset, Bytes::from_static(b"gap"), 3);
             if result.is_err() {
                 break;
@@ -708,7 +781,7 @@ mod test {
         x.ensure_ordering(false).unwrap();
         let top = 1_000_000u64;
         x.insert(top, Bytes::from_static(b"ab"), 2).unwrap();
-        for k in 0..(4 * MAX_CHUNKS as u64) {
+        for k in 0..(4 * MIN_MAX_CHUNKS as u64) {
             x.insert(top - k - 1, Bytes::from_static(b"ab"), 2).unwrap();
             assert!(
                 x.data.len() <= COMPACT_THRESHOLD + 1,
@@ -724,11 +797,11 @@ mod test {
         // so each one pushes a chunk; they must not be rejected, or compact every frame.
         let mut x = Assembler::new();
         // Withhold offset 0 so nothing can be drained.
-        for i in 0..MAX_CHUNKS as u64 {
+        for i in 0..MIN_MAX_CHUNKS as u64 {
             x.insert(1 + i * 4, Bytes::from_static(b"abc"), 3).unwrap();
         }
         let mut max_len = x.data.len();
-        for _ in 0..(3 * MAX_CHUNKS) {
+        for _ in 0..(3 * MIN_MAX_CHUNKS) {
             x.insert(1, Bytes::from_static(b"abc"), 3)
                 .expect("duplicate flood must not be rejected");
             max_len = max_len.max(x.data.len());
@@ -740,7 +813,7 @@ mod test {
         }
         // Compacting on every frame would pin the count at `MAX_CHUNKS`.
         assert!(
-            max_len > MAX_CHUNKS,
+            max_len > MIN_MAX_CHUNKS,
             "buffer compacted on every frame (max observed len {max_len})"
         );
     }

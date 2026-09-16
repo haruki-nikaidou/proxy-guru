@@ -9,6 +9,11 @@
 //! peer acknowledged over the last five seconds, and the send rate is divided by
 //! it, floored at 0.8 so that the sender over-sends by a quarter at most however
 //! bad the path gets. A port of `core/internal/congestion/brutal/brutal.go`.
+//!
+//! Sending through loss rather than around it is what makes this fast, and it is
+//! also what makes the receiver's side of the link matter: it must be given a
+//! receive window sized for the rate, or quinn's cap on simultaneous holes in a
+//! stream ends the connection (see `vendor/quinn-proto/PATCH.md`).
 
 use quinn_proto::RttEstimator;
 use quinn_proto::congestion::{Controller, ControllerFactory, ControllerMetrics};

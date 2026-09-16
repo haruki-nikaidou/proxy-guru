@@ -6,6 +6,13 @@
 //! is asked for a rate gets brutal (see [`super::brutal`]) and windows sized for
 //! it: at 2x the bandwidth-delay product in flight, a window of half a second of
 //! the peer's rate covers paths up to 250 ms.
+//!
+//! The receive window does more than admit bytes. quinn caps how many holes a
+//! stream may hold at once in proportion to it (see
+//! `vendor/quinn-proto/PATCH.md`), and a fixed-rate sender on a lossy path leaves
+//! many: a window too small for the peer's rate does not merely throttle the
+//! stream, it ends the connection. So `receive_mbps` is not optional decoration
+//! on a link that sets `send_mbps` at the other end.
 
 use crate::quic::brutal::BrutalConfig;
 use guru_worker_config::{KeepAlive, QuicCongestion, QuicTuning};

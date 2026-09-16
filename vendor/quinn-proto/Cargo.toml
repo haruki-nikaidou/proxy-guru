@@ -193,3 +193,5 @@ version = "1"
 level = "warn"
 priority = 0
 check-cfg = ["cfg(fuzzing)"]
+
+[workspace]
