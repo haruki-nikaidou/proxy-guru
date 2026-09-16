@@ -119,6 +119,36 @@ export const bundlePeerOf = (key: string): string | null =>
 const memberKey = (slot: number): string => `member_${slot}`;
 
 /**
+ * The channels a node's `chan:` ports name, in the order the operator sees them.
+ * Both a universal pod and a distribute node are described this way, so the two
+ * callers — here and `./canvas.js` — share the walk.
+ */
+export const channelsOfPorts = (
+	ports: readonly CanvasPort[],
+	channels: ReadonlyMap<string, ChannelDto>
+): (ChannelDto & { portId: string })[] =>
+	ports
+		.flatMap(port => {
+			const pod = channelOf(port.key);
+			const channel = pod === null ? undefined : channels.get(pod);
+			return channel ? [{ ...channel, portId: port.id }] : [];
+		})
+		.sort((a, b) => a.ordinal - b.ordinal);
+
+/**
+ * The bundles collected on a node. They all sit at position 0, so they are
+ * ordered by the name of the far end instead — `peerName` resolves that name.
+ */
+export const bundlesInOfPorts = (
+	ports: readonly CanvasPort[],
+	peerName: (nodeId: string) => string
+): BundlePortDto[] =>
+	ports
+		.filter(port => port.key.startsWith('bundle_in:'))
+		.map(port => ({ ...port, peerName: peerName(bundlePeerOf(port.key) ?? '') }))
+		.sort((a, b) => a.peerName.localeCompare(b.peerName));
+
+/**
  * A standalone node, or `null` for a pod / an unsupported spec. `exportNames`
  * maps the export node ids of an import target to their names, which is what
  * the mirrored ports are keyed by; `channels` resolves the `chan:` ports of a
@@ -174,14 +204,7 @@ export function toStandalone(
 			passProxyProtocol: toProxy(spec.exit.passProxyProtocol)
 		};
 	}
-	const channelsOf = () =>
-		base.ports
-			.flatMap(port => {
-				const pod = channelOf(port.key);
-				const channel = pod === null ? undefined : channels.get(pod);
-				return channel ? [{ ...channel, portId: port.id }] : [];
-			})
-			.sort((a, b) => a.ordinal - b.ordinal);
+	const channelsOf = () => channelsOfPorts(base.ports, channels);
 	// The members in the order declared, each with its port (a lane laid out
 	// thin has none declared and is never drawn) and the far end of its bundle.
 	const membersOf = (declared: { slot: number; name: string }[]): MemberDto[] =>
@@ -198,12 +221,7 @@ export function toStandalone(
 				}
 			];
 		});
-	// Collected bundles all sit at position 0: order them by the far node's name.
-	const bundlesIn = (): BundlePortDto[] =>
-		base.ports
-			.filter(port => port.key.startsWith('bundle_in:'))
-			.map(port => ({ ...port, peerName: peerName(bundlePeerOf(port.key) ?? '') }))
-			.sort((a, b) => a.peerName.localeCompare(b.peerName));
+	const bundlesIn = (): BundlePortDto[] => bundlesInOfPorts(base.ports, peerName);
 	if (spec?.loadBalanceDistribute) {
 		return {
 			...base,

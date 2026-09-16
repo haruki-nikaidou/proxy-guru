@@ -13,8 +13,8 @@ import type {
 	UniversalPodDto
 } from '#lib/dto/topology.js';
 import {
-	bundlePeerOf,
-	channelOf,
+	bundlesInOfPorts,
+	channelsOfPorts,
 	collectChannels,
 	NO_LABELS,
 	toPod,
@@ -77,17 +77,8 @@ export function toCanvasGraph(
 			const ports = toPorts(node, NO_LABELS);
 			universalByServer.set(universal.serverId, {
 				nodeId: node.id,
-				bundleIn: ports
-					.filter(port => port.key.startsWith('bundle_in:'))
-					.map(port => ({ ...port, peerName: sourceName(bundlePeerOf(port.key) ?? '') }))
-					.sort((a, b) => a.peerName.localeCompare(b.peerName)),
-				channels: ports
-					.flatMap(port => {
-						const pod = channelOf(port.key);
-						const channel = pod === null ? undefined : channels.get(pod);
-						return channel ? [{ ...channel, portId: port.id }] : [];
-					})
-					.sort((a, b) => a.ordinal - b.ordinal),
+				bundleIn: bundlesInOfPorts(ports, sourceName),
+				channels: channelsOfPorts(ports, channels),
 				bundleOut: ports.find(port => port.key === 'bundle_out') ?? null,
 				lanes: []
 			});
