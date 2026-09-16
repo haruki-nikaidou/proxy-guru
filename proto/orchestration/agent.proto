@@ -45,6 +45,11 @@ message RegisterRequest {
   // Why the last self-update on this host failed, as the start guard recorded
   // it and the worker found it at startup. Empty when there is nothing to tell.
   string last_update_error = 6;
+  // What this worker understands beyond the config every worker reads:
+  // `route_table` (a forwarding's `to` naming its own groups and upstreams) and
+  // `relay_confirm` (answering a dialer that asks, in its PROXY header, whether
+  // the relay's own next hop connected). Empty for workers built before either.
+  repeated string capabilities = 7;
 }
 message RegisterReply {
   string refresh_key = 1;

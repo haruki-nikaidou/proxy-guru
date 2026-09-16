@@ -1,3 +1,4 @@
+use crate::liveness::Liveness;
 use crate::prepared::PreparedForwarding;
 use crate::stats::Stats;
 use guru_worker_config::{
@@ -139,6 +140,8 @@ pub struct Supervisor {
     keepalive: KeepAlive,
     quic: QuicTuning,
     stats: Arc<Stats>,
+    /// What is known about every next hop, kept across applies.
+    liveness: Arc<Liveness>,
 }
 
 impl Default for Supervisor {
@@ -159,7 +162,13 @@ impl Supervisor {
             keepalive: KeepAlive::default(),
             quic: QuicTuning::default(),
             stats: Arc::new(Stats::default()),
+            liveness: Arc::new(Liveness::default()),
         }
+    }
+
+    /// What the worker knows about its next hops.
+    pub fn liveness(&self) -> Arc<Liveness> {
+        self.liveness.clone()
     }
 
     /// The traffic counters of every tag, shared with the connections it serves.
@@ -209,6 +218,7 @@ impl Supervisor {
                 cfg.keepalive,
                 cfg.quic,
                 self.stats.tag(&f.tag),
+                &self.liveness,
             ) {
                 Ok(prepared) => candidates.push((f.listen_key(), Arc::new(prepared))),
                 Err(e) => {

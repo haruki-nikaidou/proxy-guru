@@ -41,6 +41,13 @@ export interface RegisterRequest {
    * it and the worker found it at startup. Empty when there is nothing to tell.
    */
   lastUpdateError: string;
+  /**
+   * What this worker understands beyond the config every worker reads:
+   * `route_table` (a forwarding's `to` naming its own groups and upstreams) and
+   * `relay_confirm` (answering a dialer that asks, in its PROXY header, whether
+   * the relay's own next hop connected). Empty for workers built before either.
+   */
+  capabilities: string[];
 }
 
 export interface RegisterReply {
@@ -253,6 +260,7 @@ function createBaseRegisterRequest(): RegisterRequest {
     agentVersion: "",
     agentArch: "",
     lastUpdateError: "",
+    capabilities: [],
   };
 }
 
@@ -278,6 +286,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     }
     if (message.lastUpdateError !== "") {
       writer.uint32(50).string(message.lastUpdateError);
+    }
+    for (const v of message.capabilities) {
+      writer.uint32(58).string(v!);
     }
     return writer;
   },
@@ -337,6 +348,14 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
           message.lastUpdateError = reader.string();
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.capabilities.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -378,6 +397,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
         : isSet(object.last_update_error)
         ? globalThis.String(object.last_update_error)
         : "",
+      capabilities: globalThis.Array.isArray(object?.capabilities)
+        ? object.capabilities.map((e: any) => globalThis.String(e))
+        : [],
     };
   },
 
@@ -401,6 +423,9 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     if (message.lastUpdateError !== "") {
       obj.lastUpdateError = message.lastUpdateError;
     }
+    if (message.capabilities?.length) {
+      obj.capabilities = message.capabilities;
+    }
     return obj;
   },
 
@@ -419,6 +444,7 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
     message.agentVersion = object.agentVersion ?? "";
     message.agentArch = object.agentArch ?? "";
     message.lastUpdateError = object.lastUpdateError ?? "";
+    message.capabilities = object.capabilities?.map((e) => e) || [];
     return message;
   },
 };
