@@ -14,13 +14,13 @@ use crate::utils::ids::record_key;
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Clone)]
 pub struct RolloutService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub notifier: Notifier,
 }
 
@@ -172,7 +172,7 @@ impl Processor<ForgetServerApplied> for RolloutService {
 
 /// The canvas a server belongs to, or [`OrchestrationError::NotFound`].
 pub(crate) async fn canvas_of_server(
-    db: &SurrealProcessor,
+    db: &Db,
     server: &ServerId,
 ) -> Result<CanvasId, OrchestrationError> {
     db.process(FindCanvasOfServer {

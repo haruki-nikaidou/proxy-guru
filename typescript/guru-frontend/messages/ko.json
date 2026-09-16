@@ -373,6 +373,7 @@
 	"error_forbidden": "현재 역할로는 이 작업을 할 수 없습니다.",
 	"error_not_found": "해당 항목이 더 이상 존재하지 않습니다.",
 	"error_internal": "컨트롤 플레인에 연결할 수 없습니다.",
+	"error_unavailable": "컨트롤 플레인에 일시적으로 연결할 수 없습니다. 세션은 유효하니 잠시 후 다시 시도하세요.",
 	"error_cannot_modify_self": "여기서는 내 계정을 변경할 수 없습니다.",
 	"error_last_admin": "마지막 관리자는 제거할 수 없습니다.",
 	"result_invalid_credentials": "이메일 또는 비밀번호가 올바르지 않습니다.",

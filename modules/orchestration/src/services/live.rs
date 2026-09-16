@@ -37,13 +37,13 @@ use crate::services::rollout::{RolloutStatus, rollout_status};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, watch};
 use tokio::task::AbortHandle;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// How long a view waits before retrying a failed load. The watcher is already
 /// connected and has nothing to show, so this is a visible stall — short enough
@@ -63,7 +63,7 @@ pub trait LiveView: Send + Sync + 'static {
     /// not exist (any more).
     fn load(
         &self,
-        db: &SurrealProcessor,
+        db: &Db,
     ) -> impl Future<Output = Result<Option<Self::State>, OrchestrationError>> + Send;
 }
 
@@ -95,7 +95,7 @@ type Entries<T> = Arc<Mutex<HashMap<String, ViewEntry<T>>>>;
 /// The point is that N dashboards on one canvas cost one reload per change, not
 /// N: the first subscriber spawns the view task, the last one to drop aborts it.
 pub struct ViewRegistry<V: LiveView> {
-    db: SurrealProcessor,
+    db: Db,
     bus: LiveBus,
     entries: Entries<V::State>,
 }
@@ -139,7 +139,7 @@ impl<T> Drop for ViewHandle<T> {
 }
 
 impl<V: LiveView> ViewRegistry<V> {
-    pub fn new(db: SurrealProcessor, bus: LiveBus) -> Self {
+    pub fn new(db: Db, bus: LiveBus) -> Self {
         Self {
             db,
             bus,
@@ -194,7 +194,7 @@ impl<V: LiveView> ViewRegistry<V> {
 /// registry aborts the task.
 async fn run_view<V: LiveView>(
     view: V,
-    db: SurrealProcessor,
+    db: Db,
     bus: LiveBus,
     tx: watch::Sender<ViewValue<V::State>>,
 ) {
@@ -262,7 +262,7 @@ async fn run_view<V: LiveView>(
 /// Loads until the database answers. A failure here is not the watcher's
 /// problem: the stream stays open showing its previous value and the read is
 /// retried, which is what a dashboard wants across a failover.
-async fn load_until_ok<V: LiveView>(view: &V, db: &SurrealProcessor) -> Option<V::State> {
+async fn load_until_ok<V: LiveView>(view: &V, db: &Db) -> Option<V::State> {
     loop {
         match view.load(db).await {
             Ok(state) => return state,
@@ -307,7 +307,7 @@ impl LiveView for CanvasView {
         }
     }
 
-    async fn load(&self, db: &SurrealProcessor) -> Result<Option<CanvasLive>, OrchestrationError> {
+    async fn load(&self, db: &Db) -> Result<Option<CanvasLive>, OrchestrationError> {
         let Some(contents) = db
             .process(LoadCanvasContents {
                 canvas: self.canvas.clone(),
@@ -378,10 +378,7 @@ impl LiveView for RolloutsView {
         }
     }
 
-    async fn load(
-        &self,
-        db: &SurrealProcessor,
-    ) -> Result<Option<RolloutsLive>, OrchestrationError> {
+    async fn load(&self, db: &Db) -> Result<Option<RolloutsLive>, OrchestrationError> {
         let topology = db
             .process(LoadCanvasTopology {
                 canvas: self.canvas.clone(),
@@ -426,7 +423,7 @@ impl LiveView for RolloutsView {
 
 #[derive(Clone)]
 pub struct LiveService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub bus: LiveBus,
     pub canvases: ViewRegistry<CanvasView>,
     pub rollouts: ViewRegistry<RolloutsView>,
@@ -436,7 +433,7 @@ pub struct LiveService {
 }
 
 impl LiveService {
-    pub fn new(db: SurrealProcessor, bus: LiveBus, config: OrchestrationConfig) -> Self {
+    pub fn new(db: Db, bus: LiveBus, config: OrchestrationConfig) -> Self {
         Self {
             canvases: ViewRegistry::new(db.clone(), bus.clone()),
             rollouts: ViewRegistry::new(db.clone(), bus.clone()),

@@ -25,13 +25,13 @@
 
 use crate::entities::surreal::view::{ListServerWatchState, ServerWatchState};
 use crate::utils::ids::record_key;
+use base::db::Db;
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use wakuwaku::surreal::SurrealProcessor;
 
 const CHANNEL_CAPACITY: usize = 8;
 
@@ -248,12 +248,7 @@ impl WatchHub {
 }
 
 /// Polls the config view of every watched server until `shutdown`.
-pub async fn run_poller(
-    hub: WatchHub,
-    db: SurrealProcessor,
-    interval: Duration,
-    shutdown: CancellationToken,
-) {
+pub async fn run_poller(hub: WatchHub, db: Db, interval: Duration, shutdown: CancellationToken) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {

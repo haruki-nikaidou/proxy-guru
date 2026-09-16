@@ -26,10 +26,10 @@ use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_refresh_key, sha256_hex};
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use std::collections::HashSet;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// An authenticated worker: which server, and which refresh-key generation it holds.
 #[derive(Clone, Debug)]
@@ -40,7 +40,7 @@ pub struct AgentIdentity {
 
 #[derive(Clone)]
 pub struct AgentService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub hub: WatchHub,
     pub lease: SessionLease,
     pub notifier: Notifier,

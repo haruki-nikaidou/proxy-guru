@@ -31,6 +31,7 @@ use crate::utils::secret::{SecretError, SecretKey};
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{CLOUDFLARE, GOOGLE, ResolverConfig};
@@ -46,7 +47,6 @@ use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use wakuwaku::surreal::SurrealProcessor;
 
 pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 pub const VERCEL_API: &str = "https://api.vercel.com";
@@ -541,7 +541,7 @@ pub fn leaf_validity(full_chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Ut
 
 #[derive(Clone)]
 pub struct AcmeService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
     pub notifier: Notifier,

@@ -14,12 +14,12 @@ use crate::services::topology::{TopologyProblem, analyze};
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Clone)]
 pub struct CanvasService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub notifier: Notifier,
 }
 

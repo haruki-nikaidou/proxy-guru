@@ -515,7 +515,7 @@ async fn a_protocol_change_on_a_referenced_listener_is_rejected() -> TestResult 
     // would become a raw listener while tokyo's running config still dials it as a
     // relay. The two cannot coexist on one worker, so there is no seamless path.
     let mut resp =
-        w.db.db()
+        w.db.raw()
             .query("SELECT * FROM orchestration_edge_connection")
             .await?;
     let edge = resp
@@ -684,7 +684,7 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener() -> TestResult {
     // Cut the relay off from the pod feeding its listen side. Tokyo's ingress pod
     // dials that relay, so the pod alone stops deriving.
     let mut resp =
-        w.db.db()
+        w.db.raw()
             .query("SELECT * FROM orchestration_edge_connection")
             .await?;
     let edge = resp

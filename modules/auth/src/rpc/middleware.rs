@@ -82,34 +82,39 @@ where
         Box::pin(async move {
             let session_id = header(&req, SESSION_ID_METADATA);
             let api_key = header(&req, API_KEY_METADATA);
-            let lookup = async {
-                if let Some(session_id) = session_id {
-                    sessions
-                        .process(AuthenticateSession { session_id })
-                        .await
-                        .ok()
-                        .flatten()
-                } else if let Some(secret) = api_key {
-                    api_keys
-                        .process(AuthenticateApiKey { secret })
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    None
+            let resolve = || {
+                let (sessions, api_keys) = (sessions.clone(), api_keys.clone());
+                let (session_id, api_key) = (session_id.clone(), api_key.clone());
+                async move {
+                    if let Some(session_id) = session_id {
+                        sessions.process(AuthenticateSession { session_id }).await
+                    } else if let Some(secret) = api_key {
+                        api_keys.process(AuthenticateApiKey { secret }).await
+                    } else {
+                        Ok(None)
+                    }
                 }
             };
-            let identity = match tokio::time::timeout(AUTH_TIMEOUT, lookup).await {
-                Ok(identity) => identity,
-                Err(_) => {
-                    tracing::warn!(
-                        "resolving a credential timed out; the request proceeds anonymous"
-                    );
-                    None
+            // One retry: these failures are transient (a reconnected database connection
+            // that briefly lost its namespace) and the read is idempotent, so retrying is
+            // the difference between a blip nobody notices and a visible error.
+            let mut outcome = bounded(resolve()).await;
+            if matches!(outcome, Resolved::Unavailable) {
+                outcome = bounded(resolve()).await;
+            }
+            match outcome {
+                Resolved::Identity(identity) => {
+                    req.extensions_mut().insert(identity);
                 }
-            };
-            if let Some(identity) = identity {
-                req.extensions_mut().insert(identity);
+                // Authoritative: no such session, or it expired. The handler answers
+                // UNAUTHENTICATED and the caller is correctly sent to log in again.
+                Resolved::Anonymous => {}
+                // The credential was never judged. Marking the request is the only way to
+                // say so from here: this middleware is generic over the inner service, so
+                // it cannot build a response of its own.
+                Resolved::Unavailable => {
+                    req.extensions_mut().insert(AuthUnavailable);
+                }
             }
             inner.call(req).await
         })
@@ -124,11 +129,52 @@ fn header<B>(req: &http::Request<B>, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Extract the authenticated [`Identity`] a handler requires, or fail with
-/// `UNAUTHENTICATED` when the middleware injected none.
+/// Marks a request whose credential could not be judged because the database did not
+/// answer. Distinct from carrying no identity, which means the credential *was* judged and
+/// found wanting.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthUnavailable;
+
+/// What resolving a credential produced.
+enum Resolved {
+    Identity(Identity),
+    /// The credential was judged: absent, unknown, or expired.
+    Anonymous,
+    /// The credential was not judged: the database failed or did not answer in time.
+    Unavailable,
+}
+
+/// Resolves a credential under [`AUTH_TIMEOUT`], keeping "not judged" separate from
+/// "judged and rejected".
+async fn bounded(
+    lookup: impl Future<Output = Result<Option<Identity>, wakuwaku::Error>>,
+) -> Resolved {
+    match tokio::time::timeout(AUTH_TIMEOUT, lookup).await {
+        Ok(Ok(Some(identity))) => Resolved::Identity(identity),
+        Ok(Ok(None)) => Resolved::Anonymous,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "resolving a credential failed");
+            Resolved::Unavailable
+        }
+        Err(_) => {
+            tracing::warn!("resolving a credential timed out");
+            Resolved::Unavailable
+        }
+    }
+}
+
+/// Extract the authenticated [`Identity`] a handler requires.
+///
+/// `UNAUTHENTICATED` only when the credential was actually judged and rejected. A database
+/// that failed or timed out answers `UNAVAILABLE` instead: the dashboard's error boundary
+/// logs the operator out on `UNAUTHENTICATED`, so blurring the two costs a session every
+/// time the database blips.
 pub fn from_request<T>(req: &tonic::Request<T>) -> Result<Identity, Status> {
-    req.extensions()
-        .get::<Identity>()
-        .cloned()
-        .ok_or_else(|| Status::unauthenticated("Missing identity"))
+    if let Some(identity) = req.extensions().get::<Identity>() {
+        return Ok(identity.clone());
+    }
+    if req.extensions().get::<AuthUnavailable>().is_some() {
+        return Err(Status::unavailable("Authentication is briefly unavailable"));
+    }
+    Err(Status::unauthenticated("Missing identity"))
 }

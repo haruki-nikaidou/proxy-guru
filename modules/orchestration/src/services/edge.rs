@@ -10,7 +10,8 @@
 use crate::config::OrchestrationConfig;
 use crate::entities::surreal::batch::{ApplyTopologyBatch, BatchEdge, PortRef, PortReshape};
 use crate::entities::surreal::connection::{
-    ConnectPorts, DeleteEdgeRow, EdgeConnectionEntity, EdgeConnectionId, FindEdgeById,
+    ConnectPorts, DeleteEdgeRow, EdgeConnectionEntity, EdgeConnectionId, FindEdgeByEnds,
+    FindEdgeById,
 };
 use crate::entities::surreal::node::{FindNodeById, NewPort, NodeId, NodeSpec, NodeWithPorts};
 use crate::entities::surreal::port::{FindPortById, PortDirection, PortEntity, PortId, PortKind};
@@ -28,19 +29,19 @@ use crate::utils::ids::record_key;
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Clone)]
 pub struct EdgeService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
 
 /// The canvas an edge endpoint belongs to.
 async fn canvas_of_port(
-    db: &SurrealProcessor,
+    db: &Db,
     port: &PortId,
 ) -> Result<crate::entities::surreal::canvas::CanvasId, OrchestrationError> {
     let row = db
@@ -230,7 +231,7 @@ impl ConnectEnd {
 
     async fn canvas(
         &self,
-        db: &SurrealProcessor,
+        db: &Db,
     ) -> Result<crate::entities::surreal::canvas::CanvasId, OrchestrationError> {
         match self {
             ConnectEnd::Port(port) => canvas_of_port(db, port).await,
@@ -545,23 +546,15 @@ impl Processor<ConnectUniversal> for EdgeService {
         universal::apply(&self.db, &self.notifier, prepared, None).await?;
 
         // The edge, by its ends, now that both ports exist.
-        let mut resp = self
+        let edge = self
             .db
-            .db()
-            .query(
-                "SELECT * FROM orchestration_edge_connection
-                 WHERE in.owner = $source AND in.key = $source_key
-                   AND out.owner = $target AND out.key = $target_key LIMIT 1",
-            )
-            .bind(("source", out.node.node.id.clone()))
-            .bind(("source_key", out.key.clone()))
-            .bind(("target", inp.node.node.id.clone()))
-            .bind(("target_key", inp.key.clone()))
-            .await
-            .map_err(OrchestrationError::Db)?;
-        let edge = resp
-            .take::<Option<EdgeConnectionEntity>>(0)
-            .map_err(OrchestrationError::Db)?
+            .process(FindEdgeByEnds {
+                source: out.node.node.id.clone(),
+                source_key: out.key.clone(),
+                target: inp.node.node.id.clone(),
+                target_key: inp.key.clone(),
+            })
+            .await?
             .ok_or(OrchestrationError::NotFound)?;
         self.notifier
             .canvas_changed(

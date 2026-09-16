@@ -15,13 +15,13 @@ use crate::utils::secret::SecretKey;
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Clone)]
 pub struct DnsProviderService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub secrets: SecretKey,
 }
 

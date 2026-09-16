@@ -15,12 +15,12 @@
 //! added stay readable through `#[serde(default)]` on the config struct, which
 //! keeps additive changes cheap without hiding real corruption.
 
+use crate::db::Db;
 use crate::entities::surreal::app_config::{
     ConfigJson, FindRawConfig, InsertRawConfigIfAbsent, UpsertRawConfig,
 };
 use kanau::processor::Processor;
 use std::marker::PhantomData;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -44,7 +44,7 @@ pub enum ConfigError {
 /// truth; there is no cache to invalidate.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
-    pub db: SurrealProcessor,
+    pub db: Db,
 }
 
 /// Read one config. An absent key yields `T::default()`.

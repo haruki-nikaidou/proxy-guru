@@ -1,8 +1,8 @@
 //! API-key lifecycle and machine authentication.
 
+use base::db::Db;
 use chrono::Utc;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 use crate::entities::surreal::account::{AccountRole, FindAccountById};
 use crate::entities::surreal::api_key::{
@@ -16,7 +16,7 @@ use crate::utils::token::{generate_api_key_secret, sha256_hex};
 /// API-key operations.
 #[derive(Clone)]
 pub struct ApiKeyService {
-    pub db: SurrealProcessor,
+    pub db: Db,
 }
 
 /// Create a new API key owned by the caller.

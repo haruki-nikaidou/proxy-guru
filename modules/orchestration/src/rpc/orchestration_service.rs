@@ -96,7 +96,7 @@ where
 
 /// One page of a node-health recovery read, retried.
 async fn refetch_node_health(
-    db: &wakuwaku::surreal::SurrealProcessor,
+    db: &base::db::Db,
     node: &crate::entities::surreal::node::NodeId,
     after: DateTime<Utc>,
     after_id: Option<&str>,

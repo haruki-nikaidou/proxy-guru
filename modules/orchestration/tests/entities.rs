@@ -4,6 +4,7 @@
 
 mod common;
 
+use base::db::Db;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::surreal::agent_release::{FindAgentRelease, PublishAgentRelease};
@@ -292,11 +293,11 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
 
 /// Seeds a `desired` snapshot the way a derivation pass would.
 async fn seed_desired(
-    sp: &wakuwaku::surreal::SurrealProcessor,
+    sp: &Db,
     server: &orchestration::entities::surreal::server::ServerId,
     revision: i64,
 ) -> Result<(), surrealdb::Error> {
-    sp.db()
+    sp.raw()
         .query(
             "UPDATE orchestration_server_config_view
                  SET desired = { revision: $revision, toml: $toml, created_at: time::now(), forwardings: [] }
@@ -849,7 +850,7 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
     // canvas through `owner`/`in`, which dereferences to NONE once the node row
     // is gone, so rows the cascade orphaned are invisible to them.
     let mut resp = sp
-        .db()
+        .raw()
         .query("SELECT VALUE id FROM orchestration_port")
         .await?;
     let ports_left = resp.take::<Vec<PortId>>(0)?;
@@ -864,7 +865,7 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
         "and the port that survives is the untouched node's"
     );
     let mut resp = sp
-        .db()
+        .raw()
         .query("SELECT VALUE id FROM orchestration_edge_connection")
         .await?;
     assert!(

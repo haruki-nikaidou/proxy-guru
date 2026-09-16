@@ -373,6 +373,7 @@
 	"error_forbidden": "你的角色没有此权限。",
 	"error_not_found": "该项已不存在。",
 	"error_internal": "无法连接控制面。",
+	"error_unavailable": "控制面暂时不可达。你的登录仍然有效，稍后重试即可。",
 	"error_cannot_modify_self": "不能在这里修改你自己的账号。",
 	"error_last_admin": "不能移除最后一位管理员。",
 	"result_invalid_credentials": "邮箱或密码错误。",

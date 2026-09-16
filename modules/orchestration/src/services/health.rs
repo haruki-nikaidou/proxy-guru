@@ -28,19 +28,19 @@ use crate::services::notify::Notifier;
 use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use guru_worker_config::{Config, ConfigError, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::time::Duration;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// Node records returned by `ListNodeHealthHistory` when the caller sets no limit.
 pub const DEFAULT_NODE_HISTORY_LIMIT: i64 = 500;
 
 #[derive(Clone)]
 pub struct HealthService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub config: OrchestrationConfig,
     pub notifier: Notifier,
 }

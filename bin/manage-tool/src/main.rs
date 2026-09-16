@@ -13,6 +13,7 @@
 use auth::config::AuthConfig;
 use auth::entities::surreal::account::{AccountRole, CreateAccount, FindAccountByEmail};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use base::db::Db;
 use base::entities::surreal::app_config::{ConfigJson, FindRawConfig};
 use base::services::config::{
     ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode, defaults,
@@ -33,7 +34,6 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use surrealdb::opt::auth::Root;
 use surrealdb::types::ToSql;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// Administration CLI.
 #[derive(Debug, Parser)]
@@ -175,19 +175,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::CreateAdmin { email, password } => {
-            create_admin(SurrealProcessor::new(db), email, password).await
+            create_admin(Db::new(db), email, password).await
         }
         Command::GenerateMasterKey => Ok(()),
-        Command::Config { command } => config(SurrealProcessor::new(db), command).await,
+        Command::Config { command } => config(Db::new(db), command).await,
         Command::Orchestration {
             command: OrchestrationCommand::ExportConfig { server },
-        } => export_config(SurrealProcessor::new(db), server).await,
+        } => export_config(Db::new(db), server).await,
         Command::Orchestration {
             command: OrchestrationCommand::InitCa,
-        } => init_ca(SurrealProcessor::new(db)).await,
+        } => init_ca(Db::new(db)).await,
         Command::Agent {
             command: AgentCommand::Publish { binary, dir },
-        } => agent_publish(SurrealProcessor::new(db), binary, dir).await,
+        } => agent_publish(Db::new(db), binary, dir).await,
     }
 }
 
@@ -266,9 +266,7 @@ impl ConfigKey {
 
 /// Loads the orchestration config the masters run with. Keeping the CLI on the
 /// same values is what makes an exported config match what a master derives.
-async fn orchestration_config(
-    db: &SurrealProcessor,
-) -> Result<OrchestrationConfig, Box<dyn std::error::Error>> {
+async fn orchestration_config(db: &Db) -> Result<OrchestrationConfig, Box<dyn std::error::Error>> {
     let store = ConfigStore { db: db.clone() };
     Ok(store.process(LoadConfig::new()).await?)
 }
@@ -278,10 +276,7 @@ async fn orchestration_config(
 /// `list` and `get` print the row as stored, without decoding it: a document
 /// that no longer matches its type is exactly what an operator needs to see,
 /// and `set` is the way back out.
-async fn config(
-    db: SurrealProcessor,
-    command: ConfigCommand,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn config(db: Db, command: ConfigCommand) -> Result<(), Box<dyn std::error::Error>> {
     let store = ConfigStore { db };
     match command {
         ConfigCommand::Seed => {
@@ -339,7 +334,7 @@ async fn document(
 
 /// Generates the internal CA. Every canvas tree holding a TLS/QUIC relay is
 /// marked for re-derivation so its pods get their first leaf certificates.
-async fn init_ca(db: SurrealProcessor) -> Result<(), Box<dyn std::error::Error>> {
+async fn init_ca(db: Db) -> Result<(), Box<dyn std::error::Error>> {
     let config = orchestration_config(&db).await?;
     let ca = CaService {
         db,
@@ -368,10 +363,7 @@ async fn init_ca(db: SurrealProcessor) -> Result<(), Box<dyn std::error::Error>>
 /// No identity is involved: the CLI already authenticates against the database
 /// itself. This is the config the canvas asks for, before convergence trims it to
 /// what the rest of the fabric can support today.
-async fn export_config(
-    db: SurrealProcessor,
-    server: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn export_config(db: Db, server: String) -> Result<(), Box<dyn std::error::Error>> {
     let server_id = orchestration::utils::ids::server_id(&server);
     let Some(row) = db
         .process(orchestration::entities::surreal::server::FindServerById {
@@ -410,7 +402,7 @@ async fn export_config(
 /// Create the first administrator account directly via the entity layer (no
 /// acting admin exists yet, so RBAC is deliberately bypassed for bootstrap).
 async fn create_admin(
-    db: SurrealProcessor,
+    db: Db,
     email: String,
     password: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -452,7 +444,7 @@ const GUARD_SH: &str = include_str!("../../guru-worker/deploy/guru-worker-guard"
 /// from the ELF header. Files are written through a sibling temp file and
 /// renamed, so a download racing the publish gets the old file or the new one.
 async fn agent_publish(
-    db: SurrealProcessor,
+    db: Db,
     binary: PathBuf,
     dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {

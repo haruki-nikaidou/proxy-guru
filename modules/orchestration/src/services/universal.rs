@@ -60,10 +60,10 @@ use crate::services::server::DEFAULT_POD_PORTS;
 use crate::services::topology::{Index, ProblemKind, TopologyEdit, TopologyProblem, ensure_valid};
 use crate::utils::ids;
 use crate::utils::ids::record_key;
+use base::db::Db;
 use kanau::processor::Processor;
 use rand::Rng;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use wakuwaku::surreal::SurrealProcessor;
 
 // --- port keys ----------------------------------------------------------------
 
@@ -1351,7 +1351,7 @@ pub struct Prepared {
 /// final topology — the checker and the switch-safety rule both run on what the
 /// fabric will actually derive.
 pub async fn prepare(
-    db: &SurrealProcessor,
+    db: &Db,
     config: &OrchestrationConfig,
     topology: &CanvasTopology,
     primary: Primary,
@@ -1394,7 +1394,7 @@ pub async fn prepare(
 /// connection and a disconnection. `None` is for callers that publish their own
 /// event (they hold ids this function never sees).
 pub async fn apply(
-    db: &SurrealProcessor,
+    db: &Db,
     notifier: &Notifier,
     prepared: Prepared,
     change: Option<(CanvasChangeKind, Vec<String>)>,

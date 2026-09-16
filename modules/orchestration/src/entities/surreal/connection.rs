@@ -1,5 +1,6 @@
 use crate::entities::surreal::canvas::{CanvasFence, CanvasId};
 use crate::entities::surreal::fence::take_fence_error;
+use crate::entities::surreal::node::NodeId;
 use crate::entities::surreal::port::PortId;
 use kanau::processor::Processor;
 use newtype_record_id::table_record;
@@ -108,5 +109,41 @@ impl Processor<DeleteEdgeRow> for SurrealProcessor {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+/// The edge between two ports named by their owning node and port key, rather than by
+/// port id.
+///
+/// The connect path needs this because it creates the ports and the edge in one batch: the
+/// edge's own id only exists after that write, so the only handle on it afterwards is the
+/// pair of ends the operator asked for.
+#[derive(Debug)]
+pub struct FindEdgeByEnds {
+    pub source: NodeId,
+    pub source_key: String,
+    pub target: NodeId,
+    pub target_key: String,
+}
+
+impl Processor<FindEdgeByEnds> for SurrealProcessor {
+    /// `None` when the batch did not produce the edge, which is a caller-visible failure.
+    type Output = Option<EdgeConnectionEntity>;
+    type Error = surrealdb::Error;
+    #[tracing::instrument(name = "Query:FindEdgeByEnds", skip_all, err)]
+    async fn process(&self, input: FindEdgeByEnds) -> Result<Self::Output, Self::Error> {
+        let mut resp = self
+            .db()
+            .query(
+                "SELECT * FROM orchestration_edge_connection
+                 WHERE in.owner = $source AND in.key = $source_key
+                   AND out.owner = $target AND out.key = $target_key LIMIT 1",
+            )
+            .bind(("source", input.source))
+            .bind(("source_key", input.source_key))
+            .bind(("target", input.target))
+            .bind(("target_key", input.target_key))
+            .await?;
+        resp.take::<Option<EdgeConnectionEntity>>(0)
     }
 }

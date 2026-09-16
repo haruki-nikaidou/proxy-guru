@@ -5,6 +5,7 @@ use auth::entities::surreal::account::{AccountId, AccountRole, CreateAccount};
 use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::{Login, LoginResult, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::surreal::canvas::{
@@ -35,27 +36,26 @@ use orchestration::services::server::ServerService;
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
 use surrealdb::types::RecordId;
-use wakuwaku::surreal::SurrealProcessor;
 
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// A fresh in-memory database with the module's real schema applied.
-pub async fn setup() -> Result<SurrealProcessor, Box<dyn std::error::Error>> {
+pub async fn setup() -> Result<Db, Box<dyn std::error::Error>> {
     let db = surrealdb::engine::any::connect("mem://").await?;
     db.use_ns("test").use_db("test").await?;
-    let sp = SurrealProcessor::new(db);
+    let sp = Db::new(db);
     let ddl = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../database/schema/orchestration.surql"
     ))?;
-    sp.db().query(ddl).await?.check()?;
+    sp.raw().query(ddl).await?.check()?;
     // The live streams re-validate their session on every keep-alive tick, so
     // the gRPC-level tests need real `account` and `session` tables.
     let auth_ddl = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../database/schema/auth.surql"
     ))?;
-    sp.db().query(auth_ddl).await?.check()?;
+    sp.raw().query(auth_ddl).await?.check()?;
     Ok(sp)
 }
 
@@ -63,7 +63,7 @@ pub fn pos(x: i64, y: i64) -> CanvasUiPosition {
     CanvasUiPosition { x, y }
 }
 
-pub async fn canvas(sp: &SurrealProcessor, name: &str) -> Result<CanvasEntity, surrealdb::Error> {
+pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, surrealdb::Error> {
     sp.process(CreateCanvas {
         name: name.to_string(),
         description: String::new(),
@@ -72,7 +72,7 @@ pub async fn canvas(sp: &SurrealProcessor, name: &str) -> Result<CanvasEntity, s
 }
 
 pub async fn server(
-    sp: &SurrealProcessor,
+    sp: &Db,
     canvas: &CanvasEntity,
     name: &str,
 ) -> Result<ServerEntity, surrealdb::Error> {
@@ -82,7 +82,7 @@ pub async fn server(
 /// A server with a pinned IPv4 address, so pods placed on it derive a dialable
 /// destination without a live worker.
 pub async fn server_at(
-    sp: &SurrealProcessor,
+    sp: &Db,
     canvas: &CanvasEntity,
     name: &str,
     address: &str,
@@ -138,7 +138,7 @@ pub fn entry_ports() -> Vec<NewPort> {
 }
 
 pub async fn node(
-    sp: &SurrealProcessor,
+    sp: &Db,
     canvas: &CanvasEntity,
     name: &str,
     spec: NodeSpec,
@@ -210,7 +210,7 @@ pub fn pos0() -> CanvasUiPosition {
 
 /// Every service over one in-memory database, plus the derivation hook.
 pub struct World {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
     /// The in-process live bus every service in this world publishes to.

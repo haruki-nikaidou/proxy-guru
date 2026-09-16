@@ -341,7 +341,7 @@ async fn deleting_a_root_deletes_its_whole_tree() -> TestResult {
         "orchestration_server_config_view",
     ] {
         let mut resp =
-            w.db.db()
+            w.db.raw()
                 .query(format!("SELECT VALUE id FROM {table}"))
                 .await?;
         let rows: Vec<surrealdb::types::RecordId> = resp.take(0)?;

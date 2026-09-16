@@ -8,6 +8,7 @@
 
 use auth::entities::surreal::account::{AccountId, AccountRole};
 use auth::services::identity::{Identity, IdentityKind};
+use base::db::Db;
 use base::services::config::ConfigStore;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -16,20 +17,19 @@ use orchestration::services::config::{
 };
 use serde_json::json;
 use surrealdb::types::RecordId;
-use wakuwaku::surreal::SurrealProcessor;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 async fn setup() -> Result<OrchestrationConfigService, Box<dyn std::error::Error>> {
     let db = surrealdb::engine::any::connect("mem://").await?;
     db.use_ns("test").use_db("test").await?;
-    let db = SurrealProcessor::new(db);
+    let db = Db::new(db);
     let ddl = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../database/schema/base.surql"
     ))?;
     // `.check()` surfaces any per-statement error from applying the schema.
-    db.db().query(ddl).await?.check()?;
+    db.raw().query(ddl).await?.check()?;
     Ok(OrchestrationConfigService {
         configs: ConfigStore { db },
     })

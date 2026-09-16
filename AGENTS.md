@@ -81,7 +81,8 @@ src/
   `lib/newtype_record_id` (this generates the `RecordId` newtype plus its
   `SurrealValue` impl).
 - Implement `Processor<Input>` for `wakuwaku::surreal::SurrealProcessor`, one
-  impl per query/command, with `Error = surrealdb::Error`. Run statements with
+  impl per query/command, with `Error = surrealdb::Error`. The raw processor, not
+  `base::db::Db`: services hold the bounded handle and it forwards to these. Run statements with
   `self.db().query(SQL).bind(("k", v)).await?` then `resp.take::<T>(0)?`; use
   `.check()?` on write-only commands to surface per-statement errors.
 - Queries are validated at runtime, not compile time, so cover them with the
@@ -99,6 +100,10 @@ src/
 
 ### `services`
 
+- The database dependency is `base::db::Db`, never `SurrealProcessor`. It bounds every
+  query, so a client that never answers costs one retryable error instead of an await that
+  never returns. Reach for `Db::raw()` only to build a statement by hand, and know that
+  nothing awaited through it is bounded.
 - A service is a `Clone` struct owning its dependencies (database, Redis, AMQP,
   loaded config, other services).
 - One `Processor` impl per operation; return domain types, not protobuf types.

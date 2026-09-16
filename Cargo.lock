@@ -2212,6 +2212,7 @@ name = "guru-worker"
 version = "0.2.2-beta"
 dependencies = [
  "auth",
+ "base",
  "chrono",
  "clap",
  "compact_str",

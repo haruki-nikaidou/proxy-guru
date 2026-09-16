@@ -26,6 +26,7 @@ use auth::services::api_key::ApiKeyService;
 use auth::services::config::AuthConfigService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
+use base::db::Db;
 use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
 use kanau::message::MessageDe;
@@ -73,7 +74,6 @@ use wakuwaku::amqp::{
     AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting, setup_consumer,
 };
 use wakuwaku::interval_job::IntervalJobExecutionSignal;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum WorkerMode {
@@ -143,6 +143,15 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     watch_poll_ms: u64,
+    /// The bound on one database query. It cannot live in `app_config` like the operator's
+    /// other settings: reading that config goes through the very handle being configured.
+    #[arg(
+        long,
+        env = "GURU_DB_TIMEOUT_MS",
+        default_value = "10000",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    db_timeout_ms: u64,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     log_level: String,
 }
@@ -194,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
     db.use_ns(namespace).use_db(database).await?;
-    let db = SurrealProcessor::new(db);
+    let db = Db::new(db).with_timeout(Duration::from_millis(cli.db_timeout_ms));
     // Environment only, never argv: the key would otherwise be visible in process
     // listings. `manage-tool generate-master-key` prints a fresh one.
     let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;

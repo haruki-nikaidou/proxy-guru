@@ -31,11 +31,11 @@ use crate::utils::ids::record_key;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_server_agent_key, sha256_hex};
+use base::db::Db;
 use chrono::Utc;
 use kanau::processor::Processor;
 use std::net::IpAddr;
 use std::ops::RangeInclusive;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// Where generated landing pods and the dashboard's suggestions draw their
 /// ports from: high enough to stay clear of anything an operator types by hand.
@@ -43,7 +43,7 @@ pub const DEFAULT_POD_PORTS: RangeInclusive<u16> = 40000..=59999;
 
 #[derive(Clone)]
 pub struct ServerService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }

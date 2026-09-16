@@ -16,31 +16,24 @@ use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::{AuthenticateSession, Login, LoginResult, Logout, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Connect to a fresh in-memory database, apply the schema, and build services.
-async fn setup() -> Result<
-    (
-        SurrealProcessor,
-        AccountService,
-        SessionService,
-        ApiKeyService,
-    ),
-    Box<dyn std::error::Error>,
-> {
+async fn setup()
+-> Result<(Db, AccountService, SessionService, ApiKeyService), Box<dyn std::error::Error>> {
     let db = surrealdb::engine::any::connect("mem://").await?;
     db.use_ns("test").use_db("test").await?;
-    let sp = SurrealProcessor::new(db);
+    let sp = Db::new(db);
 
     let ddl = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../database/schema/auth.surql"
     ))?;
     // `.check()` surfaces any per-statement error from applying the schema.
-    sp.db().query(ddl).await?.check()?;
+    sp.raw().query(ddl).await?.check()?;
 
     let hasher = Argon2PasswordAlgorithm::default();
     let accounts = AccountService {

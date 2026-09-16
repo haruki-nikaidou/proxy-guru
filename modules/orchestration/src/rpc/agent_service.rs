@@ -17,13 +17,13 @@ use crate::services::health::{
 };
 use crate::services::watch::{AgentSignal, SessionLease, WatchFence, WatchHub};
 use crate::utils::ids;
+use base::db::Db;
 use guru_worker_config::Config;
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration_agent as pb;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use wakuwaku::surreal::SurrealProcessor;
 
 const STREAM_CAPACITY: usize = 4;
 /// The bound on one unary handler's service call. The database client can leave a
@@ -51,7 +51,7 @@ pub struct WorkerAgentGrpc {
     pub agents: AgentService,
     pub health: HealthService,
     pub ca: CaService,
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub hub: WatchHub,
     pub lease: SessionLease,
 }

@@ -94,6 +94,8 @@ export function errorMessage(code: string | undefined, fallback: string): string
 			return m.error_not_found();
 		case 'internal':
 			return m.error_internal();
+		case 'unavailable':
+			return m.error_unavailable();
 		case 'cannot_modify_self':
 			return m.error_cannot_modify_self();
 		case 'last_admin':

@@ -1,7 +1,7 @@
 //! Account management and self-service operations.
 
+use base::db::Db;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 use crate::entities::surreal::account::{
     AccountEntity, AccountId, AccountRole, CreateAccount, DeleteAccount as DeleteAccountEntity,
@@ -23,7 +23,7 @@ fn normalize_email(email: &str) -> String {
 /// Account lifecycle and self-service operations.
 #[derive(Clone)]
 pub struct AccountService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub hasher: Argon2PasswordAlgorithm,
 }
 

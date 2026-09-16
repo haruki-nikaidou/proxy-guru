@@ -25,6 +25,7 @@ use crate::entities::surreal::view::{CertificateKind, CertificateRef};
 use crate::services::OrchestrationError;
 use crate::utils::ids::{self, record_key};
 use crate::utils::secret::SecretKey;
+use base::db::Db;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use kanau::processor::Processor;
 use rcgen::{
@@ -33,7 +34,6 @@ use rcgen::{
 };
 use std::collections::HashMap;
 use time::OffsetDateTime;
-use wakuwaku::surreal::SurrealProcessor;
 
 pub const CA_COMMON_NAME: &str = "guru internal relay CA";
 const CA_VALID_DAYS: i64 = 3650;
@@ -70,7 +70,7 @@ pub struct CertificateFile {
 
 #[derive(Clone)]
 pub struct CaService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
 }

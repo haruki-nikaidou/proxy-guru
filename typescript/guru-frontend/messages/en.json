@@ -373,6 +373,7 @@
 	"error_forbidden": "Your role does not allow this.",
 	"error_not_found": "That no longer exists.",
 	"error_internal": "The control plane is unreachable.",
+	"error_unavailable": "The control plane is briefly unreachable. Your session is still valid — try again in a moment.",
 	"error_cannot_modify_self": "You cannot change your own account here.",
 	"error_last_admin": "The last administrator cannot be removed.",
 	"result_invalid_credentials": "Wrong email or password.",

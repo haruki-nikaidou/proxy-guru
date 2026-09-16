@@ -373,6 +373,7 @@
 	"error_forbidden": "你的角色沒有此權限。",
 	"error_not_found": "該項目已不存在。",
 	"error_internal": "無法連線到控制平面。",
+	"error_unavailable": "控制面暫時無法連線。你的登入仍然有效，稍後重試即可。",
 	"error_cannot_modify_self": "不能在這裡修改你自己的帳號。",
 	"error_last_admin": "不能移除最後一位管理員。",
 	"result_invalid_credentials": "電子郵件或密碼錯誤。",

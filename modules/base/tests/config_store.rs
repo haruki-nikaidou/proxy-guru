@@ -5,13 +5,13 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use base::db::Db;
 use base::entities::surreal::app_config::{ConfigJson, FindRawConfig, UpsertRawConfig};
 use base::services::config::{
     ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode,
 };
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
-use wakuwaku::surreal::SurrealProcessor;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -58,13 +58,13 @@ impl ConfigJson for SampleConfig {
 async fn setup() -> Result<ConfigStore, Box<dyn std::error::Error>> {
     let db = surrealdb::engine::any::connect("mem://").await?;
     db.use_ns("test").use_db("test").await?;
-    let db = SurrealProcessor::new(db);
+    let db = Db::new(db);
     let ddl = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../database/schema/base.surql"
     ))?;
     // `.check()` surfaces any per-statement error from applying the schema.
-    db.db().query(ddl).await?.check()?;
+    db.raw().query(ddl).await?.check()?;
     Ok(ConfigStore { db })
 }
 

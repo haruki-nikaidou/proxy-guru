@@ -85,7 +85,13 @@ impl From<surrealdb::Error> for OrchestrationError {
 impl From<OrchestrationError> for tonic::Status {
     fn from(error: OrchestrationError) -> Self {
         match error {
-            OrchestrationError::Core(e) => tonic::Status::from(e),
+            // A database that did not answer is not a bug in the control plane: it is
+            // retryable, and a caller told `INTERNAL` has no reason to try again.
+            OrchestrationError::Core(e) => base::db::status_of(e),
+            OrchestrationError::Db(e) if base::db::is_unavailable(&e) => {
+                tracing::warn!(error = %e, "database unavailable");
+                tonic::Status::unavailable("Database unavailable")
+            }
             OrchestrationError::Db(e) => {
                 tracing::error!(error = %e, "database error");
                 tonic::Status::internal("Database error")

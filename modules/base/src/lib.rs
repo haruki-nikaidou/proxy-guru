@@ -25,6 +25,9 @@
 //!   [`services::config::ConfigStore`].
 //! - [`utils`] — small, dependency-light helpers local to the module.
 //!
+//! [`db`] is the exception to the mirror: it lives here alone, because the handle it wraps
+//! is shared by every module.
+//!
 //! See `AGENTS.md` at the workspace root for the full authoring guide.
 
 #![deny(clippy::unwrap_used)]
@@ -33,6 +36,9 @@
 #![warn(clippy::arithmetic_side_effects)]
 
 pub mod config;
+/// Base-only: the bounded database handle every module's services hold. Feature modules
+/// mirror the layout below, but none of them declares a `db` module of its own.
+pub mod db;
 pub mod entities;
 pub mod events;
 pub mod hooks;

@@ -31,6 +31,15 @@ export async function callGrpc<T>(fn: () => Promise<T>): Promise<T> {
 					throw error(403, { message: 'Forbidden', code: 'forbidden' });
 				case Status.NOT_FOUND:
 					throw error(404, { message: 'Not found', code: 'not_found' });
+				case Status.UNAVAILABLE:
+					// The control plane could not reach its database, or could not judge the
+					// session in time. Deliberately NOT a redirect: the session is still
+					// valid, and clearing the cookie here would turn a database blip into a
+					// logout, which is exactly the bug this status exists to prevent.
+					throw error(503, {
+						message: 'The control plane is briefly unreachable. Try again in a moment.',
+						code: 'unavailable'
+					});
 				case Status.INVALID_ARGUMENT:
 				case Status.FAILED_PRECONDITION:
 					// These carry actionable English text from the control plane.

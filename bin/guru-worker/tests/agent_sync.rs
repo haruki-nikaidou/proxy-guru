@@ -13,6 +13,7 @@ use auth::services::api_key::{ApiKeyService, CreateApiKey};
 use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::SessionService;
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use base::db::Db;
 use guru_worker::agent::{self, AgentOptions};
 use guru_worker::state;
 use guru_worker::supervisor::Supervisor;
@@ -56,7 +57,6 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
-use wakuwaku::surreal::SurrealProcessor;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -103,7 +103,7 @@ fn edge_ok() -> PodStatus {
 }
 
 struct Master {
-    db: SurrealProcessor,
+    db: Db,
     hub: WatchHub,
     addr: SocketAddr,
     shutdown: CancellationToken,
@@ -114,13 +114,13 @@ struct Master {
 async fn boot_master(lease: SessionLease) -> Result<(Master, String), Box<dyn std::error::Error>> {
     let db = surrealdb::engine::any::connect("mem://").await?;
     db.use_ns("test").use_db("test").await?;
-    let sp = SurrealProcessor::new(db);
+    let sp = Db::new(db);
     for schema in ["auth", "orchestration"] {
         let ddl = std::fs::read_to_string(format!(
             "{}/../../database/schema/{schema}.surql",
             env!("CARGO_MANIFEST_DIR")
         ))?;
-        sp.db().query(ddl).await?.check()?;
+        sp.raw().query(ddl).await?.check()?;
     }
 
     let hasher = Argon2PasswordAlgorithm::default();
@@ -159,7 +159,7 @@ async fn boot_master(lease: SessionLease) -> Result<(Master, String), Box<dyn st
 
 /// Starts one tonic server (a master "process") and returns its address.
 async fn serve(
-    db: &SurrealProcessor,
+    db: &Db,
     hub: &WatchHub,
     shutdown: &CancellationToken,
     lease: SessionLease,
@@ -255,7 +255,7 @@ struct Canvas {
 }
 
 /// One server with a single `pod -> entry` / `exit -> pod` chain on loopback.
-async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::error::Error>> {
+async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
     let canvases = CanvasService {
         db: db.clone(),
         notifier: Notifier::default(),
@@ -375,7 +375,7 @@ async fn build_canvas(db: &SurrealProcessor) -> Result<Canvas, Box<dyn std::erro
 }
 
 /// Waits until `check` holds for the server's config view, or fails the test.
-async fn wait_for<F>(db: &SurrealProcessor, server: &ServerId, what: &str, check: F)
+async fn wait_for<F>(db: &Db, server: &ServerId, what: &str, check: F)
 where
     F: Fn(&ServerConfigViewEntity) -> bool,
 {
@@ -789,7 +789,7 @@ async fn a_rotated_refresh_key_ends_an_open_stream() -> TestResult {
     // is allowed to take the server over.
     master
         .db
-        .db()
+        .raw()
         .query("UPDATE $server SET session_lease_until = $past")
         .bind(("server", canvas.server.clone()))
         .bind(("past", chrono::Utc::now() - chrono::TimeDelta::seconds(60)))

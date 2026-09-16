@@ -30,12 +30,12 @@ use crate::utils::ids::record_key;
 use auth::entities::surreal::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
+use base::db::Db;
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 #[derive(Clone)]
 pub struct NodeService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub notifier: Notifier,
     pub config: OrchestrationConfig,
 }
@@ -429,10 +429,7 @@ impl NodeService {
 /// provider that exists: the certificate row the cron creates for it references
 /// both, and a dangling provider could never answer the challenge. The SNI is
 /// stored in its canonical (lower-case) form, which is the certificate row key.
-async fn ensure_tls_valid(
-    db: &SurrealProcessor,
-    spec: &mut NodeSpec,
-) -> Result<(), OrchestrationError> {
+async fn ensure_tls_valid(db: &Db, spec: &mut NodeSpec) -> Result<(), OrchestrationError> {
     let NodeSpec::Entry(entry) = spec else {
         return Ok(());
     };

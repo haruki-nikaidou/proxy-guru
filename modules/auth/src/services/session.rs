@@ -2,9 +2,9 @@
 
 use std::sync::LazyLock;
 
+use base::db::Db;
 use chrono::{Duration, Utc};
 use kanau::processor::Processor;
-use wakuwaku::surreal::SurrealProcessor;
 
 use crate::config::AuthConfig;
 use crate::entities::surreal::account::FindAccountByEmail;
@@ -32,7 +32,7 @@ fn normalize_email(email: &str) -> String {
 /// Session operations for human callers.
 #[derive(Clone)]
 pub struct SessionService {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub hasher: Argon2PasswordAlgorithm,
     pub config: AuthConfig,
 }

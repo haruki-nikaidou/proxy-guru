@@ -373,6 +373,7 @@
 	"error_forbidden": "この操作は現在のロールでは行えません。",
 	"error_not_found": "対象は既に存在しません。",
 	"error_internal": "制御基盤に接続できません。",
+	"error_unavailable": "コントロールプレーンに一時的に接続できません。セッションは有効なので、少し待って再試行してください。",
 	"error_cannot_modify_self": "自分のアカウントはここでは変更できません。",
 	"error_last_admin": "最後の管理者は削除できません。",
 	"result_invalid_credentials": "メールアドレスまたはパスワードが違います。",

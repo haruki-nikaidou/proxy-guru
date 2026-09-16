@@ -52,12 +52,12 @@ use crate::services::derive::{
 use crate::services::notify::Notifier;
 use crate::utils::ids::{self, record_key};
 use crate::utils::secret::SecretKey;
+use base::db::Db;
 use chrono::{DateTime, Utc};
 use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use wakuwaku::amqp::AmqpMessageProcessor;
-use wakuwaku::surreal::SurrealProcessor;
 
 /// How many times one pass retries after losing the generation race before it
 /// leaves the canvas to the next message or sweep tick.
@@ -65,7 +65,7 @@ const MAX_ATTEMPTS: usize = 8;
 
 #[derive(Clone)]
 pub struct CanvasDeriver {
-    pub db: SurrealProcessor,
+    pub db: Db,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
     /// A derivation pass publishes no AMQP event, but it does move every
