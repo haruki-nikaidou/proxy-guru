@@ -39,8 +39,13 @@ use surrealdb::types::ToSql;
 #[derive(Debug, Parser)]
 #[command(name = "manage-tool", about = "Administration tasks for the platform")]
 struct Cli {
-    /// SurrealDB address (e.g. `ws://127.0.0.1:8000`).
-    #[arg(long, env = "SURREALDB_HOST", default_value = "ws://127.0.0.1:8000")]
+    /// SurrealDB address. `http://` and `ws://` both work; see the note below.
+    // `http://` on purpose. Both remote engines are compiled in and
+    // `engine::any::connect` picks by scheme, but the WebSocket engine multiplexes
+    // every query in the process through one router task, and a lost answer there
+    // strands its caller until the bound in `base::db::Db` fires. Over HTTP each
+    // query is its own request, so there is no shared pipe to go stale.
+    #[arg(long, env = "SURREALDB_HOST", default_value = "http://127.0.0.1:8000")]
     address: String,
     /// Root username.
     #[arg(long, env = "SURREALDB_USER", default_value = "root")]

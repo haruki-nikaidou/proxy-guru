@@ -14,10 +14,8 @@ use tonic::codegen::{BoxFuture, Service};
 
 /// Metadata key carrying a worker's dynamic refresh key.
 pub const REFRESH_KEY_METADATA: &str = "x-refresh-key";
-/// How long resolving the key may take. The database client can leave a lookup
-/// pending forever after its socket reconnects; a request must not hang on that,
-/// so past this the call proceeds anonymous and the handler answers
-/// `UNAUTHENTICATED`, which the worker retries.
+/// The backstop on resolving a refresh key. The bound inside `base::db::Db` is far tighter
+/// and normally fires first; this only catches a stall outside the query itself.
 const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
@@ -75,7 +73,9 @@ where
                 .map(str::to_owned);
             if let Some(secret) = secret {
                 // One retry, then say so: a key that could not be judged must not be
-                // reported as a key that was judged and rejected.
+                // reported as a key that was judged and rejected. The retry lives here
+                // rather than in `base::db::Db` because this lookup is a pure read; the
+                // handle bounds writes too and must not replay them.
                 let mut outcome = resolve(&agents, &secret).await;
                 if matches!(outcome, Resolved::Unavailable) {
                     outcome = resolve(&agents, &secret).await;

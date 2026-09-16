@@ -1,6 +1,6 @@
 <script lang="ts">
 import ShieldOffIcon from '@lucide/svelte/icons/shield-off';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { replaceEntrySpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
@@ -38,24 +38,19 @@ let dnsProviderId = $state('');
 let domainId = $state('');
 let acmeDirectory = $state('');
 
-// Seed once per node: the effect writes the same state it would otherwise read
-// back, so an unguarded version would clobber every keystroke.
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-		proxy = snapshot.receiveProxyProtocol;
-		tlsEnabled = snapshot.tls !== null;
-		sni = snapshot.tls?.sni ?? '';
-		dnsProviderId = snapshot.tls?.dnsProviderId ?? '';
-		domainId = snapshot.tls?.domainId ?? '';
-		acmeDirectory = snapshot.tls?.acmeDirectory ?? '';
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+		proxy = node.receiveProxyProtocol;
+		tlsEnabled = node.tls !== null;
+		sni = node.tls?.sni ?? '';
+		dnsProviderId = node.tls?.dnsProviderId ?? '';
+		domainId = node.tls?.domainId ?? '';
+		acmeDirectory = node.tls?.acmeDirectory ?? '';
+	}
+);
 
 // `ListDnsProviders` is admin-only in the control plane, so the listing is never
 // requested for anyone else: a maintainer sees the stored id instead of a select.

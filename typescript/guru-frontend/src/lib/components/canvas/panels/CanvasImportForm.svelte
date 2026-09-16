@@ -1,6 +1,6 @@
 <script lang="ts">
 import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { goto } from '$app/navigation';
 import { updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
@@ -25,16 +25,13 @@ let name = $state('');
 let comment = $state('');
 const writes = panelWrites();
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+	}
+);
 
 async function save() {
 	await writes.run(async () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { deleteNode, replacePodSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
@@ -44,18 +44,15 @@ let port = $state('1');
 const writes = panelWrites();
 let confirmOpen = $state(false);
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === pod.id) return;
-	seededFor = pod.id;
-	const snapshot = pod;
-	untrack(() => {
-		name = snapshot.name;
-		bindIp = snapshot.bindIp ?? BIND_ALL;
-		advertiseIp = snapshot.advertiseIp ?? ADVERTISE_AUTO;
-		port = String(snapshot.port);
-	});
-});
+seedOn(
+	() => pod.id,
+	() => {
+		name = pod.name;
+		bindIp = pod.bindIp ?? BIND_ALL;
+		advertiseIp = pod.advertiseIp ?? ADVERTISE_AUTO;
+		port = String(pod.port);
+	}
+);
 
 // A stored address that is no longer among the server's candidates stays
 // selectable, so an edit never silently rewrites it.

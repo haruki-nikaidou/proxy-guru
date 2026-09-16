@@ -105,7 +105,12 @@ struct Cli {
     dashboard_addr: SocketAddr,
     #[arg(long, env = "GURU_WORKERS_GRPC_ADDR", default_value = "0.0.0.0:50052")]
     workers_addr: SocketAddr,
-    #[arg(long, env = "SURREALDB_HOST", default_value = "ws://127.0.0.1:8000")]
+    // `http://` on purpose. Both remote engines are compiled in and
+    // `engine::any::connect` picks by scheme, but the WebSocket engine multiplexes
+    // every query in the process through one router task, and a lost answer there
+    // strands its caller until the bound in `base::db::Db` fires. Over HTTP each
+    // query is its own request, so there is no shared pipe to go stale.
+    #[arg(long, env = "SURREALDB_HOST", default_value = "http://127.0.0.1:8000")]
     address: String,
     #[arg(long, env = "SURREALDB_USER", default_value = "root")]
     username: String,

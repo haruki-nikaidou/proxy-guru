@@ -1,7 +1,7 @@
 <script lang="ts">
 import EyeIcon from '@lucide/svelte/icons/eye';
 import EyeOffIcon from '@lucide/svelte/icons/eye-off';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { toast } from 'svelte-sonner';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Dialog from '#lib/components/ui/dialog/index.js';
@@ -49,23 +49,16 @@ const selectedKind: DnsProviderKindName = $derived(
 
 let revealSecret = $state(false);
 
-// Seed once per open: `.set()` writes the same field the effect reads, so an
-// unguarded effect would clobber every keystroke.
-let seededFor = $state('');
-$effect(() => {
-	if (!open) {
-		seededFor = '';
-		revealSecret = false;
-		return;
+// Seeded once per open, so a reopen on the same provider seeds it again.
+seedOn(
+	() => (open && mode === 'edit' && provider ? provider.id : null),
+	() => {
+		form.fields.name.set(provider?.name ?? '');
+		form.fields.accountId.set(provider?.accountId ?? '');
 	}
-	if (mode !== 'edit' || !provider) return;
-	if (seededFor === provider.id) return;
-	seededFor = provider.id;
-	const { name, accountId } = provider;
-	untrack(() => {
-		form.fields.name.set(name);
-		form.fields.accountId.set(accountId);
-	});
+);
+$effect(() => {
+	if (!open) revealSecret = false;
 });
 
 $effect(() => {

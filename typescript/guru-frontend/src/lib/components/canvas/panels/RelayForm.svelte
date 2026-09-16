@@ -1,5 +1,5 @@
 <script lang="ts">
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { replaceRelaySpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -23,19 +23,16 @@ let overrideIpAddress = $state('');
 let overridePort = $state('0');
 const writes = panelWrites();
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-		protocol = snapshot.protocol;
-		overrideIpAddress = snapshot.overrideIpAddress;
-		overridePort = String(snapshot.overridePort);
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+		protocol = node.protocol;
+		overrideIpAddress = node.overrideIpAddress;
+		overridePort = String(node.overridePort);
+	}
+);
 
 async function save() {
 	await writes.run(async () => {

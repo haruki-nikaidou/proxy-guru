@@ -2,17 +2,22 @@
 //!
 //! # Why this exists
 //!
-//! The SurrealDB client has **no request timeout of its own**. `query_timeout` on the SDK's
-//! config object reaches the embedded engines only, never `engine/remote/ws`, which is what
-//! `ws://` resolves to. When that client's router cannot match a response to its caller it
-//! drops the response and logs; when it reconnects it does fail the requests that were in
-//! flight, but only once the reconnect completes and only for sessions its map still holds
-//! as `Ok`. A request that falls through those holes is an `.await` that never returns, and
-//! the SDK's own `fail_all_pending_requests` comment says as much (surrealdb/surrealdb#7037).
+//! The SurrealDB client has **no request timeout of its own**, on any remote engine:
+//! `query_timeout` on the SDK's config object reaches the embedded engines only. A request
+//! whose answer is lost is therefore an `.await` that never returns.
 //!
 //! That is not a hypothetical. Two workers hung on it on 2026-09-16, one inside an update
 //! poll and one inside a config acknowledgement, and neither recovered until the master was
-//! restarted an hour later.
+//! restarted an hour later. The engine they were on multiplexes every query in a process
+//! through one WebSocket and one router task; when that router cannot match a response to a
+//! caller it drops the response and logs, and its recovery on reconnect only covers sessions
+//! its map still holds as `Ok` (the SDK's own `fail_all_pending_requests` comment says as
+//! much, citing surrealdb/surrealdb#7037).
+//!
+//! The control plane has since moved to `http://`, where each query is an independent request
+//! and there is no shared pipe to lose answers in. This bound stays regardless: it is what
+//! keeps any future engine, or any network, from turning one lost answer into a process that
+//! waits for it forever.
 //!
 //! # What it fixes
 //!
@@ -25,8 +30,13 @@
 //! # What it does not do
 //!
 //! A timeout is not a cancellation. The statement keeps running on the server, so a write
-//! that timed out may still commit — anything retried after one must be idempotent — and the
-//! client keeps one entry in its pending map until an answer arrives or the connection resets.
+//! that timed out may still commit, and the client keeps one entry in its pending map until
+//! an answer arrives or the connection resets.
+//!
+//! **It therefore does not retry.** Retrying here would retry writes as well as reads, and a
+//! `CREATE` whose answer was lost after it committed would be applied twice. Only a caller
+//! knows whether its operation is idempotent, so the retry lives with the callers that are:
+//! the two authentication middlewares, whose lookups are pure reads.
 
 use kanau::processor::Processor;
 use std::time::Duration;
@@ -37,11 +47,15 @@ use wakuwaku::surreal::SurrealProcessor;
 
 /// How long one query may take before it is called lost.
 ///
-/// Three orders of magnitude above any real query here, and below the thirty second watch
-/// session lease, so a stuck lease renewal fails in time for its stream to end cleanly
-/// instead of exactly as the lease lapses. It is a backstop, not a latency budget: a caller
-/// that needs a tighter bound puts one at its own edge.
-pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Measured against the live database while the fleet was running, the queries that actually
+/// lose their answers return in 28-81 ms. Three seconds is more than thirty times the honest
+/// worst case and still well under the thirty second watch session lease, so a stuck lease
+/// renewal fails in time for its stream to end cleanly. It is a backstop, not a latency
+/// budget: a caller that needs a tighter bound puts one at its own edge.
+///
+/// It started at ten seconds. That was long enough that a caller which retried once waited
+/// twenty seconds before answering, which is what a lost answer felt like from the dashboard.
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A [`SurrealProcessor`] whose queries are bounded.
 ///

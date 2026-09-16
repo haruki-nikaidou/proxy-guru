@@ -36,7 +36,10 @@ kanau = { version = "0.5", features = [
     "serde_json",
 ] }
 amqprs = { version = "2.1", features = ["uriparse", "urispec"] }
-surrealdb = { version = "3.2", features = ["protocol-ws"] }
+# Both remote engines compile in, so the scheme in SURREALDB_HOST picks one and a
+# rollback between them needs no rebuild. `protocol-http` only pulls in reqwest,
+# which this workspace already depends on.
+surrealdb = { version = "3.2", features = ["protocol-ws", "protocol-http"] }
 surrealdb-types = "3.2"
 redis = { version = "1.0", features = [
     "tokio-comp",

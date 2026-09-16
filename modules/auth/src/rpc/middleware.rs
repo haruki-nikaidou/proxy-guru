@@ -21,9 +21,8 @@ use crate::services::{ApiKeyService, AuthenticateApiKey, AuthenticateSession, Se
 pub const SESSION_ID_METADATA: &str = "x-session-id";
 /// Metadata key carrying a machine API-key secret.
 pub const API_KEY_METADATA: &str = "x-api-key";
-/// How long resolving a credential may take. The database client can leave a
-/// lookup pending forever after its socket reconnects; past this the request
-/// proceeds without an identity and the handler answers `UNAUTHENTICATED`.
+/// The backstop on resolving a credential. The bound inside `base::db::Db` is far tighter
+/// and normally fires first; this only catches a stall outside the query itself.
 const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Tower layer that authenticates requests and injects an [`Identity`] extension.
@@ -95,9 +94,10 @@ where
                     }
                 }
             };
-            // One retry: these failures are transient (a reconnected database connection
-            // that briefly lost its namespace) and the read is idempotent, so retrying is
-            // the difference between a blip nobody notices and a visible error.
+            // One retry. `base::db::Db` deliberately does not retry, because it cannot
+            // know whether the query it bounded was a write that already committed; this
+            // lookup is a pure read, so here it is safe and it is the difference between a
+            // blip nobody notices and a visible error.
             let mut outcome = bounded(resolve()).await;
             if matches!(outcome, Resolved::Unavailable) {
                 outcome = bounded(resolve()).await;

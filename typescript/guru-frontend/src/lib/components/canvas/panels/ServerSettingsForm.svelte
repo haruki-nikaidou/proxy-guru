@@ -1,7 +1,7 @@
 <script lang="ts">
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import PlusIcon from '@lucide/svelte/icons/plus';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import ServerGlyph from '#lib/components/canvas/ServerGlyph.svelte';
 import { deleteServerNode, updateServerNode } from '#lib/components/canvas/commands.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
@@ -43,23 +43,20 @@ let pinV6 = $state('');
 let extraAddresses = $state<string[]>([]);
 let newExtra = $state('');
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === server.id) return;
-	seededFor = server.id;
-	const snapshot = server;
-	untrack(() => {
-		name = snapshot.name;
-		icon = snapshot.icon;
-		comment = snapshot.comment;
-		ipv6Resolve = snapshot.ipv6Resolve;
-		logLevel = snapshot.logLevel;
-		pinV4 = snapshot.addresses.v4.pinned;
-		pinV6 = snapshot.addresses.v6.pinned;
-		extraAddresses = [...snapshot.addresses.extra];
+seedOn(
+	() => server.id,
+	() => {
+		name = server.name;
+		icon = server.icon;
+		comment = server.comment;
+		ipv6Resolve = server.ipv6Resolve;
+		logLevel = server.logLevel;
+		pinV4 = server.addresses.v4.pinned;
+		pinV6 = server.addresses.v6.pinned;
+		extraAddresses = [...server.addresses.extra];
 		newExtra = '';
-	});
-});
+	}
+);
 
 const addresses = $derived(server.addresses);
 const sourceLabel = $derived(

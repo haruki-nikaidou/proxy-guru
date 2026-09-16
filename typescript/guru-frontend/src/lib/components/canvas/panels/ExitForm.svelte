@@ -1,5 +1,5 @@
 <script lang="ts">
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { replaceExitSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -21,18 +21,15 @@ let destination = $state('');
 let proxy = $state<ProxyProtocolName>('none');
 const writes = panelWrites();
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-		destination = snapshot.destination;
-		proxy = snapshot.passProxyProtocol;
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+		destination = node.destination;
+		proxy = node.passProxyProtocol;
+	}
+);
 
 async function save() {
 	await writes.run(async () => {

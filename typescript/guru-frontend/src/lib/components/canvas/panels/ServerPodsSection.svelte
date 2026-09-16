@@ -1,7 +1,7 @@
 <script lang="ts">
 import DicesIcon from '@lucide/svelte/icons/dices';
 import PlusIcon from '@lucide/svelte/icons/plus';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { createPodNode } from '#lib/components/canvas/commands.js';
 import { randomFreePort } from '#lib/components/canvas/graph.js';
 import { Button } from '#lib/components/ui/button/index.js';
@@ -42,17 +42,15 @@ const rerollPort = () => {
 	);
 };
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === server.id) return;
-	seededFor = server.id;
-	untrack(() => {
+seedOn(
+	() => server.id,
+	() => {
 		newPodName = '';
 		newPodBind = '';
 		newPodAdvertise = '';
 		rerollPort();
-	});
-});
+	}
+);
 
 const addresses = $derived(server.addresses);
 /** Every address the server is known by, pinned values first, deduplicated. */

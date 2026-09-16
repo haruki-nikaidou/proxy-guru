@@ -1,5 +1,5 @@
 <script lang="ts">
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { toast } from 'svelte-sonner';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
@@ -31,18 +31,13 @@ const canvas = $derived(options.current?.find(option => option.id === canvasId))
 const form = $derived(updateCanvas.for(canvasId));
 let deleteOpen = $state(false);
 
-// Seed once per canvas: `.set()` writes the same field the effect reads, so an
-// unguarded effect would clobber every keystroke.
-let seededFor = $state('');
-$effect(() => {
-	if (!canvas || seededFor === canvas.id) return;
-	seededFor = canvas.id;
-	const { name, description } = canvas;
-	untrack(() => {
-		form.fields.name.set(name);
-		form.fields.description.set(description);
-	});
-});
+seedOn(
+	() => canvas?.id ?? null,
+	() => {
+		form.fields.name.set(canvas?.name ?? '');
+		form.fields.description.set(canvas?.description ?? '');
+	}
+);
 
 $effect(() => {
 	if (form.result?.ok) toast.success(m.canvas_updated());

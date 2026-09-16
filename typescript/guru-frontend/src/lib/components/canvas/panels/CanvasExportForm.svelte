@@ -1,5 +1,5 @@
 <script lang="ts">
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { replaceExportSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -33,18 +33,15 @@ let portKind = $state<ExportPortKindName>('derive_listen');
 let exportAs = $state<CanvasExportAsName>('input_into_canvas');
 const writes = panelWrites();
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-		portKind = snapshot.portKind;
-		exportAs = snapshot.exportAs;
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+		portKind = node.portKind;
+		exportAs = node.exportAs;
+	}
+);
 
 const reshapes = $derived(portKind !== node.portKind || exportAs !== node.exportAs);
 

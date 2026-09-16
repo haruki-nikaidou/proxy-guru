@@ -1,7 +1,7 @@
 <script lang="ts">
 import PlusIcon from '@lucide/svelte/icons/plus';
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { toast } from 'svelte-sonner';
 import { replaceLoadBalanceSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { channelColor } from '#lib/components/canvas/graph.js';
@@ -52,19 +52,16 @@ let protocol = $state<RelayProtocolName>('tcp_raw');
 let members = $state<{ slot: number; name: string }[]>([]);
 const writes = panelWrites();
 
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === node.id) return;
-	seededFor = node.id;
-	const snapshot = node;
-	untrack(() => {
-		name = snapshot.name;
-		comment = snapshot.comment;
-		balanceMode = snapshot.balanceMode;
-		protocol = snapshot.protocol;
-		members = snapshot.members.map(member => ({ slot: member.slot, name: member.name }));
-	});
-});
+seedOn(
+	() => node.id,
+	() => {
+		name = node.name;
+		comment = node.comment;
+		balanceMode = node.balanceMode;
+		protocol = node.protocol;
+		members = node.members.map(member => ({ slot: member.slot, name: member.name }));
+	}
+);
 
 /** The far end of a member's bundle as stored, or nothing while unwired. */
 const peerOf = (slot: number): string | null =>

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { toast } from 'svelte-sonner';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Dialog from '#lib/components/ui/dialog/index.js';
@@ -25,22 +25,14 @@ const form: CanvasForm = $derived(
 	mode === 'edit' && canvas ? updateCanvas.for(canvas.id) : createCanvas
 );
 
-// Seed once per open: `.set()` writes the same field the effect reads, so an
-// unguarded effect would clobber every keystroke.
-let seededFor = $state('');
-$effect(() => {
-	if (!open || mode !== 'edit' || !canvas) {
-		seededFor = '';
-		return;
+// Seeded once per open, so a reopen on the same canvas seeds it again.
+seedOn(
+	() => (open && mode === 'edit' && canvas ? canvas.id : null),
+	() => {
+		form.fields.name.set(canvas?.name ?? '');
+		form.fields.description.set(canvas?.description ?? '');
 	}
-	if (seededFor === canvas.id) return;
-	seededFor = canvas.id;
-	const { name, description } = canvas;
-	untrack(() => {
-		form.fields.name.set(name);
-		form.fields.description.set(description);
-	});
-});
+);
 
 $effect(() => {
 	if (!form.result?.ok) return;

@@ -1,6 +1,6 @@
 <script lang="ts">
 import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
-import { untrack } from 'svelte';
+import { seedOn } from '#lib/seed.svelte.js';
 import { replacePodSpec } from '#lib/components/canvas/commands.js';
 import { channelColor } from '#lib/components/canvas/graph.js';
 import { Button } from '#lib/components/ui/button/index.js';
@@ -19,15 +19,12 @@ let { canvasId, lane, editable }: { canvasId: string; lane: LaneDto; editable: b
 
 let port = $state('1');
 const writes = panelWrites();
-let seededFor = $state('');
-$effect(() => {
-	if (seededFor === lane.nodeId) return;
-	seededFor = lane.nodeId;
-	const snapshot = lane;
-	untrack(() => {
-		port = String(snapshot.port);
-	});
-});
+seedOn(
+	() => lane.nodeId,
+	() => {
+		port = String(lane.port);
+	}
+);
 
 async function save() {
 	await writes.run(async () => {
