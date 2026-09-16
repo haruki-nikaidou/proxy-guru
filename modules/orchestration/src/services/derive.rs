@@ -245,7 +245,7 @@ pub fn derive_server_config(
     let config = Config {
         ipv6_resolve: server_row.ipv6_resolve.into(),
         log: LogConfig {
-            level: server_row.log_level.clone(),
+            level: server_row.log_level.as_str().to_owned(),
         },
         relay_ca: certificates.ca_present.then(|| PathBuf::from(CA_FILE)),
         // The defaults, which the TOML then omits: a worker built before the

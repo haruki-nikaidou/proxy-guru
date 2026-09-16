@@ -169,7 +169,8 @@ distribute 的镜像：捆绑重新汇合的地方。它的**成员**就是它�
 pod，或修订版本落后超过宽限期）、红色 `Offline`（连续三个健康检查间隔没有任何上报 —— 默认为 45 秒），
 或只有描边的 `Unknown`。表头下面一行是服务器的 IPv4 地址，一行是 IPv6 地址（各自取手动指定、上报、观测
 中的第一个，见下文；都没有时显示 `no address yet`），然后是最后一次健康上报的时间，服务器离线期间会追加
-`not reporting`。设置项在检查器里，不在卡片上：日志级别、IPv6 解析策略
+`not reporting`。设置项在检查器里，不在卡片上：日志级别（`trace`、`debug`、`info`、`warn` 或 `error`，默认 `info`，配置送达 worker
+后立即切换，无需重启）、IPv6 解析策略
 （`Required`/`Preferred`/`Tolerated`/`Forbidden`，默认 `Tolerated`）以及下面的 QUIC 速率。
 
 **QUIC 中继链路。** 检查器的最后一组是这台服务器在它参与的每条 QUIC 中继链路上的一侧：拥塞控制（`Cubic`，

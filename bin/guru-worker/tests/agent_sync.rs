@@ -26,7 +26,9 @@ use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::CanvasUiPosition;
 use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
 use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
-use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{
+    FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
+};
 use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{self, CanvasDeriver};
 use orchestration::rpc::WorkerAgentGrpc;
@@ -282,7 +284,7 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
             comment: String::new(),
             position: pos(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("127.0.0.1".to_string()),
                 override_v6: None,

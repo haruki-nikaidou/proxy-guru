@@ -19,7 +19,7 @@ use crate::entities::db::node::{
 };
 use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::db::server::{
-    AddressSource, QuicCongestion, ServerEntity, ServerIpv6Resolve, ServerQuic,
+    AddressSource, QuicCongestion, ServerEntity, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
 };
 use crate::entities::db::view::{ConfigSnapshot, ListenerCap};
 use crate::events::live::{
@@ -499,6 +499,17 @@ fn history_window(start: &str, end: &str) -> Result<(DateTime<Utc>, DateTime<Utc
     Ok((start, end))
 }
 
+/// One of the five levels a server logs at. Surrounding blanks and case are
+/// forgiven, since `tracing` itself reads `INFO` as `info`; anything else is not a
+/// level.
+fn log_level_from_proto(value: &str) -> Result<ServerLogLevel, Status> {
+    value.trim().to_ascii_lowercase().parse().map_err(|_| {
+        Status::invalid_argument(format!(
+            "log_level: unknown level {value:?}; expected one of trace, debug, info, warn, error"
+        ))
+    })
+}
+
 fn ipv6_from_proto(value: i32) -> Result<ServerIpv6Resolve, Status> {
     match pb::Ipv6Resolve::try_from(value) {
         Ok(pb::Ipv6Resolve::Ipv6Required) => Ok(ServerIpv6Resolve::Required),
@@ -562,7 +573,7 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         comment: server.comment.clone(),
         position: Some(position_to_proto(server.position)),
         ipv6_resolve: ipv6_to_proto(server.ipv6_resolve),
-        log_level: server.log_level.clone(),
+        log_level: server.log_level.to_string(),
         quic: Some(quic_to_proto(&server.quic)),
         last_seen_at: server
             .last_seen_at
@@ -1194,7 +1205,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 comment: input.comment,
                 position: position_or_origin(input.position),
                 ipv6_resolve: ipv6_from_proto(input.ipv6_resolve)?,
-                log_level: input.log_level,
+                log_level: log_level_from_proto(&input.log_level)?,
                 addresses: server::AddressOverrides::parse(
                     &input.override_v4,
                     &input.override_v6,
@@ -1222,7 +1233,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 icon: input.icon,
                 comment: input.comment,
                 ipv6_resolve: ipv6_from_proto(input.ipv6_resolve)?,
-                log_level: input.log_level,
+                log_level: log_level_from_proto(&input.log_level)?,
                 quic: quic_from_proto(input.quic)?,
                 addresses: server::AddressOverrides::parse(
                     &input.override_v4,

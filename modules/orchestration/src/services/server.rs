@@ -16,7 +16,8 @@ use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::db::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
 use crate::entities::db::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, ServerQuic, SetAgentUpdateRequested,
+    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
+    SetAgentUpdateRequested,
     SetServerAgentKey, UpdateServerSettings,
 };
 use crate::entities::db::topology::LoadCanvasTopology;
@@ -117,7 +118,7 @@ pub struct CreateServer {
     pub comment: String,
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
-    pub log_level: String,
+    pub log_level: ServerLogLevel,
     pub addresses: AddressOverrides,
 }
 
@@ -127,11 +128,6 @@ impl Processor<CreateServer> for ServerService {
     #[tracing::instrument(name = "Service:CreateServer", skip_all, err)]
     async fn process(&self, input: CreateServer) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        if input.log_level.trim().is_empty() {
-            return Err(OrchestrationError::Invalid(
-                "log_level must not be empty".into(),
-            ));
-        }
         self.db
             .process(FindCanvasById {
                 id: input.canvas.clone(),
@@ -193,7 +189,7 @@ pub struct UpdateServer {
     pub icon: String,
     pub comment: String,
     pub ipv6_resolve: ServerIpv6Resolve,
-    pub log_level: String,
+    pub log_level: ServerLogLevel,
     pub quic: ServerQuic,
     pub addresses: AddressOverrides,
     /// Already validated by [`agent_unit_from`]; `None` clears it.
@@ -206,11 +202,6 @@ impl Processor<UpdateServer> for ServerService {
     #[tracing::instrument(name = "Service:UpdateServer", skip_all, err)]
     async fn process(&self, input: UpdateServer) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        if input.log_level.trim().is_empty() {
-            return Err(OrchestrationError::Invalid(
-                "log_level must not be empty".into(),
-            ));
-        }
         input.quic.validate().map_err(OrchestrationError::Invalid)?;
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
         let topology = self
@@ -222,7 +213,7 @@ impl Processor<UpdateServer> for ServerService {
         let projected = topology.project(&[TopologyEdit::SetServerSettings {
             server: input.server.clone(),
             ipv6_resolve: input.ipv6_resolve,
-            log_level: input.log_level.clone(),
+            log_level: input.log_level,
             quic: input.quic,
             override_v4: input.addresses.override_v4.clone(),
             override_v6: input.addresses.override_v6.clone(),

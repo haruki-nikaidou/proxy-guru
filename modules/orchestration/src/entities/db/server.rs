@@ -28,7 +28,7 @@ pub struct ServerEntity {
     #[sqlx(flatten)]
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
-    pub log_level: String,
+    pub log_level: ServerLogLevel,
     /// This server's side of every QUIC relay link it takes part in.
     #[sqlx(json)]
     pub quic: ServerQuic,
@@ -189,6 +189,25 @@ text_enum!(ServerIpv6Resolve {
     Forbidden => "forbidden",
 });
 
+/// The level a server's worker logs at, written into its config as `[log] level`.
+/// A worker accepts any `tracing` `EnvFilter` directive there; a server row holds
+/// one of these five, which is what the dashboard offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerLogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+text_enum!(ServerLogLevel {
+    Trace => "trace",
+    Debug => "debug",
+    Info => "info",
+    Warn => "warn",
+    Error => "error",
+});
+
 /// How a server sends on its QUIC relay links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -282,7 +301,7 @@ pub struct CreateServer {
     pub comment: String,
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
-    pub log_level: String,
+    pub log_level: ServerLogLevel,
     pub override_v4: Option<String>,
     pub override_v6: Option<String>,
     pub extra_addresses: Vec<String>,
@@ -311,7 +330,7 @@ impl Processor<CreateServer> for Db {
         .bind(input.position.x)
         .bind(input.position.y)
         .bind(input.ipv6_resolve)
-        .bind(&input.log_level)
+        .bind(input.log_level)
         .bind(&input.override_v4)
         .bind(&input.override_v6)
         .bind(&input.extra_addresses)
@@ -424,7 +443,7 @@ pub struct UpdateServerSettings {
     pub icon: String,
     pub comment: String,
     pub ipv6_resolve: ServerIpv6Resolve,
-    pub log_level: String,
+    pub log_level: ServerLogLevel,
     pub quic: ServerQuic,
     pub override_v4: Option<String>,
     pub override_v6: Option<String>,
@@ -453,7 +472,7 @@ impl Processor<UpdateServerSettings> for Db {
         .bind(&input.icon)
         .bind(&input.comment)
         .bind(input.ipv6_resolve)
-        .bind(&input.log_level)
+        .bind(input.log_level)
         .bind(&input.override_v4)
         .bind(&input.override_v6)
         .bind(&input.extra_addresses)

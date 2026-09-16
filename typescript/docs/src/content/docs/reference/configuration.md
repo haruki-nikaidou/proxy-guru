@@ -107,8 +107,10 @@ while the last acknowledged revision failed for any pod. The named values are ke
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
 against the default path `/etc/guru-worker/config.toml`. `--log-level`/`GURU_LOG_LEVEL` configures
-agent mode only: standalone reads `log.level` from the config file instead (it never looks at the
-flag). Agent mode reads the operator API key from `GURU_API_KEY`, or from the file given by
+agent mode only, and only until the first config is applied (the saved last-good one at startup,
+then each one the master sends): from then on the server's log level in the dashboard is in force,
+switched without a restart. Standalone reads `log.level` from the config file instead (it never
+looks at the flag). Agent mode reads the operator API key from `GURU_API_KEY`, or from the file given by
 `--api-key-file` (trailing whitespace is trimmed); the key is used once per session to register with
 the master. It is either an operator API key (`gk_…`, Maintainer or Admin — a machine credential
 that can register any server and nothing else) or the server's own agent key (`gs_…`), which the
@@ -128,13 +130,13 @@ Top level:
 | Key | Default | Value |
 |---|---|---|
 | `ipv6_resolve` | `"tolerated"` | `required`, `preferred`, `tolerated`, `forbidden` — family policy when a destination is a domain name |
-| `log.level` | `"info"` | A `tracing` `EnvFilter` directive — `info`, `debug`, or something targeted like `guru_worker=debug,warn`. Read **once at startup**, so a reload does not change it |
+| `log.level` | `"info"` | A `tracing` `EnvFilter` directive — `info`, `debug`, or something targeted like `guru_worker=debug,warn`. Applied at startup and again by every reload, without a restart; a config the master derives carries one of `trace`, `debug`, `info`, `warn`, `error` |
 | `[keepalive]` | see below | Liveness probing on every data-plane connection |
 | `[quic]` | see below | This worker's side of every QUIC relay link: congestion control, rates, windows |
 | `[[forwarding]]` | `[]` | One listener each; a file with none is valid and does nothing |
 
 In standalone mode `log.level` is what configures the process log: `--log-level`/`GURU_LOG_LEVEL`
-applies to agent mode only.
+applies to agent mode only, where it is replaced by the `log.level` of the first config applied.
 
 `ipv6_resolve` is global and captured into every compiled target: `required`/`forbidden` make the
 other family a resolution failure, `preferred`/`tolerated` pick a winner when both resolve and fall

@@ -270,6 +270,55 @@ async fn connect_ports_accepts_universal_handles(pool: sqlx::PgPool) -> TestResu
     Ok(())
 }
 
+/// A server logs at one of five levels: anything else is an argument error,
+/// while case and surrounding blanks are forgiven the way `tracing` forgives them.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_server_log_level_is_one_of_five(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let api = grpc(&w);
+    let root = create_canvas(&api, "root").await;
+    let create = |log_level: &str| {
+        as_operator(pb::CreateServerRequest {
+            canvas_id: root.id.clone(),
+            name: "us".to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: None,
+            ipv6_resolve: pb::Ipv6Resolve::Ipv6Tolerated.into(),
+            log_level: log_level.to_string(),
+            override_v4: "198.51.100.1".to_string(),
+            override_v6: String::new(),
+            extra_addresses: Vec::new(),
+        })
+    };
+    for level in ["verbose", "warning", "", "info,guru_worker=debug"] {
+        let err = api
+            .create_server(create(level))
+            .await
+            .expect_err("not a level");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{level:?}");
+    }
+    let server = api
+        .create_server(create(" DEBUG "))
+        .await?
+        .into_inner()
+        .server
+        .unwrap();
+    assert_eq!(server.log_level, "debug");
+
+    let err = api
+        .update_server(as_operator(pb::UpdateServerRequest {
+            server_id: server.id.clone(),
+            name: server.name.clone(),
+            log_level: "loud".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .expect_err("not a level");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    Ok(())
+}
+
 // --- live streams ------------------------------------------------------------
 
 /// Pulls the next stream item, or `None` when nothing arrives in time.

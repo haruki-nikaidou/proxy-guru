@@ -19,7 +19,7 @@ use orchestration::entities::db::node::{
 };
 use orchestration::entities::db::server::{
     ClaimServerWatchSession, FindServerById, RenewServerWatchSession, ServerEntity, ServerId,
-    ServerIpv6Resolve,
+    ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::SweepLivenessSignal;
@@ -147,7 +147,7 @@ async fn base(
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),
                 override_v6: None,
@@ -1330,7 +1330,7 @@ async fn five_servers(
                 comment: String::new(),
                 position: pos0(),
                 ipv6_resolve: ServerIpv6Resolve::Tolerated,
-                log_level: "info".to_string(),
+                log_level: ServerLogLevel::Info,
                 addresses: AddressOverrides {
                     override_v4: Some(format!("203.0.113.{}", 10 + i)),
                     override_v6: None,

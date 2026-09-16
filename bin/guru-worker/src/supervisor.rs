@@ -182,9 +182,11 @@ impl Supervisor {
     /// without dropping in-flight connections.
     ///
     /// The outcome names every forwarding of the config with the error that kept it
-    /// from taking its new shape, in config order.
+    /// from taking its new shape, in config order. The config's `[log] level`
+    /// becomes the process log filter before anything else ([`crate::apply_log_level`]).
     pub async fn apply(&mut self, cfg: &Config) -> ApplyOutcome {
         self.ipv6_resolve = cfg.ipv6_resolve;
+        crate::apply_log_level(&cfg.log.level);
         self.log = cfg.log.clone();
         self.relay_ca = cfg.relay_ca.clone();
         self.keepalive = cfg.keepalive;

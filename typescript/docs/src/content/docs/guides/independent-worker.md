@@ -255,7 +255,7 @@ systemctl reload guru-worker
 ```
 
 `SIGTERM`/`SIGINT` (so `systemctl stop`, `systemctl restart`) stop every listener and shut down.
-Note that the log level is read once at startup: changing `log.level` needs a restart, not a reload.
+A reload applies a changed `log.level` too: the process log switches without a restart.
 
 ## 8. Troubleshooting
 

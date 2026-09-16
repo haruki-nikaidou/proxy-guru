@@ -14,7 +14,7 @@ use orchestration::entities::db::node::{
     FindNodeWithPorts, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
 use orchestration::entities::db::port::{PortDirection, PortId, PortKind};
-use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve, ServerLogLevel};
 use orchestration::services::OrchestrationError;
 use orchestration::services::canvas::{
     CreateCanvas, DeleteCanvas, GetCanvas, GetCanvasTree, ListCanvases,
@@ -50,7 +50,7 @@ async fn server(
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some(ip.to_string()),
                 override_v6: None,

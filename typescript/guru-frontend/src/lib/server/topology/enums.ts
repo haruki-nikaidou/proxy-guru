@@ -24,6 +24,7 @@ import type {
 	ExportPortKindName,
 	Ipv6ResolveName,
 	LoadBalanceModeName,
+	LogLevelName,
 	PortDirectionName,
 	PortKindName,
 	ProxyProtocolName,
@@ -114,6 +115,21 @@ export function toIpv6(value: Ipv6Resolve): Ipv6ResolveName {
 		default:
 			// `IPV6_RESOLVE_UNSPECIFIED` decodes to `Tolerated` in the control plane.
 			return 'tolerated';
+	}
+}
+/**
+ * The log level travels as a string; the control plane stores one of five, and
+ * anything else reads as `info`, the worker's own default.
+ */
+export function toLogLevel(value: string): LogLevelName {
+	switch (value) {
+		case 'trace':
+		case 'debug':
+		case 'warn':
+		case 'error':
+			return value;
+		default:
+			return 'info';
 	}
 }
 export function fromIpv6(value: Ipv6ResolveName): Ipv6Resolve {

@@ -229,8 +229,8 @@ install -o root -g guru-worker -m 0644 \
 systemctl reload guru-worker
 ```
 
-`SIGTERM`/`SIGINT`（也就是 `systemctl stop`、`systemctl restart`）会停止所有监听器并关闭进程。注意日志级别只在启动时读取一次：修改
-`log.level` 需要重启，而不是重新加载。
+`SIGTERM`/`SIGINT`（也就是 `systemctl stop`、`systemctl restart`）会停止所有监听器并关闭进程。重新加载也会应用修改过的
+`log.level`：进程日志无需重启即可切换。
 
 ## 8. 故障排查
 

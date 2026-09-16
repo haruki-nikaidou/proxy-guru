@@ -12,7 +12,9 @@ use orchestration::entities::db::canvas::{CanvasId, FindCanvasById};
 use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, NodeSpec, NodeWithPorts, PodConfig, RelayConfig, RelayProtocol,
 };
-use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{
+    FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
+};
 use orchestration::entities::db::view::{
     AckServerConfig, ListStaleCanvases, ListenProtocol, ListenerCap, ServerConfigViewEntity,
     TakeInFlight,
@@ -160,7 +162,7 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
                 comment: String::new(),
                 position: pos0(),
                 ipv6_resolve: ServerIpv6Resolve::Tolerated,
-                log_level: "info".to_string(),
+                log_level: ServerLogLevel::Info,
                 addresses: AddressOverrides {
                     override_v4: Some(ip.to_string()),
                     override_v6: None,
@@ -638,7 +640,7 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),
                 override_v6: None,

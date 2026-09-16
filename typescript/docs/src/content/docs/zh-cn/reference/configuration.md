@@ -94,8 +94,9 @@ Worker 实际运行的内容。
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 
 `--config` 和 `--master` 互斥；两者都不给出时，Worker 以独立模式运行，并使用默认路径
-`/etc/guru-worker/config.toml`。`--log-level`/`GURU_LOG_LEVEL` 只配置 agent 模式：独立模式改为从
-配置文件读取 `log.level`（它完全不看这个参数）。agent 模式从 `GURU_API_KEY` 读取运维 API 密钥，或从
+`/etc/guru-worker/config.toml`。`--log-level`/`GURU_LOG_LEVEL` 只配置 agent 模式，
+而且只管到应用第一份配置为止（启动时是保存的 last-good 配置，之后是 master 下发的每一份）：从那以后生效的是仪表盘里
+这台服务器的日志级别，切换无需重启。独立模式改为从配置文件读取 `log.level`（它完全不看这个参数）。agent 模式从 `GURU_API_KEY` 读取运维 API 密钥，或从
 `--api-key-file` 指定的文件读取（尾部空白会被去掉）；该密钥在每个会话中只使用一次，用于向 master 注册。
 
 ## Worker 配置文件
@@ -109,12 +110,12 @@ Worker 实际运行的内容。
 | 键 | 默认值 | 取值 |
 |---|---|---|
 | `ipv6_resolve` | `"tolerated"` | `required`、`preferred`、`tolerated`、`forbidden` —— 目的地为域名时的地址族策略 |
-| `log.level` | `"info"` | 一条 `tracing` 的 `EnvFilter` 指令 —— `info`、`debug`，或更有针对性的写法如 `guru_worker=debug,warn`。**只在启动时读取一次**，因此重新加载不会改变它 |
+| `log.level` | `"info"` | 一条 `tracing` 的 `EnvFilter` 指令 —— `info`、`debug`，或更有针对性的写法如 `guru_worker=debug,warn`。启动时应用，每次重新加载时再次应用，无需重启；master 派生的配置里是 `trace`、`debug`、`info`、`warn`、`error` 之一 |
 | `[keepalive]` | 见下文 | 数据面每条连接的存活探测 |
 | `[quic]` | 见下文 | 本 Worker 在每条 QUIC 中继链路上的一侧：拥塞控制、速率、窗口 |
 | `[[forwarding]]` | `[]` | 每一项对应一个监听器；不含任何条目的文件也是合法的，只是什么都不做 |
 
-独立模式下，进程日志由 `log.level` 配置：`--log-level`/`GURU_LOG_LEVEL` 只适用于 agent 模式。
+独立模式下，进程日志由 `log.level` 配置：`--log-level`/`GURU_LOG_LEVEL` 只适用于 agent 模式，并会被应用的第一份配置里的 `log.level` 取代。
 
 `ipv6_resolve` 是全局设置，并会被固化进每个编译后的目标中：`required`/`forbidden` 会把另一个地址族
 视为解析失败，`preferred`/`tolerated` 在两个地址族都能解析时选出优先者，否则回退到另一个。

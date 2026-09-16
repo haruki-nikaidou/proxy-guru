@@ -45,8 +45,6 @@ export function issueMessage(code: string): string {
 			return m.issue_members_invalid();
 		case 'ip_invalid':
 			return m.issue_ip_invalid();
-		case 'log_level_required':
-			return m.issue_log_level_required();
 		case 'sni_required':
 			return m.issue_sni_required();
 		case 'sni_too_long':

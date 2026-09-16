@@ -16,7 +16,9 @@ use orchestration::entities::db::node::{
     RelayProtocol,
 };
 use orchestration::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{
+    FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
+};
 use orchestration::entities::db::topology::{CanvasTopology, LoadCanvasTopology};
 use orchestration::entities::db::view::{
     AckServerConfig, ListStaleCanvases, ListenProtocol, TakeInFlight,
@@ -63,7 +65,7 @@ async fn create_server(w: &World, canvas: &CanvasId, name: &str, ip: &str) -> Se
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides::parse(ip, "", &[]).unwrap(),
         })
         .await

@@ -22,7 +22,7 @@ use orchestration::entities::db::node::{
     NodeWithPorts, PodConfig,
 };
 use orchestration::entities::db::port::{PortId, PortKind};
-use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve, ServerLogLevel};
 use orchestration::entities::db::view::TakeInFlight;
 use orchestration::events::live::{CanvasChangeKind, LiveMessage};
 use orchestration::hooks::live::LiveEvent;
@@ -77,7 +77,7 @@ async fn make_server(
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some(address.to_string()),
                 override_v6: None,

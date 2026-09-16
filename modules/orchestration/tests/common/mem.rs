@@ -9,7 +9,9 @@ use orchestration::entities::db::node::{
     NodeWithPorts,
 };
 use orchestration::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve, ServerQuic};
+use orchestration::entities::db::server::{
+    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
+};
 use orchestration::entities::db::topology::CanvasTopology;
 use orchestration::services::node::export_port_direction;
 use orchestration::utils::ids;
@@ -233,7 +235,7 @@ impl Builder {
             comment: String::new(),
             position: CanvasUiPosition { x: 0, y: 0 },
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             quic: Default::default(),
             current_dynamic_refresh_key: None,
             refresh_key_generation: 0,

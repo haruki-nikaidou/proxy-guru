@@ -127,7 +127,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: orchestration::entities::db::server::ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: orchestration::entities::db::server::ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),
                 override_v6: None,

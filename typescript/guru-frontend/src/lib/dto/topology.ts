@@ -14,6 +14,8 @@ export type RelayProtocolName = 'tcp_raw' | 'tcp_tls' | 'quic';
 export type LoadBalanceModeName = 'round_robin' | 'random' | 'ip_hash' | 'fallback';
 export type Ipv6ResolveName = 'required' | 'preferred' | 'tolerated' | 'forbidden';
 export type QuicCongestionName = 'cubic' | 'brutal';
+/** The level a server's worker logs at; the worker switches to a new one live. */
+export type LogLevelName = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 /**
  * A server's side of every QUIC relay link it takes part in. `upMbps` is what
  * it sends at (brutal's fixed rate), `downMbps` what it can receive; the master
@@ -252,7 +254,7 @@ export type ServerDto = {
 	x: number;
 	y: number;
 	ipv6Resolve: Ipv6ResolveName;
-	logLevel: string;
+	logLevel: LogLevelName;
 	quic: ServerQuicDto;
 	/** Advanced by the config stream's heartbeat as well as by health reports. */
 	lastSeenAt: string;

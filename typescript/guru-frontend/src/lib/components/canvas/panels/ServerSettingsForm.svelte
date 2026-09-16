@@ -12,14 +12,21 @@ import * as Select from '#lib/components/ui/select/index.js';
 import { Separator } from '#lib/components/ui/separator/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
-import type { Ipv6ResolveName, QuicCongestionName, ServerDto } from '#lib/dto/topology.js';
+import type {
+	Ipv6ResolveName,
+	LogLevelName,
+	QuicCongestionName,
+	ServerDto
+} from '#lib/dto/topology.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
 import {
 	IPV6_OPTIONS,
+	LOG_LEVEL_OPTIONS,
 	QUIC_CONGESTION_OPTIONS,
 	ipv6Label,
+	logLevelLabel,
 	quicCongestionLabel
 } from '#lib/i18n/labels.js';
 import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
@@ -40,7 +47,7 @@ let name = $state('');
 let icon = $state('');
 let comment = $state('');
 let ipv6Resolve = $state<Ipv6ResolveName>('tolerated');
-let logLevel = $state('info');
+let logLevel = $state<LogLevelName>('info');
 // The server's side of its QUIC relay links. `Input` renders a dynamic `type`,
 // so Svelte never coerces these to numbers: they are strings until Save.
 let quicCongestion = $state<QuicCongestionName>('cubic');
@@ -181,7 +188,24 @@ const removeServer = () =>
 
 	<Field.Field>
 		<Field.FieldLabel for="server-log-level">{m.editor_server_log_level()}</Field.FieldLabel>
-		<Input id="server-log-level" bind:value={logLevel} disabled={!editable} />
+		<Select.Root
+			type="single"
+			value={logLevel}
+			disabled={!editable}
+			onValueChange={next => (logLevel = next as LogLevelName)}
+		>
+			<Select.Trigger id="server-log-level">{logLevelLabel(logLevel)}</Select.Trigger>
+			<Select.Content>
+				<Select.Group>
+					{#each LOG_LEVEL_OPTIONS as option (option)}
+						<Select.Item value={option} label={logLevelLabel(option)}>
+							{logLevelLabel(option)}
+						</Select.Item>
+					{/each}
+				</Select.Group>
+			</Select.Content>
+		</Select.Root>
+		<Field.FieldDescription>{m.editor_server_log_level_hint()}</Field.FieldDescription>
 	</Field.Field>
 </Field.FieldGroup>
 

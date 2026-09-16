@@ -31,9 +31,57 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// Default config path used by standalone mode when `--config` is absent.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/guru-worker/config.toml";
 
+/// The process log filter once [`init_tracing`] installed it: the handle that
+/// swaps it, and the directive in force.
+struct LogFilter {
+    handle: tracing_subscriber::reload::Handle<
+        tracing_subscriber::EnvFilter,
+        tracing_subscriber::Registry,
+    >,
+    level: parking_lot::Mutex<String>,
+}
+
+static LOG_FILTER: std::sync::OnceLock<LogFilter> = std::sync::OnceLock::new();
+
+/// Installs the process logger, filtered by `level` — a `tracing` `EnvFilter`
+/// directive — until [`apply_log_level`] swaps the filter.
 pub fn init_tracing(level: &str) {
-    let filter = tracing_subscriber::EnvFilter::new(level);
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let (filter, handle) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new(level));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+    let _ = LOG_FILTER.set(LogFilter {
+        handle,
+        level: parking_lot::Mutex::new(level.to_owned()),
+    });
+}
+
+/// Makes `level` the process log filter, without a restart. Every applied config
+/// calls it with its `[log] level`, so the level set in the dashboard reaches an
+/// agent as soon as its config does: a directive already in force costs nothing,
+/// and before [`init_tracing`] ran (the integration tests drive the supervisor
+/// without it) there is no filter to swap.
+pub fn apply_log_level(level: &str) {
+    let Some(filter) = LOG_FILTER.get() else {
+        return;
+    };
+    let mut current = filter.level.lock();
+    if *current == level {
+        return;
+    }
+    // Logged under the old filter, which is the one the operator is watching.
+    tracing::info!(from = %current, to = level, "switching log level");
+    match filter
+        .handle
+        .reload(tracing_subscriber::EnvFilter::new(level))
+    {
+        Ok(()) => *current = level.to_owned(),
+        Err(error) => tracing::warn!(error = %error, level, "switching log level failed"),
+    }
 }
 
 /// Logs a config's non-fatal warnings.
@@ -227,4 +275,13 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
     let _ = agent.await;
     sup.lock().await.shutdown_all();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_log_level_without_a_logger_changes_nothing() {
+        super::apply_log_level("debug");
+        assert!(super::LOG_FILTER.get().is_none());
+    }
 }

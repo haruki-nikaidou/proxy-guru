@@ -14,7 +14,7 @@ use orchestration::entities::db::node::{
 };
 use orchestration::entities::db::port::{PortDirection, PortKind};
 use orchestration::entities::db::server::{
-    CreateServer, ServerEntity, ServerId, ServerIpv6Resolve,
+    CreateServer, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
@@ -77,7 +77,7 @@ pub async fn server_at(
         comment: String::new(),
         position: pos(0, 0),
         ipv6_resolve: ServerIpv6Resolve::Tolerated,
-        log_level: "info".to_string(),
+        log_level: ServerLogLevel::Info,
         override_v4: Some(address.to_string()),
         override_v6: None,
         extra_addresses: Vec::new(),

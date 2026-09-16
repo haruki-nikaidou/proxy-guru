@@ -18,7 +18,7 @@ use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::CanvasUiPosition;
 use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
-use orchestration::entities::db::server::ServerIpv6Resolve;
+use orchestration::entities::db::server::{ServerIpv6Resolve, ServerLogLevel};
 use orchestration::entities::db::view::FindServerConfigView;
 use orchestration::events::{CanvasDirty, DeriveStaleCanvasesSignal};
 use orchestration::hooks::derive::CanvasDeriver;
@@ -120,7 +120,7 @@ async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),
                 override_v6: None,
@@ -289,7 +289,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
             comment: String::new(),
             position: pos0(),
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
-            log_level: "info".to_string(),
+            log_level: ServerLogLevel::Info,
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.20".to_string()),
                 override_v6: None,

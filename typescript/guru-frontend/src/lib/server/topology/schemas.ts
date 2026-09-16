@@ -60,7 +60,7 @@ export const extraAddressesSchema = v.optional(
 	v.array(v.pipe(v.string(), v.trim(), v.ip('ip_invalid'))),
 	[]
 );
-export const logLevelSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'log_level_required'));
+export const logLevelSchema = v.picklist(['trace', 'debug', 'info', 'warn', 'error'] as const);
 /** `guru-worker@<unit>`: what the control plane accepts, or empty for none. */
 export const agentUnitSchema = v.optional(
 	v.pipe(v.string(), v.trim(), v.regex(/^(?:[a-z0-9][a-z0-9-]{0,31})?$/, 'agent_unit_invalid')),

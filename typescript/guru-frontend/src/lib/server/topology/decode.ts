@@ -36,6 +36,7 @@ import {
 	toExportAs,
 	toExportPortKind,
 	toIpv6,
+	toLogLevel,
 	toPortDirection,
 	toPortKind,
 	toProxy,
@@ -306,7 +307,7 @@ export const toServer = (
 	x: Number(server.position?.x ?? 0n),
 	y: Number(server.position?.y ?? 0n),
 	ipv6Resolve: toIpv6(server.ipv6Resolve),
-	logLevel: server.logLevel,
+	logLevel: toLogLevel(server.logLevel),
 	quic: {
 		congestion: toQuicCongestion(server.quic?.congestion ?? QuicCongestion.UNSPECIFIED),
 		upMbps: server.quic?.upMbps ?? 0,

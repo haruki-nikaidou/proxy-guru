@@ -190,8 +190,9 @@ reported for three health intervals — 45 s by default), or an outlined `Unknow
 one line holds the server's IPv4 address and one its IPv6 address (each the first of pinned,
 reported and observed, see below, or `no address yet`), then the time of the last health report,
 with `not reporting` appended while the server is offline. The settings are the inspector's, not
-the card's: the log level, the IPv6 resolution policy (`Required`/`Preferred`/`Tolerated`/`Forbidden`,
-default `Tolerated`) and the QUIC rates below.
+the card's: the log level (`trace`, `debug`, `info`, `warn` or `error`, default `info`, which the
+worker switches to as soon as the config reaches it, without a restart), the IPv6 resolution policy
+(`Required`/`Preferred`/`Tolerated`/`Forbidden`, default `Tolerated`) and the QUIC rates below.
 
 **QUIC relay links.** The inspector's last group is this server's side of every QUIC relay link it
 takes part in: the congestion control (`Cubic`, or `Brutal`, which sends at exactly the up rate

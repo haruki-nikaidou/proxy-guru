@@ -206,7 +206,7 @@ install -o root -g guru-worker -m 0644 \
 systemctl reload guru-worker
 ```
 
-`SIGTERM`/`SIGINT`（したがって `systemctl stop`、`systemctl restart`）は、すべてのリスナーを停止してシャットダウンします。なお、ログレベルは起動時に一度だけ読まれるため、`log.level` の変更にはリロードではなく再起動が必要です。
+`SIGTERM`/`SIGINT`（したがって `systemctl stop`、`systemctl restart`）は、すべてのリスナーを停止してシャットダウンします。リロードは変更された `log.level` も適用し、プロセスのログは再起動なしで切り替わります。
 
 ## 8. トラブルシューティング
 

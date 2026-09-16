@@ -4,6 +4,7 @@ import type {
 	ExportPortKindName,
 	Ipv6ResolveName,
 	LoadBalanceModeName,
+	LogLevelName,
 	ProxyProtocolName,
 	QuicCongestionName,
 	RelayProtocolName,
@@ -55,6 +56,17 @@ export const balanceModeLabel = (value: LoadBalanceModeName): string =>
 export const QUIC_CONGESTION_OPTIONS: QuicCongestionName[] = ['cubic', 'brutal'];
 export const quicCongestionLabel = (value: QuicCongestionName): string =>
 	value === 'brutal' ? m.editor_quic_brutal() : m.editor_quic_cubic();
+export const LOG_LEVEL_OPTIONS: LogLevelName[] = ['trace', 'debug', 'info', 'warn', 'error'];
+export const logLevelLabel = (value: LogLevelName): string =>
+	value === 'trace'
+		? m.editor_log_level_trace()
+		: value === 'debug'
+			? m.editor_log_level_debug()
+			: value === 'warn'
+				? m.editor_log_level_warn()
+				: value === 'error'
+					? m.editor_log_level_error()
+					: m.editor_log_level_info();
 export const IPV6_OPTIONS: Ipv6ResolveName[] = ['required', 'preferred', 'tolerated', 'forbidden'];
 export const ipv6Label = (value: Ipv6ResolveName): string =>
 	value === 'required'
