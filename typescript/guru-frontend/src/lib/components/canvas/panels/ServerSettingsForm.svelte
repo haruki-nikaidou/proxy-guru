@@ -3,7 +3,9 @@ import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import PlusIcon from '@lucide/svelte/icons/plus';
 import { seedOn } from '#lib/seed.svelte.js';
 import ServerGlyph from '#lib/components/canvas/ServerGlyph.svelte';
+import { removeAll } from 'guru-graph';
 import { deleteServerNode, updateServerNode } from '#lib/components/canvas/commands.js';
+import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -29,7 +31,6 @@ import {
 	logLevelLabel,
 	quicCongestionLabel
 } from '#lib/i18n/labels.js';
-import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
  * What an operator may change about the server itself: how it is named and
@@ -41,7 +42,7 @@ let { canvasId, server, editable }: { canvasId: string; server: ServerDto; edita
 	$props();
 
 const writes = panelWrites();
-let deleteOpen = $state(false);
+const editor = useEditor();
 
 let name = $state('');
 let icon = $state('');
@@ -130,13 +131,24 @@ const save = () =>
 		m.editor_saved()
 	);
 
-// The command retires the server's pods first; the panel closes on its own once
-// the refreshed graph no longer holds the server.
-const removeServer = () =>
-	writes.run(async () => {
-		await deleteServerNode({ canvasId, serverId: server.id, force: false });
-		deleteOpen = false;
-	}, m.editor_deleted());
+/**
+ * `DeleteServer` refuses while pods run on the server, so the pods go first, in
+ * a batch the operator sees; the panel closes on its own once the refreshed
+ * graph no longer holds the server.
+ */
+function removeServer() {
+	const graph = editor.graph;
+	const podIds = graph.pods.filter(pod => pod.serverId === server.id).map(pod => pod.id);
+	editor.review({
+		title: m.editor_server_delete(),
+		description: m.editor_server_delete_description({ name: server.name, count: podIds.length }),
+		prunable: true,
+		build: prune => removeAll(graph, editor.drawing, { podIds }, prune),
+		alsoDeletes: { servers: [server.name], canvases: [] },
+		after: () => deleteServerNode({ canvasId, serverId: server.id }),
+		success: m.editor_deleted()
+	});
+}
 </script>
 
 <Field.FieldGroup>
@@ -387,16 +399,8 @@ const removeServer = () =>
 	class="mt-2 w-full"
 	variant="outline"
 	disabled={!editable || writes.pending}
-	onclick={() => (deleteOpen = true)}
+	onclick={removeServer}
 >
 	<Trash2Icon />
 	{m.editor_server_delete()}
 </Button>
-
-<ConfirmDeleteDialog
-	bind:open={deleteOpen}
-	title={m.editor_server_delete()}
-	description={m.editor_server_delete_description({ name: server.name, count: server.pods.length })}
-	pending={writes.pending}
-	onconfirm={removeServer}
-/>

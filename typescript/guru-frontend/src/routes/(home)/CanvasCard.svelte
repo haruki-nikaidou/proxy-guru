@@ -55,7 +55,7 @@ let deleteOpen = $state(false);
 	<Card.Content class="flex flex-wrap items-center gap-2">
 		{#if canvas.stats}
 			<Badge variant="secondary">{m.canvas_servers_count({ count: canvas.stats.servers })}</Badge>
-			<Badge variant="secondary">{m.canvas_nodes_count({ count: canvas.stats.nodes })}</Badge>
+			<Badge variant="secondary">{m.canvas_pods_count({ count: canvas.stats.pods })}</Badge>
 			<Badge variant="secondary">{m.canvas_edges_count({ count: canvas.stats.edges })}</Badge>
 		{:else}
 			<Badge variant="outline">{m.canvas_stats_unavailable()}</Badge>

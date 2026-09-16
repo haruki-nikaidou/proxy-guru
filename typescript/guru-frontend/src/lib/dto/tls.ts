@@ -1,5 +1,5 @@
 /**
- * The ACME plumbing behind an Entry node's TLS config: DNS providers and the
+ * The ACME plumbing behind a TLS client pod's config: DNS providers and the
  * certificates the derivation pass creates from them. Protobuf never reaches
  * the client, so every enum is a string union here.
  *
@@ -15,7 +15,7 @@ export type DnsProviderDto = {
 	name: string;
 	provider: DnsProviderKindName;
 	/**
-	 * Unused for Cloudflare (the zone id lives on the Entry's
+	 * Unused for Cloudflare (the zone id lives on the pod's
 	 * `TlsConfig.domain_id`); the team id — or `''` for a personal account —
 	 * for Vercel.
 	 */
@@ -28,7 +28,7 @@ export type CertificateStatusName = 'unknown' | 'pending' | 'issued' | 'failed';
 
 /**
  * One certificate row, identified by `(sni, acmeDirectory)`. The dashboard
- * never issues one: the derivation pass creates the row from an Entry node's
+ * never issues one: the derivation pass creates the row from a TLS client pod's
  * TLS config. Key material is never returned.
  */
 export type CertificateDto = {

@@ -7,31 +7,20 @@
  */
 import {
 	AddressSource,
-	CanvasExportAs,
+	Ingress,
 	Ipv6Resolve,
-	LoadBalanceMode,
-	PortDirection,
-	PortKind,
 	ProxyProtocolVersion,
 	QuicCongestion,
-	RelayProtocol,
-	ServerHealthStatus,
-	UniversalGroup
+	ServerHealthStatus
 } from 'app-protobuf/orchestration/orchestration';
+import type { IngressKind, ProxyVersion } from 'guru-graph';
 import type {
 	AddressSourceName,
-	CanvasExportAsName,
-	ExportPortKindName,
 	Ipv6ResolveName,
-	LoadBalanceModeName,
 	LogLevelName,
-	PortDirectionName,
-	PortKindName,
 	ProxyProtocolName,
 	QuicCongestionName,
-	RelayProtocolName,
-	ServerHealthStatusName,
-	UniversalGroupName
+	ServerHealthStatusName
 } from '#lib/dto/topology.js';
 
 export function toProxy(value: ProxyProtocolVersion): ProxyProtocolName {
@@ -44,7 +33,12 @@ export function toProxy(value: ProxyProtocolVersion): ProxyProtocolName {
 			return 'none';
 	}
 }
-export function fromProxy(value: ProxyProtocolName): ProxyProtocolVersion {
+/** The graph model's spelling: `null` is no PROXY header. */
+export const toProxyVersion = (value: ProxyProtocolVersion): ProxyVersion | null => {
+	const name = toProxy(value);
+	return name === 'none' ? null : name;
+};
+export function fromProxy(value: ProxyProtocolName | ProxyVersion | null): ProxyProtocolVersion {
 	switch (value) {
 		case 'v1':
 			return ProxyProtocolVersion.PROXY_V1;
@@ -54,55 +48,43 @@ export function fromProxy(value: ProxyProtocolName): ProxyProtocolVersion {
 			return ProxyProtocolVersion.UNSPECIFIED;
 	}
 }
+/**
+ * A pod whose ingress this build does not know reads as a raw client listener:
+ * it is drawn and can be edited, and the control plane stays the judge.
+ */
+export function toIngressKind(value: Ingress): IngressKind {
+	switch (value) {
+		case Ingress.CLIENT_TLS:
+			return 'client_tls';
+		case Ingress.RELAY_TCP:
+			return 'relay_tcp';
+		case Ingress.RELAY_TLS:
+			return 'relay_tls';
+		case Ingress.RELAY_QUIC:
+			return 'relay_quic';
+		default:
+			return 'client_raw';
+	}
+}
+export function fromIngressKind(value: IngressKind): Ingress {
+	switch (value) {
+		case 'client_tls':
+			return Ingress.CLIENT_TLS;
+		case 'relay_tcp':
+			return Ingress.RELAY_TCP;
+		case 'relay_tls':
+			return Ingress.RELAY_TLS;
+		case 'relay_quic':
+			return Ingress.RELAY_QUIC;
+		default:
+			return Ingress.CLIENT_RAW;
+	}
+}
 export function toQuicCongestion(value: QuicCongestion): QuicCongestionName {
 	return value === QuicCongestion.QUIC_BRUTAL ? 'brutal' : 'cubic';
 }
 export function fromQuicCongestion(value: QuicCongestionName): QuicCongestion {
 	return value === 'brutal' ? QuicCongestion.QUIC_BRUTAL : QuicCongestion.QUIC_CUBIC;
-}
-export function toRelayProtocol(value: RelayProtocol): RelayProtocolName {
-	switch (value) {
-		case RelayProtocol.RELAY_TCP_TLS:
-			return 'tcp_tls';
-		case RelayProtocol.RELAY_QUIC:
-			return 'quic';
-		default:
-			return 'tcp_raw';
-	}
-}
-export function fromRelayProtocol(value: RelayProtocolName): RelayProtocol {
-	switch (value) {
-		case 'tcp_tls':
-			return RelayProtocol.RELAY_TCP_TLS;
-		case 'quic':
-			return RelayProtocol.RELAY_QUIC;
-		default:
-			return RelayProtocol.RELAY_TCP_RAW;
-	}
-}
-export function toBalanceMode(value: LoadBalanceMode): LoadBalanceModeName {
-	switch (value) {
-		case LoadBalanceMode.RANDOM:
-			return 'random';
-		case LoadBalanceMode.IP_HASH:
-			return 'ip_hash';
-		case LoadBalanceMode.FALLBACK:
-			return 'fallback';
-		default:
-			return 'round_robin';
-	}
-}
-export function fromBalanceMode(value: LoadBalanceModeName): LoadBalanceMode {
-	switch (value) {
-		case 'random':
-			return LoadBalanceMode.RANDOM;
-		case 'ip_hash':
-			return LoadBalanceMode.IP_HASH;
-		case 'fallback':
-			return LoadBalanceMode.FALLBACK;
-		default:
-			return LoadBalanceMode.ROUND_ROBIN;
-	}
 }
 export function toIpv6(value: Ipv6Resolve): Ipv6ResolveName {
 	switch (value) {
@@ -160,14 +142,6 @@ export function toServerHealth(value: ServerHealthStatus): ServerHealthStatusNam
 			return 'unknown';
 	}
 }
-export const toPortKind = (value: PortKind): PortKindName =>
-	value === PortKind.DERIVE_LISTEN
-		? 'derive_listen'
-		: value === PortKind.BUNDLE
-			? 'bundle'
-			: 'derive_destination';
-export const toPortDirection = (value: PortDirection): PortDirectionName =>
-	value === PortDirection.PORT_OUTPUT ? 'output' : 'input';
 
 export const toAddressSource = (value: AddressSource): AddressSourceName => {
 	switch (value) {
@@ -181,17 +155,3 @@ export const toAddressSource = (value: AddressSource): AddressSourceName => {
 			return 'none';
 	}
 };
-
-export const toExportPortKind = (value: PortKind): ExportPortKindName =>
-	value === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination';
-export const toExportAs = (value: CanvasExportAs): CanvasExportAsName =>
-	value === CanvasExportAs.INPUT_INTO_CANVAS ? 'input_into_canvas' : 'output_out_of_canvas';
-export const fromPortKind = (value: ExportPortKindName): PortKind =>
-	value === 'derive_listen' ? PortKind.DERIVE_LISTEN : PortKind.DERIVE_DESTINATION;
-export const fromExportAs = (value: CanvasExportAsName): CanvasExportAs =>
-	value === 'input_into_canvas'
-		? CanvasExportAs.INPUT_INTO_CANVAS
-		: CanvasExportAs.OUTPUT_OUT_OF_CANVAS;
-
-export const fromGroup = (value: UniversalGroupName): UniversalGroup =>
-	value === 'channel_out' ? UniversalGroup.CHANNEL_OUT : UniversalGroup.BUNDLE_IN;

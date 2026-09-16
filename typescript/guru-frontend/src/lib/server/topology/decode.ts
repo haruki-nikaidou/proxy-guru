@@ -1,98 +1,42 @@
 /**
- * Protobuf replies as the DTOs in `#lib/dto/topology.js`. Pure mapping: no
- * transport, no validation — the remote functions in
- * `routes/(canvas)/canvas/[canvasId]/` do the calling, this does the shaping.
- * Scalar enums are mapped in `./enums.js`, the whole canvas in `./canvas.js`.
+ * Protobuf replies as the DTOs in `#lib/dto/topology.js` and the graph model of
+ * `guru-graph`. Pure mapping: no transport, no validation — the remote functions
+ * in `routes/(canvas)/canvas/[canvasId]/` do the calling, this does the shaping.
+ * Scalar enums are mapped in `./enums.js`; the way back is `./encode.js`.
  */
 import type {
+	ApplyGraphReply,
+	GetGraphReply,
+	Canvas as ProtoCanvas,
 	ConfigSnapshot as ProtoConfigSnapshot,
-	Node as ProtoNode,
-	PodConfig as ProtoPodConfig,
+	Diagnostic as ProtoDiagnostic,
+	Edge as ProtoEdge,
+	Exit as ProtoExit,
+	Group as ProtoGroup,
+	Pod as ProtoPod,
 	Server as ProtoServer,
 	ServerAddresses as ProtoServerAddresses
 } from 'app-protobuf/orchestration/orchestration';
-import {
-	AddressSource,
-	ProblemKind,
-	ProblemSeverity,
-	QuicCongestion
-} from 'app-protobuf/orchestration/orchestration';
+import { AddressSource, QuicCongestion } from 'app-protobuf/orchestration/orchestration';
+import type { Canvas, Edge, Exit, Group, GroupMember, Ingress, Pod, Route } from 'guru-graph';
 import type {
-	BundlePortDto,
-	CanvasPort,
-	ChannelDto,
+	ApplyOutcomeDto,
+	CanvasGraph,
 	ConfigSnapshotDto,
-	MemberDto,
-	PodDto,
+	DiagnosticDto,
+	DiagnosticSubjectDto,
 	ServerAddressesDto,
-	ServerDto,
-	StandaloneNode,
-	TopologyProblem,
-	UniversalPodDto
+	ServerDto
 } from '#lib/dto/topology.js';
 import {
 	toAddressSource,
-	toBalanceMode,
-	toExportAs,
-	toExportPortKind,
+	toIngressKind,
 	toIpv6,
 	toLogLevel,
-	toPortDirection,
-	toPortKind,
-	toProxy,
+	toProxyVersion,
 	toQuicCongestion,
-	toRelayProtocol,
 	toServerHealth
 } from './enums.js';
-
-/** Shared by every node whose ports carry no derived label. */
-export const NO_LABELS: ReadonlyMap<string, string> = new Map();
-
-export const toPorts = (node: ProtoNode, labels: ReadonlyMap<string, string>): CanvasPort[] =>
-	node.ports
-		.map(port => ({
-			id: port.id,
-			kind: toPortKind(port.kind),
-			direction: toPortDirection(port.direction),
-			key: port.key,
-			position: Number(port.position),
-			label: labels.get(port.key) ?? null
-		}))
-		.sort((a, b) => a.position - b.position);
-
-export function toProblem(problem: {
-	severity: ProblemSeverity;
-	kind: ProblemKind;
-	message: string;
-	nodeIds: string[];
-	edgeIds: string[];
-	portIds: string[];
-}): TopologyProblem {
-	return {
-		severity:
-			problem.severity === ProblemSeverity.PROBLEM_ERROR
-				? 'error'
-				: problem.severity === ProblemSeverity.PROBLEM_WARNING
-					? 'warning'
-					: 'unknown',
-		kind: ProblemKind[problem.kind] ?? 'UNSPECIFIED',
-		message: problem.message,
-		nodeIds: problem.nodeIds,
-		edgeIds: problem.edgeIds,
-		portIds: problem.portIds
-	};
-}
-
-export const toPod = (node: ProtoNode, pod: ProtoPodConfig): PodDto => ({
-	id: node.id,
-	name: node.name,
-	comment: node.comment,
-	serverId: pod.serverId,
-	port: pod.port,
-	bindIp: pod.bindIp === '' ? null : pod.bindIp,
-	advertiseIp: pod.advertiseIp === '' ? null : pod.advertiseIp,
-	ports: toPorts(node, NO_LABELS)
-});
 
 const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddressesDto => ({
 	v4: { reported: addresses?.v4?.reported ?? '', pinned: addresses?.v4?.pinned ?? '' },
@@ -107,200 +51,9 @@ const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddress
 	country: addresses?.country ?? ''
 });
 
-/** The 12-colour channel palette: `--channel-0` … `--channel-11`. */
-const CHANNEL_COLORS = 12;
-
-/** The pod id a `chan:<pod>` / `lane:<pod>` port names, or `null`. */
-export const channelOf = (key: string): string | null =>
-	key.startsWith('chan:') ? key.slice('chan:'.length) : null;
-
-/** The far node id a `bundle_in:<id>` port names, or `null`. */
-export const bundlePeerOf = (key: string): string | null =>
-	key.startsWith('bundle_in:') ? key.slice('bundle_in:'.length) : null;
-
-/** The key of a member's bundle port. */
-const memberKey = (slot: number): string => `member_${slot}`;
-
-/**
- * The channels a node's `chan:` ports name, in the order the operator sees them.
- * Both a universal pod and a distribute node are described this way, so the two
- * callers — here and `./canvas.js` — share the walk.
- */
-export const channelsOfPorts = (
-	ports: readonly CanvasPort[],
-	channels: ReadonlyMap<string, ChannelDto>
-): (ChannelDto & { portId: string })[] =>
-	ports
-		.flatMap(port => {
-			const pod = channelOf(port.key);
-			const channel = pod === null ? undefined : channels.get(pod);
-			return channel ? [{ ...channel, portId: port.id }] : [];
-		})
-		.sort((a, b) => a.ordinal - b.ordinal);
-
-/**
- * The bundles collected on a node. They all sit at position 0, so they are
- * ordered by the name of the far end instead — `peerName` resolves that name.
- */
-export const bundlesInOfPorts = (
-	ports: readonly CanvasPort[],
-	peerName: (nodeId: string) => string
-): BundlePortDto[] =>
-	ports
-		.filter(port => port.key.startsWith('bundle_in:'))
-		.map(port => ({ ...port, peerName: peerName(bundlePeerOf(port.key) ?? '') }))
-		.sort((a, b) => a.peerName.localeCompare(b.peerName));
-
-/**
- * A standalone node, or `null` for a pod / an unsupported spec. `exportNames`
- * maps the export node ids of an import target to their names, which is what
- * the mirrored ports are keyed by; `channels` resolves the `chan:` ports of a
- * universal node; `peerName` names a node (a universal pod by its server) and
- * `peerOfPort` finds the node on the far end of the edge on a port.
- */
-export function toStandalone(
-	node: ProtoNode,
-	exportNames: ReadonlyMap<string, string>,
-	channels: ReadonlyMap<string, ChannelDto>,
-	peerName: (nodeId: string) => string,
-	peerOfPort: (portId: string) => string | null
-): StandaloneNode | null {
-	const spec = node.spec;
-	const base = {
-		id: node.id,
-		name: node.name,
-		comment: node.comment,
-		x: Number(node.position?.x ?? 0n),
-		y: Number(node.position?.y ?? 0n),
-		ports: toPorts(node, exportNames)
-	};
-	if (spec?.entry) {
-		const tls = spec.entry.tls;
-		return {
-			...base,
-			kind: 'entry',
-			receiveProxyProtocol: toProxy(spec.entry.receiveProxyProtocol),
-			tls: tls
-				? {
-						sni: tls.sni,
-						dnsProviderId: tls.dnsProviderId,
-						domainId: tls.domainId,
-						acmeDirectory: tls.acmeDirectory
-					}
-				: null
-		};
-	}
-	if (spec?.relay) {
-		return {
-			...base,
-			kind: 'relay',
-			protocol: toRelayProtocol(spec.relay.protocol),
-			overrideIpAddress: spec.relay.overrideIpAddress,
-			overridePort: spec.relay.overridePort
-		};
-	}
-	if (spec?.exit) {
-		return {
-			...base,
-			kind: 'exit',
-			destination: spec.exit.destination,
-			passProxyProtocol: toProxy(spec.exit.passProxyProtocol)
-		};
-	}
-	const channelsOf = () => channelsOfPorts(base.ports, channels);
-	// The members in the order declared, each with its port (a lane laid out
-	// thin has none declared and is never drawn) and the far end of its bundle.
-	const membersOf = (declared: { slot: number; name: string }[]): MemberDto[] =>
-		declared.flatMap(member => {
-			const port = base.ports.find(p => p.key === memberKey(member.slot));
-			if (!port) return [];
-			const peer = peerOfPort(port.id);
-			return [
-				{
-					slot: member.slot,
-					name: member.name,
-					port,
-					peerName: peer === null ? null : peerName(peer)
-				}
-			];
-		});
-	const bundlesIn = (): BundlePortDto[] => bundlesInOfPorts(base.ports, peerName);
-	if (spec?.loadBalanceDistribute) {
-		return {
-			...base,
-			kind: 'load_balance',
-			mode: 'distribute',
-			balanceMode: toBalanceMode(spec.loadBalanceDistribute.mode),
-			protocol: toRelayProtocol(spec.loadBalanceDistribute.protocol),
-			members: membersOf(spec.loadBalanceDistribute.members),
-			channels: channelsOf(),
-			bundlesIn: bundlesIn()
-		};
-	}
-	if (spec?.loadBalanceAggregate) {
-		return {
-			...base,
-			kind: 'load_balance',
-			mode: 'aggregate',
-			balanceMode: 'round_robin',
-			protocol: 'tcp_raw',
-			members: membersOf(spec.loadBalanceAggregate.members),
-			channels: channelsOf(),
-			bundlesIn: []
-		};
-	}
-	if (spec?.canvasImport) {
-		return {
-			...base,
-			kind: 'canvas_import',
-			targetCanvasId: spec.canvasImport.canvasId,
-			// Unset when the target is gone: `CANVAS_IMPORT_UNRESOLVED` says so.
-			targetName: node.importTarget?.name ?? ''
-		};
-	}
-	if (spec?.canvasExport) {
-		return {
-			...base,
-			kind: 'canvas_export',
-			portKind: toExportPortKind(spec.canvasExport.kind),
-			exportAs: toExportAs(spec.canvasExport.direction)
-		};
-	}
-	return null;
-}
-
-/**
- * The channels of a canvas: every `chan:` port of a distribute node or a
- * universal pod names the entry pod that is the channel; the port's position is
- * the channel's ordinal.
- */
-export function collectChannels(nodes: ProtoNode[]): Map<string, ChannelDto> {
-	const names = new Map(nodes.map(node => [node.id, node.name]));
-	const channels = new Map<string, ChannelDto>();
-	for (const node of nodes) {
-		if (!node.spec?.loadBalanceDistribute && !node.spec?.universalPod) continue;
-		for (const port of node.ports) {
-			const podId = channelOf(port.key);
-			if (podId === null) continue;
-			const ordinal = Number(port.position);
-			channels.set(podId, {
-				podId,
-				podName: names.get(podId) ?? podId,
-				ordinal,
-				colorIndex: ((ordinal % CHANNEL_COLORS) + CHANNEL_COLORS) % CHANNEL_COLORS,
-				distributorId: node.id
-			});
-		}
-	}
-	return channels;
-}
-
-export const toServer = (
-	server: ProtoServer,
-	pods: PodDto[],
-	universal: UniversalPodDto | null
-): ServerDto => ({
+export const toServer = (server: ProtoServer): ServerDto => ({
 	id: server.id,
+	canvasId: server.canvasId,
 	name: server.name,
 	icon: server.icon,
 	comment: server.comment,
@@ -325,8 +78,148 @@ export const toServer = (
 	agentUpdateRequested: server.agentUpdateRequested,
 	agentUpdateError: server.agentUpdateError,
 	agentKeyIssuedAt: server.agentKeyIssuedAt,
-	pods,
-	universal
+	capabilities: [...server.capabilities]
+});
+
+export const toCanvas = (canvas: ProtoCanvas): Canvas => ({
+	id: canvas.id,
+	name: canvas.name,
+	description: canvas.description,
+	parentId: canvas.parentId === '' ? null : canvas.parentId,
+	x: Number(canvas.position?.x ?? 0n),
+	y: Number(canvas.position?.y ?? 0n)
+});
+
+/** A JSON document the control plane wrote; `fallback` when it is empty or unreadable. */
+function parseJson<T>(json: string, fallback: T): T {
+	if (json.trim() === '') return fallback;
+	try {
+		return JSON.parse(json) as T;
+	} catch {
+		return fallback;
+	}
+}
+
+function toIngress(pod: ProtoPod): Ingress {
+	const kind = toIngressKind(pod.ingress);
+	const receiveProxyProtocol = toProxyVersion(pod.receiveProxyProtocol);
+	switch (kind) {
+		case 'client_tls':
+			return {
+				kind,
+				receiveProxyProtocol,
+				tls: {
+					sni: pod.tls?.sni ?? '',
+					dnsProviderId: pod.tls?.dnsProviderId ?? '',
+					domainId: pod.tls?.domainId ?? '',
+					acmeDirectory: pod.tls?.acmeDirectory ?? ''
+				}
+			};
+		case 'client_raw':
+			return { kind, receiveProxyProtocol };
+		default:
+			return { kind };
+	}
+}
+
+export const toPod = (pod: ProtoPod): Pod => ({
+	id: pod.id,
+	canvasId: pod.canvasId,
+	serverId: pod.serverId,
+	name: pod.name,
+	comment: pod.comment,
+	port: pod.port,
+	bindIp: pod.bindIp === '' ? null : pod.bindIp,
+	advertiseIp: pod.advertiseIp === '' ? null : pod.advertiseIp,
+	ingress: toIngress(pod),
+	route: parseJson<Route | null>(pod.routeJson, null)
+});
+
+export const toExit = (exit: ProtoExit): Exit => ({
+	id: exit.id,
+	canvasId: exit.canvasId,
+	name: exit.name,
+	comment: exit.comment,
+	destination: exit.destination,
+	sendProxyProtocol: toProxyVersion(exit.sendProxyProtocol),
+	x: Number(exit.position?.x ?? 0n),
+	y: Number(exit.position?.y ?? 0n)
+});
+
+/** An edge naming no target is dropped: the control plane never stores one. */
+export const toEdge = (edge: ProtoEdge): Edge | null => {
+	const target =
+		edge.targetPodId !== undefined
+			? { pod: edge.targetPodId }
+			: edge.targetExitId !== undefined
+				? { exit: edge.targetExitId }
+				: null;
+	if (!target) return null;
+	return {
+		id: edge.id,
+		sourcePodId: edge.sourcePodId,
+		target,
+		overrideIp: edge.overrideIp === '' ? null : edge.overrideIp,
+		overridePort: edge.overridePort === 0 ? null : edge.overridePort
+	};
+};
+
+export const toGroup = (group: ProtoGroup): Group => ({
+	id: group.id,
+	canvasId: group.canvasId,
+	kind: group.kind,
+	name: group.name,
+	props: parseJson<Record<string, unknown>>(group.propsJson, {}),
+	members: group.members.flatMap((member): GroupMember[] =>
+		member.podId !== undefined
+			? [{ pod: member.podId }]
+			: member.edgeId !== undefined
+				? [{ edge: member.edgeId }]
+				: member.exitId !== undefined
+					? [{ exit: member.exitId }]
+					: member.serverId !== undefined
+						? [{ server: member.serverId }]
+						: []
+	)
+});
+
+export const toDiagnostic = (diagnostic: ProtoDiagnostic): DiagnosticDto => ({
+	problem: diagnostic.problem,
+	error: diagnostic.error,
+	subjects: diagnostic.subjects.flatMap((subject): DiagnosticSubjectDto[] =>
+		subject.serverId !== undefined
+			? [{ server: subject.serverId }]
+			: subject.podId !== undefined
+				? [{ pod: subject.podId }]
+				: subject.exitId !== undefined
+					? [{ exit: subject.exitId }]
+					: subject.edgeId !== undefined
+						? [{ edge: subject.edgeId }]
+						: subject.groupId !== undefined
+							? [{ group: subject.groupId }]
+							: subject.canvasId !== undefined
+								? [{ canvas: subject.canvasId }]
+								: []
+	),
+	message: diagnostic.message
+});
+
+export const toCanvasGraph = (reply: GetGraphReply): CanvasGraph => ({
+	canvases: reply.canvases.map(toCanvas),
+	servers: reply.servers.map(toServer),
+	pods: reply.pods.map(toPod),
+	exits: reply.exits.map(toExit),
+	edges: reply.edges.flatMap(edge => toEdge(edge) ?? []),
+	groups: reply.groups.map(toGroup),
+	generation: Number(reply.generation),
+	diagnostics: reply.diagnostics.map(toDiagnostic)
+});
+
+export const toApplyOutcome = (reply: ApplyGraphReply): ApplyOutcomeDto => ({
+	applied: reply.applied,
+	generation: Number(reply.generation),
+	diagnostics: reply.diagnostics.map(toDiagnostic),
+	pods: reply.pods.map(toPod)
 });
 
 /** `revision` is an `int64`: it is narrowed here so no bigint reaches a client. */

@@ -10,7 +10,7 @@ import type { ServerHealthStatusName } from './topology.js';
 
 export type { ServerHealthStatusName };
 
-export type NodeHealthStatusName = 'unknown' | 'ready' | 'deploying' | 'failed';
+export type PodHealthStatusName = 'unknown' | 'ready' | 'deploying' | 'failed';
 
 /**
  * How far back the dashboard may look, in minutes: one hour, six hours, a day,
@@ -39,11 +39,11 @@ export type ServerHealthPoint = {
 };
 
 /** One deployment event of a pod; `message` carries the derive / apply error. */
-export type NodeHealthPoint = {
+export type PodHealthPoint = {
 	id: string;
 	/** RFC3339, as the control plane stores it. */
 	reportTime: string;
-	status: NodeHealthStatusName;
+	status: PodHealthStatusName;
 	message: string;
 };
 

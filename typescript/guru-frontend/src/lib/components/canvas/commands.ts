@@ -4,8 +4,6 @@
  * the single place that bridges the two, so no component carries a deep relative
  * path — and no component has to know which of the route's files a call is in.
  */
-export * from '../../../routes/(canvas)/canvas/[canvasId]/edges.remote.js';
-export * from '../../../routes/(canvas)/canvas/[canvasId]/nodes.remote.js';
+export * from '../../../routes/(canvas)/canvas/[canvasId]/graph.remote.js';
 export * from '../../../routes/(canvas)/canvas/[canvasId]/servers.remote.js';
 export * from '../../../routes/(canvas)/canvas/[canvasId]/subcanvas.remote.js';
-export * from '../../../routes/(canvas)/canvas/[canvasId]/topology.remote.js';

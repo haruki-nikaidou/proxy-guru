@@ -1,12 +1,12 @@
 import type {
-	NodeHealthRecord as ProtoNodeHealthRecord,
+	PodHealthRecord as ProtoPodHealthRecord,
 	ServerHealthRecord as ProtoServerHealthRecord
 } from 'app-protobuf/orchestration/orchestration';
-import { NodeHealthStatus } from 'app-protobuf/orchestration/orchestration';
+import { PodHealthStatus } from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
 import type {
-	NodeHealthPoint,
-	NodeHealthStatusName,
+	PodHealthPoint,
+	PodHealthStatusName,
 	ServerHealthPoint,
 	ServerHealthSeries
 } from '#lib/dto/health.js';
@@ -22,13 +22,13 @@ import { query } from '$app/server';
 // permissions, so no role check happens here.
 const windowSchema = v.optional(v.picklist(HEALTH_WINDOWS, 'health_window_invalid'), 60);
 
-function toNodeStatus(value: NodeHealthStatus): NodeHealthStatusName {
+function toPodStatus(value: PodHealthStatus): PodHealthStatusName {
 	switch (value) {
-		case NodeHealthStatus.NODE_READY:
+		case PodHealthStatus.POD_READY:
 			return 'ready';
-		case NodeHealthStatus.NODE_DEPLOYING:
+		case PodHealthStatus.POD_DEPLOYING:
 			return 'deploying';
-		case NodeHealthStatus.NODE_FAILED:
+		case PodHealthStatus.POD_FAILED:
 			return 'failed';
 		default:
 			return 'unknown';
@@ -46,25 +46,25 @@ const toServerPoint = (record: ProtoServerHealthRecord): ServerHealthPoint => ({
 	maxConnections: Number(record.maxConnections)
 });
 
-const toNodePoint = (record: ProtoNodeHealthRecord): NodeHealthPoint => ({
+const toPodPoint = (record: ProtoPodHealthRecord): PodHealthPoint => ({
 	id: record.id,
 	reportTime: record.reportTime,
-	status: toNodeStatus(record.status),
+	status: toPodStatus(record.status),
 	message: record.message
 });
 
 /**
  * Every server of the canvas with the reports it uploaded inside the window.
  * The status badge comes from the server row — a server that stopped reporting
- * is `offline` there while its series is empty.
+ * is `offline` there while its series is empty. `GetGraph` answers the whole
+ * tree; only the servers placed on this canvas are this page's.
  */
 export const listServerHealth = query(
 	v.object({ canvasId: idSchema, windowMinutes: windowSchema }),
 	async ({ canvasId, windowMinutes }): Promise<ServerHealthSeries[]> => {
 		const metadata = sessionMetadata(requireSessionId());
-		const { servers } = await callGrpc(() =>
-			orchestrationClient().getCanvas({ canvasId }, { metadata })
-		);
+		const graph = await callGrpc(() => orchestrationClient().getGraph({ canvasId }, { metadata }));
+		const servers = graph.servers.filter(server => server.canvasId === canvasId);
 
 		// An empty `end` means now, so only the lower bound is sent.
 		const start = new Date(Date.now() - windowMinutes * 60_000).toISOString();
@@ -95,18 +95,15 @@ export const listServerHealth = query(
  * them. Fetched only when a server's event feed is opened, so the page does not
  * fan out one call per pod on first paint.
  */
-export const listNodeHealth = query(
-	v.object({ nodeId: idSchema, windowMinutes: windowSchema }),
-	async ({ nodeId, windowMinutes }): Promise<NodeHealthPoint[]> => {
+export const listPodHealth = query(
+	v.object({ podId: idSchema, windowMinutes: windowSchema }),
+	async ({ podId, windowMinutes }): Promise<PodHealthPoint[]> => {
 		const metadata = sessionMetadata(requireSessionId());
 		const start = new Date(Date.now() - windowMinutes * 60_000).toISOString();
 		// `limit` 0 keeps the control plane's own page size.
 		const { records } = await callGrpc(() =>
-			orchestrationClient().listNodeHealthHistory(
-				{ nodeId, start, end: '', limit: 0 },
-				{ metadata }
-			)
+			orchestrationClient().listPodHealthHistory({ podId, start, end: '', limit: 0 }, { metadata })
 		);
-		return records.map(toNodePoint);
+		return records.map(toPodPoint);
 	}
 );

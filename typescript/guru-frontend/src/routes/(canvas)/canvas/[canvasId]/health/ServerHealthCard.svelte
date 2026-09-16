@@ -9,7 +9,7 @@ import * as Tabs from '#lib/components/ui/tabs/index.js';
 import type { HealthWindowMinutes, ServerHealthSeries } from '#lib/dto/health.js';
 import { formatAxisTime, formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
-import NodeEventsPanel from './NodeEventsPanel.svelte';
+import PodEventsPanel from './PodEventsPanel.svelte';
 import { formatBytes, formatCount } from './format.js';
 import { serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
 
@@ -202,7 +202,7 @@ let tab = $state('metrics');
 
 			<Tabs.Content value="events" class="pt-4">
 				{#if tab === 'events'}
-					<NodeEventsPanel {canvasId} serverId={series.serverId} {windowMinutes} />
+					<PodEventsPanel {canvasId} serverId={series.serverId} {windowMinutes} />
 				{/if}
 			</Tabs.Content>
 		</Tabs.Root>
