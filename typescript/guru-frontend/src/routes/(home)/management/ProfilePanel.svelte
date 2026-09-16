@@ -9,7 +9,7 @@ import { Input } from '#lib/components/ui/input/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { Identity } from '#lib/dto/identity.js';
 import { issueMessage, resultMessage } from '#lib/i18n/codes.js';
-import { roleLabel } from '#lib/i18n/format.js';
+import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import { changeEmail, changePassword } from './profile.remote.js';
 

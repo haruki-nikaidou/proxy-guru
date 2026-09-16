@@ -4,6 +4,7 @@ import SplitIcon from '@lucide/svelte/icons/split';
 import type { NodeProps } from '@xyflow/svelte';
 import { channelColor, type FlowNodeData } from '#lib/components/canvas/graph.js';
 import { m } from '#lib/paraglide/messages.js';
+import { balanceModeLabel, relayProtocolLabel } from '#lib/i18n/labels.js';
 import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
@@ -21,22 +22,8 @@ import PortHandle from './PortHandle.svelte';
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'load_balance' }> } = $props();
 
 const distribute = $derived(data.node.mode === 'distribute');
-const balanceMode = $derived(
-	data.node.balanceMode === 'random'
-		? m.editor_balance_random()
-		: data.node.balanceMode === 'ip_hash'
-			? m.editor_balance_ip_hash()
-			: data.node.balanceMode === 'fallback'
-				? m.editor_balance_fallback()
-				: m.editor_balance_round_robin()
-);
-const protocol = $derived(
-	data.node.protocol === 'tcp_tls'
-		? m.editor_relay_tcp_tls()
-		: data.node.protocol === 'quic'
-			? m.editor_relay_quic()
-			: m.editor_relay_tcp_raw()
-);
+const balanceMode = $derived(balanceModeLabel(data.node.balanceMode));
+const protocol = $derived(relayProtocolLabel(data.node.protocol));
 const portOf = (portId: string | undefined) => data.node.ports.find(port => port.id === portId);
 </script>
 

@@ -19,6 +19,12 @@ import type {
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import {
+	BALANCE_MODES,
+	RELAY_PROTOCOLS,
+	balanceModeLabel,
+	relayProtocolLabel
+} from '#lib/i18n/labels.js';
 
 let {
 	canvasId,
@@ -32,23 +38,6 @@ let {
 	/** Resolves the exit an aggregate node's channel input is connected to. */
 	graph: CanvasGraph | undefined;
 } = $props();
-
-const MODES: LoadBalanceModeName[] = ['round_robin', 'random', 'ip_hash', 'fallback'];
-const modeLabel = (value: LoadBalanceModeName): string =>
-	value === 'random'
-		? m.editor_balance_random()
-		: value === 'ip_hash'
-			? m.editor_balance_ip_hash()
-			: value === 'fallback'
-				? m.editor_balance_fallback()
-				: m.editor_balance_round_robin();
-const PROTOCOLS: RelayProtocolName[] = ['tcp_raw', 'tcp_tls', 'quic'];
-const protocolLabel = (value: RelayProtocolName): string =>
-	value === 'tcp_tls'
-		? m.editor_relay_tcp_tls()
-		: value === 'quic'
-			? m.editor_relay_quic()
-			: m.editor_relay_tcp_raw();
 
 let name = $state('');
 let comment = $state('');
@@ -142,11 +131,11 @@ const exitOf = (portId: string | undefined): string | null => {
 				disabled={!editable}
 				onValueChange={next => (balanceMode = next as LoadBalanceModeName)}
 			>
-				<Select.Trigger id="lb-mode">{modeLabel(balanceMode)}</Select.Trigger>
+				<Select.Trigger id="lb-mode">{balanceModeLabel(balanceMode)}</Select.Trigger>
 				<Select.Content>
 					<Select.Group>
-						{#each MODES as option (option)}
-							<Select.Item value={option} label={modeLabel(option)}>{modeLabel(option)}</Select.Item>
+						{#each BALANCE_MODES as option (option)}
+							<Select.Item value={option} label={balanceModeLabel(option)}>{balanceModeLabel(option)}</Select.Item>
 						{/each}
 					</Select.Group>
 				</Select.Content>
@@ -161,12 +150,12 @@ const exitOf = (portId: string | undefined): string | null => {
 				disabled={!editable}
 				onValueChange={next => (protocol = next as RelayProtocolName)}
 			>
-				<Select.Trigger id="lb-protocol">{protocolLabel(protocol)}</Select.Trigger>
+				<Select.Trigger id="lb-protocol">{relayProtocolLabel(protocol)}</Select.Trigger>
 				<Select.Content>
 					<Select.Group>
-						{#each PROTOCOLS as option (option)}
-							<Select.Item value={option} label={protocolLabel(option)}>
-								{protocolLabel(option)}
+						{#each RELAY_PROTOCOLS as option (option)}
+							<Select.Item value={option} label={relayProtocolLabel(option)}>
+								{relayProtocolLabel(option)}
 							</Select.Item>
 						{/each}
 					</Select.Group>

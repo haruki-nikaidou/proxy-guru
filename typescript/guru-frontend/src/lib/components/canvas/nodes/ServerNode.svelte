@@ -11,6 +11,7 @@ import {
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import { ipv6Label } from '#lib/i18n/labels.js';
 import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
@@ -21,15 +22,7 @@ let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'server' }> 
 
 const universal = $derived(data.server.universal);
 
-const ipv6 = $derived(
-	data.server.ipv6Resolve === 'required'
-		? m.editor_ipv6_required()
-		: data.server.ipv6Resolve === 'preferred'
-			? m.editor_ipv6_preferred()
-			: data.server.ipv6Resolve === 'forbidden'
-				? m.editor_ipv6_forbidden()
-				: m.editor_ipv6_tolerated()
-);
+const ipv6 = $derived(ipv6Label(data.server.ipv6Resolve));
 
 const health = $derived(serverHealthBadge(data.server.healthStatus));
 /**

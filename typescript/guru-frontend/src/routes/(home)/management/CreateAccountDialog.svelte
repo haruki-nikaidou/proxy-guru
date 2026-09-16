@@ -8,7 +8,7 @@ import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { ASSIGNABLE_ROLES } from '#lib/dto/identity.js';
 import { issueMessage, resultMessage } from '#lib/i18n/codes.js';
-import { roleLabel } from '#lib/i18n/format.js';
+import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import { createAccount } from './accounts.remote.js';
 

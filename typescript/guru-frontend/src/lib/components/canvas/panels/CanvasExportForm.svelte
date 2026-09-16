@@ -14,21 +14,18 @@ import type {
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import {
+	EXPORT_DIRECTIONS,
+	EXPORT_PORT_KINDS,
+	exportAsLabel,
+	exportKindLabel
+} from '#lib/i18n/labels.js';
 
 let {
 	canvasId,
 	node,
 	editable
 }: { canvasId: string; node: CanvasExportNodeDto; editable: boolean } = $props();
-
-const KINDS: ExportPortKindName[] = ['derive_listen', 'derive_destination'];
-const DIRECTIONS: CanvasExportAsName[] = ['input_into_canvas', 'output_out_of_canvas'];
-const kindLabel = (value: ExportPortKindName): string =>
-	value === 'derive_listen' ? m.editor_port_listen() : m.editor_port_destination();
-const directionLabel = (value: CanvasExportAsName): string =>
-	value === 'input_into_canvas'
-		? m.editor_export_input_into_canvas()
-		: m.editor_export_output_out_of_canvas();
 
 let name = $state('');
 let comment = $state('');
@@ -81,11 +78,11 @@ async function save() {
 			disabled={!editable}
 			onValueChange={next => (portKind = next as ExportPortKindName)}
 		>
-			<Select.Trigger id="export-kind">{kindLabel(portKind)}</Select.Trigger>
+			<Select.Trigger id="export-kind">{exportKindLabel(portKind)}</Select.Trigger>
 			<Select.Content>
 				<Select.Group>
-					{#each KINDS as option (option)}
-						<Select.Item value={option} label={kindLabel(option)}>{kindLabel(option)}</Select.Item>
+					{#each EXPORT_PORT_KINDS as option (option)}
+						<Select.Item value={option} label={exportKindLabel(option)}>{exportKindLabel(option)}</Select.Item>
 					{/each}
 				</Select.Group>
 			</Select.Content>
@@ -100,12 +97,12 @@ async function save() {
 			disabled={!editable}
 			onValueChange={next => (exportAs = next as CanvasExportAsName)}
 		>
-			<Select.Trigger id="export-direction">{directionLabel(exportAs)}</Select.Trigger>
+			<Select.Trigger id="export-direction">{exportAsLabel(exportAs)}</Select.Trigger>
 			<Select.Content>
 				<Select.Group>
-					{#each DIRECTIONS as option (option)}
-						<Select.Item value={option} label={directionLabel(option)}>
-							{directionLabel(option)}
+					{#each EXPORT_DIRECTIONS as option (option)}
+						<Select.Item value={option} label={exportAsLabel(option)}>
+							{exportAsLabel(option)}
 						</Select.Item>
 					{/each}
 				</Select.Group>

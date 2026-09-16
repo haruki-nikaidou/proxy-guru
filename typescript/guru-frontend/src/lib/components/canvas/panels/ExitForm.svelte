@@ -10,17 +10,10 @@ import { Textarea } from '#lib/components/ui/textarea/index.js';
 import type { ExitNodeDto, ProxyProtocolName } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import { PROXY_OPTIONS, proxyLabel } from '#lib/i18n/labels.js';
 
 let { canvasId, node, editable }: { canvasId: string; node: ExitNodeDto; editable: boolean } =
 	$props();
-
-const PROXY_OPTIONS: ProxyProtocolName[] = ['none', 'v1', 'v2'];
-const proxyLabel = (value: ProxyProtocolName): string =>
-	value === 'v1'
-		? m.editor_proxy_v1()
-		: value === 'v2'
-			? m.editor_proxy_v2()
-			: m.editor_proxy_none();
 
 let name = $state('');
 let comment = $state('');

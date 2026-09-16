@@ -16,6 +16,7 @@ import type { Ipv6ResolveName, ServerDto } from '#lib/dto/topology.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import { IPV6_OPTIONS, ipv6Label } from '#lib/i18n/labels.js';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 
 /**
@@ -29,16 +30,6 @@ let { canvasId, server, editable }: { canvasId: string; server: ServerDto; edita
 
 const writes = panelWrites();
 let deleteOpen = $state(false);
-
-const IPV6_OPTIONS: Ipv6ResolveName[] = ['required', 'preferred', 'tolerated', 'forbidden'];
-const ipv6Label = (value: Ipv6ResolveName): string =>
-	value === 'required'
-		? m.editor_ipv6_required()
-		: value === 'preferred'
-			? m.editor_ipv6_preferred()
-			: value === 'forbidden'
-				? m.editor_ipv6_forbidden()
-				: m.editor_ipv6_tolerated();
 
 let name = $state('');
 let icon = $state('');

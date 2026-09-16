@@ -16,7 +16,7 @@ import {
 } from '#lib/dto/identity.js';
 import { accountMutationBlock } from '#lib/guards.js';
 import { errorMessage } from '#lib/i18n/codes.js';
-import { roleLabel } from '#lib/i18n/format.js';
+import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import CreateAccountDialog from './CreateAccountDialog.svelte';
 import { deleteAccount, listAccounts, setAccountRole } from './accounts.remote.js';

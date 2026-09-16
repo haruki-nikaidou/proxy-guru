@@ -9,6 +9,13 @@ import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { PodDto } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import {
+	ADVERTISE_AUTO,
+	BIND_ALL,
+	BIND_V4,
+	podAdvertiseLabel,
+	podBindLabel
+} from '#lib/i18n/labels.js';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 
 let {
@@ -28,9 +35,6 @@ let {
 } = $props();
 
 /** The two wildcard binds, keyed so the select can hold a non-address value. */
-const BIND_ALL = '';
-const BIND_V4 = '0.0.0.0';
-const ADVERTISE_AUTO = '';
 
 let name = $state('');
 let bindIp = $state(BIND_ALL);
@@ -52,11 +56,6 @@ $effect(() => {
 		port = String(snapshot.port);
 	});
 });
-
-const bindLabel = (value: string): string =>
-	value === BIND_ALL ? m.editor_pod_bind_all() : value === BIND_V4 ? m.editor_pod_bind_v4() : value;
-const advertiseLabel = (value: string): string =>
-	value === ADVERTISE_AUTO ? m.editor_pod_advertise_auto() : value;
 
 // A stored address that is no longer among the server's candidates stays
 // selectable, so an edit never silently rewrites it.
@@ -119,13 +118,13 @@ async function remove() {
 				onValueChange={next => (bindIp = next)}
 			>
 				<Select.Trigger class="flex-1" aria-label={m.editor_pod_bind()}>
-					{bindLabel(bindIp)}
+					{podBindLabel(bindIp)}
 				</Select.Trigger>
 				<Select.Content>
 					<Select.Group>
 						<Select.GroupHeading>{m.editor_pod_bind()}</Select.GroupHeading>
 						{#each bindOptions as option (option)}
-							<Select.Item value={option} label={bindLabel(option)}>{bindLabel(option)}</Select.Item>
+							<Select.Item value={option} label={podBindLabel(option)}>{podBindLabel(option)}</Select.Item>
 						{/each}
 					</Select.Group>
 				</Select.Content>
@@ -137,14 +136,14 @@ async function remove() {
 				onValueChange={next => (advertiseIp = next)}
 			>
 				<Select.Trigger class="flex-1" aria-label={m.editor_pod_advertise()}>
-					{advertiseLabel(advertiseIp)}
+					{podAdvertiseLabel(advertiseIp)}
 				</Select.Trigger>
 				<Select.Content>
 					<Select.Group>
 						<Select.GroupHeading>{m.editor_pod_advertise()}</Select.GroupHeading>
 						{#each advertiseOptions as option (option)}
-							<Select.Item value={option} label={advertiseLabel(option)}>
-								{advertiseLabel(option)}
+							<Select.Item value={option} label={podAdvertiseLabel(option)}>
+								{podAdvertiseLabel(option)}
 							</Select.Item>
 						{/each}
 					</Select.Group>

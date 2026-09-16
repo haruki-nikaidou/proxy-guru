@@ -6,18 +6,13 @@ import { portLabel, type FlowNodeData } from '#lib/components/canvas/graph.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 import { m } from '#lib/paraglide/messages.js';
+import { proxyLabel } from '#lib/i18n/labels.js';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
 
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'entry' }> } = $props();
 
-const proxy = $derived(
-	data.node.receiveProxyProtocol === 'v1'
-		? m.editor_proxy_v1()
-		: data.node.receiveProxyProtocol === 'v2'
-			? m.editor_proxy_v2()
-			: m.editor_proxy_none()
-);
+const proxy = $derived(proxyLabel(data.node.receiveProxyProtocol));
 </script>
 
 <NodeShell

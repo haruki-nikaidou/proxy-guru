@@ -10,17 +10,10 @@ import { Textarea } from '#lib/components/ui/textarea/index.js';
 import type { RelayNodeDto, RelayProtocolName } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import { RELAY_PROTOCOLS, relayProtocolLabel } from '#lib/i18n/labels.js';
 
 let { canvasId, node, editable }: { canvasId: string; node: RelayNodeDto; editable: boolean } =
 	$props();
-
-const PROTOCOLS: RelayProtocolName[] = ['tcp_raw', 'tcp_tls', 'quic'];
-const protocolLabel = (value: RelayProtocolName): string =>
-	value === 'tcp_tls'
-		? m.editor_relay_tcp_tls()
-		: value === 'quic'
-			? m.editor_relay_quic()
-			: m.editor_relay_tcp_raw();
 
 let name = $state('');
 let comment = $state('');
@@ -77,12 +70,12 @@ async function save() {
 			disabled={!editable}
 			onValueChange={next => (protocol = next as RelayProtocolName)}
 		>
-			<Select.Trigger id="relay-protocol">{protocolLabel(protocol)}</Select.Trigger>
+			<Select.Trigger id="relay-protocol">{relayProtocolLabel(protocol)}</Select.Trigger>
 			<Select.Content>
 				<Select.Group>
-					{#each PROTOCOLS as option (option)}
-						<Select.Item value={option} label={protocolLabel(option)}>
-							{protocolLabel(option)}
+					{#each RELAY_PROTOCOLS as option (option)}
+						<Select.Item value={option} label={relayProtocolLabel(option)}>
+							{relayProtocolLabel(option)}
 						</Select.Item>
 					{/each}
 				</Select.Group>

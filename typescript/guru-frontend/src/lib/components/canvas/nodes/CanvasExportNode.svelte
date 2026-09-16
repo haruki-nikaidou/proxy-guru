@@ -3,6 +3,7 @@ import ShareIcon from '@lucide/svelte/icons/share-2';
 import type { NodeProps } from '@xyflow/svelte';
 import { portLabel, type FlowNodeData } from '#lib/components/canvas/graph.js';
 import { m } from '#lib/paraglide/messages.js';
+import { exportAsLabel, exportKindLabel } from '#lib/i18n/labels.js';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
 
@@ -10,14 +11,8 @@ import PortHandle from './PortHandle.svelte';
 // node that embeds this canvas, keyed by this node's id and named after it.
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'canvas_export' }> } = $props();
 
-const kindLabel = $derived(
-	data.node.portKind === 'derive_listen' ? m.editor_port_listen() : m.editor_port_destination()
-);
-const directionLabel = $derived(
-	data.node.exportAs === 'input_into_canvas'
-		? m.editor_export_input_into_canvas()
-		: m.editor_export_output_out_of_canvas()
-);
+const kindLabel = $derived(exportKindLabel(data.node.portKind));
+const directionLabel = $derived(exportAsLabel(data.node.exportAs));
 </script>
 
 <NodeShell

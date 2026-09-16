@@ -11,6 +11,7 @@ import { Separator } from '#lib/components/ui/separator/index.js';
 import type { ServerDto } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import { podAdvertiseLabel, podBindLabel } from '#lib/i18n/labels.js';
 import ServerLaneRow from './ServerLaneRow.svelte';
 import ServerPodRow from './ServerPodRow.svelte';
 
@@ -69,10 +70,6 @@ const knownAddresses = $derived([
 ]);
 /** What a pod may bind: any address the host actually has, plus the extras. */
 const bindChoices = $derived([...new Set([...addresses.reportedInterfaces, ...addresses.extra])]);
-const bindLabel = (value: string): string =>
-	value === '' ? m.editor_pod_bind_all() : value === '0.0.0.0' ? m.editor_pod_bind_v4() : value;
-const advertiseLabel = (value: string): string =>
-	value === '' ? m.editor_pod_advertise_auto() : value;
 
 // A pod is placed on exactly one server, so pods are created here. Their stored
 // position is unused: they render inside the server node.
@@ -146,13 +143,13 @@ const addPod = () =>
 			onValueChange={next => (newPodBind = next)}
 		>
 			<Select.Trigger class="flex-1" aria-label={m.editor_pod_bind()}>
-				{bindLabel(newPodBind)}
+				{podBindLabel(newPodBind)}
 			</Select.Trigger>
 			<Select.Content>
 				<Select.Group>
 					<Select.GroupHeading>{m.editor_pod_bind()}</Select.GroupHeading>
 					{#each ['', '0.0.0.0', ...bindChoices] as option (option)}
-						<Select.Item value={option} label={bindLabel(option)}>{bindLabel(option)}</Select.Item>
+						<Select.Item value={option} label={podBindLabel(option)}>{podBindLabel(option)}</Select.Item>
 					{/each}
 				</Select.Group>
 			</Select.Content>
@@ -164,14 +161,14 @@ const addPod = () =>
 			onValueChange={next => (newPodAdvertise = next)}
 		>
 			<Select.Trigger class="flex-1" aria-label={m.editor_pod_advertise()}>
-				{advertiseLabel(newPodAdvertise)}
+				{podAdvertiseLabel(newPodAdvertise)}
 			</Select.Trigger>
 			<Select.Content>
 				<Select.Group>
 					<Select.GroupHeading>{m.editor_pod_advertise()}</Select.GroupHeading>
 					{#each ['', ...knownAddresses] as option (option)}
-						<Select.Item value={option} label={advertiseLabel(option)}>
-							{advertiseLabel(option)}
+						<Select.Item value={option} label={podAdvertiseLabel(option)}>
+							{podAdvertiseLabel(option)}
 						</Select.Item>
 					{/each}
 				</Select.Group>

@@ -15,6 +15,7 @@ import type { EntryNodeDto, ProxyProtocolName } from '#lib/dto/topology.js';
 import { errorMessage, issueMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import { PROXY_OPTIONS, proxyLabel } from '#lib/i18n/labels.js';
 import { listDnsProviders } from '../../../../routes/(home)/tls/tls.remote.js';
 
 let {
@@ -23,14 +24,6 @@ let {
 	editable,
 	admin
 }: { canvasId: string; node: EntryNodeDto; editable: boolean; admin: boolean } = $props();
-
-const PROXY_OPTIONS: ProxyProtocolName[] = ['none', 'v1', 'v2'];
-const proxyLabel = (value: ProxyProtocolName): string =>
-	value === 'v1'
-		? m.editor_proxy_v1()
-		: value === 'v2'
-			? m.editor_proxy_v2()
-			: m.editor_proxy_none();
 
 let name = $state('');
 let comment = $state('');

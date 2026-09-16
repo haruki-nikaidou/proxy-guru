@@ -10,7 +10,7 @@ import * as Avatar from '#lib/components/ui/avatar/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 import * as Sidebar from '#lib/components/ui/sidebar/index.js';
-import { roleLabel } from '#lib/i18n/format.js';
+import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import { LOCALE_LABELS } from '#lib/i18n/locales.js';
 import { getLocale, locales, setLocale } from '#lib/paraglide/runtime.js';
