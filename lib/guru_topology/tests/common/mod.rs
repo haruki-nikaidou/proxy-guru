@@ -4,11 +4,11 @@
 
 use guru_topology::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Compiled, Edge, EdgeId,
-    EdgeTarget, Exit, ExitId, Forwardings, Graph, Ingress, Pod, PodId, Route, Server, ServerId,
-    ServerQuic, Sticky, Weighted,
+    EdgeTarget, Exit, ExitId, Graph, Ingress, Pod, PodId, Route, Server, ServerId, ServerQuic,
+    Sticky, Weighted,
 };
+use guru_worker_config::Forwarding;
 use guru_worker_config::table::{Group, Target, Upstream};
-use guru_worker_config::{Forwarding, TableForwarding};
 
 /// A graph under construction, with every certificate its relay pods need.
 pub struct Fabric {
@@ -201,27 +201,25 @@ pub fn leaves(ids: &[&str]) -> Vec<Route> {
     ids.iter().map(|id| leaf(id)).collect()
 }
 
-pub fn table<'a>(compiled: &'a Compiled, server: &str) -> &'a [TableForwarding] {
-    match &compiled.servers[&ServerId::new(server)].forwardings {
-        Forwardings::Table(list) => list,
-        Forwardings::Legacy(_) => panic!("server {server} got the tree form"),
-    }
+pub fn table<'a>(compiled: &'a Compiled, server: &str) -> &'a [Forwarding] {
+    let config = &compiled.servers[&ServerId::new(server)];
+    assert!(config.route_table, "server {server} got the tree form");
+    &config.forwardings
 }
 
 pub fn legacy<'a>(compiled: &'a Compiled, server: &str) -> &'a [Forwarding] {
-    match &compiled.servers[&ServerId::new(server)].forwardings {
-        Forwardings::Legacy(list) => list,
-        Forwardings::Table(_) => panic!("server {server} got the table form"),
-    }
+    let config = &compiled.servers[&ServerId::new(server)];
+    assert!(!config.route_table, "server {server} got route tables");
+    &config.forwardings
 }
 
-pub fn entry<'a>(list: &'a [TableForwarding], pod: &str) -> &'a TableForwarding {
+pub fn entry<'a>(list: &'a [Forwarding], pod: &str) -> &'a Forwarding {
     list.iter()
         .find(|f| f.tag == pod)
         .unwrap_or_else(|| panic!("no forwarding for pod {pod}"))
 }
 
-pub fn group<'a>(forwarding: &'a TableForwarding, id: &str) -> &'a Group {
+pub fn group<'a>(forwarding: &'a Forwarding, id: &str) -> &'a Group {
     forwarding
         .groups
         .iter()
@@ -229,7 +227,7 @@ pub fn group<'a>(forwarding: &'a TableForwarding, id: &str) -> &'a Group {
         .unwrap_or_else(|| panic!("no group {id} in {forwarding:#?}"))
 }
 
-pub fn upstream<'a>(forwarding: &'a TableForwarding, edge: &str) -> &'a Upstream {
+pub fn upstream<'a>(forwarding: &'a Forwarding, edge: &str) -> &'a Upstream {
     let id = format!("u:{edge}");
     forwarding
         .upstreams
@@ -242,5 +240,21 @@ pub fn relay_target(upstream: &Upstream) -> &guru_worker_config::table::RelayTar
     match &upstream.target {
         Target::Relay(relay) => relay,
         Target::Exit(_) => panic!("upstream {} is an exit", upstream.id),
+    }
+}
+
+/// The route id a table forwarding starts at.
+pub fn route_to(forwarding: &Forwarding) -> &str {
+    match &forwarding.to {
+        guru_worker_config::To::Route(id) => id,
+        guru_worker_config::To::Tree(tree) => panic!("expected a route table, got {tree:#?}"),
+    }
+}
+
+/// The inline tree a tree-form forwarding goes to.
+pub fn tree(forwarding: &Forwarding) -> &guru_worker_config::ForwardingTo {
+    match &forwarding.to {
+        guru_worker_config::To::Tree(tree) => tree,
+        guru_worker_config::To::Route(id) => panic!("expected a tree, got route {id}"),
     }
 }

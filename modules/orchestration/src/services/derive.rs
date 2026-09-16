@@ -412,7 +412,9 @@ fn derive_pod(
         receive_proxy_protocol,
         listen_as,
         quic,
-        to,
+        to: guru_worker_config::To::Tree(to),
+        groups: Vec::new(),
+        upstreams: Vec::new(),
     };
     forwarding.validate()?;
     // A node reached through several load-balance members appears once: node

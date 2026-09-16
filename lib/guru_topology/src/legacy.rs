@@ -3,7 +3,7 @@
 use crate::compile::{Entry, Hop, HopKind};
 use crate::model::{EdgeId, Route};
 use guru_worker_config::{
-    ConfigError, Forwarding, ForwardingTo, LoadBalanceGroup, LoadBalanceStrategy,
+    ConfigError, Forwarding, ForwardingTo, LoadBalanceGroup, LoadBalanceStrategy, To,
 };
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
@@ -21,7 +21,9 @@ pub(crate) fn render(entry: &Entry<'_>) -> Result<Forwarding, ConfigError> {
         receive_proxy_protocol: entry.receive_proxy_protocol,
         listen_as: entry.listen_as.clone(),
         quic: entry.quic,
-        to,
+        to: To::Tree(to),
+        groups: Vec::new(),
+        upstreams: Vec::new(),
     };
     forwarding.validate()?;
     Ok(forwarding)

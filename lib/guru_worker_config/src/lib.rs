@@ -8,6 +8,10 @@
 //! Both sides of the control plane share this crate: `guru-worker` deserializes the
 //! TOML it receives (or loads from disk) into [`Config`], and `guru-master` derives a
 //! [`Config`] from a canvas and serializes it back to TOML.
+//!
+//! A [`Forwarding`] says where its connections go in one of two forms: an inline
+//! [`ForwardingTo`] tree, which every worker reads, or a route table (see
+//! [`table`]), where `to` names one of the forwarding's own groups or upstreams.
 
 pub mod error;
 pub mod load_balance;
@@ -20,7 +24,6 @@ use serde::Deserializer;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-pub use table::TableForwarding;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +37,79 @@ pub struct Forwarding {
     /// the dialer and the rate it expects from it. Only valid with such a listener.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quic: Option<QuicTuning>,
-    pub to: ForwardingTo,
+    /// Where accepted connections go.
+    pub to: To,
+    /// The groups a route table chooses between; empty for an inline tree.
+    #[serde(rename = "group", default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<table::Group>,
+    /// The next hops a route table names; empty for an inline tree.
+    #[serde(rename = "upstream", default, skip_serializing_if = "Vec::is_empty")]
+    pub upstreams: Vec<table::Upstream>,
+}
+
+/// A forwarding's destination.
+#[derive(Debug, Clone, PartialEq)]
+pub enum To {
+    /// An inline tree, the form every worker reads.
+    Tree(ForwardingTo),
+    /// The id of one of the forwarding's own groups or upstreams. Only a worker
+    /// that reports the `route_table` capability reads it.
+    Route(String),
+}
+
+impl To {
+    /// The inline tree, when this destination is one.
+    pub fn tree(&self) -> Option<&ForwardingTo> {
+        match self {
+            To::Tree(tree) => Some(tree),
+            To::Route(_) => None,
+        }
+    }
+}
+
+impl From<ForwardingTo> for To {
+    fn from(tree: ForwardingTo) -> Self {
+        To::Tree(tree)
+    }
+}
+
+impl serde::Serialize for To {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            To::Tree(tree) => tree.serialize(s),
+            To::Route(id) => s.serialize_str(id),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for To {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ToVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ToVisitor {
+            type Value = To;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a destination table, or the id of a group or upstream")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, id: &str) -> Result<To, E> {
+                Ok(To::Route(id.to_string()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<To, A::Error> {
+                <ForwardingTo as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(To::Tree)
+            }
+        }
+
+        deserializer.deserialize_any(ToVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,9 +312,8 @@ impl Forwarding {
             return None;
         }
         let sus = match &self.to {
-            ForwardingTo::Exit { .. } => false,
-            ForwardingTo::Relay { .. } => false,
-            ForwardingTo::LoadBalance(c) => c.ip_hash_somewhere(),
+            To::Tree(ForwardingTo::LoadBalance(c)) => c.ip_hash_somewhere(),
+            To::Tree(_) | To::Route(_) => false,
         };
         sus.then(|| {
             format!(
@@ -250,16 +324,18 @@ impl Forwarding {
     }
     fn unnecessary_load_balance(&self) -> Option<String> {
         match &self.to {
-            ForwardingTo::LoadBalance(c) if c.unnecessary_load_balance() => Some(format!(
-                "forward role {} has only one member in load balance group, unnecessary load balance",
-                self.tag
-            )),
+            To::Tree(ForwardingTo::LoadBalance(c)) if c.unnecessary_load_balance() => {
+                Some(format!(
+                    "forward role {} has only one member in load balance group, unnecessary load balance",
+                    self.tag
+                ))
+            }
             _ => None,
         }
     }
     fn empty_load_balance(&self) -> Option<String> {
         match &self.to {
-            ForwardingTo::LoadBalance(c) if c.empty_members() => Some(format!(
+            To::Tree(ForwardingTo::LoadBalance(c)) if c.empty_members() => Some(format!(
                 "forward role {} has no member in load balance group",
                 self.tag
             )),
@@ -269,6 +345,9 @@ impl Forwarding {
     /// Warnings worth showing an operator. Never fatal: [`Config::validate`] owns
     /// the hard errors, and callers decide whether and how to report these.
     pub fn lint(&self) -> Vec<String> {
+        if let To::Route(_) = &self.to {
+            return table::lint(self);
+        }
         if let Some(empty) = self.empty_load_balance() {
             return vec![empty];
         }
@@ -516,7 +595,15 @@ impl Forwarding {
             }
             quic.validate(&format!("forwarding {}", self.tag))?;
         }
-        validate_to(&self.to, &self.tag)
+        match &self.to {
+            To::Tree(tree) => {
+                if !self.groups.is_empty() || !self.upstreams.is_empty() {
+                    return Err(ConfigError::RouteEntriesWithTree(self.tag.clone()));
+                }
+                validate_to(tree, &self.tag)
+            }
+            To::Route(to) => table::validate(self, to),
+        }
     }
 }
 
@@ -710,7 +797,9 @@ send_mbps = 200
                 ..QuicTuning::default()
             })
         );
-        assert!(matches!(&f.to, ForwardingTo::Relay { quic: Some(q), .. } if q.send_mbps == 200));
+        assert!(
+            matches!(&f.to, To::Tree(ForwardingTo::Relay { quic: Some(q), .. }) if q.send_mbps == 200)
+        );
         assert_eq!(
             Config::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap(),
             cfg
@@ -718,7 +807,7 @@ send_mbps = 200
 
         let mut plain = cfg.clone();
         plain.forwardings[0].quic = None;
-        if let ForwardingTo::Relay { quic, .. } = &mut plain.forwardings[0].to {
+        if let To::Tree(ForwardingTo::Relay { quic, .. }) = &mut plain.forwardings[0].to {
             *quic = None;
         }
         assert!(

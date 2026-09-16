@@ -986,10 +986,12 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
                 full_chain: "certs/acme/edge/full_chain.pem".into(),
             }),
             quic: None,
-            to: ForwardingTo::Exit {
+            to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                 destination: Remote::parse("127.0.0.1:9")?,
                 send_proxy_protocol: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         }],
     };
     let revision = ConfigRevision {
@@ -1116,10 +1118,12 @@ fn raw_revision(revision: i64) -> Result<ConfigRevision, Box<dyn std::error::Err
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
             quic: None,
-            to: ForwardingTo::Exit {
+            to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                 destination: Remote::parse("127.0.0.1:9")?,
                 send_proxy_protocol: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         }],
     };
     Ok(ConfigRevision {

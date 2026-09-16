@@ -117,10 +117,12 @@ fn relay_worker(listen: SocketAddr, leaf: &TlsHostConfig, echo: SocketAddr) -> C
             receive_proxy_protocol: None,
             listen_as: ListenAs::Relay(RelayHost::Quic(leaf.clone())),
             quic: None,
-            to: ForwardingTo::Exit {
+            to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                 destination: Remote::Address(echo),
                 send_proxy_protocol: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         },
     )
 }
@@ -134,12 +136,14 @@ fn entry_worker(listen: SocketAddr, relay: SocketAddr, ca: &Path) -> Config {
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
             quic: None,
-            to: ForwardingTo::Relay {
+            to: guru_worker_config::To::Tree(ForwardingTo::Relay {
                 protocol: RelayProtocol::Quic,
                 destination: Remote::Address(relay),
                 sni: Some(RELAY_SNI.to_string()),
                 quic: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         },
     )
 }

@@ -13,7 +13,7 @@ use guru_worker_config::table::{
 };
 use guru_worker_config::{
     ConfigError, Forwarding, ListenAs, QuicTuning, RelayHost, RelayProtocol, Remote,
-    TableForwarding, TcpProxyProtocol,
+    TcpProxyProtocol, To,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,41 +31,24 @@ pub struct Compiled {
 /// One server's share of the graph.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
-    /// One forwarding per compiled pod, by pod id; the tag is the pod id.
-    pub forwardings: Forwardings,
+    /// One forwarding per compiled pod, by pod id; the tag is the pod id. Each
+    /// goes where it goes through a route table when `route_table` is set, and
+    /// through the inline tree every worker reads otherwise: weights become
+    /// repeated members of a round robin, a failover becomes `fallback`, a
+    /// sticky balance becomes `ip_hash`, and nothing asks for confirmation.
+    pub forwardings: Vec<Forwarding>,
+    /// Whether the forwardings use route tables, as this server's worker reads.
+    pub route_table: bool,
     /// What each forwarding depends on, in the same order.
     pub deps: Vec<Deps>,
     /// Pods on this server that could not be compiled, and why.
     pub invalid: Vec<InvalidPod>,
 }
 
-/// The forwardings in the form this server's worker reads.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Forwardings {
-    Table(Vec<TableForwarding>),
-    /// For a worker without [`crate::Capabilities::route_table`]: weights become
-    /// repeated members of a round robin, a failover becomes `fallback`, a
-    /// sticky balance becomes `ip_hash`, and nothing asks for confirmation.
-    Legacy(Vec<Forwarding>),
-}
-
-impl Forwardings {
-    pub fn len(&self) -> usize {
-        match self {
-            Forwardings::Table(list) => list.len(),
-            Forwardings::Legacy(list) => list.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
+impl ServerConfig {
+    /// The tags of the forwardings, which are the ids of their pods.
     pub fn tags(&self) -> Vec<&str> {
-        match self {
-            Forwardings::Table(list) => list.iter().map(|f| f.tag.as_str()).collect(),
-            Forwardings::Legacy(list) => list.iter().map(|f| f.tag.as_str()).collect(),
-        }
+        self.forwardings.iter().map(|f| f.tag.as_str()).collect()
     }
 }
 
@@ -139,38 +122,29 @@ pub fn compile(graph: &Graph, certificates: &Certificates) -> Result<Compiled, R
 
     let mut servers = BTreeMap::new();
     for server in index.servers.values().copied() {
-        let mine = entries.iter().filter(|e| e.server.id == server.id);
+        let route_table = server.capabilities.route_table;
         let mut invalid = invalid.remove(&server.id).unwrap_or_default();
+        let mut forwardings = Vec::new();
         let mut deps = Vec::new();
-        let forwardings = if server.capabilities.route_table {
-            let mut list = Vec::new();
-            for entry in mine {
-                match render_table(entry) {
-                    Ok(forwarding) => {
-                        list.push(forwarding);
-                        deps.push(entry.deps.clone());
-                    }
-                    Err(error) => invalid.push(rejected(&index, entry.pod, &error)),
+        for entry in entries.iter().filter(|e| e.server.id == server.id) {
+            let rendered = if route_table {
+                render_table(entry)
+            } else {
+                legacy::render(entry)
+            };
+            match rendered {
+                Ok(forwarding) => {
+                    forwardings.push(forwarding);
+                    deps.push(entry.deps.clone());
                 }
+                Err(error) => invalid.push(rejected(&index, entry.pod, &error)),
             }
-            Forwardings::Table(list)
-        } else {
-            let mut list = Vec::new();
-            for entry in mine {
-                match legacy::render(entry) {
-                    Ok(forwarding) => {
-                        list.push(forwarding);
-                        deps.push(entry.deps.clone());
-                    }
-                    Err(error) => invalid.push(rejected(&index, entry.pod, &error)),
-                }
-            }
-            Forwardings::Legacy(list)
-        };
+        }
         servers.insert(
             server.id.clone(),
             ServerConfig {
                 forwardings,
+                route_table,
                 deps,
                 invalid,
             },
@@ -460,7 +434,7 @@ fn pair_quic_listeners(index: &Index<'_>, entries: &mut [Entry<'_>]) {
     }
 }
 
-fn render_table(entry: &Entry<'_>) -> Result<TableForwarding, ConfigError> {
+fn render_table(entry: &Entry<'_>) -> Result<Forwarding, ConfigError> {
     let mut groups = Vec::new();
     let to = table_member(entry.route, "g", &mut groups);
     let upstreams = entry
@@ -490,13 +464,13 @@ fn render_table(entry: &Entry<'_>) -> Result<TableForwarding, ConfigError> {
             },
         })
         .collect();
-    let forwarding = TableForwarding {
+    let forwarding = Forwarding {
         tag: entry.pod.id.to_string(),
         listen: entry.listen,
         receive_proxy_protocol: entry.receive_proxy_protocol,
         listen_as: entry.listen_as.clone(),
         quic: entry.quic,
-        to,
+        to: To::Route(to),
         groups,
         upstreams,
     };

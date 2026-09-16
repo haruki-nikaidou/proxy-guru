@@ -118,10 +118,12 @@ fn relay_worker(
             receive_proxy_protocol: None,
             listen_as: ListenAs::Relay(host),
             quic: None,
-            to: ForwardingTo::Exit {
+            to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                 destination: Remote::Address(echo),
                 send_proxy_protocol: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         },
     )
 }
@@ -142,12 +144,14 @@ fn entry_worker(
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
             quic: None,
-            to: ForwardingTo::Relay {
+            to: guru_worker_config::To::Tree(ForwardingTo::Relay {
                 protocol,
                 destination: Remote::Address(relay),
                 sni: Some(RELAY_SNI.to_string()),
                 quic: None,
-            },
+            }),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         },
     )
 }
@@ -349,10 +353,12 @@ async fn quic_relay_multiplexes_every_connection_on_one_link() {
                 receive_proxy_protocol: None,
                 listen_as: ListenAs::Raw,
                 quic: None,
-                to: ForwardingTo::Exit {
+                to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                     destination: Remote::Address(echo),
                     send_proxy_protocol: None,
-                },
+                }),
+                groups: Vec::new(),
+                upstreams: Vec::new(),
             },
         ))
         .await;

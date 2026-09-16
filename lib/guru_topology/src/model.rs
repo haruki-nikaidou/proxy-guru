@@ -138,7 +138,7 @@ pub(crate) fn lower(a: u32, b: u32) -> u32 {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capabilities {
-    /// Reads [`guru_worker_config::TableForwarding`].
+    /// Reads route tables (see [`guru_worker_config::table`]).
     pub route_table: bool,
     /// Confirms a relayed connection once its own next hop answered.
     pub relay_confirm: bool,
