@@ -28,6 +28,10 @@ pub struct Forwarding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receive_proxy_protocol: Option<TcpProxyProtocol>,
     pub listen_as: ListenAs,
+    /// Transport tuning for a `quic` relay listener: the rate it sends at toward
+    /// the dialer and the rate it expects from it. Only valid with such a listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic: Option<QuicTuning>,
     pub to: ForwardingTo,
 }
 
@@ -125,6 +129,10 @@ pub enum ForwardingTo {
         destination: Remote,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sni: Option<String>,
+        /// Transport tuning for a `quic` hop: the rate this side sends at toward
+        /// the listener and the rate it expects back. Only valid with `quic`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quic: Option<QuicTuning>,
     },
     LoadBalance(Box<LoadBalanceGroup>),
 }
@@ -138,6 +146,87 @@ pub enum RelayProtocol {
     TlsOverTcp,
     #[serde(rename = "quic")]
     Quic,
+}
+
+/// How one end of a QUIC relay link sends and receives.
+///
+/// A rate turns the sender into hysteria's *brutal*: it paces at exactly that
+/// rate, never slows down on loss, and sends up to a quarter more to make up for
+/// what the path drops. Set it to what the path can actually carry in that
+/// direction; more only makes loss. The peer's rate sizes this side's receive
+/// windows, which otherwise cap a stream at `window / RTT` no matter how the
+/// sender behaves. One QUIC connection carries every proxied connection of the
+/// link, so a rate is the link's total, not a per-connection budget.
+///
+/// Every field has a zero default meaning "quinn's own choice", so a tuning with
+/// nothing set is not written out and a config without one reads the same as
+/// before the field existed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct QuicTuning {
+    /// How this side decides its send rate: `cubic` probes, `brutal` sends at
+    /// `send_mbps` and needs it set.
+    pub congestion: QuicCongestion,
+    /// The send rate toward the peer, in Mbit/s: brutal's fixed rate, and the
+    /// basis of `send_window` either way. `0` keeps quinn's defaults.
+    pub send_mbps: u32,
+    /// The rate the peer sends toward this side, in Mbit/s; sizes the receive
+    /// windows. `0` keeps quinn's defaults.
+    pub receive_mbps: u32,
+    /// Streams the peer may keep open on one connection; the listener side
+    /// advertises it. `0` means 4096.
+    pub max_streams: u32,
+    /// Per-stream receive window in bytes, overriding the one derived from
+    /// `receive_mbps`. `0` derives.
+    pub stream_receive_window: u64,
+    /// Receive window for a whole connection in bytes, all streams together.
+    /// `0` leaves it unlimited, so only the per-stream window applies.
+    pub receive_window: u64,
+    /// Bytes this side may have unacknowledged on one connection, overriding the
+    /// one derived from `send_mbps`. `0` derives.
+    pub send_window: u64,
+}
+
+/// The congestion control of one side of a QUIC link.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuicCongestion {
+    /// quinn's Cubic: probes for bandwidth and backs off on loss.
+    #[default]
+    Cubic,
+    /// Hysteria's brutal: sends at `send_mbps` whatever the path does.
+    Brutal,
+}
+
+impl QuicTuning {
+    /// Whether every field is at its zero default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Brutal without a rate would send at nothing.
+    pub fn validate(&self, what: &str) -> Result<(), ConfigError> {
+        if self.congestion == QuicCongestion::Brutal && self.send_mbps == 0 {
+            return Err(ConfigError::QuicTuning(format!(
+                "{what}: congestion = \"brutal\" needs send_mbps"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The tuning for the other end of the same link: it sends at what this side
+    /// receives, and receives what this side sends.
+    pub fn mirrored(&self) -> Self {
+        Self {
+            send_mbps: self.receive_mbps,
+            receive_mbps: self.send_mbps,
+            ..*self
+        }
+    }
 }
 
 impl Forwarding {
@@ -241,6 +330,10 @@ pub struct Config {
     /// master must not send the section to a worker built before it existed.
     #[serde(default, skip_serializing_if = "KeepAlive::is_default")]
     pub keepalive: KeepAlive,
+    /// This worker's side of every QUIC relay link, listener or dialer, unless a
+    /// forwarding carries its own. Omitted at the defaults for the same reason.
+    #[serde(default, skip_serializing_if = "QuicTuning::is_default")]
+    pub quic: QuicTuning,
     #[serde(rename = "forwarding", default)]
     pub forwardings: Vec<Forwarding>,
 }
@@ -271,7 +364,7 @@ impl Default for LogConfig {
 ///
 /// None of this is an idle limit: a connection whose peer answers the probes stays
 /// open for as long as the peer likes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeepAlive {
     /// Seconds a TCP connection is idle before the first probe (`TCP_KEEPIDLE`).
@@ -389,6 +482,7 @@ impl Config {
     /// worker tells its listeners apart and how it reports on each of them.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.keepalive.validate()?;
+        self.quic.validate("quic")?;
         let mut seen = HashSet::new();
         let mut tags = HashSet::new();
         for f in &self.forwardings {
@@ -414,6 +508,12 @@ impl Forwarding {
     /// entry can attribute a failure to the entry that caused it instead of
     /// rejecting the whole file.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(quic) = &self.quic {
+            if self.transport() != Transport::Quic {
+                return Err(ConfigError::QuicTuningWithoutQuic(self.tag.clone()));
+            }
+            quic.validate(&format!("forwarding {}", self.tag))?;
+        }
         validate_to(&self.to, &self.tag)
     }
 }
@@ -425,10 +525,21 @@ impl Forwarding {
 fn validate_to(to: &ForwardingTo, tag: &str) -> Result<(), ConfigError> {
     match to {
         ForwardingTo::Exit { .. } => Ok(()),
-        ForwardingTo::Relay { protocol, sni, .. } => {
+        ForwardingTo::Relay {
+            protocol,
+            sni,
+            quic,
+            ..
+        } => {
             let needs = matches!(protocol, RelayProtocol::TlsOverTcp | RelayProtocol::Quic);
             if needs && sni.is_none() {
                 return Err(ConfigError::MissingSni(tag.to_string()));
+            }
+            if let Some(quic) = quic {
+                if *protocol != RelayProtocol::Quic {
+                    return Err(ConfigError::QuicTuningWithoutQuic(tag.to_string()));
+                }
+                quic.validate(&format!("forwarding {tag} relay"))?;
             }
             Ok(())
         }
@@ -560,5 +671,101 @@ destination = "10.0.0.5:8080"
     #[test]
     fn remote_rejects_bad_port() {
         assert!(Remote::parse("host:notaport").is_err());
+    }
+
+    #[test]
+    fn quic_tuning_is_written_only_when_set_and_only_on_quic() {
+        let text = r#"
+[[forwarding]]
+tag = "hop"
+listen = "[::]:4443"
+
+[forwarding.listen_as.relay]
+relay_type = "quic"
+key = "k.pem"
+full_chain = "c.pem"
+
+[forwarding.quic]
+send_mbps = 2000
+receive_mbps = 200
+
+[forwarding.to]
+type = "relay"
+protocol = "quic"
+destination = "10.0.0.5:4443"
+sni = "next.relay.guru.internal"
+
+[forwarding.to.quic]
+send_mbps = 200
+"#;
+        let cfg = Config::from_toml_str(text).unwrap();
+        let f = &cfg.forwardings[0];
+        assert_eq!(
+            f.quic,
+            Some(QuicTuning {
+                send_mbps: 2000,
+                receive_mbps: 200,
+                ..QuicTuning::default()
+            })
+        );
+        assert!(matches!(&f.to, ForwardingTo::Relay { quic: Some(q), .. } if q.send_mbps == 200));
+        assert_eq!(
+            Config::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap(),
+            cfg
+        );
+
+        let mut plain = cfg.clone();
+        plain.forwardings[0].quic = None;
+        if let ForwardingTo::Relay { quic, .. } = &mut plain.forwardings[0].to {
+            *quic = None;
+        }
+        assert!(
+            !plain.to_toml_string().unwrap().contains("quic]"),
+            "no tuning, no table: a worker that predates it rejects unknown keys"
+        );
+
+        let top = format!("[quic]\ncongestion = \"brutal\"\nsend_mbps = 500\n{text}");
+        let cfg = Config::from_toml_str(&top).unwrap();
+        assert_eq!(cfg.quic.congestion, QuicCongestion::Brutal);
+        assert!(
+            cfg.to_toml_string()
+                .unwrap()
+                .contains("\n[quic]\ncongestion = \"brutal\"\n")
+        );
+        match Config::from_toml_str("[quic]\ncongestion = \"brutal\"\n") {
+            Err(ConfigError::QuicTuning(msg)) => assert!(msg.contains("send_mbps"), "{msg}"),
+            other => panic!("brutal without a rate is refused, got {other:?}"),
+        }
+
+        let on_tcp = text.replace("relay_type = \"quic\"", "relay_type = \"tcp\"");
+        match Config::from_toml_str(&on_tcp) {
+            Err(ConfigError::QuicTuningWithoutQuic(tag)) => assert_eq!(tag, "hop"),
+            other => panic!("tuning on a tcp listener is refused, got {other:?}"),
+        }
+        let on_tls_hop = text
+            .replace(
+                "[forwarding.quic]\nsend_mbps = 2000\nreceive_mbps = 200\n",
+                "",
+            )
+            .replace("protocol = \"quic\"", "protocol = \"tls\"");
+        match Config::from_toml_str(&on_tls_hop) {
+            Err(ConfigError::QuicTuningWithoutQuic(tag)) => assert_eq!(tag, "hop"),
+            other => panic!("tuning on a tls hop is refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quic_tuning_mirrors_send_and_receive() {
+        let dialer = QuicTuning {
+            send_mbps: 200,
+            receive_mbps: 2000,
+            max_streams: 64,
+            ..QuicTuning::default()
+        };
+        let listener = dialer.mirrored();
+        assert_eq!(listener.send_mbps, 2000);
+        assert_eq!(listener.receive_mbps, 200);
+        assert_eq!(listener.max_streams, 64);
+        assert!(QuicTuning::default().is_default());
     }
 }

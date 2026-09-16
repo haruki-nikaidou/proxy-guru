@@ -6,8 +6,8 @@
 
 use guru_worker::supervisor::{ApplyOutcome, Supervisor};
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, RelayHost,
-    RelayProtocol, Remote, TlsHostConfig,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, QuicTuning,
+    RelayHost, RelayProtocol, Remote, TlsHostConfig,
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 use std::net::SocketAddr;
@@ -78,6 +78,7 @@ fn config(relay_ca: Option<PathBuf>, forwarding: Forwarding) -> Config {
         log: LogConfig::default(),
         relay_ca,
         keepalive: KEEPALIVE,
+        quic: QuicTuning::default(),
         forwardings: vec![forwarding],
     }
 }
@@ -115,6 +116,7 @@ fn relay_worker(listen: SocketAddr, leaf: &TlsHostConfig, echo: SocketAddr) -> C
             listen,
             receive_proxy_protocol: None,
             listen_as: ListenAs::Relay(RelayHost::Quic(leaf.clone())),
+            quic: None,
             to: ForwardingTo::Exit {
                 destination: Remote::Address(echo),
                 send_proxy_protocol: None,
@@ -131,10 +133,12 @@ fn entry_worker(listen: SocketAddr, relay: SocketAddr, ca: &Path) -> Config {
             listen,
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
+            quic: None,
             to: ForwardingTo::Relay {
                 protocol: RelayProtocol::Quic,
                 destination: Remote::Address(relay),
                 sni: Some(RELAY_SNI.to_string()),
+                quic: None,
             },
         },
     )

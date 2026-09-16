@@ -29,6 +29,9 @@ pub struct ServerEntity {
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
+    /// This server's side of every QUIC relay link it takes part in.
+    #[sqlx(json)]
+    pub quic: ServerQuic,
     pub current_dynamic_refresh_key: Option<String>,
     pub refresh_key_generation: i64,
     /// Monotonic claim counter for the single live `WatchConfig` stream. Bumped by
@@ -153,6 +156,81 @@ text_enum!(ServerIpv6Resolve {
     Forbidden => "forbidden",
 });
 
+/// How a server sends on its QUIC relay links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuicCongestion {
+    /// quinn's Cubic: probes for bandwidth, backs off on loss.
+    #[default]
+    Cubic,
+    /// Hysteria's brutal: sends at `up_mbps` whatever the path does.
+    Brutal,
+}
+
+/// A server's side of every QUIC relay link it takes part in, as the operator
+/// set it. Stored as one `jsonb` document; every field has a zero default, so a
+/// server created before the column existed reads as "quinn's defaults".
+///
+/// `up_mbps` is what this server sends at and `down_mbps` what it can receive;
+/// on each link the master pairs them with the peer's, so a server never sends
+/// faster than its peer said it can take (see `services::derive`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerQuic {
+    pub congestion: QuicCongestion,
+    /// Send rate toward every QUIC peer, Mbit/s. `0` = unknown.
+    pub up_mbps: u32,
+    /// Receive rate from every QUIC peer, Mbit/s. `0` = unknown.
+    pub down_mbps: u32,
+    /// Per-stream receive window in bytes; `0` derives it from `down_mbps`.
+    pub stream_receive_window: u64,
+    /// Whole-connection receive window in bytes; `0` leaves it unlimited.
+    pub conn_receive_window: u64,
+}
+
+impl ServerQuic {
+    /// Brutal without a send rate would send at nothing.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.congestion == QuicCongestion::Brutal && self.up_mbps == 0 {
+            return Err("quic: brutal congestion control needs up_mbps".to_string());
+        }
+        Ok(())
+    }
+
+    /// This server's side of a link with `peer`: it sends at the lower of its own
+    /// up rate and the peer's down rate, and sizes its windows for the lower of
+    /// its own down rate and the peer's up rate. Windows the operator pinned
+    /// stay pinned. Without a peer (the worker-wide default) its own numbers
+    /// stand.
+    pub fn tuning(&self, peer: Option<&ServerQuic>) -> guru_worker_config::QuicTuning {
+        fn lower(mine: u32, theirs: u32) -> u32 {
+            match (mine, theirs) {
+                (0, rate) | (rate, 0) => rate,
+                (mine, theirs) => mine.min(theirs),
+            }
+        }
+        let (send_mbps, receive_mbps) = match peer {
+            Some(peer) => (
+                lower(self.up_mbps, peer.down_mbps),
+                lower(self.down_mbps, peer.up_mbps),
+            ),
+            None => (self.up_mbps, self.down_mbps),
+        };
+        guru_worker_config::QuicTuning {
+            congestion: match self.congestion {
+                QuicCongestion::Cubic => guru_worker_config::QuicCongestion::Cubic,
+                QuicCongestion::Brutal => guru_worker_config::QuicCongestion::Brutal,
+            },
+            send_mbps,
+            receive_mbps,
+            max_streams: 0,
+            stream_receive_window: self.stream_receive_window,
+            receive_window: self.conn_receive_window,
+            send_window: 0,
+        }
+    }
+}
+
 impl From<ServerIpv6Resolve> for guru_worker_config::Ipv6Resolve {
     fn from(value: ServerIpv6Resolve) -> Self {
         match value {
@@ -263,6 +341,7 @@ pub struct UpdateServerSettings {
     pub comment: String,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
+    pub quic: ServerQuic,
     pub override_v4: Option<String>,
     pub override_v6: Option<String>,
     pub extra_addresses: Vec<String>,
@@ -281,7 +360,8 @@ impl Processor<UpdateServerSettings> for Db {
         let server: ServerEntity = sqlx::query_as(
             "UPDATE orchestration_server
              SET name = $2, icon = $3, comment = $4, ipv6_resolve = $5, log_level = $6,
-                 override_v4 = $7, override_v6 = $8, extra_addresses = $9, agent_unit = $10
+                 override_v4 = $7, override_v6 = $8, extra_addresses = $9, agent_unit = $10,
+                 quic = $11
              WHERE id = $1 RETURNING *",
         )
         .bind(&input.id)
@@ -294,6 +374,7 @@ impl Processor<UpdateServerSettings> for Db {
         .bind(&input.override_v6)
         .bind(&input.extra_addresses)
         .bind(&input.agent_unit)
+        .bind(Json(input.quic))
         .fetch_one(&mut *tx)
         .await?;
         fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;

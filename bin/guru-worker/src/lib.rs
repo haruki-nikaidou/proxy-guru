@@ -16,6 +16,7 @@ pub mod keepalive;
 pub mod listener;
 pub mod pipe;
 pub mod prepared;
+pub mod quic;
 pub mod resolver;
 pub mod state;
 pub mod stats;

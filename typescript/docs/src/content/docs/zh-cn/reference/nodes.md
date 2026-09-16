@@ -167,6 +167,12 @@ distribute 的镜像：捆绑重新汇合的地方。它的**成员**就是它�
 `Offline`（连续三个健康检查间隔没有任何上报 —— 默认为 45 秒）或 `Unknown`。两行摘要依次是日志级别、
 IPv6 解析策略（`Required`/`Preferred`/`Tolerated`/`Forbidden`，默认 `Tolerated`）、生效地址或
 `no address yet`、上报的国家 —— 然后是最后一次 watch 流心跳，服务器离线期间会追加 `not reporting`。
+服务器填了 QUIC 速率之后，中间会多出 `brutal ↑1000/↓1000`（或 `Cubic ↑…/↓…`）。
+
+**QUIC 中继链路。** 检查器的最后一组是这台服务器在它参与的每条 QUIC 中继链路上的一侧：拥塞控制（`Cubic`，
+或不管路径怎样都按上行速率固定发送的 `Brutal`）、上行和下行速率（Mbit/s），以及两个可选的接收窗口（字节；
+0 = 按下行速率推导 / 不限）。它们会成为 Worker 的 `[quic]` 段；每条链路上 master 会把两端配对，服务器
+永远不会发得比对端的下行更快（见[配置参考](/zh-cn/reference/configuration/#quic)）。`Brutal` 需要填上行速率。
 
 服务器的地址不需要任何人手工填写：Worker 在注册时上报自己的 IPv4/IPv6，master 也会记住注册请求来自
 哪里。优先级顺序为：手工固定的 v4 → 上报的 v4 → 观测到的 v4 → 手工固定的 v6 → 上报的 v6 → 观测到的

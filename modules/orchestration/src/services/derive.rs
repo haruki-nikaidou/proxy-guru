@@ -21,7 +21,7 @@ use crate::entities::db::node::{
     NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayProtocol as EntityRelayProtocol,
 };
 use crate::entities::db::port::PortEntity;
-use crate::entities::db::server::ServerId;
+use crate::entities::db::server::{ServerEntity, ServerId, ServerQuic};
 use crate::entities::db::topology::CanvasTopology;
 use crate::entities::db::view::{
     CertificateKind, CertificateRef, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
@@ -29,8 +29,8 @@ use crate::entities::db::view::{
 use crate::services::ca::{CA_FILE, acme_cert_paths, relay_cert_paths};
 use crate::services::topology::Index;
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, KeepAlive, ListenAs, LoadBalanceGroup, LogConfig, RelayHost,
-    RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
+    Config, Forwarding, ForwardingTo, KeepAlive, ListenAs, LoadBalanceGroup, LogConfig, QuicTuning,
+    RelayHost, RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
 };
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
@@ -185,6 +185,7 @@ pub fn derive_server_config(
         })?;
 
     let index = Index::build(topology);
+    let dialers = quic_dialers(&index, topology, certificates);
     let mut forwardings = Vec::new();
     let mut deps = Vec::new();
     let mut invalid = Vec::new();
@@ -225,6 +226,8 @@ pub fn derive_server_config(
             destination_port,
             certificates,
             config,
+            server_row,
+            &dialers,
         ) {
             Ok((forwarding, pod_deps)) => {
                 forwardings.push(forwarding);
@@ -248,6 +251,9 @@ pub fn derive_server_config(
         // The defaults, which the TOML then omits: a worker built before the
         // section existed rejects unknown keys.
         keepalive: KeepAlive::default(),
+        // The server's own side of every QUIC link; a link whose peer asks for
+        // less carries its own numbers on the forwarding.
+        quic: server_row.quic.tuning(None),
         forwardings,
     };
     // Every entry validated itself in `derive_pod`; what is left is the cross-pod
@@ -262,7 +268,91 @@ pub fn derive_server_config(
     })
 }
 
+/// Every QUIC relay hop on the canvas as `(dialing server, listener it dials)`,
+/// so a listener can learn who dials it and pair its QUIC numbers with theirs.
+/// A hop that cannot be derived (no CA, a dangling relay) is simply absent: its
+/// dialer's own derivation reports the problem.
+fn quic_dialers(
+    index: &Index<'_>,
+    topology: &CanvasTopology,
+    certificates: &DerivationCertificates,
+) -> Vec<(ServerId, ListenerCap)> {
+    let mut dialers = Vec::new();
+    for pod in &topology.nodes {
+        let NodeSpec::Pod(cfg) = &pod.node.spec else {
+            continue;
+        };
+        let Some(producer) = index
+            .port_by_key(pod, "destination")
+            .and_then(|port| index.peer(port))
+        else {
+            continue;
+        };
+        let mut points_at = Vec::new();
+        let _ = derive_destination(
+            index,
+            producer,
+            &mut Vec::new(),
+            &mut points_at,
+            &mut Vec::new(),
+            certificates,
+            &ServerQuic::default(),
+        );
+        dialers.extend(
+            points_at
+                .into_iter()
+                .filter(|cap| cap.protocol == ListenProtocol::RelayQuic)
+                .map(|cap| (cfg.server.clone(), cap)),
+        );
+    }
+    dialers
+}
+
+/// This side of a QUIC link with `peer`, written on the forwarding only when it
+/// differs from the server-wide side the top-level `[quic]` already carries.
+fn link_tuning(local: &ServerQuic, peer: &ServerQuic) -> Option<QuicTuning> {
+    let tuning = local.tuning(Some(peer));
+    (tuning != local.tuning(None)).then_some(tuning)
+}
+
+/// The listener side of a QUIC link: paired with every server that dials this
+/// pod. Several dialers (a pod reached through more than one relay) are folded
+/// into the most conservative peer, so the listener never sends faster than the
+/// slowest of them said it can take.
+fn listener_tuning(
+    local: &ServerEntity,
+    port: u16,
+    dialers: &[(ServerId, ListenerCap)],
+    index: &Index<'_>,
+) -> Option<QuicTuning> {
+    fn lower(a: u32, b: u32) -> u32 {
+        match (a, b) {
+            (0, rate) | (rate, 0) => rate,
+            (a, b) => a.min(b),
+        }
+    }
+    let mut peer: Option<ServerQuic> = None;
+    for (dialer, cap) in dialers {
+        if cap.server != local.id || cap.port != i64::from(port) {
+            continue;
+        }
+        let Some(server) = index.servers.get(dialer) else {
+            continue;
+        };
+        peer = Some(match peer {
+            None => server.quic,
+            Some(folded) => ServerQuic {
+                up_mbps: lower(folded.up_mbps, server.quic.up_mbps),
+                down_mbps: lower(folded.down_mbps, server.quic.down_mbps),
+                ..folded
+            },
+        });
+    }
+    link_tuning(&local.quic, &peer?)
+}
+
 /// One pod's `[[forwarding]]` entry, or why that pod alone cannot be derived.
+#[allow(clippy::too_many_arguments)]
 fn derive_pod(
     index: &Index<'_>,
     pod: &NodeWithPorts,
@@ -271,6 +361,8 @@ fn derive_pod(
     destination_port: &PortEntity,
     certificates: &DerivationCertificates,
     config: &OrchestrationConfig,
+    local: &ServerEntity,
+    dialers: &[(ServerId, ListenerCap)],
 ) -> Result<(Forwarding, ForwardingDeps), DeriveError> {
     // No bind means every address of the host: the worker binds `::` dual-stack
     // and falls back to `0.0.0.0` on a host without IPv6.
@@ -307,13 +399,19 @@ fn derive_pod(
         &mut points_at,
         &mut nodes,
         certificates,
+        &local.quic,
     )?;
 
+    let quic = match listen_protocol {
+        ListenProtocol::RelayQuic => listener_tuning(local, cfg.port, dialers, index),
+        _ => None,
+    };
     let forwarding = Forwarding {
         tag: pod.node.name.clone(),
         listen: SocketAddr::new(address, cfg.port),
         receive_proxy_protocol,
         listen_as,
+        quic,
         to,
     };
     forwarding.validate()?;
@@ -461,6 +559,7 @@ fn derive_destination(
     points_at: &mut Vec<ListenerCap>,
     nodes: &mut Vec<NodeId>,
     certificates: &DerivationCertificates,
+    local: &ServerQuic,
 ) -> Result<ForwardingTo, DeriveError> {
     let key = node.node.id.to_string();
     if visited.contains(&key) {
@@ -555,10 +654,15 @@ fn derive_destination(
                     })?,
                 };
                 let sni = (protocol != RelayProtocol::Tcp).then(|| relay_sni(&pod.node.id));
+                // The dialing side of a QUIC link, paired with the listener's server.
+                let quic = (protocol == RelayProtocol::Quic)
+                    .then(|| link_tuning(local, &far.quic))
+                    .flatten();
                 ForwardingTo::Relay {
                     protocol,
                     destination,
                     sni,
+                    quic,
                 }
             }
             NodeSpec::LoadBalanceDistribute(cfg) => {
@@ -574,6 +678,7 @@ fn derive_destination(
                         points_at,
                         nodes,
                         certificates,
+                        local,
                     )?);
                 }
                 ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
@@ -592,7 +697,15 @@ fn derive_destination(
                         node: node.node.name.clone(),
                     });
                 };
-                derive_destination(index, source, visited, points_at, nodes, certificates)?
+                derive_destination(
+                    index,
+                    source,
+                    visited,
+                    points_at,
+                    nodes,
+                    certificates,
+                    local,
+                )?
             }
             // Boundary nodes and universal pods are never reached: `Index::peer`
             // resolves through the former and stops at the latter's bundles.

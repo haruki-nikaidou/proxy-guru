@@ -17,6 +17,9 @@ openssl = { version = "0.10", features = ["vendored"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 quinn = { version = "0.11", features = ["runtime-tokio"] }
+# The congestion-control trait the brutal sender implements (`quinn` does not
+# re-export `RttEstimator`). Resolved to vendor/quinn-proto by the workspace patch.
+quinn-proto = "0.11"
 smallvec = { version = "1.15", features = ["serde"] }
 compact_str = { version = "0.10", features = ["serde"] }
 tracing = "0.1"

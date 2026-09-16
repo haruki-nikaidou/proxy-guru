@@ -14,7 +14,8 @@ import type {
 import {
 	AddressSource,
 	ProblemKind,
-	ProblemSeverity
+	ProblemSeverity,
+	QuicCongestion
 } from 'app-protobuf/orchestration/orchestration';
 import type {
 	BundlePortDto,
@@ -38,6 +39,7 @@ import {
 	toPortDirection,
 	toPortKind,
 	toProxy,
+	toQuicCongestion,
 	toRelayProtocol,
 	toServerHealth
 } from './enums.js';
@@ -305,6 +307,13 @@ export const toServer = (
 	y: Number(server.position?.y ?? 0n),
 	ipv6Resolve: toIpv6(server.ipv6Resolve),
 	logLevel: server.logLevel,
+	quic: {
+		congestion: toQuicCongestion(server.quic?.congestion ?? QuicCongestion.UNSPECIFIED),
+		upMbps: server.quic?.upMbps ?? 0,
+		downMbps: server.quic?.downMbps ?? 0,
+		streamReceiveWindow: Number(server.quic?.streamReceiveWindow ?? 0n),
+		connReceiveWindow: Number(server.quic?.connReceiveWindow ?? 0n)
+	},
 	lastSeenAt: server.lastSeenAt,
 	lastHealthReportAt: server.lastHealthReportAt,
 	healthStatus: toServerHealth(server.healthStatus),

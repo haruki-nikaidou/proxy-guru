@@ -1,7 +1,7 @@
 use crate::stats::TagStats;
 use guru_worker_config::{
-    Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LoadBalanceStrategy, RelayHost,
-    RelayProtocol, Remote, TcpProxyProtocol,
+    Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LoadBalanceStrategy, QuicTuning,
+    RelayHost, RelayProtocol, Remote, TcpProxyProtocol,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub enum Target {
         /// CA the relay peer is verified against; `None` means the system roots.
         relay_ca: Option<PathBuf>,
         keepalive: KeepAlive,
+        /// This side of the link when `protocol` is QUIC; ignored otherwise.
+        quic: QuicTuning,
     },
     LoadBalance {
         members: Vec<Arc<Target>>,
@@ -55,11 +57,14 @@ pub struct PreparedForwarding {
 }
 
 impl PreparedForwarding {
+    /// `quic` is the worker's default side of a QUIC link; a forwarding that
+    /// carries its own replaces it, listener and hop alike.
     pub fn build(
         f: &Forwarding,
         ipv6_resolve: Ipv6Resolve,
         relay_ca: Option<&Path>,
         keepalive: KeepAlive,
+        quic: QuicTuning,
         stats: Arc<TagStats>,
     ) -> Result<PreparedForwarding, crate::BoxError> {
         let ingest = match &f.listen_as {
@@ -72,12 +77,14 @@ impl PreparedForwarding {
             ListenAs::Relay(RelayHost::Quic(_)) => Ingest::RelayQuic,
         };
         let quic_server = match &f.listen_as {
-            ListenAs::Relay(RelayHost::Quic(c)) => {
-                Some(crate::tls::quic_server_config(c, &keepalive)?)
-            }
+            ListenAs::Relay(RelayHost::Quic(c)) => Some(crate::tls::quic_server_config(
+                c,
+                &keepalive,
+                &f.quic.unwrap_or(quic),
+            )?),
             _ => None,
         };
-        let target = compile_target(&f.to, ipv6_resolve, relay_ca, keepalive);
+        let target = compile_target(&f.to, ipv6_resolve, relay_ca, keepalive, quic);
         Ok(PreparedForwarding {
             forwarding: Arc::new(f.clone()),
             ingest,
@@ -94,6 +101,7 @@ fn compile_target(
     ipv6_resolve: Ipv6Resolve,
     relay_ca: Option<&Path>,
     keepalive: KeepAlive,
+    quic: QuicTuning,
 ) -> Arc<Target> {
     match to {
         ForwardingTo::Exit {
@@ -109,6 +117,7 @@ fn compile_target(
             protocol,
             destination,
             sni,
+            quic: own,
         } => Arc::new(Target::Relay {
             protocol: *protocol,
             destination: destination.clone(),
@@ -116,12 +125,13 @@ fn compile_target(
             sni: sni.clone(),
             relay_ca: relay_ca.map(Path::to_path_buf),
             keepalive,
+            quic: own.unwrap_or(quic),
         }),
         ForwardingTo::LoadBalance(g) => {
             let members = g
                 .members
                 .iter()
-                .map(|m| compile_target(m, ipv6_resolve, relay_ca, keepalive))
+                .map(|m| compile_target(m, ipv6_resolve, relay_ca, keepalive, quic))
                 .collect();
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

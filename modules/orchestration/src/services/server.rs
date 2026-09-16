@@ -16,8 +16,8 @@ use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::db::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
 use crate::entities::db::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, SetAgentUpdateRequested, SetServerAgentKey,
-    UpdateServerSettings,
+    ServerEntity, ServerId, ServerIpv6Resolve, ServerQuic, SetAgentUpdateRequested,
+    SetServerAgentKey, UpdateServerSettings,
 };
 use crate::entities::db::topology::LoadCanvasTopology;
 use crate::entities::db::view::ListServerConfigViewsByCanvases;
@@ -194,6 +194,7 @@ pub struct UpdateServer {
     pub comment: String,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: String,
+    pub quic: ServerQuic,
     pub addresses: AddressOverrides,
     /// Already validated by [`agent_unit_from`]; `None` clears it.
     pub agent_unit: Option<String>,
@@ -210,6 +211,7 @@ impl Processor<UpdateServer> for ServerService {
                 "log_level must not be empty".into(),
             ));
         }
+        input.quic.validate().map_err(OrchestrationError::Invalid)?;
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
         let topology = self
             .db
@@ -221,6 +223,7 @@ impl Processor<UpdateServer> for ServerService {
             server: input.server.clone(),
             ipv6_resolve: input.ipv6_resolve,
             log_level: input.log_level.clone(),
+            quic: input.quic,
             override_v4: input.addresses.override_v4.clone(),
             override_v6: input.addresses.override_v6.clone(),
             extra_addresses: input.addresses.extra_addresses.clone(),
@@ -244,6 +247,7 @@ impl Processor<UpdateServer> for ServerService {
                 comment: input.comment,
                 ipv6_resolve: input.ipv6_resolve,
                 log_level: input.log_level,
+                quic: input.quic,
                 override_v4: input.addresses.override_v4,
                 override_v6: input.addresses.override_v6,
                 extra_addresses: input.addresses.extra_addresses,

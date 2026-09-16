@@ -12,6 +12,25 @@ enum ProxyProtocolVersion {
   PROXY_V1 = 1;
   PROXY_V2 = 2;
 }
+// How a server sends on its QUIC relay links.
+enum QuicCongestion {
+  QUIC_CONGESTION_UNSPECIFIED = 0;
+  QUIC_CUBIC = 1;
+  QUIC_BRUTAL = 2;
+}
+// A server's side of every QUIC relay link it takes part in. `up_mbps` is what
+// it sends at (brutal's fixed rate), `down_mbps` what it can receive; on each
+// link the master pairs a server's numbers with its peer's, so nobody sends
+// faster than the other end said it can take. Zero means unknown / default.
+message QuicSettings {
+  QuicCongestion congestion = 1;
+  uint32 up_mbps = 2;
+  uint32 down_mbps = 3;
+  // Bytes; 0 derives the per-stream window from down_mbps.
+  uint64 stream_receive_window = 4;
+  // Bytes; 0 leaves the whole-connection window unlimited.
+  uint64 conn_receive_window = 5;
+}
 enum RelayProtocol {
   RELAY_PROTOCOL_UNSPECIFIED = 0;
   RELAY_TCP_RAW = 1;
@@ -292,6 +311,7 @@ message Server {
   Ipv6Resolve ipv6_resolve = 7;
   string log_level = 8;
   string last_seen_at = 9;
+  QuicSettings quic = 20;
   ServerHealthStatus health_status = 11;
   reserved 10; // ips
   ServerAddresses addresses = 12;
@@ -431,6 +451,8 @@ message UpdateServerRequest {
   // The systemd instance the install command targets (`guru-worker@<unit>`):
   // 1-32 lowercase letters, digits or dashes. Empty clears it.
   string agent_unit = 10;
+  // Absent keeps quinn's defaults (every field zero).
+  QuicSettings quic = 11;
 }
 message UpdateServerReply {
   Server server = 1;

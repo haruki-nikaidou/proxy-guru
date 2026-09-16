@@ -9,7 +9,7 @@ use orchestration::entities::db::node::{
     NodeWithPorts,
 };
 use orchestration::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve, ServerQuic};
 use orchestration::entities::db::topology::CanvasTopology;
 use orchestration::services::node::export_port_direction;
 use orchestration::utils::ids;
@@ -234,6 +234,7 @@ impl Builder {
             position: CanvasUiPosition { x: 0, y: 0 },
             ipv6_resolve: ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
+            quic: Default::default(),
             current_dynamic_refresh_key: None,
             refresh_key_generation: 0,
             watch_epoch: 0,
@@ -256,6 +257,15 @@ impl Builder {
             agent_key_issued_at: None,
         });
         id
+    }
+
+    /// Sets a server's side of its QUIC links.
+    pub fn server_quic(&mut self, server: &ServerId, quic: ServerQuic) {
+        for s in self.servers.iter_mut() {
+            if s.id == *server {
+                s.quic = quic;
+            }
+        }
     }
 
     /// Pins an address on a server and hands back its id, so a pod can be placed

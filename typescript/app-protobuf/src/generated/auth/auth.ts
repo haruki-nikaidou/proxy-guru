@@ -11,7 +11,7 @@ import { ConfigDocument } from "../base/config.js";
 
 export const protobufPackage = "guru.auth";
 
-/** Account roles, mirroring `auth::entities::surreal::account::AccountRole`. */
+/** Account roles, mirroring `auth::entities::db::account::AccountRole`. */
 export enum Role {
   UNSPECIFIED = 0,
   ADMIN = 1,

@@ -13,6 +13,21 @@ export type ProxyProtocolName = 'none' | 'v1' | 'v2';
 export type RelayProtocolName = 'tcp_raw' | 'tcp_tls' | 'quic';
 export type LoadBalanceModeName = 'round_robin' | 'random' | 'ip_hash' | 'fallback';
 export type Ipv6ResolveName = 'required' | 'preferred' | 'tolerated' | 'forbidden';
+export type QuicCongestionName = 'cubic' | 'brutal';
+/**
+ * A server's side of every QUIC relay link it takes part in. `upMbps` is what
+ * it sends at (brutal's fixed rate), `downMbps` what it can receive; the master
+ * pairs each link's two ends. Zero means "quinn's default".
+ */
+export type ServerQuicDto = {
+	congestion: QuicCongestionName;
+	upMbps: number;
+	downMbps: number;
+	/** Bytes; 0 derives the per-stream window from `downMbps`. */
+	streamReceiveWindow: number;
+	/** Bytes; 0 leaves the whole-connection window unlimited. */
+	connReceiveWindow: number;
+};
 /**
  * Which side of the boundary an export node feeds, named from the subcanvas's
  * point of view: `input_into_canvas` emits inside, so the mirrored port on the
@@ -234,6 +249,7 @@ export type ServerDto = {
 	y: number;
 	ipv6Resolve: Ipv6ResolveName;
 	logLevel: string;
+	quic: ServerQuicDto;
 	/** Advanced by the config stream's heartbeat as well as by health reports. */
 	lastSeenAt: string;
 	/** When the worker's last health report was accepted; empty until one is. */

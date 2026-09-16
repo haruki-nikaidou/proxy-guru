@@ -21,8 +21,9 @@ use orchestration::entities::db::node::{
 use orchestration::entities::db::port::PortId;
 use orchestration::entities::db::server::{
     ClaimServerWatchSession, DeleteServerRow, FindServerById, FindServerByRefreshKeyDigest,
-    ListServersByCanvas, MoveServerPosition, RegisterWorkerSession, ReleaseServerWatchSession,
-    RenewServerWatchSession, ServerIpv6Resolve, UpdateServerSettings,
+    ListServersByCanvas, MoveServerPosition, QuicCongestion, RegisterWorkerSession,
+    ReleaseServerWatchSession, RenewServerWatchSession, ServerIpv6Resolve, ServerQuic,
+    UpdateServerSettings,
 };
 use orchestration::entities::db::topology::{
     FindCanvasOfServer, LoadCanvasContents, LoadCanvasTopology,
@@ -112,6 +113,13 @@ async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> 
             comment: "primary".to_string(),
             ipv6_resolve: ServerIpv6Resolve::Preferred,
             log_level: "debug".to_string(),
+            quic: ServerQuic {
+                congestion: QuicCongestion::Brutal,
+                up_mbps: 1000,
+                down_mbps: 1000,
+                stream_receive_window: 67_108_864,
+                conn_receive_window: 268_435_456,
+            },
             override_v4: None,
             override_v6: None,
             extra_addresses: Vec::new(),
@@ -121,6 +129,9 @@ async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> 
         .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);
     assert_eq!(updated.log_level, "debug");
+    assert_eq!(updated.quic.congestion, QuicCongestion::Brutal);
+    assert_eq!(updated.quic.up_mbps, 1000);
+    assert_eq!(updated.quic.conn_receive_window, 268_435_456);
 
     sp.process(MoveServerPosition {
         id: s.id.clone(),

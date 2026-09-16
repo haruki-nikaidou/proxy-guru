@@ -226,7 +226,10 @@ The derived config carries the worker's `[keepalive]` defaults, and the TOML omi
 the section when it equals them: every struct of `guru_worker_config` rejects
 unknown keys, so a master must not send a section to workers built before it
 existed. Tuning those values is a standalone-file affair until the dashboard
-grows a setting for them.
+grows a setting for them. `[quic]` is the server's own setting (`ServerEntity::quic`,
+edited in the server inspector) and is omitted the same way; on each QUIC relay
+link `derive` pairs the two servers' numbers and writes the lower rate on the
+forwarding, so a server never sends faster than its peer's down rate.
 
 A revision is acknowledged **per pod**: the worker commits every forwarding it
 could prepare and bind, keeps the previous listener of the ones it could not,

@@ -184,7 +184,15 @@ past the grace period), `Offline` (nothing reported for three health intervals �
 or `Unknown`. The two summary lines are the log level, the IPv6 resolution policy
 (`Required`/`Preferred`/`Tolerated`/`Forbidden`, default `Tolerated`), the effective address or
 `no address yet`, the reported country — then the last watch-stream heartbeat, with `not reporting`
-appended while the server is offline.
+appended while the server is offline. Once the server has QUIC rates, `brutal ↑1000/↓1000` (or
+`Cubic ↑…/↓…`) sits between them.
+
+**QUIC relay links.** The inspector's last group is this server's side of every QUIC relay link it
+takes part in: the congestion control (`Cubic`, or `Brutal`, which sends at exactly the up rate
+whatever the path does), the up and down rates in Mbit/s, and two optional receive windows in bytes
+(0 = derived from the down rate / unlimited). They become the worker's `[quic]` section; on each link
+the master pairs the two ends, so a server never sends faster than its peer's down rate (see the
+[configuration reference](/reference/configuration/#quic)). `Brutal` needs an up rate.
 
 Nobody types a server's address: the worker reports its IPv4/IPv6 on registration and the master
 remembers where the registration came from. Precedence is pinned v4 → reported v4 → observed v4 →

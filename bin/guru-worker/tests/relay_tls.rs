@@ -6,8 +6,8 @@
 
 use guru_worker::supervisor::{ApplyOutcome, Supervisor};
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, RelayHost,
-    RelayProtocol, Remote, TlsHostConfig,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, QuicCongestion,
+    QuicTuning, RelayHost, RelayProtocol, Remote, TlsHostConfig,
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 use std::net::SocketAddr;
@@ -66,6 +66,7 @@ fn config(relay_ca: Option<PathBuf>, forwarding: Forwarding) -> Config {
         log: LogConfig::default(),
         relay_ca,
         keepalive: KeepAlive::default(),
+        quic: QuicTuning::default(),
         forwardings: vec![forwarding],
     }
 }
@@ -116,6 +117,7 @@ fn relay_worker(
             listen,
             receive_proxy_protocol: None,
             listen_as: ListenAs::Relay(host),
+            quic: None,
             to: ForwardingTo::Exit {
                 destination: Remote::Address(echo),
                 send_proxy_protocol: None,
@@ -139,10 +141,12 @@ fn entry_worker(
             listen,
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
+            quic: None,
             to: ForwardingTo::Relay {
                 protocol,
                 destination: Remote::Address(relay),
                 sni: Some(RELAY_SNI.to_string()),
+                quic: None,
             },
         },
     )
@@ -232,4 +236,204 @@ async fn tls_relay_hop_is_verified_against_relay_ca() {
 #[tokio::test]
 async fn quic_relay_hop_is_verified_against_relay_ca() {
     chain(RelayProtocol::Quic).await;
+}
+
+/// The relay worker with the link's QUIC side set: `quic` is what it sends to
+/// and expects from the entry.
+fn relay_worker_quic(
+    listen: SocketAddr,
+    leaf: &TlsHostConfig,
+    echo: SocketAddr,
+    quic: QuicTuning,
+) -> Config {
+    let mut cfg = relay_worker(RelayProtocol::Quic, listen, leaf, echo);
+    cfg.quic = quic;
+    cfg
+}
+
+/// Sends `payload` through the entry and waits for all of it back, returning the
+/// bytes and how long the round trip took.
+async fn timed_round_trip(entry: SocketAddr, payload: &[u8]) -> (Vec<u8>, Duration) {
+    let started = tokio::time::Instant::now();
+    let client = tokio::net::TcpStream::connect(entry).await.unwrap();
+    let writer = {
+        let payload = payload.to_vec();
+        let (read, mut write) = client.into_split();
+        tokio::spawn(async move {
+            write.write_all(&payload).await.unwrap();
+            write.shutdown().await.unwrap();
+        });
+        read
+    };
+    let mut read = writer;
+    let mut got = Vec::with_capacity(payload.len());
+    let mut buf = vec![0u8; 64 * 1024];
+    let deadline = started + Duration::from_secs(30);
+    while got.len() < payload.len() {
+        match tokio::time::timeout_at(deadline, read.read(&mut buf)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+            Ok(Ok(n)) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    (got, started.elapsed())
+}
+
+async fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn quic_relay_multiplexes_every_connection_on_one_link() {
+    let _ = quinn::rustls::crypto::ring::default_provider().install_default();
+    let dir = std::env::temp_dir().join(format!("guru-worker-quic-pool-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pki = pki(&dir, "guru internal relay CA");
+    let echo = echo_server().await;
+    let ports = free_ports(2);
+    let (relay_addr, entry_addr) = (ports[0], ports[1]);
+
+    let mut relay = Supervisor::new();
+    assert_all_applied(
+        &relay
+            .apply(&relay_worker(
+                RelayProtocol::Quic,
+                relay_addr,
+                &pki.leaf,
+                echo,
+            ))
+            .await,
+    );
+    let mut entry = Supervisor::new();
+    assert_all_applied(
+        &entry
+            .apply(&entry_worker(
+                RelayProtocol::Quic,
+                entry_addr,
+                relay_addr,
+                &pki.ca,
+            ))
+            .await,
+    );
+    let client = guru_worker::tls::quic_client(Some(&pki.ca)).unwrap();
+    assert_eq!(client.connections(), 0, "nothing dialed yet");
+
+    // Twenty clients at once: twenty streams, one QUIC connection.
+    let mut clients = tokio::task::JoinSet::new();
+    for i in 0..20u8 {
+        clients.spawn(async move {
+            let payload = vec![i; 4096];
+            let got = round_trip(entry_addr, &payload).await;
+            assert_eq!(got, payload, "client {i} echoed");
+        });
+    }
+    while let Some(done) = clients.join_next().await {
+        done.unwrap();
+    }
+    assert_eq!(client.connections(), 1, "every stream shared the one link");
+
+    // The relay goes away: the pooled connection dies and the next client gets a
+    // fresh one, without anyone restarting the entry.
+    relay
+        .apply(&config(
+            None,
+            Forwarding {
+                tag: "unused".to_string(),
+                listen: free_ports(1)[0],
+                receive_proxy_protocol: None,
+                listen_as: ListenAs::Raw,
+                quic: None,
+                to: ForwardingTo::Exit {
+                    destination: Remote::Address(echo),
+                    send_proxy_protocol: None,
+                },
+            },
+        ))
+        .await;
+    wait_until("the dead link to be dropped", || client.connections() == 0).await;
+    assert_all_applied(
+        &relay
+            .apply(&relay_worker(
+                RelayProtocol::Quic,
+                relay_addr,
+                &pki.leaf,
+                echo,
+            ))
+            .await,
+    );
+    let payload = b"back again over a new connection";
+    assert_eq!(round_trip(entry_addr, payload).await, payload);
+    assert_eq!(client.connections(), 1);
+
+    relay.shutdown_all();
+    entry.shutdown_all();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn quic_relay_brutal_sends_at_the_configured_rate() {
+    let _ = quinn::rustls::crypto::ring::default_provider().install_default();
+    let dir = std::env::temp_dir().join(format!("guru-worker-quic-brutal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pki = pki(&dir, "guru internal relay CA");
+    let echo = echo_server().await;
+    let ports = free_ports(2);
+    let (relay_addr, entry_addr) = (ports[0], ports[1]);
+
+    // The relay sends the echo back at 40 Mbit/s: 5 MB/s.
+    let mbps = 40u32;
+    let mut relay = Supervisor::new();
+    assert_all_applied(
+        &relay
+            .apply(&relay_worker_quic(
+                relay_addr,
+                &pki.leaf,
+                echo,
+                QuicTuning {
+                    congestion: QuicCongestion::Brutal,
+                    send_mbps: mbps,
+                    receive_mbps: 1000,
+                    ..QuicTuning::default()
+                },
+            ))
+            .await,
+    );
+    let mut entry = Supervisor::new();
+    assert_all_applied(
+        &entry
+            .apply(&entry_worker(
+                RelayProtocol::Quic,
+                entry_addr,
+                relay_addr,
+                &pki.ca,
+            ))
+            .await,
+    );
+
+    let payload: Vec<u8> = (0..4_000_000u32).map(|i| (i % 251) as u8).collect();
+    let nominal = Duration::from_secs_f64(payload.len() as f64 * 8.0 / (f64::from(mbps) * 1e6));
+    let (got, elapsed) = timed_round_trip(entry_addr, &payload).await;
+    assert_eq!(got.len(), payload.len(), "the whole payload came back");
+    assert_eq!(got, payload);
+    // Loopback would move 4 MB in well under 100 ms; brutal paces it out to the
+    // rate (0.8 s nominal). The bounds are loose: the pacer may run up to a
+    // quarter fast, the test box may be slow.
+    assert!(
+        elapsed >= nominal.mul_f64(0.6),
+        "brutal paced the reply: {elapsed:?} for a nominal {nominal:?}"
+    );
+    assert!(
+        elapsed <= nominal.mul_f64(4.0),
+        "brutal did not stall: {elapsed:?} for a nominal {nominal:?}"
+    );
+
+    relay.shutdown_all();
+    entry.shutdown_all();
+    let _ = std::fs::remove_dir_all(&dir);
 }

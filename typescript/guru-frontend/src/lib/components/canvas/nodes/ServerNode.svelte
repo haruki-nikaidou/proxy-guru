@@ -5,7 +5,12 @@ import { channelColor, portLabel, type FlowNodeData } from '#lib/components/canv
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
-import { ipv6Label, serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
+import {
+	ipv6Label,
+	quicCongestionLabel,
+	serverHealthBadge,
+	serverHealthLabel
+} from '#lib/i18n/labels.js';
 import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
@@ -17,6 +22,12 @@ let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'server' }> 
 const universal = $derived(data.server.universal);
 
 const ipv6 = $derived(ipv6Label(data.server.ipv6Resolve));
+/** `brutal ↑1000/↓1000` once the server has QUIC numbers; nothing at the defaults. */
+const quic = $derived(
+	data.server.quic.upMbps > 0 || data.server.quic.downMbps > 0
+		? `${quicCongestionLabel(data.server.quic.congestion)} ↑${data.server.quic.upMbps}/↓${data.server.quic.downMbps}`
+		: ''
+);
 
 const health = $derived(serverHealthBadge(data.server.healthStatus));
 /**
@@ -62,6 +73,7 @@ const channelOf = (podId: string) => data.channels[podId];
 	{/snippet}
 	<p class="truncate px-3 pt-1 text-xs text-muted-foreground">
 		{data.server.logLevel} · {ipv6} ·
+		{#if quic}<span class="font-mono">{quic}</span> ·{/if}
 		<span class="font-mono">
 			{data.server.addresses.effectiveAddress || m.editor_server_address_none_short()}
 		</span>

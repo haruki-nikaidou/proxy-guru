@@ -30,6 +30,8 @@ modules/          # business logic, one crate per feature
   base/           # foundational + template module
 proto/            # protobuf definitions (grouped by module) — the single API source
 database/         # PostgreSQL schema: sqlx migrations (database/migrations)
+vendor/           # patched third-party crates, wired in by [patch.crates-io] in the
+                  # root Cargo.toml; each carries a PATCH.md with the diff and why
 typescript/       # Bun workspace: all frontend / TypeScript packages
   app-protobuf/   # generated gRPC/protobuf TypeScript code (shared)
 package.json      # root of the Bun workspace (workspaces: ["typescript/*"])

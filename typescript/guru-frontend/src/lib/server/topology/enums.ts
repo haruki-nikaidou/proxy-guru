@@ -13,6 +13,7 @@ import {
 	PortDirection,
 	PortKind,
 	ProxyProtocolVersion,
+	QuicCongestion,
 	RelayProtocol,
 	ServerHealthStatus,
 	UniversalGroup
@@ -26,6 +27,7 @@ import type {
 	PortDirectionName,
 	PortKindName,
 	ProxyProtocolName,
+	QuicCongestionName,
 	RelayProtocolName,
 	ServerHealthStatusName,
 	UniversalGroupName
@@ -50,6 +52,12 @@ export function fromProxy(value: ProxyProtocolName): ProxyProtocolVersion {
 		default:
 			return ProxyProtocolVersion.UNSPECIFIED;
 	}
+}
+export function toQuicCongestion(value: QuicCongestion): QuicCongestionName {
+	return value === QuicCongestion.QUIC_BRUTAL ? 'brutal' : 'cubic';
+}
+export function fromQuicCongestion(value: QuicCongestionName): QuicCongestion {
+	return value === 'brutal' ? QuicCongestion.QUIC_BRUTAL : QuicCongestion.QUIC_CUBIC;
 }
 export function toRelayProtocol(value: RelayProtocol): RelayProtocolName {
 	switch (value) {

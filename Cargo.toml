@@ -132,3 +132,9 @@ thiserror = "2"
 
 # Algorithm
 itertools = "0.14"
+
+# quinn-proto with a pacing patch: a congestion controller that reports a pacing
+# rate has the pacer refill at that rate (needed by the worker's brutal sender).
+# The diff against the upstream release is in vendor/quinn-proto/PATCH.md.
+[patch.crates-io]
+quinn-proto = { path = "vendor/quinn-proto" }

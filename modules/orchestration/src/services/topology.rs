@@ -25,7 +25,7 @@ use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::connection::{EdgeConnectionEntity, EdgeConnectionId};
 use crate::entities::db::node::{NodeEntity, NodeId, NodeSpec, NodeWithPorts, RelayProtocol};
 use crate::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
-use crate::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve};
+use crate::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve, ServerQuic};
 use crate::entities::db::topology::CanvasTopology;
 use crate::services::node::{export_port_direction, import_port_layout};
 use crate::services::universal::{self, UniversalPort};
@@ -160,6 +160,7 @@ pub enum TopologyEdit {
         server: ServerId,
         ipv6_resolve: ServerIpv6Resolve,
         log_level: String,
+        quic: ServerQuic,
         override_v4: Option<String>,
         override_v6: Option<String>,
         extra_addresses: Vec<String>,
@@ -215,6 +216,7 @@ impl CanvasTopology {
                     server,
                     ipv6_resolve,
                     log_level,
+                    quic,
                     override_v4,
                     override_v6,
                     extra_addresses,
@@ -223,6 +225,7 @@ impl CanvasTopology {
                         if s.id == *server {
                             s.ipv6_resolve = *ipv6_resolve;
                             s.log_level = log_level.clone();
+                            s.quic = *quic;
                             s.override_v4 = override_v4.clone();
                             s.override_v6 = override_v6.clone();
                             s.extra_addresses = extra_addresses.clone();

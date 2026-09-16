@@ -12,11 +12,16 @@ import * as Select from '#lib/components/ui/select/index.js';
 import { Separator } from '#lib/components/ui/separator/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
-import type { Ipv6ResolveName, ServerDto } from '#lib/dto/topology.js';
+import type { Ipv6ResolveName, QuicCongestionName, ServerDto } from '#lib/dto/topology.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
-import { IPV6_OPTIONS, ipv6Label } from '#lib/i18n/labels.js';
+import {
+	IPV6_OPTIONS,
+	QUIC_CONGESTION_OPTIONS,
+	ipv6Label,
+	quicCongestionLabel
+} from '#lib/i18n/labels.js';
 import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
@@ -36,6 +41,13 @@ let icon = $state('');
 let comment = $state('');
 let ipv6Resolve = $state<Ipv6ResolveName>('tolerated');
 let logLevel = $state('info');
+// The server's side of its QUIC relay links. `Input` renders a dynamic `type`,
+// so Svelte never coerces these to numbers: they are strings until Save.
+let quicCongestion = $state<QuicCongestionName>('cubic');
+let quicUpMbps = $state('0');
+let quicDownMbps = $state('0');
+let quicStreamWindow = $state('0');
+let quicConnWindow = $state('0');
 // The two fixed address slots are learned from the worker; a pin overrides what
 // it reported. Extras are whatever else the operator wants pods to advertise.
 let pinV4 = $state('');
@@ -51,6 +63,11 @@ seedOn(
 		comment = server.comment;
 		ipv6Resolve = server.ipv6Resolve;
 		logLevel = server.logLevel;
+		quicCongestion = server.quic.congestion;
+		quicUpMbps = String(server.quic.upMbps);
+		quicDownMbps = String(server.quic.downMbps);
+		quicStreamWindow = String(server.quic.streamReceiveWindow);
+		quicConnWindow = String(server.quic.connReceiveWindow);
 		pinV4 = server.addresses.v4.pinned;
 		pinV6 = server.addresses.v6.pinned;
 		extraAddresses = [...server.addresses.extra];
@@ -94,7 +111,14 @@ const save = () =>
 				overrideV6: pinV6,
 				extraAddresses,
 				// Chosen in the install dialog; the settings form only carries it along.
-				agentUnit: server.agentUnit
+				agentUnit: server.agentUnit,
+				quic: {
+					congestion: quicCongestion,
+					upMbps: Number(quicUpMbps),
+					downMbps: Number(quicDownMbps),
+					streamReceiveWindow: Number(quicStreamWindow),
+					connReceiveWindow: Number(quicConnWindow)
+				}
 			}),
 		m.editor_saved()
 	);
@@ -155,6 +179,66 @@ const removeServer = () =>
 		<Input id="server-log-level" bind:value={logLevel} disabled={!editable} />
 	</Field.Field>
 </Field.FieldGroup>
+
+<Separator class="my-6" />
+
+<h3 class="text-sm font-medium">{m.editor_server_quic()}</h3>
+<p class="mt-1 text-xs text-muted-foreground">{m.editor_server_quic_hint()}</p>
+<div class="mt-3 grid gap-3">
+	<Field.Field>
+		<Field.FieldLabel for="server-quic-congestion">{m.editor_server_quic_congestion()}</Field.FieldLabel>
+		<Select.Root
+			type="single"
+			value={quicCongestion}
+			disabled={!editable}
+			onValueChange={next => (quicCongestion = next as QuicCongestionName)}
+		>
+			<Select.Trigger id="server-quic-congestion">{quicCongestionLabel(quicCongestion)}</Select.Trigger>
+			<Select.Content>
+				<Select.Group>
+					{#each QUIC_CONGESTION_OPTIONS as option (option)}
+						<Select.Item value={option} label={quicCongestionLabel(option)}>
+							{quicCongestionLabel(option)}
+						</Select.Item>
+					{/each}
+				</Select.Group>
+			</Select.Content>
+		</Select.Root>
+	</Field.Field>
+	<div class="grid grid-cols-2 gap-3">
+		<Field.Field>
+			<Field.FieldLabel for="server-quic-up">{m.editor_server_quic_up()}</Field.FieldLabel>
+			<Input id="server-quic-up" type="number" min={0} bind:value={quicUpMbps} disabled={!editable} />
+		</Field.Field>
+		<Field.Field>
+			<Field.FieldLabel for="server-quic-down">{m.editor_server_quic_down()}</Field.FieldLabel>
+			<Input id="server-quic-down" type="number" min={0} bind:value={quicDownMbps} disabled={!editable} />
+		</Field.Field>
+	</div>
+	<div class="grid grid-cols-2 gap-3">
+		<Field.Field>
+			<Field.FieldLabel for="server-quic-stream-window">{m.editor_server_quic_stream_window()}</Field.FieldLabel>
+			<Input
+				id="server-quic-stream-window"
+				type="number"
+				min={0}
+				bind:value={quicStreamWindow}
+				disabled={!editable}
+			/>
+		</Field.Field>
+		<Field.Field>
+			<Field.FieldLabel for="server-quic-conn-window">{m.editor_server_quic_conn_window()}</Field.FieldLabel>
+			<Input
+				id="server-quic-conn-window"
+				type="number"
+				min={0}
+				bind:value={quicConnWindow}
+				disabled={!editable}
+			/>
+		</Field.Field>
+	</div>
+	<p class="text-xs text-muted-foreground">{m.editor_server_quic_windows_hint()}</p>
+</div>
 
 <Separator class="my-6" />
 

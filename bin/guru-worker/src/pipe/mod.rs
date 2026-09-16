@@ -329,6 +329,7 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
             sni,
             relay_ca,
             keepalive,
+            quic,
         } => Ok(TargetStream::Relay(
             relay::dial_relay(
                 *protocol,
@@ -337,6 +338,7 @@ pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<Targe
                 sni.as_deref(),
                 relay_ca.as_deref(),
                 keepalive,
+                quic,
                 client_addr,
             )
             .await?,

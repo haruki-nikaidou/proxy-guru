@@ -6,10 +6,10 @@
 //! and the other side of the pipe is closed with it. A QUIC relay connection gets the
 //! opposite treatment: quinn's default idle timeout (thirty seconds, no pings) would
 //! cut a long connection that is merely quiet, so it pings and is allowed a longer
-//! idle period.
+//! idle period; that half lives with the rest of the QUIC transport parameters in
+//! [`crate::quic::transport`].
 
 use guru_worker_config::KeepAlive;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// The kernel parameters for one TCP socket.
@@ -24,20 +24,6 @@ fn tcp(ka: &KeepAlive) -> socket2::TcpKeepalive {
 /// connection is still usable, it just will not notice a vanished peer.
 pub fn apply_tcp(stream: &tokio::net::TcpStream, ka: &KeepAlive) -> std::io::Result<()> {
     socket2::SockRef::from(stream).set_tcp_keepalive(&tcp(ka))
-}
-
-/// The transport parameters for one QUIC connection, either side.
-pub fn quic_transport(ka: &KeepAlive) -> Arc<quinn::TransportConfig> {
-    let mut transport = quinn::TransportConfig::default();
-    transport.keep_alive_interval(Some(Duration::from_secs(u64::from(ka.quic_ping_secs))));
-    // `quic_idle_secs` is validated against `u32` seconds, so the millisecond value
-    // fits a `VarInt` (a 62-bit integer) with room to spare.
-    transport.max_idle_timeout(Some(
-        quinn::VarInt::from_u64(u64::from(ka.quic_idle_secs) * 1000)
-            .unwrap_or(quinn::VarInt::MAX)
-            .into(),
-    ));
-    Arc::new(transport)
 }
 
 #[cfg(test)]

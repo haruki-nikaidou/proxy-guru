@@ -15,7 +15,7 @@ import { orchestrationClient } from '#lib/server/grpc.js';
 import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { toSnapshot } from '#lib/server/topology/decode.js';
-import { fromIpv6 } from '#lib/server/topology/enums.js';
+import { fromIpv6, fromQuicCongestion } from '#lib/server/topology/enums.js';
 import {
 	agentUnitSchema,
 	commentSchema,
@@ -24,7 +24,8 @@ import {
 	ipv6Schema,
 	logLevelSchema,
 	nameSchema,
-	optionalIpSchema
+	optionalIpSchema,
+	serverQuicSchema
 } from '#lib/server/topology/schemas.js';
 import { command, query } from '$app/server';
 import { getCanvasGraph } from './topology.remote.js';
@@ -67,7 +68,8 @@ export const updateServerNode = command(
 		overrideV4: optionalIpSchema,
 		overrideV6: optionalIpSchema,
 		extraAddresses: extraAddressesSchema,
-		agentUnit: agentUnitSchema
+		agentUnit: agentUnitSchema,
+		quic: serverQuicSchema
 	}),
 	async ({
 		canvasId,
@@ -80,7 +82,8 @@ export const updateServerNode = command(
 		overrideV4,
 		overrideV6,
 		extraAddresses,
-		agentUnit
+		agentUnit,
+		quic
 	}) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
@@ -95,7 +98,14 @@ export const updateServerNode = command(
 					overrideV4,
 					overrideV6,
 					extraAddresses,
-					agentUnit
+					agentUnit,
+					quic: {
+						congestion: fromQuicCongestion(quic.congestion),
+						upMbps: quic.upMbps,
+						downMbps: quic.downMbps,
+						streamReceiveWindow: BigInt(quic.streamReceiveWindow),
+						connReceiveWindow: BigInt(quic.connReceiveWindow)
+					}
 				},
 				{ metadata }
 			)

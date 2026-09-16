@@ -18,8 +18,8 @@ use guru_worker::agent::{self, AgentOptions};
 use guru_worker::state;
 use guru_worker::supervisor::Supervisor;
 use guru_worker_config::{
-    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, Remote,
-    TlsHostConfig,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, QuicTuning,
+    Remote, TlsHostConfig,
 };
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -974,6 +974,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
         log: LogConfig::default(),
         relay_ca: Some("certs/ca.pem".into()),
         keepalive: KeepAlive::default(),
+        quic: QuicTuning::default(),
         forwardings: vec![Forwarding {
             tag: "edge".to_string(),
             listen,
@@ -982,6 +983,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
                 key: "certs/acme/edge/key.pem".into(),
                 full_chain: "certs/acme/edge/full_chain.pem".into(),
             }),
+            quic: None,
             to: ForwardingTo::Exit {
                 destination: Remote::parse("127.0.0.1:9")?,
                 send_proxy_protocol: None,
@@ -1105,11 +1107,13 @@ fn raw_revision(revision: i64) -> Result<ConfigRevision, Box<dyn std::error::Err
         log: LogConfig::default(),
         relay_ca: None,
         keepalive: KeepAlive::default(),
+        quic: QuicTuning::default(),
         forwardings: vec![Forwarding {
             tag: "edge".to_string(),
             listen: format!("127.0.0.1:{}", free_port()).parse()?,
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
+            quic: None,
             to: ForwardingTo::Exit {
                 destination: Remote::parse("127.0.0.1:9")?,
                 send_proxy_protocol: None,

@@ -18,7 +18,9 @@ use crate::entities::db::node::{
     RelayConfig, RelayProtocol, TlsConfig, UniversalPodConfig,
 };
 use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
-use crate::entities::db::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
+use crate::entities::db::server::{
+    AddressSource, QuicCongestion, ServerEntity, ServerIpv6Resolve, ServerQuic,
+};
 use crate::entities::db::view::{ConfigSnapshot, ListenerCap};
 use crate::events::live::{
     CanvasChangeKind, LiveMessage, NodeHealthLive, ServerHealthLive, live_time,
@@ -512,6 +514,45 @@ fn ipv6_from_proto(value: i32) -> Result<ServerIpv6Resolve, Status> {
     }
 }
 
+fn quic_to_proto(quic: &ServerQuic) -> pb::QuicSettings {
+    pb::QuicSettings {
+        congestion: match quic.congestion {
+            QuicCongestion::Cubic => pb::QuicCongestion::QuicCubic,
+            QuicCongestion::Brutal => pb::QuicCongestion::QuicBrutal,
+        } as i32,
+        up_mbps: quic.up_mbps,
+        down_mbps: quic.down_mbps,
+        stream_receive_window: quic.stream_receive_window,
+        conn_receive_window: quic.conn_receive_window,
+    }
+}
+
+/// An absent message is the default; an unknown congestion value is refused.
+fn quic_from_proto(quic: Option<pb::QuicSettings>) -> Result<ServerQuic, Status> {
+    let Some(quic) = quic else {
+        return Ok(ServerQuic::default());
+    };
+    let congestion = match pb::QuicCongestion::try_from(quic.congestion) {
+        Ok(pb::QuicCongestion::QuicCubic | pb::QuicCongestion::Unspecified) => {
+            QuicCongestion::Cubic
+        }
+        Ok(pb::QuicCongestion::QuicBrutal) => QuicCongestion::Brutal,
+        Err(_) => {
+            return Err(Status::invalid_argument(format!(
+                "quic.congestion: unknown value {}",
+                quic.congestion
+            )));
+        }
+    };
+    Ok(ServerQuic {
+        congestion,
+        up_mbps: quic.up_mbps,
+        down_mbps: quic.down_mbps,
+        stream_receive_window: quic.stream_receive_window,
+        conn_receive_window: quic.conn_receive_window,
+    })
+}
+
 fn server_to_proto(server: &ServerEntity) -> pb::Server {
     pb::Server {
         id: server.id.to_string(),
@@ -522,6 +563,7 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         position: Some(position_to_proto(server.position)),
         ipv6_resolve: ipv6_to_proto(server.ipv6_resolve),
         log_level: server.log_level.clone(),
+        quic: Some(quic_to_proto(&server.quic)),
         last_seen_at: server
             .last_seen_at
             .map(|t| t.to_rfc3339())
@@ -1181,6 +1223,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 comment: input.comment,
                 ipv6_resolve: ipv6_from_proto(input.ipv6_resolve)?,
                 log_level: input.log_level,
+                quic: quic_from_proto(input.quic)?,
                 addresses: server::AddressOverrides::parse(
                     &input.override_v4,
                     &input.override_v6,

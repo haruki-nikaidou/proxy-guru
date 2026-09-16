@@ -111,6 +111,7 @@ Worker 实际运行的内容。
 | `ipv6_resolve` | `"tolerated"` | `required`、`preferred`、`tolerated`、`forbidden` —— 目的地为域名时的地址族策略 |
 | `log.level` | `"info"` | 一条 `tracing` 的 `EnvFilter` 指令 —— `info`、`debug`，或更有针对性的写法如 `guru_worker=debug,warn`。**只在启动时读取一次**，因此重新加载不会改变它 |
 | `[keepalive]` | 见下文 | 数据面每条连接的存活探测 |
+| `[quic]` | 见下文 | 本 Worker 在每条 QUIC 中继链路上的一侧：拥塞控制、速率、窗口 |
 | `[[forwarding]]` | `[]` | 每一项对应一个监听器；不含任何条目的文件也是合法的，只是什么都不做 |
 
 独立模式下，进程日志由 `log.level` 配置：`--log-level`/`GURU_LOG_LEVEL` 只适用于 agent 模式。
@@ -140,6 +141,29 @@ TCP 分不清"对端安静"和"对端消失"：客户端没有发 FIN 或 RST �
 该段只有在与默认值不同时才会写出，而 `guru-master` 下发的就是默认值：早于该段存在的 Worker 会拒绝未知
 键，所以在独立模式文件里调整了它的运维人员必须运行认识这一段的 Worker。
 
+### `[quic]`
+
+本 Worker 在它监听或拨出的每条 QUIC 中继链路上的一侧。quinn 的默认值是给网页客户端准备的，不是给中继的：
+Cubic 一丢包就退避，而固定 1.25 MB 的单流接收窗口把一条流封在 `窗口 / RTT` 以内，发送端再怎么努力也没用。
+告诉链路它的速率之后，它会得到 hysteria 的 *brutal* 发送端，以及按该速率算出的窗口。
+
+| 键 | 默认值 | 取值 |
+|---|---|---|
+| `congestion` | `"cubic"` | `cubic` 探测带宽；`brutal` 不管路径怎样都按 `send_mbps` 发送，并按观测到的丢包率多发（最多四分之一） |
+| `send_mbps` | `0` | 朝对端的速率，Mbit/s：brutal 的固定速率，也是发送窗口的依据。`0` 保持 quinn 默认 |
+| `receive_mbps` | `0` | 对端朝本侧发送的速率，Mbit/s；接收窗口按它的半秒数据量计算。`0` 保持 quinn 每流 1.25 MB |
+| `max_streams` | `0` | 监听方允许对端在一条连接上同时打开的流数；`0` 表示 4096 |
+| `stream_receive_window` | `0` | 单流接收窗口字节数，代替由 `receive_mbps` 推导的值 |
+| `receive_window` | `0` | 整条连接的接收窗口字节数；`0` 表示不限 |
+| `send_window` | `0` | 本侧每条连接允许的未确认字节数，代替由 `send_mbps` 推导的值 |
+
+一条链路上所有被代理的连接共用一条 QUIC 连接（每个连接一条流），所以速率是整条链路的总量，而不是每个
+连接的配额：填这个方向上路径实际能跑的值，填多了只会制造丢包。`quic` 中继监听器上的 `[forwarding.quic]`
+表，或 `quic` 跳上的 `[forwarding.to.quic]` 表，会替代该链路上的这一段。`guru-master` 就是这样配对链路两端的：
+每台服务器把自己的数字放在 `[quic]` 里，当对端的*下行*低于本侧的*上行*（或反过来）时，forwarding 里写的是
+较低的那个，谁都不会发得比对端声称能收的更快。没有 `send_mbps` 的 `brutal` 会被拒绝，把这两张表放在非 QUIC
+中继上也会被拒绝。和 `[keepalive]` 一样，该段在默认值时不写出。
+
 ### `[[forwarding]]`
 
 | 键 | 必填 | 取值 |
@@ -148,6 +172,7 @@ TCP 分不清"对端安静"和"对端消失"：客户端没有发 FIN 或 RST �
 | `listen` | 是 | `ip:port` —— 必须是字面地址，绝不能是主机名（`0.0.0.0:443`、`[::]:443`） |
 | `receive_proxy_protocol` | 否 | `"v1"` 或 `"v2"` —— 表示在客户端载荷之前会有一个 PROXY 头 |
 | `listen_as` | 是 | 如何接受连接：`"raw"`，或一个 `tls` / `relay` 表（见下文） |
+| `quic` | 否 | 只作用于这个监听器的 `[quic]` 表；仅限 `quic` 中继监听器 |
 | `to` | 是 | 流量去向：一个 `[forwarding.to]` 表（见下文） |
 
 监听器以 `(listen, transport)` 为键，而只有 `quic` 中继监听器的 transport 才是 QUIC。因此，当一个条目

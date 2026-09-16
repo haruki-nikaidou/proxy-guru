@@ -5,6 +5,7 @@ import type {
 	Ipv6ResolveName,
 	LoadBalanceModeName,
 	ProxyProtocolName,
+	QuicCongestionName,
 	RelayProtocolName,
 	ServerHealthStatusName
 } from '#lib/dto/topology.js';
@@ -51,6 +52,9 @@ export const balanceModeLabel = (value: LoadBalanceModeName): string =>
 				? m.editor_balance_fallback()
 				: m.editor_balance_round_robin();
 
+export const QUIC_CONGESTION_OPTIONS: QuicCongestionName[] = ['cubic', 'brutal'];
+export const quicCongestionLabel = (value: QuicCongestionName): string =>
+	value === 'brutal' ? m.editor_quic_brutal() : m.editor_quic_cubic();
 export const IPV6_OPTIONS: Ipv6ResolveName[] = ['required', 'preferred', 'tolerated', 'forbidden'];
 export const ipv6Label = (value: Ipv6ResolveName): string =>
 	value === 'required'

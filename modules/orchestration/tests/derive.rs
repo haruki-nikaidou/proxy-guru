@@ -18,7 +18,7 @@ use orchestration::entities::db::node::{
     RelayConfig, RelayProtocol, TlsConfig,
 };
 use orchestration::entities::db::port::PortKind;
-use orchestration::entities::db::server::ServerId;
+use orchestration::entities::db::server::{QuicCongestion, ServerId, ServerQuic};
 use orchestration::entities::db::topology::CanvasTopology;
 use orchestration::entities::db::view::{
     CertificateKind, CertificateRef, InvalidPod, ListenProtocol,
@@ -591,6 +591,139 @@ fn a_secure_relay_with_a_leaf_derives_listener_dialer_and_pins() {
             &derived_with(&topology, &osaka, &certificates),
         );
     }
+}
+
+/// Each end of a QUIC link gets the worker-wide `[quic]` of its own server and,
+/// on the link's forwarding, the numbers paired with the peer: it sends at the
+/// lower of its up rate and the peer's down rate, and receives at the lower of
+/// its down rate and the peer's up rate. Equal settings on both ends leave the
+/// forwardings bare; a TLS relay never carries any of it.
+#[test]
+fn quic_rates_are_paired_per_link() {
+    use guru_worker_config::{QuicCongestion as WireCongestion, QuicTuning};
+
+    let (mut b, tokyo, osaka) = secure_relay(RelayProtocol::Quic);
+    b.server_quic(
+        &tokyo,
+        ServerQuic {
+            congestion: QuicCongestion::Brutal,
+            up_mbps: 200,
+            down_mbps: 2000,
+            stream_receive_window: 67_108_864,
+            conn_receive_window: 0,
+        },
+    );
+    b.server_quic(
+        &osaka,
+        ServerQuic {
+            congestion: QuicCongestion::Brutal,
+            up_mbps: 1000,
+            down_mbps: 1000,
+            stream_receive_window: 0,
+            conn_receive_window: 268_435_456,
+        },
+    );
+    let topology = b.build();
+    let certificates = DerivationCertificates {
+        ca_present: true,
+        assume_issued: true,
+        ..DerivationCertificates::default()
+    };
+
+    // Tokyo dials: it may send its full 200 (Osaka takes 1000) but Osaka only
+    // sends 1000, not the 2000 Tokyo could take.
+    let tokyo_cfg = derive_server_config(&topology, &tokyo, &certificates, &config())
+        .unwrap()
+        .config;
+    assert_eq!(
+        tokyo_cfg.quic,
+        QuicTuning {
+            congestion: WireCongestion::Brutal,
+            send_mbps: 200,
+            receive_mbps: 2000,
+            stream_receive_window: 67_108_864,
+            ..QuicTuning::default()
+        }
+    );
+    match &tokyo_cfg.forwardings[0].to {
+        ForwardingTo::Relay { quic, .. } => assert_eq!(
+            *quic,
+            Some(QuicTuning {
+                congestion: WireCongestion::Brutal,
+                send_mbps: 200,
+                receive_mbps: 1000,
+                stream_receive_window: 67_108_864,
+                ..QuicTuning::default()
+            })
+        ),
+        other => panic!("expected a relay destination, got {other:?}"),
+    }
+    assert!(
+        tokyo_cfg.forwardings[0].quic.is_none(),
+        "a raw listener carries nothing"
+    );
+
+    // Osaka listens: it sends at its 1000 (Tokyo takes 2000) and receives 200.
+    let osaka_cfg = derive_server_config(&topology, &osaka, &certificates, &config())
+        .unwrap()
+        .config;
+    assert_eq!(osaka_cfg.quic.receive_window, 268_435_456);
+    assert_eq!(
+        osaka_cfg.forwardings[0].quic,
+        Some(QuicTuning {
+            congestion: WireCongestion::Brutal,
+            send_mbps: 1000,
+            receive_mbps: 200,
+            receive_window: 268_435_456,
+            ..QuicTuning::default()
+        })
+    );
+    // Both parse on a worker: the link numbers ride along as `[forwarding.quic]`.
+    for cfg in [&tokyo_cfg, &osaka_cfg] {
+        let text = cfg.to_toml_string().unwrap();
+        assert_eq!(
+            &guru_worker_config::Config::from_toml_str(&text).unwrap(),
+            cfg
+        );
+    }
+
+    // The same numbers on both ends: nothing to pair, the forwardings stay bare.
+    let mut b = secure_relay(RelayProtocol::Quic).0;
+    let same = ServerQuic {
+        congestion: QuicCongestion::Brutal,
+        up_mbps: 1000,
+        down_mbps: 1000,
+        stream_receive_window: 67_108_864,
+        conn_receive_window: 268_435_456,
+    };
+    b.server_quic(&tokyo, same);
+    b.server_quic(&osaka, same);
+    let topology = b.build();
+    for server in [&tokyo, &osaka] {
+        let cfg = derive_server_config(&topology, server, &certificates, &config())
+            .unwrap()
+            .config;
+        assert_eq!(cfg.quic.send_mbps, 1000);
+        assert!(cfg.forwardings[0].quic.is_none());
+        assert!(matches!(
+            &cfg.forwardings[0].to,
+            ForwardingTo::Relay { quic: None, .. } | ForwardingTo::Exit { .. }
+        ));
+    }
+
+    // A TLS relay between the same servers gets the worker-wide section only.
+    let (mut b, tokyo, osaka) = secure_relay(RelayProtocol::TcpTls);
+    b.server_quic(&tokyo, same);
+    b.server_quic(&osaka, same);
+    let topology = b.build();
+    let cfg = derive_server_config(&topology, &tokyo, &certificates, &config())
+        .unwrap()
+        .config;
+    assert_eq!(cfg.quic.send_mbps, 1000);
+    assert!(matches!(
+        &cfg.forwardings[0].to,
+        ForwardingTo::Relay { quic: None, .. }
+    ));
 }
 
 #[test]

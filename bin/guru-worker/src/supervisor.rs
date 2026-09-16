@@ -1,6 +1,8 @@
 use crate::prepared::PreparedForwarding;
 use crate::stats::Stats;
-use guru_worker_config::{Config, Forwarding, Ipv6Resolve, KeepAlive, LogConfig, Transport};
+use guru_worker_config::{
+    Config, Forwarding, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, Transport,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -135,6 +137,7 @@ pub struct Supervisor {
     log: LogConfig,
     relay_ca: Option<PathBuf>,
     keepalive: KeepAlive,
+    quic: QuicTuning,
     stats: Arc<Stats>,
 }
 
@@ -154,6 +157,7 @@ impl Supervisor {
             log: LogConfig::default(),
             relay_ca: None,
             keepalive: KeepAlive::default(),
+            quic: QuicTuning::default(),
             stats: Arc::new(Stats::default()),
         }
     }
@@ -184,6 +188,7 @@ impl Supervisor {
         self.log = cfg.log.clone();
         self.relay_ca = cfg.relay_ca.clone();
         self.keepalive = cfg.keepalive;
+        self.quic = cfg.quic;
 
         // Tags the config dropped run nothing from here on; their listeners are stopped
         // once every surviving tag has been placed.
@@ -200,6 +205,7 @@ impl Supervisor {
                 cfg.ipv6_resolve,
                 cfg.relay_ca.as_deref(),
                 cfg.keepalive,
+                cfg.quic,
                 self.stats.tag(&f.tag),
             ) {
                 Ok(prepared) => candidates.push((f.listen_key(), Arc::new(prepared))),
@@ -437,6 +443,7 @@ impl Supervisor {
             log: self.log.clone(),
             relay_ca: self.relay_ca.clone(),
             keepalive: self.keepalive,
+            quic: self.quic,
             forwardings,
         }
     }

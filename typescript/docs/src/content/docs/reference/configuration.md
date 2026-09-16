@@ -130,6 +130,7 @@ Top level:
 | `ipv6_resolve` | `"tolerated"` | `required`, `preferred`, `tolerated`, `forbidden` — family policy when a destination is a domain name |
 | `log.level` | `"info"` | A `tracing` `EnvFilter` directive — `info`, `debug`, or something targeted like `guru_worker=debug,warn`. Read **once at startup**, so a reload does not change it |
 | `[keepalive]` | see below | Liveness probing on every data-plane connection |
+| `[quic]` | see below | This worker's side of every QUIC relay link: congestion control, rates, windows |
 | `[[forwarding]]` | `[]` | One listener each; a file with none is valid and does nothing |
 
 In standalone mode `log.level` is what configures the process log: `--log-level`/`GURU_LOG_LEVEL`
@@ -166,6 +167,32 @@ The section is written out only when it differs from the defaults, and `guru-mas
 defaults: workers built before the section existed reject unknown keys, so an operator who tunes a
 standalone file must run a worker that knows it.
 
+### `[quic]`
+
+This worker's side of every QUIC relay link it listens on or dials. quinn's defaults suit a web
+client, not a relay: Cubic backs off on every loss, and a fixed 1.25 MB per-stream receive window
+caps a stream at `window / RTT` whatever the sender does. A link that is told its rate gets
+hysteria's *brutal* sender and windows sized for it.
+
+| Key | Default | Value |
+|---|---|---|
+| `congestion` | `"cubic"` | `cubic` probes for bandwidth; `brutal` sends at exactly `send_mbps` whatever the path does, over-sending by the observed loss (a quarter at most) |
+| `send_mbps` | `0` | Rate toward the peer, Mbit/s: brutal's fixed rate and the basis of the send window. `0` keeps quinn's defaults |
+| `receive_mbps` | `0` | The rate the peer sends at, Mbit/s; the receive windows hold half a second of it. `0` keeps quinn's 1.25 MB per stream |
+| `max_streams` | `0` | Streams a listener lets the peer keep open on one connection; `0` means 4096 |
+| `stream_receive_window` | `0` | Per-stream receive window in bytes, instead of the one derived from `receive_mbps` |
+| `receive_window` | `0` | Whole-connection receive window in bytes; `0` leaves it unlimited |
+| `send_window` | `0` | Bytes this side may have unacknowledged per connection, instead of the one derived from `send_mbps` |
+
+One QUIC connection carries every proxied connection of a link (a stream each), so a rate is the
+link's total, not a per-connection budget: set it to what the path carries in that direction, more
+only makes loss. A `[forwarding.quic]` table on a `quic` relay listener, or a `[forwarding.to.quic]`
+table on a `quic` hop, replaces the section for that one link. That is how `guru-master` pairs the
+two ends: every server carries its own numbers in `[quic]`, and where the peer's *down* rate is lower
+than this side's *up* rate (or the other way round) the forwarding gets the lower one, so nobody sends
+faster than the other end said it can receive. `brutal` without `send_mbps` is rejected, as is either
+table on anything but a QUIC relay. Like `[keepalive]`, the section is omitted at its defaults.
+
 ### `[[forwarding]]`
 
 | Key | Required | Value |
@@ -174,6 +201,7 @@ standalone file must run a worker that knows it.
 | `listen` | yes | `ip:port` — a literal address, never a hostname (`0.0.0.0:443`, `[::]:443`) |
 | `receive_proxy_protocol` | no | `"v1"` or `"v2"` — expect a PROXY header in front of the client payload |
 | `listen_as` | yes | How to accept: `"raw"`, or a `tls` / `relay` table (below) |
+| `quic` | no | A `[quic]` table for this listener alone; only on a `quic` relay listener |
 | `to` | yes | Where it goes: a `[forwarding.to]` table (below) |
 
 Listeners are keyed by `(listen, transport)`, and transport is QUIC only for a `quic` relay
@@ -238,6 +266,10 @@ type = "relay"                        # next guru hop
 protocol = "tcp"                      # "tcp" | "tls" | "quic"
 destination = "hop.example.com:9443"
 sni = "hop.example.com"               # required for "tls" and "quic"
+
+# [forwarding.to.quic]                # optional, "quic" only: this hop's side of
+# congestion = "brutal"               # the link instead of the top-level [quic]
+# send_mbps = 1000
 ```
 
 ```toml

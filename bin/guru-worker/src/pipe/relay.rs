@@ -1,6 +1,8 @@
 use crate::BoxError;
 use crate::pipe::write_proxy_header;
-use guru_worker_config::{Ipv6Resolve, KeepAlive, RelayProtocol, Remote, TcpProxyProtocol};
+use guru_worker_config::{
+    Ipv6Resolve, KeepAlive, QuicTuning, RelayProtocol, Remote, TcpProxyProtocol,
+};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
@@ -10,7 +12,7 @@ use tokio::io::ReadBuf;
 pub enum RelayStream {
     Tcp(tokio::net::TcpStream),
     Tls(tokio_openssl::SslStream<tokio::net::TcpStream>),
-    Quic(tokio::io::Join<quinn::RecvStream, quinn::SendStream>),
+    Quic(crate::quic::pool::Stream),
 }
 
 impl tokio::io::AsyncRead for RelayStream {
@@ -64,7 +66,9 @@ impl tokio::io::AsyncWrite for RelayStream {
 /// Dials the next relay hop over the configured transport and writes the PROXY v2
 /// framing header carrying the true client address. TLS and QUIC peers are verified
 /// against `relay_ca` when given, else the system roots; the hop probes for liveness
-/// per `keepalive`.
+/// per `keepalive`. A QUIC hop is a stream on the link's pooled connection, sent
+/// and received per `quic`.
+#[allow(clippy::too_many_arguments)]
 pub async fn dial_relay(
     protocol: RelayProtocol,
     destination: &Remote,
@@ -72,6 +76,7 @@ pub async fn dial_relay(
     sni: Option<&str>,
     relay_ca: Option<&Path>,
     keepalive: &KeepAlive,
+    quic: &QuicTuning,
     client_addr: SocketAddr,
 ) -> Result<RelayStream, BoxError> {
     let addr = crate::resolver::resolve(destination, ipv6_resolve).await?;
@@ -92,9 +97,7 @@ pub async fn dial_relay(
         RelayProtocol::Quic => {
             let sni = sni.ok_or("relay quic dial requires sni")?;
             let client = crate::tls::quic_client(relay_ca)?;
-            let conn = client.connect(addr, sni, keepalive)?.await?;
-            let (send, recv) = conn.open_bi().await?;
-            RelayStream::Quic(tokio::io::join(recv, send))
+            RelayStream::Quic(client.stream(addr, sni, keepalive, quic).await?)
         }
     };
     write_proxy_header(&mut out, TcpProxyProtocol::V2, client_addr, addr).await?;

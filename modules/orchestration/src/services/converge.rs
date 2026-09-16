@@ -208,6 +208,7 @@ pub fn converge(
             log: ideal.config.log,
             relay_ca: ideal.config.relay_ca,
             keepalive: ideal.config.keepalive,
+            quic: ideal.config.quic,
             forwardings,
         },
         forwardings: deps,

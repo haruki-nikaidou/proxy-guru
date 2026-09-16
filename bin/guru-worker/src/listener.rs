@@ -46,6 +46,10 @@ pub async fn run_quic(
 ) {
     let mut current = cfg_rx.borrow().clone();
     let mut conns = JoinSet::new();
+    // Connections outlive the accept loop only for as long as they carry a
+    // stream: the dialer pools them and pings them, so a removed listener has
+    // to close them itself or they stay up for good.
+    let drain = CancellationToken::new();
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -58,17 +62,25 @@ pub async fn run_quic(
             }
             incoming = endpoint.accept() => match incoming {
                 Some(inc) => {
-                    conns.spawn(handle_quic_connection(inc, current.clone()));
+                    conns.spawn(handle_quic_connection(inc, current.clone(), drain.clone()));
                 }
                 None => break, // endpoint closed
             }
         }
     }
+    drain.cancel();
     while conns.join_next().await.is_some() {}
     endpoint.wait_idle().await;
 }
 
-async fn handle_quic_connection(incoming: quinn::Incoming, cfg: Arc<PreparedForwarding>) {
+/// Serves one accepted connection: a stream per proxied connection until `drain`
+/// says the listener is going away, after which the connection is closed as
+/// soon as its last stream ends.
+async fn handle_quic_connection(
+    incoming: quinn::Incoming,
+    cfg: Arc<PreparedForwarding>,
+    drain: CancellationToken,
+) {
     let conn = match incoming.await {
         Ok(c) => c,
         Err(e) => {
@@ -77,13 +89,64 @@ async fn handle_quic_connection(incoming: quinn::Incoming, cfg: Arc<PreparedForw
         }
     };
     let remote = canonical(conn.remote_address());
-    while let Ok((send, recv)) = conn.accept_bi().await {
-        let joined = Box::new(tokio::io::join(recv, send));
-        tokio::spawn(crate::pipe::handle_relay_quic_stream_logged(
-            joined,
-            remote,
-            cfg.clone(),
-        ));
+    // Streams are spawned on their own, as TCP connections are, so that a
+    // listener forced down mid-transfer does not cut them; only their count is
+    // kept, for the close below.
+    let open = Arc::new(OpenStreams::default());
+    loop {
+        tokio::select! {
+            _ = drain.cancelled() => break,
+            accepted = conn.accept_bi() => match accepted {
+                Ok((send, recv)) => {
+                    let joined = Box::new(tokio::io::join(recv, send));
+                    let guard = open.clone().enter();
+                    let cfg = cfg.clone();
+                    tokio::spawn(async move {
+                        crate::pipe::handle_relay_quic_stream_logged(joined, remote, cfg).await;
+                        drop(guard);
+                    });
+                }
+                Err(_) => return, // the peer closed it, or it timed out
+            }
+        }
+    }
+    open.drained().await;
+    conn.close(quinn::VarInt::from_u32(0), b"listener removed");
+}
+
+/// How many streams a connection is serving, and a way to wait for none.
+#[derive(Default)]
+struct OpenStreams {
+    count: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+struct OpenStream(Arc<OpenStreams>);
+
+impl OpenStreams {
+    fn enter(self: Arc<Self>) -> OpenStream {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        OpenStream(self)
+    }
+
+    async fn drained(&self) {
+        loop {
+            // Register before checking, so a drop between the two is not missed.
+            let notified = self.changed.notified();
+            if self.count.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for OpenStream {
+    fn drop(&mut self) {
+        self.0
+            .count
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.changed.notify_waiters();
     }
 }
 

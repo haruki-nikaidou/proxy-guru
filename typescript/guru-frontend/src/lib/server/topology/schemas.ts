@@ -75,6 +75,23 @@ export const balanceModeSchema = v.picklist([
 	'fallback'
 ] as const);
 export const ipv6Schema = v.picklist(['required', 'preferred', 'tolerated', 'forbidden'] as const);
+export const quicCongestionSchema = v.picklist(['cubic', 'brutal'] as const);
+/** A rate in Mbit/s; 0 is "unknown". */
+export const mbpsSchema = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(1_000_000));
+/** A window in bytes; 0 is "derived / unlimited". */
+export const windowBytesSchema = v.pipe(
+	v.number(),
+	v.integer(),
+	v.minValue(0),
+	v.maxValue(Number.MAX_SAFE_INTEGER)
+);
+export const serverQuicSchema = v.object({
+	congestion: quicCongestionSchema,
+	upMbps: mbpsSchema,
+	downMbps: mbpsSchema,
+	streamReceiveWindow: windowBytesSchema,
+	connReceiveWindow: windowBytesSchema
+});
 /**
  * One hostname, optionally with a leading `*.` wildcard label. Deliberately
  * narrower than the RFC: the ACME order is built from this verbatim.

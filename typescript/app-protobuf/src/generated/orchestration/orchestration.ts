@@ -50,6 +50,46 @@ export function proxyProtocolVersionToJSON(object: ProxyProtocolVersion): string
   }
 }
 
+/** How a server sends on its QUIC relay links. */
+export enum QuicCongestion {
+  UNSPECIFIED = 0,
+  QUIC_CUBIC = 1,
+  QUIC_BRUTAL = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function quicCongestionFromJSON(object: any): QuicCongestion {
+  switch (object) {
+    case 0:
+    case "QUIC_CONGESTION_UNSPECIFIED":
+      return QuicCongestion.UNSPECIFIED;
+    case 1:
+    case "QUIC_CUBIC":
+      return QuicCongestion.QUIC_CUBIC;
+    case 2:
+    case "QUIC_BRUTAL":
+      return QuicCongestion.QUIC_BRUTAL;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return QuicCongestion.UNRECOGNIZED;
+  }
+}
+
+export function quicCongestionToJSON(object: QuicCongestion): string {
+  switch (object) {
+    case QuicCongestion.UNSPECIFIED:
+      return "QUIC_CONGESTION_UNSPECIFIED";
+    case QuicCongestion.QUIC_CUBIC:
+      return "QUIC_CUBIC";
+    case QuicCongestion.QUIC_BRUTAL:
+      return "QUIC_BRUTAL";
+    case QuicCongestion.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum RelayProtocol {
   UNSPECIFIED = 0,
   RELAY_TCP_RAW = 1,
@@ -983,6 +1023,22 @@ export function canvasChangeKindToJSON(object: CanvasChangeKind): string {
   }
 }
 
+/**
+ * A server's side of every QUIC relay link it takes part in. `up_mbps` is what
+ * it sends at (brutal's fixed rate), `down_mbps` what it can receive; on each
+ * link the master pairs a server's numbers with its peer's, so nobody sends
+ * faster than the other end said it can take. Zero means unknown / default.
+ */
+export interface QuicSettings {
+  congestion: QuicCongestion;
+  upMbps: number;
+  downMbps: number;
+  /** Bytes; 0 derives the per-stream window from down_mbps. */
+  streamReceiveWindow: bigint;
+  /** Bytes; 0 leaves the whole-connection window unlimited. */
+  connReceiveWindow: bigint;
+}
+
 export interface CanvasUiPosition {
   x: bigint;
   y: bigint;
@@ -1175,6 +1231,7 @@ export interface Server {
   ipv6Resolve: Ipv6Resolve;
   logLevel: string;
   lastSeenAt: string;
+  quic: QuicSettings | undefined;
   healthStatus: ServerHealthStatus;
   addresses:
     | ServerAddresses
@@ -1346,6 +1403,8 @@ export interface UpdateServerRequest {
    * 1-32 lowercase letters, digits or dashes. Empty clears it.
    */
   agentUnit: string;
+  /** Absent keeps quinn's defaults (every field zero). */
+  quic: QuicSettings | undefined;
 }
 
 export interface UpdateServerReply {
@@ -1828,6 +1887,156 @@ export interface RolloutEvent {
   snapshot?: RolloutSnapshot | undefined;
   keepAlive?: KeepAlive | undefined;
 }
+
+function createBaseQuicSettings(): QuicSettings {
+  return { congestion: 0, upMbps: 0, downMbps: 0, streamReceiveWindow: 0n, connReceiveWindow: 0n };
+}
+
+export const QuicSettings: MessageFns<QuicSettings> = {
+  encode(message: QuicSettings, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.congestion !== 0) {
+      writer.uint32(8).int32(message.congestion);
+    }
+    if (message.upMbps !== 0) {
+      writer.uint32(16).uint32(message.upMbps);
+    }
+    if (message.downMbps !== 0) {
+      writer.uint32(24).uint32(message.downMbps);
+    }
+    if (message.streamReceiveWindow !== 0n) {
+      if (BigInt.asUintN(64, message.streamReceiveWindow) !== message.streamReceiveWindow) {
+        throw new globalThis.Error("value provided for field message.streamReceiveWindow of type uint64 too large");
+      }
+      writer.uint32(32).uint64(message.streamReceiveWindow);
+    }
+    if (message.connReceiveWindow !== 0n) {
+      if (BigInt.asUintN(64, message.connReceiveWindow) !== message.connReceiveWindow) {
+        throw new globalThis.Error("value provided for field message.connReceiveWindow of type uint64 too large");
+      }
+      writer.uint32(40).uint64(message.connReceiveWindow);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): QuicSettings {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseQuicSettings();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.congestion = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.upMbps = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.downMbps = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.streamReceiveWindow = reader.uint64() as bigint;
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.connReceiveWindow = reader.uint64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): QuicSettings {
+    return {
+      congestion: isSet(object.congestion) ? quicCongestionFromJSON(object.congestion) : 0,
+      upMbps: isSet(object.upMbps)
+        ? globalThis.Number(object.upMbps)
+        : isSet(object.up_mbps)
+        ? globalThis.Number(object.up_mbps)
+        : 0,
+      downMbps: isSet(object.downMbps)
+        ? globalThis.Number(object.downMbps)
+        : isSet(object.down_mbps)
+        ? globalThis.Number(object.down_mbps)
+        : 0,
+      streamReceiveWindow: isSet(object.streamReceiveWindow)
+        ? BigInt(object.streamReceiveWindow)
+        : isSet(object.stream_receive_window)
+        ? BigInt(object.stream_receive_window)
+        : 0n,
+      connReceiveWindow: isSet(object.connReceiveWindow)
+        ? BigInt(object.connReceiveWindow)
+        : isSet(object.conn_receive_window)
+        ? BigInt(object.conn_receive_window)
+        : 0n,
+    };
+  },
+
+  toJSON(message: QuicSettings): unknown {
+    const obj: any = {};
+    if (message.congestion !== 0) {
+      obj.congestion = quicCongestionToJSON(message.congestion);
+    }
+    if (message.upMbps !== 0) {
+      obj.upMbps = Math.round(message.upMbps);
+    }
+    if (message.downMbps !== 0) {
+      obj.downMbps = Math.round(message.downMbps);
+    }
+    if (message.streamReceiveWindow !== 0n) {
+      obj.streamReceiveWindow = message.streamReceiveWindow.toString();
+    }
+    if (message.connReceiveWindow !== 0n) {
+      obj.connReceiveWindow = message.connReceiveWindow.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<QuicSettings>): QuicSettings {
+    return QuicSettings.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<QuicSettings>): QuicSettings {
+    const message = createBaseQuicSettings();
+    message.congestion = object.congestion ?? 0;
+    message.upMbps = object.upMbps ?? 0;
+    message.downMbps = object.downMbps ?? 0;
+    message.streamReceiveWindow = (object.streamReceiveWindow !== undefined && object.streamReceiveWindow !== null)
+      ? BigInt(object.streamReceiveWindow)
+      : 0n;
+    message.connReceiveWindow = (object.connReceiveWindow !== undefined && object.connReceiveWindow !== null)
+      ? BigInt(object.connReceiveWindow)
+      : 0n;
+    return message;
+  },
+};
 
 function createBaseCanvasUiPosition(): CanvasUiPosition {
   return { x: 0n, y: 0n };
@@ -4002,6 +4211,7 @@ function createBaseServer(): Server {
     ipv6Resolve: 0,
     logLevel: "",
     lastSeenAt: "",
+    quic: undefined,
     healthStatus: 0,
     addresses: undefined,
     agentVersion: "",
@@ -4042,6 +4252,9 @@ export const Server: MessageFns<Server> = {
     }
     if (message.lastSeenAt !== "") {
       writer.uint32(74).string(message.lastSeenAt);
+    }
+    if (message.quic !== undefined) {
+      QuicSettings.encode(message.quic, writer.uint32(162).fork()).join();
     }
     if (message.healthStatus !== 0) {
       writer.uint32(88).int32(message.healthStatus);
@@ -4152,6 +4365,14 @@ export const Server: MessageFns<Server> = {
           message.lastSeenAt = reader.string();
           continue;
         }
+        case 20: {
+          if (tag !== 162) {
+            break;
+          }
+
+          message.quic = QuicSettings.decode(reader, reader.uint32());
+          continue;
+        }
         case 11: {
           if (tag !== 88) {
             break;
@@ -4260,6 +4481,7 @@ export const Server: MessageFns<Server> = {
         : isSet(object.last_seen_at)
         ? globalThis.String(object.last_seen_at)
         : "",
+      quic: isSet(object.quic) ? QuicSettings.fromJSON(object.quic) : undefined,
       healthStatus: isSet(object.healthStatus)
         ? serverHealthStatusFromJSON(object.healthStatus)
         : isSet(object.health_status)
@@ -4333,6 +4555,9 @@ export const Server: MessageFns<Server> = {
     if (message.lastSeenAt !== "") {
       obj.lastSeenAt = message.lastSeenAt;
     }
+    if (message.quic !== undefined) {
+      obj.quic = QuicSettings.toJSON(message.quic);
+    }
     if (message.healthStatus !== 0) {
       obj.healthStatus = serverHealthStatusToJSON(message.healthStatus);
     }
@@ -4379,6 +4604,9 @@ export const Server: MessageFns<Server> = {
     message.ipv6Resolve = object.ipv6Resolve ?? 0;
     message.logLevel = object.logLevel ?? "";
     message.lastSeenAt = object.lastSeenAt ?? "";
+    message.quic = (object.quic !== undefined && object.quic !== null)
+      ? QuicSettings.fromPartial(object.quic)
+      : undefined;
     message.healthStatus = object.healthStatus ?? 0;
     message.addresses = (object.addresses !== undefined && object.addresses !== null)
       ? ServerAddresses.fromPartial(object.addresses)
@@ -6273,6 +6501,7 @@ function createBaseUpdateServerRequest(): UpdateServerRequest {
     overrideV6: "",
     extraAddresses: [],
     agentUnit: "",
+    quic: undefined,
   };
 }
 
@@ -6307,6 +6536,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     }
     if (message.agentUnit !== "") {
       writer.uint32(82).string(message.agentUnit);
+    }
+    if (message.quic !== undefined) {
+      QuicSettings.encode(message.quic, writer.uint32(90).fork()).join();
     }
     return writer;
   },
@@ -6398,6 +6630,14 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
           message.agentUnit = reader.string();
           continue;
         }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.quic = QuicSettings.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -6447,6 +6687,7 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
         : isSet(object.agent_unit)
         ? globalThis.String(object.agent_unit)
         : "",
+      quic: isSet(object.quic) ? QuicSettings.fromJSON(object.quic) : undefined,
     };
   },
 
@@ -6482,6 +6723,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     if (message.agentUnit !== "") {
       obj.agentUnit = message.agentUnit;
     }
+    if (message.quic !== undefined) {
+      obj.quic = QuicSettings.toJSON(message.quic);
+    }
     return obj;
   },
 
@@ -6500,6 +6744,9 @@ export const UpdateServerRequest: MessageFns<UpdateServerRequest> = {
     message.overrideV6 = object.overrideV6 ?? "";
     message.extraAddresses = object.extraAddresses?.map((e) => e) || [];
     message.agentUnit = object.agentUnit ?? "";
+    message.quic = (object.quic !== undefined && object.quic !== null)
+      ? QuicSettings.fromPartial(object.quic)
+      : undefined;
     return message;
   },
 };

@@ -41,7 +41,7 @@ mod tests {
     use super::*;
     use crate::{
         Config, ConfigError, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig,
-        RelayHost, RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
+        QuicTuning, RelayHost, RelayProtocol, Remote, TcpProxyProtocol, TlsHostConfig,
     };
     use smallvec::SmallVec;
     use std::path::PathBuf;
@@ -52,6 +52,7 @@ mod tests {
             listen: "203.0.113.10:443".parse().unwrap(),
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
+            quic: None,
             to,
         }
     }
@@ -61,6 +62,7 @@ mod tests {
             protocol,
             destination: Remote::parse("relay.internal:9000").unwrap(),
             sni: sni.map(str::to_string),
+            quic: None,
         }
     }
 
@@ -80,12 +82,14 @@ mod tests {
             },
             relay_ca: None,
             keepalive: KeepAlive::default(),
+            quic: QuicTuning::default(),
             forwardings: vec![
                 Forwarding {
                     tag: "raw-exit".to_string(),
                     listen: "203.0.113.10:443".parse().unwrap(),
                     receive_proxy_protocol: Some(TcpProxyProtocol::V2),
                     listen_as: ListenAs::Raw,
+                    quic: None,
                     to: ForwardingTo::Exit {
                         destination: Remote::parse("10.0.0.5:8080").unwrap(),
                         send_proxy_protocol: Some(TcpProxyProtocol::V1),
@@ -96,10 +100,12 @@ mod tests {
                     listen: "203.0.113.10:8443".parse().unwrap(),
                     receive_proxy_protocol: None,
                     listen_as: ListenAs::Tls(tls_host()),
+                    quic: None,
                     to: ForwardingTo::Relay {
                         protocol: RelayProtocol::TlsOverTcp,
                         destination: Remote::parse("relay.internal:9000").unwrap(),
                         sni: Some("relay.example.com".to_string()),
+                        quic: None,
                     },
                 },
                 Forwarding {
@@ -107,6 +113,7 @@ mod tests {
                     listen: "203.0.113.10:9443".parse().unwrap(),
                     receive_proxy_protocol: None,
                     listen_as: ListenAs::Relay(RelayHost::Quic(tls_host())),
+                    quic: None,
                     to: ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
                         strategy: LoadBalanceStrategy::Fallback,
                         members: smallvec::smallvec![

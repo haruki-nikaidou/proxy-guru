@@ -1,5 +1,6 @@
 use crate::pipe::AsyncRw;
-use guru_worker_config::{KeepAlive, TlsHostConfig};
+use crate::quic::pool::{Key, Pool, Stream};
+use guru_worker_config::{KeepAlive, QuicTuning, TlsHostConfig};
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslFiletype, SslMethod};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -72,10 +73,11 @@ pub async fn connect_tls(
 }
 
 /// Builds a quinn server config from a cert chain + key on disk, pinging and timing
-/// out idle connections per `keepalive`.
+/// out idle connections per `keepalive` and sending and receiving per `tuning`.
 pub fn quic_server_config(
     c: &TlsHostConfig,
     keepalive: &KeepAlive,
+    tuning: &QuicTuning,
 ) -> Result<quinn::ServerConfig, crate::BoxError> {
     use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer};
     let chain: Vec<CertificateDer<'static>> = {
@@ -89,7 +91,7 @@ pub fn quic_server_config(
         rustls_pemfile::private_key(&mut r)?.ok_or("no private key in key file")?
     };
     let mut config = quinn::ServerConfig::with_single_cert(chain, key)?;
-    config.transport_config(crate::keepalive::quic_transport(keepalive));
+    config.transport_config(crate::quic::transport::build(keepalive, Some(tuning)));
     Ok(config)
 }
 
@@ -107,13 +109,13 @@ fn root_store_from_pem(ca: &Path) -> Result<quinn::rustls::RootCertStore, crate:
     Ok(roots)
 }
 
-/// A QUIC dialer: one UDP socket and the trust it verifies peers with. The transport
-/// parameters are not part of it — they come from the config in force at each dial,
-/// so a reload changes them without rebinding the socket.
+/// A QUIC dialer: one UDP socket, the trust it verifies peers with, and the pool
+/// of connections it keeps, one per link. The transport parameters are not part
+/// of it — they come from the config in force at each dial and are part of the
+/// pool key, so a reload changes them without rebinding the socket.
 #[derive(Clone)]
 pub struct QuicClient {
-    endpoint: quinn::Endpoint,
-    config: quinn::ClientConfig,
+    pool: Arc<Pool>,
 }
 
 impl QuicClient {
@@ -121,19 +123,33 @@ impl QuicClient {
         let config = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
         let addr: std::net::SocketAddr = "[::]:0".parse()?;
         let endpoint = quinn::Endpoint::client(addr)?;
-        Ok(Self { endpoint, config })
+        Ok(Self {
+            pool: Arc::new(Pool::new(endpoint, config)),
+        })
     }
 
-    /// Opens a connection to `addr` as `sni`, probing per `keepalive`.
-    pub fn connect(
+    /// Opens a stream to `addr` as `sni` on the link's pooled connection,
+    /// dialing it first when there is none.
+    pub async fn stream(
         &self,
         addr: std::net::SocketAddr,
         sni: &str,
         keepalive: &KeepAlive,
-    ) -> Result<quinn::Connecting, quinn::ConnectError> {
-        let mut config = self.config.clone();
-        config.transport_config(crate::keepalive::quic_transport(keepalive));
-        self.endpoint.connect_with(config, addr, sni)
+        tuning: &QuicTuning,
+    ) -> Result<Stream, crate::BoxError> {
+        self.pool
+            .stream(Key {
+                addr,
+                sni: sni.to_string(),
+                keepalive: *keepalive,
+                tuning: *tuning,
+            })
+            .await
+    }
+
+    /// Live pooled connections, for tests.
+    pub fn connections(&self) -> usize {
+        self.pool.connections()
     }
 }
 

@@ -16,6 +16,10 @@ pub enum ConfigError {
     MissingSni(String),
     #[error("forwarding {0} has an empty load-balance group")]
     EmptyLoadBalance(String),
+    #[error("forwarding {0} has `quic` tuning on something other than a quic relay")]
+    QuicTuningWithoutQuic(String),
+    #[error("{0}")]
+    QuicTuning(String),
     #[error("{0}")]
     KeepAlive(String),
     #[error("read {path}: {source}")]
