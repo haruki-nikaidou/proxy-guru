@@ -3,6 +3,8 @@
  * them, replacing a spec, retiring one. The boundary nodes — import and export
  * — live in `./subcanvas.remote.js`, because they change two canvases at once.
  */
+
+import type { NodeSpec } from 'app-protobuf/orchestration/orchestration';
 import {
 	LoadBalanceMode,
 	ProxyProtocolVersion,
@@ -39,6 +41,21 @@ const DEFAULT_MEMBERS = [
 	{ slot: 1, name: '1' },
 	{ slot: 2, name: '2' }
 ];
+
+/**
+ * Replaces one node's spec, then re-reads the canvas. Every command below is
+ * this call with a different `spec`: the control plane validates the new shape,
+ * reshapes the node's ports, and drops whatever no longer fits — so the graph
+ * is stale either way and the reply carries nothing worth threading back.
+ */
+const replaceSpec = async (canvasId: string, nodeId: string, spec: NodeSpec) => {
+	const metadata = sessionMetadata(requireSessionId());
+	await callGrpc(() =>
+		orchestrationClient().replaceNodeSpec({ nodeId, spec, itemCount: 0 }, { metadata })
+	);
+	await getCanvasGraph({ canvasId }).refresh();
+	return { ok: true as const };
+};
 
 export const createStandaloneNode = command(
 	v.object({
@@ -186,24 +203,11 @@ export const replaceEntrySpec = command(
 		receiveProxyProtocol: proxySchema,
 		tls: tlsSchema
 	}),
-	async ({ canvasId, nodeId, receiveProxyProtocol, tls }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					// `tls: undefined` is the wire form of "no TLS on this entry".
-					spec: {
-						entry: { receiveProxyProtocol: fromProxy(receiveProxyProtocol), tls: tls ?? undefined }
-					},
-					itemCount: 0
-				},
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
+	({ canvasId, nodeId, receiveProxyProtocol, tls }) =>
+		replaceSpec(canvasId, nodeId, {
+			// `tls: undefined` is the wire form of "no TLS on this entry".
+			entry: { receiveProxyProtocol: fromProxy(receiveProxyProtocol), tls: tls ?? undefined }
+		})
 );
 
 export const replaceRelaySpec = command(
@@ -214,23 +218,10 @@ export const replaceRelaySpec = command(
 		overrideIpAddress: v.optional(v.pipe(v.string(), v.trim()), ''),
 		overridePort: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(65535))
 	}),
-	async ({ canvasId, nodeId, protocol, overrideIpAddress, overridePort }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					spec: {
-						relay: { protocol: fromRelayProtocol(protocol), overrideIpAddress, overridePort }
-					},
-					itemCount: 0
-				},
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
+	({ canvasId, nodeId, protocol, overrideIpAddress, overridePort }) =>
+		replaceSpec(canvasId, nodeId, {
+			relay: { protocol: fromRelayProtocol(protocol), overrideIpAddress, overridePort }
+		})
 );
 
 export const replaceExitSpec = command(
@@ -240,21 +231,10 @@ export const replaceExitSpec = command(
 		destination: v.optional(v.pipe(v.string(), v.trim()), ''),
 		passProxyProtocol: proxySchema
 	}),
-	async ({ canvasId, nodeId, destination, passProxyProtocol }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					spec: { exit: { destination, passProxyProtocol: fromProxy(passProxyProtocol) } },
-					itemCount: 0
-				},
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
+	({ canvasId, nodeId, destination, passProxyProtocol }) =>
+		replaceSpec(canvasId, nodeId, {
+			exit: { destination, passProxyProtocol: fromProxy(passProxyProtocol) }
+		})
 );
 
 /**
@@ -274,31 +254,21 @@ export const replaceLoadBalanceSpec = command(
 		protocol: v.optional(relayProtocolSchema, 'tcp_raw'),
 		members: membersSchema
 	}),
-	async ({ canvasId, nodeId, mode, balanceMode, protocol, members }) => {
-		const metadata = sessionMetadata(requireSessionId());
+	({ canvasId, nodeId, mode, balanceMode, protocol, members }) =>
 		// The spec kind cannot change, so `mode` only picks which config to resend.
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					spec:
-						mode === 'distribute'
-							? {
-									loadBalanceDistribute: {
-										mode: fromBalanceMode(balanceMode),
-										protocol: fromRelayProtocol(protocol),
-										members
-									}
-								}
-							: { loadBalanceAggregate: { members } },
-					itemCount: 0
-				},
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
+		replaceSpec(
+			canvasId,
+			nodeId,
+			mode === 'distribute'
+				? {
+						loadBalanceDistribute: {
+							mode: fromBalanceMode(balanceMode),
+							protocol: fromRelayProtocol(protocol),
+							members
+						}
+					}
+				: { loadBalanceAggregate: { members } }
+		)
 );
 
 export const replacePodSpec = command(
@@ -310,17 +280,8 @@ export const replacePodSpec = command(
 		bindIp: optionalIpSchema,
 		advertiseIp: optionalIpSchema
 	}),
-	async ({ canvasId, nodeId, serverId, port, bindIp, advertiseIp }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{ nodeId, spec: { pod: { serverId, port, bindIp, advertiseIp } }, itemCount: 0 },
-				{ metadata }
-			)
-		);
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
+	({ canvasId, nodeId, serverId, port, bindIp, advertiseIp }) =>
+		replaceSpec(canvasId, nodeId, { pod: { serverId, port, bindIp, advertiseIp } })
 );
 
 export const deleteNode = command(
