@@ -1649,6 +1649,7 @@ dependencies = [
  "chrono",
  "clap",
  "compact_str",
+ "guru_topology",
  "guru_worker_config",
  "if-addrs",
  "kanau",

@@ -91,13 +91,15 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
 
     // The watcher lives on replica B and shares its database with the publisher.
     let live = LiveService::new(w.db.clone(), replica_b.clone(), w.config.clone());
     let mut handle = live
-        .process(orchestration::services::live::WatchCanvas {
+        .process(orchestration::services::live::WatchRollouts {
             actor: operator(),
             canvas: canvas.id.clone(),
         })
@@ -114,7 +116,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
     .await
     .expect("an opening snapshot");
     match &opening {
-        ViewValue::Ready { state, .. } => assert!(state.contents.servers.is_empty()),
+        ViewValue::Ready { state, .. } => assert!(state.servers.is_empty()),
         other => panic!("unexpected opening value: {}", describe(other)),
     }
 
@@ -142,7 +144,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
         loop {
             handle.rx.changed().await.expect("the view task is alive");
             if let ViewValue::Ready { state, cause } = handle.rx.borrow_and_update().clone()
-                && !state.contents.servers.is_empty()
+                && !state.servers.is_empty()
             {
                 return (state, cause);
             }
@@ -151,8 +153,8 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
     .await
     .expect("a refreshed snapshot");
     let (state, cause) = refreshed;
-    assert_eq!(state.contents.servers.len(), 1);
-    assert_eq!(state.contents.servers[0].name, "tokyo");
+    assert_eq!(state.servers.len(), 1);
+    assert_eq!(state.servers[0].server.name, "tokyo");
     let cause = cause.expect("a cross-replica snapshot names its cause");
     assert!(
         matches!(

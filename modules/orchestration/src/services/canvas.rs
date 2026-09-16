@@ -1,20 +1,24 @@
-//! Canvas CRUD and validation.
+//! Canvas CRUD.
+//!
+//! Canvases nest by `parent`: a subcanvas is only a way to organise a big graph,
+//! so edges cross canvas boundaries freely within a tree, and the tree is what
+//! gets checked and derived as a whole.
 
 use crate::entities::db::canvas::{
-    CanvasContents, CanvasEntity, CanvasId, CanvasTree, CreateCanvas as CreateCanvasRow,
+    CanvasEntity, CanvasId, CanvasTree, CanvasUiPosition, CreateCanvas as CreateCanvasRow,
     DeleteCanvasRow, FindCanvasById, ListCanvases as ListCanvasesRow, LoadCanvasTree,
     UpdateCanvasMeta,
 };
-use crate::entities::db::node::{FindImporterOf, NodeId};
-use crate::entities::db::topology::{LoadCanvasContents, LoadCanvasTopology};
+use crate::entities::db::edge::EdgeTarget;
+use crate::entities::db::graph::LoadCanvasGraph;
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
-use crate::services::topology::{TopologyProblem, analyze};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
 use kanau::processor::Processor;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct CanvasService {
@@ -26,6 +30,9 @@ pub struct CreateCanvas {
     pub actor: Identity,
     pub name: String,
     pub description: String,
+    /// `Some` creates a subcanvas drawn at `position` inside that canvas.
+    pub parent: Option<CanvasId>,
+    pub position: CanvasUiPosition,
 }
 
 impl Processor<CreateCanvas> for CanvasService {
@@ -37,13 +44,25 @@ impl Processor<CreateCanvas> for CanvasService {
         if input.name.trim().is_empty() {
             return Err(OrchestrationError::Invalid("name must not be empty".into()));
         }
-        Ok(self
+        let canvas = self
             .db
             .process(CreateCanvasRow {
                 name: input.name,
                 description: input.description,
+                parent: input.parent.clone(),
+                position: input.position,
             })
-            .await?)
+            .await?;
+        if let Some(parent) = &input.parent {
+            self.notifier
+                .canvas_changed(
+                    parent,
+                    CanvasChangeKind::CanvasCreated,
+                    vec![canvas.id.to_string()],
+                )
+                .await;
+        }
+        Ok(canvas)
     }
 }
 
@@ -105,31 +124,13 @@ impl Processor<FindCanvas> for CanvasService {
     }
 }
 
-pub struct GetCanvas {
-    pub actor: Identity,
-    pub canvas: CanvasId,
-}
-
-impl Processor<GetCanvas> for CanvasService {
-    type Output = CanvasContents;
-    type Error = OrchestrationError;
-    #[tracing::instrument(name = "Service:GetCanvas", skip_all, err)]
-    async fn process(&self, input: GetCanvas) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ViewWorkspace)?;
-        self.db
-            .process(LoadCanvasContents {
-                canvas: input.canvas,
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)
-    }
-}
-
 pub struct UpdateCanvas {
     pub actor: Identity,
     pub canvas: CanvasId,
     pub name: String,
     pub description: String,
+    /// Where a subcanvas is drawn on its parent; `None` leaves it.
+    pub position: Option<CanvasUiPosition>,
 }
 
 impl Processor<UpdateCanvas> for CanvasService {
@@ -155,6 +156,7 @@ impl Processor<UpdateCanvas> for CanvasService {
                 id: input.canvas.clone(),
                 name: input.name,
                 description: input.description,
+                position: input.position,
             })
             .await?;
         self.notifier
@@ -176,42 +178,98 @@ pub struct DeleteCanvas {
 impl Processor<DeleteCanvas> for CanvasService {
     type Output = ();
     type Error = OrchestrationError;
-    /// Deletes the canvas and its whole tree in one transaction. An imported
-    /// canvas cannot be deleted: retire the import node first.
+    /// Deletes the canvas with everything below it, in one transaction.
     ///
-    /// Workers of the deleted servers keep running their last config: there is no
-    /// canvas left to derive an empty one from, and no view row to send it through.
-    /// This is the same behaviour as deleting a single server.
+    /// Refused while something outside the subtree still depends on it: an edge
+    /// from a pod outside into a pod or exit inside (the pod's route names it),
+    /// or a pod outside placed on a server inside. Workers of the deleted
+    /// servers keep running their last config, as when a single server is
+    /// deleted; the servers of the rest of the tree are re-derived.
     #[tracing::instrument(name = "Service:DeleteCanvas", skip_all, err)]
     async fn process(&self, input: DeleteCanvas) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        self.db
+        let canvas = self
+            .db
             .process(FindCanvasById {
                 id: input.canvas.clone(),
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        if let Some(importer) = self
+        let graph = self
             .db
-            .process(FindImporterOf {
+            .process(LoadCanvasGraph {
+                canvas: input.canvas.clone(),
+            })
+            .await?;
+        let tree = self
+            .db
+            .process(LoadCanvasTree {
                 canvas: input.canvas.clone(),
             })
             .await?
-        {
+            .ok_or(OrchestrationError::NotFound)?;
+        let mut doomed: HashSet<CanvasId> = HashSet::new();
+        if let Some(subtree) = find_subtree(&tree, &input.canvas) {
+            collect(subtree, &mut doomed);
+        }
+        let inside_pods: HashSet<&str> = graph
+            .pods
+            .iter()
+            .filter(|p| doomed.contains(&p.canvas))
+            .map(|p| p.id.as_str())
+            .collect();
+        let inside_exits: HashSet<&str> = graph
+            .exits
+            .iter()
+            .filter(|e| doomed.contains(&e.canvas))
+            .map(|e| e.id.as_str())
+            .collect();
+        let inside_servers: HashSet<&str> = graph
+            .servers
+            .iter()
+            .filter(|s| doomed.contains(&s.canvas))
+            .map(|s| s.id.as_str())
+            .collect();
+        let dialing: Vec<&str> = graph
+            .edges
+            .iter()
+            .filter(|edge| !inside_pods.contains(edge.source.as_str()))
+            .filter(|edge| match &edge.target {
+                EdgeTarget::Pod(pod) => inside_pods.contains(pod.as_str()),
+                EdgeTarget::Exit(exit) => inside_exits.contains(exit.as_str()),
+            })
+            .filter_map(|edge| {
+                graph
+                    .pods
+                    .iter()
+                    .find(|p| p.id == edge.source)
+                    .map(|p| p.name.as_str())
+            })
+            .collect();
+        if let Some(pod) = dialing.first() {
             return Err(OrchestrationError::Conflict(format!(
-                "canvas is imported by node {} in canvas {}; retire that node first",
-                importer.name, importer.canvas
+                "pod {pod} outside this canvas still leads into it; remove those edges first"
             )));
         }
-        // The transaction re-checks the import and throws on a race.
+        if let Some(pod) = graph.pods.iter().find(|p| {
+            !doomed.contains(&p.canvas) && inside_servers.contains(p.server.as_str())
+        }) {
+            return Err(OrchestrationError::Conflict(format!(
+                "pod {} outside this canvas runs on a server inside it; move or delete it first",
+                pod.name
+            )));
+        }
         self.db
             .process(DeleteCanvasRow {
                 id: input.canvas.clone(),
             })
             .await?;
+        if let Some(parent) = &canvas.parent {
+            self.notifier.notify(parent).await;
+        }
         self.notifier
             .canvas_changed(
-                &input.canvas,
+                canvas.parent.as_ref().unwrap_or(&input.canvas),
                 CanvasChangeKind::CanvasDeleted,
                 vec![input.canvas.to_string()],
             )
@@ -220,45 +278,16 @@ impl Processor<DeleteCanvas> for CanvasService {
     }
 }
 
-pub struct ValidateCanvas {
-    pub actor: Identity,
-    pub canvas: CanvasId,
+fn find_subtree<'a>(tree: &'a CanvasTree, id: &CanvasId) -> Option<&'a CanvasTree> {
+    if tree.canvas.id == *id {
+        return Some(tree);
+    }
+    tree.children.iter().find_map(|child| find_subtree(child, id))
 }
 
-impl Processor<ValidateCanvas> for CanvasService {
-    type Output = Vec<TopologyProblem>;
-    type Error = OrchestrationError;
-    #[tracing::instrument(name = "Service:ValidateCanvas", skip_all, err)]
-    async fn process(&self, input: ValidateCanvas) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ViewWorkspace)?;
-        self.db
-            .process(FindCanvasById {
-                id: input.canvas.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
-        let topology = self
-            .db
-            .process(LoadCanvasTopology {
-                canvas: input.canvas,
-            })
-            .await?;
-        // A problem on a generated lane is shown on the universal node that
-        // generated it: the lane itself is not on the canvas.
-        let group_of: std::collections::HashMap<&NodeId, &NodeId> = topology
-            .nodes
-            .iter()
-            .filter_map(|n| n.node.lane.as_ref().map(|lane| (&n.node.id, &lane.group)))
-            .collect();
-        let mut problems = analyze(&topology);
-        for problem in &mut problems {
-            for node in &mut problem.nodes {
-                if let Some(group) = group_of.get(node) {
-                    *node = (*group).clone();
-                }
-            }
-            problem.nodes.dedup();
-        }
-        Ok(problems)
+fn collect(tree: &CanvasTree, out: &mut HashSet<CanvasId>) {
+    out.insert(tree.canvas.id.clone());
+    for child in &tree.children {
+        collect(child, out);
     }
 }

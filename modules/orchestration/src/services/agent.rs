@@ -7,7 +7,7 @@
 use crate::config::OrchestrationConfig;
 use crate::entities::db::agent_release::FindAgentRelease;
 use crate::entities::db::health::{
-    InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus, ServerHealthStatus,
+    InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus, ServerHealthStatus,
     SetServerHealthStatus,
 };
 use crate::entities::db::server::{
@@ -19,7 +19,7 @@ use crate::entities::db::view::{
 };
 use crate::events::live::{CanvasChangeKind, LiveMessage, RolloutScope};
 use crate::services::OrchestrationError;
-use crate::services::health::{NodeVerdicts, ParsedSnapshot, SnapshotEntry, parse_snapshot};
+use crate::services::health::{ParsedSnapshot, PodVerdicts, SnapshotEntry, parse_snapshot};
 use crate::services::notify::Notifier;
 use crate::services::watch::{SessionLease, WatchHub};
 use auth::services::identity::Identity;
@@ -65,6 +65,8 @@ pub struct RegisterWorker {
     /// The worker's build, when it reports one.
     pub agent_version: Option<String>,
     pub agent_arch: Option<String>,
+    /// What the worker reads beyond the tree form every worker reads.
+    pub capabilities: Vec<String>,
     /// Why the last self-update on the host failed, when the worker found the
     /// start guard's record of it.
     pub last_update_error: Option<String>,
@@ -98,6 +100,7 @@ impl Processor<RegisterWorker> for AgentService {
                 reported: input.reported,
                 agent_version: input.agent_version.clone(),
                 agent_arch: input.agent_arch,
+                capabilities: known_capabilities(input.capabilities),
             })
             .await?
             .ok_or_else(|| {
@@ -367,7 +370,7 @@ impl Processor<AckConfig> for AgentService {
         let parsed = parse_snapshot(in_flight).map_err(invalid_snapshot)?;
         let now = Utc::now();
         // Failures keyed by tag: `(tag, error)`.
-        let (applied, failed_pods, nodes) = match &input.error {
+        let (applied, failed_pods, pods) = match &input.error {
             Some(error) => {
                 let failed: Vec<(&str, &str)> = parsed
                     .entries
@@ -377,7 +380,7 @@ impl Processor<AckConfig> for AgentService {
                 (
                     None,
                     Vec::new(),
-                    ack_node_records(&parsed.entries, &failed, now),
+                    ack_pod_records(&parsed.entries, &failed, now),
                 )
             }
             None => {
@@ -387,13 +390,13 @@ impl Processor<AckConfig> for AgentService {
                     .iter()
                     .filter_map(|pod| Some((pod.tag.as_str(), pod.error.as_deref()?)))
                     .collect();
-                let nodes = ack_node_records(&parsed.entries, &failed, now);
+                let pods = ack_pod_records(&parsed.entries, &failed, now);
                 if failed.is_empty() {
-                    (None, Vec::new(), nodes)
+                    (None, Vec::new(), pods)
                 } else {
                     let (mix, failures) =
                         synthesise_applied(in_flight, parsed, view.applied.as_ref(), &failed)?;
-                    (Some(mix), failures, nodes)
+                    (Some(mix), failures, pods)
                 }
             }
         };
@@ -417,9 +420,9 @@ impl Processor<AckConfig> for AgentService {
         // The verdict is known now; nobody should have to wait for the next
         // report to see it. The status write is fenced on the session like the
         // ack itself.
-        let node_rows = self
+        let pod_rows = self
             .db
-            .process(InsertNodeHealthRecords { records: nodes })
+            .process(InsertPodHealthRecords { records: pods })
             .await?;
         let health = self
             .db
@@ -439,10 +442,10 @@ impl Processor<AckConfig> for AgentService {
         self.notifier
             .rollout_changed(RolloutScope::Server(server_key.clone()))
             .await;
-        if !node_rows.is_empty() {
+        if !pod_rows.is_empty() {
             self.notifier
-                .live(LiveMessage::NodeHealth {
-                    records: node_rows.iter().map(Into::into).collect(),
+                .live(LiveMessage::PodHealth {
+                    records: pod_rows.iter().map(Into::into).collect(),
                 })
                 .await;
         }
@@ -460,25 +463,37 @@ impl Processor<AckConfig> for AgentService {
     }
 }
 
-/// The node records an ack settles: `Failed` with the worker's message for a
-/// failed pod and every node its forwarding runs through, `Ready` for the rest;
-/// one row per node, the worst verdict winning.
-fn ack_node_records(
+/// The pod records an ack settles: `Failed` with the worker's message for a
+/// failed pod, `Ready` for the rest; one row per pod, the worst verdict winning.
+fn ack_pod_records(
     entries: &[SnapshotEntry<'_>],
     failed: &[(&str, &str)],
     now: DateTime<Utc>,
-) -> Vec<NewNodeHealthRecord> {
-    let mut verdicts = NodeVerdicts::default();
+) -> Vec<NewPodHealthRecord> {
+    let mut verdicts = PodVerdicts::default();
     for entry in entries {
         let (status, message) = failed
             .iter()
             .find(|(tag, _)| *tag == entry.tag())
-            .map_or((NodeHealthStatus::Ready, ""), |(_, error)| {
-                (NodeHealthStatus::Failed, *error)
+            .map_or((PodHealthStatus::Ready, ""), |(_, error)| {
+                (PodHealthStatus::Failed, *error)
             });
         verdicts.record(entry.deps, status, message);
     }
     verdicts.into_records(now)
+}
+
+/// The capabilities the master compiles for, sorted and deduplicated; anything
+/// else a newer worker reports is dropped rather than stored.
+fn known_capabilities(reported: Vec<String>) -> Vec<String> {
+    use crate::services::graph::{RELAY_CONFIRM, ROUTE_TABLE};
+    let mut known: Vec<String> = reported
+        .into_iter()
+        .filter(|capability| [ROUTE_TABLE, RELAY_CONFIRM].contains(&capability.as_str()))
+        .collect();
+    known.sort();
+    known.dedup();
+    known
 }
 
 fn invalid_snapshot(error: guru_worker_config::ConfigError) -> OrchestrationError {

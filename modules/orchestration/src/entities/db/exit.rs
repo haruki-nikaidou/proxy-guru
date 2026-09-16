@@ -39,3 +39,23 @@ pub(crate) async fn insert_exit(conn: &mut PgConnection, exit: &ExitEntity) -> R
     .await?;
     Ok(())
 }
+
+/// Rewrites every column of an existing exit but its id and canvas.
+pub(crate) async fn update_exit(conn: &mut PgConnection, exit: &ExitEntity) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE orchestration_exit
+         SET name = $2, comment = $3, destination = $4, send_proxy_protocol = $5,
+             position_x = $6, position_y = $7
+         WHERE id = $1",
+    )
+    .bind(&exit.id)
+    .bind(&exit.name)
+    .bind(&exit.comment)
+    .bind(&exit.destination)
+    .bind(exit.send_proxy_protocol)
+    .bind(exit.position.x)
+    .bind(exit.position.y)
+    .execute(conn)
+    .await?;
+    Ok(())
+}

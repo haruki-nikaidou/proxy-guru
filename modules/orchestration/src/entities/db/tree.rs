@@ -1,18 +1,19 @@
 //! Walking a canvas tree.
 //!
-//! Nesting is stored only on the importing node (`orchestration_node.import_canvas`);
-//! a canvas's root, ancestors and tree are computed. These run inside the
-//! caller's transaction, so a mutating transaction bumps the root it belongs to
-//! at commit time rather than the root a service read a moment earlier.
+//! A canvas names its `parent`; a canvas without one is a root. The root, the
+//! ancestors and the tree are computed, inside the caller's transaction, so a
+//! mutating transaction bumps the root it belongs to at commit time rather than
+//! the root a service read a moment earlier.
 
 use crate::entities::db::canvas::CanvasId;
 use base::db::Error;
 use sqlx::PgConnection;
 
 /// Deeper than this and the tree is refused rather than walked further; a cycle
-/// is impossible by construction (`import_canvas` is UNIQUE and an import cannot
-/// name an ancestor), so hitting the cap means corrupt data, not a big tree.
-const MAX_DEPTH: i32 = 32;
+/// is impossible through the writes the service accepts (a parent is chosen at
+/// creation and never changes), so hitting the cap means corrupt data, not a
+/// big tree.
+pub const MAX_DEPTH: i32 = 32;
 pub const NESTING_TOO_DEEP: &str = "canvas nesting deeper than 32 levels";
 
 fn guard_depth(rows: &[(CanvasId, i32)]) -> Result<(), Error> {
@@ -22,18 +23,19 @@ fn guard_depth(rows: &[(CanvasId, i32)]) -> Result<(), Error> {
     }
 }
 
-/// `[parent, grandparent, ..., root]`; empty for a root.
+/// `[parent, grandparent, ..., root]`; empty for a root or a canvas that does
+/// not exist.
 pub async fn ancestors_of(
     conn: &mut PgConnection,
     canvas: &CanvasId,
 ) -> Result<Vec<CanvasId>, Error> {
     let rows: Vec<(CanvasId, i32)> = sqlx::query_as(
         "WITH RECURSIVE up (canvas, depth) AS (
-             SELECT n.canvas, 1 FROM orchestration_node n WHERE n.import_canvas = $1
+             SELECT parent, 1 FROM orchestration_canvas WHERE id = $1 AND parent IS NOT NULL
            UNION ALL
-             SELECT n.canvas, up.depth + 1
-             FROM up JOIN orchestration_node n ON n.import_canvas = up.canvas
-             WHERE up.depth < $2
+             SELECT c.parent, up.depth + 1
+             FROM up JOIN orchestration_canvas c ON c.id = up.canvas
+             WHERE c.parent IS NOT NULL AND up.depth < $2
          )
          SELECT canvas, depth FROM up ORDER BY depth",
     )
@@ -53,15 +55,16 @@ pub async fn root_of(conn: &mut PgConnection, canvas: &CanvasId) -> Result<Canva
         .unwrap_or_else(|| canvas.clone()))
 }
 
-/// The canvas and every canvas below it, the given canvas first, then by depth.
+/// The canvas and every canvas below it, the given canvas first, then by depth
+/// and id.
 pub async fn tree_of(conn: &mut PgConnection, canvas: &CanvasId) -> Result<Vec<CanvasId>, Error> {
     let rows: Vec<(CanvasId, i32)> = sqlx::query_as(
         "WITH RECURSIVE tree (canvas, depth) AS (
              SELECT $1::text, 0
            UNION ALL
-             SELECT n.import_canvas, tree.depth + 1
-             FROM tree JOIN orchestration_node n ON n.canvas = tree.canvas
-             WHERE n.import_canvas IS NOT NULL AND tree.depth < $2
+             SELECT c.id, tree.depth + 1
+             FROM tree JOIN orchestration_canvas c ON c.parent = tree.canvas
+             WHERE tree.depth < $2
          )
          SELECT canvas, depth FROM tree ORDER BY depth, canvas",
     )

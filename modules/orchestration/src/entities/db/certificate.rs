@@ -1,6 +1,6 @@
-//! Public certificates obtained through ACME (DNS-01) for Entry nodes.
+//! Public certificates obtained through ACME (DNS-01) for TLS client pods.
 //!
-//! One row per `(sni, acme_directory)`; every Entry whose `TlsConfig` names that
+//! One row per `(sni, acme_directory)`; every pod whose `TlsConfig` names that
 //! pair serves the same certificate. `acme_account_key` and `private_key_pem`
 //! are encrypted with the master key; `full_chain_pem` is public. `version`
 //! increments on every issuance and renewal, and a config snapshot pins the
@@ -10,7 +10,7 @@
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::fence;
-use crate::entities::db::node::TlsConfig;
+use crate::entities::db::pod::TlsConfig;
 use base::db::{Db, Error};
 use chrono::{DateTime, Utc};
 use db_types::{table_record, text_enum};
@@ -44,7 +44,7 @@ pub struct CertificateEntity {
 /// ([`crate::events::live::LiveMessage::CertificateChanged`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CertificateStatus {
-    /// Wanted by an Entry, not yet issued.
+    /// Wanted by a pod, not yet issued.
     Pending,
     Issued,
     /// The last attempt failed; `last_error` says why. Retried after
@@ -68,7 +68,7 @@ impl CertificateEntity {
 
 /// Creates the `Pending` row for a `(sni, acme_directory)` pair, or returns the
 /// existing one untouched. `dns_provider` / `domain_id` are only written on
-/// creation: the first Entry to ask wins, later Entries share the certificate.
+/// creation: the first pod to ask wins, later pods share the certificate.
 #[derive(Debug)]
 pub struct EnsureCertificate {
     pub sni: String,
@@ -85,7 +85,7 @@ impl Processor<EnsureCertificate> for Db {
     async fn process(&self, input: EnsureCertificate) -> Result<Self::Output, Self::Error> {
         // `DO NOTHING` returns no row when the pair exists; a second statement
         // then reads the one that won, whether it was ours or a concurrent
-        // Entry's.
+        // pod's.
         let created: Option<CertificateEntity> = sqlx::query_as(
             "INSERT INTO certificate
                  (id, sni, dns_provider, domain_id, acme_directory, status, created_at)
@@ -389,17 +389,25 @@ impl Processor<DeleteCertificateRow> for Db {
     }
 }
 
-/// The `TlsConfig` blocks Entry nodes currently ask for, one per Entry, with the
+/// The TLS certificates client pods currently ask for, one per pod, with the
 /// canvas of each; the cron ensures a certificate row exists for each distinct
 /// `(sni, acme_directory)`.
 #[derive(Debug)]
 pub struct ListTlsRequests;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct TlsRequest {
     pub canvas: CanvasId,
-    #[sqlx(json)]
     pub tls: TlsConfig,
+}
+
+#[derive(sqlx::FromRow)]
+struct TlsRequestRow {
+    canvas: CanvasId,
+    tls_sni: String,
+    tls_dns_provider: crate::entities::db::dns::DnsProviderId,
+    tls_domain_id: String,
+    tls_acme_directory: String,
 }
 
 impl Processor<ListTlsRequests> for Db {
@@ -407,20 +415,29 @@ impl Processor<ListTlsRequests> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListTlsRequests", skip_all, err)]
     async fn process(&self, _: ListTlsRequests) -> Result<Self::Output, Self::Error> {
-        // `jsonb_typeof` tells a `tls` object from an absent key *and* from a
-        // JSON `null`, which serde writes for `None`.
-        Ok(sqlx::query_as(
-            "SELECT canvas, spec -> 'config' -> 'tls' AS tls FROM orchestration_node
-             WHERE spec ->> 'type' = 'entry'
-               AND jsonb_typeof(spec -> 'config' -> 'tls') = 'object'",
+        let rows: Vec<TlsRequestRow> = sqlx::query_as(
+            "SELECT canvas, tls_sni, tls_dns_provider, tls_domain_id, tls_acme_directory
+             FROM orchestration_pod WHERE ingress = 'client_tls' ORDER BY id",
         )
         .fetch_all(self.db())
-        .await?)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TlsRequest {
+                canvas: row.canvas,
+                tls: TlsConfig {
+                    sni: row.tls_sni,
+                    dns_provider: row.tls_dns_provider,
+                    domain_id: row.tls_domain_id,
+                    acme_directory: row.tls_acme_directory,
+                },
+            })
+            .collect())
     }
 }
 
-/// Canvases holding an Entry whose `TlsConfig.sni` is the given one; issuance
-/// and renewal touch them so their servers get a new revision.
+/// Canvases holding a TLS client pod for the given SNI; issuance and renewal
+/// touch them so their servers get a new revision.
 #[derive(Debug)]
 pub struct ListCanvasesUsingSni {
     pub sni: String,
@@ -432,9 +449,8 @@ impl Processor<ListCanvasesUsingSni> for Db {
     #[tracing::instrument(name = "Query:ListCanvasesUsingSni", skip_all, err, fields(sni = %input.sni))]
     async fn process(&self, input: ListCanvasesUsingSni) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar(
-            "SELECT DISTINCT canvas FROM orchestration_node
-             WHERE spec ->> 'type' = 'entry'
-               AND lower(spec -> 'config' -> 'tls' ->> 'sni') = $1
+            "SELECT DISTINCT canvas FROM orchestration_pod
+             WHERE ingress = 'client_tls' AND lower(tls_sni) = $1
              ORDER BY canvas",
         )
         .bind(input.sni)

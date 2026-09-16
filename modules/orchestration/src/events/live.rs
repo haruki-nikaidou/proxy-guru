@@ -17,7 +17,7 @@
 
 use crate::entities::db::certificate::CertificateStatus;
 use crate::entities::db::health::{
-    NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+    PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use chrono::{DateTime, Utc};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
@@ -44,17 +44,14 @@ pub const LIVE_CHANNEL: &str = "guru:orchestration:live";
 pub enum LiveMessage {
     /// Anything the dashboard renders for a canvas changed.
     ///
-    /// Published by: every canvas, server, node and edge mutation in `services`,
-    /// plus `RecordHealthReport` and `RegisterWorker` when a server's reported
+    /// Published by: every canvas, server and graph mutation in `services`, plus
+    /// `RecordHealthReport` and `RegisterWorker` when a server's reported
     /// addresses move.
-    /// Consumed by: [`crate::services::live::CanvasView`] (a full refreshed
-    /// snapshot) and [`crate::services::live::RolloutsView`] (the set of servers
+    /// Consumed by: [`crate::services::live::RolloutsView`] (the set of servers
     /// and the tree's generation may have moved with it).
     ///
     /// `canvas` is the canvas the edit happened in (not the root); views match it
-    /// against their own tree, so a subcanvas edit refreshes the parent that
-    /// imports it, and importing a canvas is published against the target too so
-    /// a watcher already open on it learns it has acquired ancestors.
+    /// against their own tree, so a subcanvas edit refreshes its ancestors.
     CanvasChanged {
         canvas: String,
         kind: CanvasChangeKind,
@@ -75,25 +72,22 @@ pub enum LiveMessage {
     ///
     /// Published by: `HealthService` (`RecordHealthReport`, `MarkServerOffline`,
     /// `SweepLiveness`) and `AckConfig`.
-    /// Consumed by: the `WatchServerHealth` stream (every row) and
-    /// [`crate::services::live::CanvasView`] (only when `status_changed`).
+    /// Consumed by: the `WatchServerHealth` stream (every row).
     ServerHealth {
         server: String,
         canvas: String,
         record: ServerHealthLive,
         /// Whether the server's denormalised `health_status` changed with it.
-        /// Canvas views only refresh for those: a report every interval per
-        /// server would otherwise reload every open canvas.
         status_changed: bool,
     },
-    /// A batch of `node_health_record` rows written in one statement.
+    /// A batch of `pod_health_record` rows written in one statement.
     ///
     /// Published by: the derivation hook (`Deploying` the moment a revision is
     /// published), `AckConfig` (the settled verdicts) and `RecordHealthReport`
     /// (the rows that travelled inside the report's transaction).
-    /// Consumed by: the `WatchNodeHealth` stream, which keeps the records whose
-    /// node it watches.
-    NodeHealth { records: Vec<NodeHealthLive> },
+    /// Consumed by: nobody yet — published so a pod health stream needs no
+    /// publisher changes.
+    PodHealth { records: Vec<PodHealthLive> },
     /// A `certificate` row changed status or version.
     ///
     /// Published by: `AcmeService` (`IssueCertificate` on success and on either
@@ -112,6 +106,7 @@ pub enum LiveMessage {
 /// it to decide what to animate; a watcher's reload does not depend on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CanvasChangeKind {
+    CanvasCreated,
     CanvasUpdated,
     CanvasDeleted,
     ServerCreated,
@@ -119,14 +114,8 @@ pub enum CanvasChangeKind {
     ServerMoved,
     ServerDeleted,
     ServerIpChanged,
-    NodeCreated,
-    NodeReplaced,
-    NodeMetaUpdated,
-    NodeRetired,
-    NodeDeleted,
-    EdgeConnected,
-    EdgeRetired,
-    EdgeDeleted,
+    /// Pods, exits, edges or groups changed.
+    GraphChanged,
 }
 
 /// What a rollout change is scoped to: a whole tree (a derivation pass) or one
@@ -151,12 +140,12 @@ pub struct ServerHealthLive {
     pub max_connections: i64,
 }
 
-/// A `node_health_record` row as it travels on the bus.
+/// A `pod_health_record` row as it travels on the bus.
 #[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct NodeHealthLive {
+pub struct PodHealthLive {
     pub id: String,
-    pub node: String,
-    pub status: NodeHealthStatus,
+    pub pod: String,
+    pub status: PodHealthStatus,
     pub message: String,
     pub report_time_unix_micros: i64,
 }
@@ -175,11 +164,11 @@ impl From<&ServerHealthRecordEntity> for ServerHealthLive {
     }
 }
 
-impl From<&NodeHealthRecordEntity> for NodeHealthLive {
-    fn from(record: &NodeHealthRecordEntity) -> Self {
+impl From<&PodHealthRecordEntity> for PodHealthLive {
+    fn from(record: &PodHealthRecordEntity) -> Self {
         Self {
             id: record.id.to_string(),
-            node: record.node.to_string(),
+            pod: record.pod.to_string(),
             status: record.status,
             message: record.message.clone(),
             report_time_unix_micros: record.report_time.timestamp_micros(),

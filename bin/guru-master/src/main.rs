@@ -51,10 +51,9 @@ use orchestration::services::canvas::CanvasService;
 use orchestration::services::config::OrchestrationConfigService;
 use orchestration::services::country::CountryService;
 use orchestration::services::dns::DnsProviderService;
-use orchestration::services::edge::EdgeService;
 use orchestration::services::health::HealthService;
 use orchestration::services::live::LiveService;
-use orchestration::services::node::NodeService;
+use orchestration::services::graph::GraphService;
 use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
@@ -276,12 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     notifier: notifier.clone(),
                     config: config.clone(),
                 },
-                nodes: NodeService {
-                    db: db.clone(),
-                    notifier: notifier.clone(),
-                    config: config.clone(),
-                },
-                edges: EdgeService {
+                graph: GraphService {
                     db: db.clone(),
                     notifier: notifier.clone(),
                     config: config.clone(),

@@ -8,9 +8,9 @@
 
 use crate::entities::db::canvas::{CanvasId, SNAPSHOT_READ};
 use crate::entities::db::fence;
-use crate::entities::db::node::NodeId;
+use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
-use crate::entities::db::topology::{CanvasTopology, load_canvas};
+use crate::entities::db::graph::{GraphRows, load_graph};
 use crate::entities::db::tree;
 use base::db::{Db, Error};
 use chrono::{DateTime, Utc};
@@ -46,7 +46,7 @@ impl ListenProtocol {
 /// A listener another server can point at.
 ///
 /// Identity is by content: the same server/port/protocol is the same capability
-/// whichever node row produced it, and whatever address the server is dialed on
+/// whichever pod produced it, and whatever address the server is dialed on
 /// today. That is what lets a server keep serving a listener across an unrelated
 /// edit (or an address change) while its dependants still reference it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -82,21 +82,16 @@ impl ListenerCap {
 /// One `[[forwarding]]` entry's place in the dependency graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForwardingDeps {
-    /// The pod node this entry was derived from.
+    /// The pod this entry was compiled from; also the entry's tag.
     ///
     /// Identity, not diagnostics: it is how convergence finds the previous shape
-    /// of a forwarding whose pod stopped deriving. A socket cannot serve that
+    /// of a forwarding whose pod stopped compiling. A socket cannot serve that
     /// purpose, because the edit that broke the pod may also have moved it.
-    pub pod: NodeId,
+    pub pod: PodId,
     pub serves: ListenerCap,
     pub points_at: Vec<ListenerCap>,
-    /// Every non-pod node this entry was derived through (the Entry or Relay on
-    /// the listen side; exits, relays and load balancers on the destination
-    /// side), boundaries excluded. Node health follows the pod's through this.
-    #[serde(default)]
-    pub nodes: Vec<NodeId>,
     /// The certificates this entry's TOML references (the ACME certificate of a
-    /// TLS Entry, the relay leaf of a TLS/QUIC relay listener). A forwarding
+    /// TLS client listener, the relay leaf of a TLS/QUIC relay listener). A forwarding
     /// carried over from an older snapshot keeps its refs, so a synthesised
     /// snapshot's `certificates` is just the union over its entries.
     #[serde(default)]
@@ -127,22 +122,25 @@ pub enum CertificateKind {
 /// A pod the worker could not apply from the acknowledged revision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PodFailure {
-    pub pod: NodeId,
-    /// The `[[forwarding]]` tag, i.e. the pod's name at the time.
+    pub pod: PodId,
+    /// The `[[forwarding]]` tag it was applied under.
     pub tag: String,
     pub error: String,
 }
 
-/// A pod whose own derivation failed.
+/// A pod that could not be compiled on its own (a certificate not issued yet, a
+/// target without an address).
 ///
-/// The rest of the server still derives and is published; this is how an operator
-/// learns which pod is broken and why. A pod listed here keeps serving whatever
-/// its listener last was, so a bad edit cannot drop live traffic.
+/// The rest of the server still compiles and is published; this is how an
+/// operator learns which pod is broken and why. A pod listed here keeps serving
+/// whatever its listener last was, so a missing certificate cannot drop live
+/// traffic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvalidPod {
-    pub node: NodeId,
-    /// The pod's name, i.e. the `[[forwarding]]` tag it would have carried.
-    pub pod: String,
+    pub pod: PodId,
+    /// The pod's name when it was compiled.
+    #[serde(default)]
+    pub name: String,
     /// The socket the pod would serve, as `ip:port`. Diagnostic only.
     pub listen: String,
     pub error: String,
@@ -434,7 +432,7 @@ impl Processor<ListServerWatchState> for Db {
 }
 
 /// Everything one derivation pass reads, in a single transaction. The counters
-/// are the root's; the topology is the whole tree.
+/// are the root's; the graph is the whole tree.
 #[derive(Debug, Clone)]
 pub struct DerivationInput {
     pub root: CanvasId,
@@ -444,7 +442,7 @@ pub struct DerivationInput {
     pub derived_view_seq: i64,
     /// The tree's view `seq` sum as this read saw it.
     pub view_seq: i64,
-    pub topology: CanvasTopology,
+    pub graph: GraphRows,
     pub views: Vec<ServerConfigViewEntity>,
 }
 
@@ -460,7 +458,7 @@ impl Processor<LoadCanvasDerivationInput> for Db {
     #[tracing::instrument(name = "Query-Transaction:LoadCanvasDerivationInput", skip_all, err)]
     async fn process(&self, input: LoadCanvasDerivationInput) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin_with(SNAPSHOT_READ).await?;
-        let rows = load_canvas(&mut tx, &input.canvas).await?;
+        let rows = load_graph(&mut tx, &input.canvas).await?;
         let Some(root) = rows.canvases.iter().find(|c| c.id == rows.root) else {
             return Ok(None);
         };
@@ -479,7 +477,7 @@ impl Processor<LoadCanvasDerivationInput> for Db {
             derived_generation: root.derived_generation,
             derived_view_seq,
             view_seq,
-            topology: rows.into_topology(),
+            graph: rows,
             views,
         }))
     }
@@ -619,9 +617,9 @@ impl Processor<ListStaleCanvases> for Db {
             "WITH RECURSIVE tree (root, canvas, depth) AS (
                  SELECT id, id, 0 FROM orchestration_canvas
                UNION ALL
-                 SELECT tree.root, n.import_canvas, tree.depth + 1
-                 FROM tree JOIN orchestration_node n ON n.canvas = tree.canvas
-                 WHERE n.import_canvas IS NOT NULL AND tree.depth < 32
+                 SELECT tree.root, c.id, tree.depth + 1
+                 FROM tree JOIN orchestration_canvas c ON c.parent = tree.canvas
+                 WHERE tree.depth < 32
              ), view_sum AS (
                  SELECT tree.root, COALESCE(SUM(v.seq), 0) AS seq_sum
                  FROM tree

@@ -90,102 +90,6 @@ export function quicCongestionToJSON(object: QuicCongestion): string {
   }
 }
 
-export enum RelayProtocol {
-  UNSPECIFIED = 0,
-  RELAY_TCP_RAW = 1,
-  RELAY_TCP_TLS = 2,
-  RELAY_QUIC = 3,
-  UNRECOGNIZED = -1,
-}
-
-export function relayProtocolFromJSON(object: any): RelayProtocol {
-  switch (object) {
-    case 0:
-    case "RELAY_PROTOCOL_UNSPECIFIED":
-      return RelayProtocol.UNSPECIFIED;
-    case 1:
-    case "RELAY_TCP_RAW":
-      return RelayProtocol.RELAY_TCP_RAW;
-    case 2:
-    case "RELAY_TCP_TLS":
-      return RelayProtocol.RELAY_TCP_TLS;
-    case 3:
-    case "RELAY_QUIC":
-      return RelayProtocol.RELAY_QUIC;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return RelayProtocol.UNRECOGNIZED;
-  }
-}
-
-export function relayProtocolToJSON(object: RelayProtocol): string {
-  switch (object) {
-    case RelayProtocol.UNSPECIFIED:
-      return "RELAY_PROTOCOL_UNSPECIFIED";
-    case RelayProtocol.RELAY_TCP_RAW:
-      return "RELAY_TCP_RAW";
-    case RelayProtocol.RELAY_TCP_TLS:
-      return "RELAY_TCP_TLS";
-    case RelayProtocol.RELAY_QUIC:
-      return "RELAY_QUIC";
-    case RelayProtocol.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-export enum LoadBalanceMode {
-  UNSPECIFIED = 0,
-  ROUND_ROBIN = 1,
-  RANDOM = 2,
-  IP_HASH = 3,
-  FALLBACK = 4,
-  UNRECOGNIZED = -1,
-}
-
-export function loadBalanceModeFromJSON(object: any): LoadBalanceMode {
-  switch (object) {
-    case 0:
-    case "LOAD_BALANCE_MODE_UNSPECIFIED":
-      return LoadBalanceMode.UNSPECIFIED;
-    case 1:
-    case "ROUND_ROBIN":
-      return LoadBalanceMode.ROUND_ROBIN;
-    case 2:
-    case "RANDOM":
-      return LoadBalanceMode.RANDOM;
-    case 3:
-    case "IP_HASH":
-      return LoadBalanceMode.IP_HASH;
-    case 4:
-    case "FALLBACK":
-      return LoadBalanceMode.FALLBACK;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return LoadBalanceMode.UNRECOGNIZED;
-  }
-}
-
-export function loadBalanceModeToJSON(object: LoadBalanceMode): string {
-  switch (object) {
-    case LoadBalanceMode.UNSPECIFIED:
-      return "LOAD_BALANCE_MODE_UNSPECIFIED";
-    case LoadBalanceMode.ROUND_ROBIN:
-      return "ROUND_ROBIN";
-    case LoadBalanceMode.RANDOM:
-      return "RANDOM";
-    case LoadBalanceMode.IP_HASH:
-      return "IP_HASH";
-    case LoadBalanceMode.FALLBACK:
-      return "FALLBACK";
-    case LoadBalanceMode.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
 export enum Ipv6Resolve {
   UNSPECIFIED = 0,
   IPV6_REQUIRED = 1,
@@ -237,449 +141,6 @@ export function ipv6ResolveToJSON(object: Ipv6Resolve): string {
   }
 }
 
-export enum PortKind {
-  UNSPECIFIED = 0,
-  DERIVE_LISTEN = 1,
-  DERIVE_DESTINATION = 2,
-  /**
-   * BUNDLE - A bundle carries every channel of a universal node to the next one; it is
-   * expansion metadata, not a traffic port.
-   */
-  BUNDLE = 3,
-  UNRECOGNIZED = -1,
-}
-
-export function portKindFromJSON(object: any): PortKind {
-  switch (object) {
-    case 0:
-    case "PORT_KIND_UNSPECIFIED":
-      return PortKind.UNSPECIFIED;
-    case 1:
-    case "DERIVE_LISTEN":
-      return PortKind.DERIVE_LISTEN;
-    case 2:
-    case "DERIVE_DESTINATION":
-      return PortKind.DERIVE_DESTINATION;
-    case 3:
-    case "BUNDLE":
-      return PortKind.BUNDLE;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return PortKind.UNRECOGNIZED;
-  }
-}
-
-export function portKindToJSON(object: PortKind): string {
-  switch (object) {
-    case PortKind.UNSPECIFIED:
-      return "PORT_KIND_UNSPECIFIED";
-    case PortKind.DERIVE_LISTEN:
-      return "DERIVE_LISTEN";
-    case PortKind.DERIVE_DESTINATION:
-      return "DERIVE_DESTINATION";
-    case PortKind.BUNDLE:
-      return "BUNDLE";
-    case PortKind.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-export enum PortDirection {
-  UNSPECIFIED = 0,
-  PORT_INPUT = 1,
-  PORT_OUTPUT = 2,
-  UNRECOGNIZED = -1,
-}
-
-export function portDirectionFromJSON(object: any): PortDirection {
-  switch (object) {
-    case 0:
-    case "PORT_DIRECTION_UNSPECIFIED":
-      return PortDirection.UNSPECIFIED;
-    case 1:
-    case "PORT_INPUT":
-      return PortDirection.PORT_INPUT;
-    case 2:
-    case "PORT_OUTPUT":
-      return PortDirection.PORT_OUTPUT;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return PortDirection.UNRECOGNIZED;
-  }
-}
-
-export function portDirectionToJSON(object: PortDirection): string {
-  switch (object) {
-    case PortDirection.UNSPECIFIED:
-      return "PORT_DIRECTION_UNSPECIFIED";
-    case PortDirection.PORT_INPUT:
-      return "PORT_INPUT";
-    case PortDirection.PORT_OUTPUT:
-      return "PORT_OUTPUT";
-    case PortDirection.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-export enum CanvasExportAs {
-  UNSPECIFIED = 0,
-  INPUT_INTO_CANVAS = 1,
-  OUTPUT_OUT_OF_CANVAS = 2,
-  UNRECOGNIZED = -1,
-}
-
-export function canvasExportAsFromJSON(object: any): CanvasExportAs {
-  switch (object) {
-    case 0:
-    case "CANVAS_EXPORT_AS_UNSPECIFIED":
-      return CanvasExportAs.UNSPECIFIED;
-    case 1:
-    case "INPUT_INTO_CANVAS":
-      return CanvasExportAs.INPUT_INTO_CANVAS;
-    case 2:
-    case "OUTPUT_OUT_OF_CANVAS":
-      return CanvasExportAs.OUTPUT_OUT_OF_CANVAS;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return CanvasExportAs.UNRECOGNIZED;
-  }
-}
-
-export function canvasExportAsToJSON(object: CanvasExportAs): string {
-  switch (object) {
-    case CanvasExportAs.UNSPECIFIED:
-      return "CANVAS_EXPORT_AS_UNSPECIFIED";
-    case CanvasExportAs.INPUT_INTO_CANVAS:
-      return "INPUT_INTO_CANVAS";
-    case CanvasExportAs.OUTPUT_OUT_OF_CANVAS:
-      return "OUTPUT_OUT_OF_CANVAS";
-    case CanvasExportAs.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-export enum ProblemSeverity {
-  UNSPECIFIED = 0,
-  PROBLEM_ERROR = 1,
-  PROBLEM_WARNING = 2,
-  UNRECOGNIZED = -1,
-}
-
-export function problemSeverityFromJSON(object: any): ProblemSeverity {
-  switch (object) {
-    case 0:
-    case "PROBLEM_SEVERITY_UNSPECIFIED":
-      return ProblemSeverity.UNSPECIFIED;
-    case 1:
-    case "PROBLEM_ERROR":
-      return ProblemSeverity.PROBLEM_ERROR;
-    case 2:
-    case "PROBLEM_WARNING":
-      return ProblemSeverity.PROBLEM_WARNING;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return ProblemSeverity.UNRECOGNIZED;
-  }
-}
-
-export function problemSeverityToJSON(object: ProblemSeverity): string {
-  switch (object) {
-    case ProblemSeverity.UNSPECIFIED:
-      return "PROBLEM_SEVERITY_UNSPECIFIED";
-    case ProblemSeverity.PROBLEM_ERROR:
-      return "PROBLEM_ERROR";
-    case ProblemSeverity.PROBLEM_WARNING:
-      return "PROBLEM_WARNING";
-    case ProblemSeverity.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-export enum ProblemKind {
-  UNSPECIFIED = 0,
-  PORT_KIND_MISMATCH = 1,
-  EDGE_DIRECTION_INVALID = 2,
-  EDGE_SELF_NODE = 3,
-  EDGE_CROSS_CANVAS = 4,
-  PORT_OVERSUBSCRIBED = 5,
-  PORT_SHAPE_INVALID = 6,
-  CYCLE = 7,
-  DUPLICATE_LISTEN = 8,
-  EXIT_DESTINATION_INVALID = 10,
-  IP_HASH_WITHOUT_CLIENT_IP = 11,
-  POD_PORT_UNCONNECTED = 13,
-  RELAY_SAME_SERVER = 14,
-  DISTRIBUTE_SINGLE_MEMBER = 15,
-  CANVAS_IMPORT_SELF = 16,
-  CANVAS_IMPORT_ANCESTOR = 17,
-  CANVAS_IMPORT_DUPLICATE = 18,
-  CANVAS_IMPORT_UNRESOLVED = 19,
-  POD_SERVER_FOREIGN = 20,
-  SERVER_NO_ADDRESS = 21,
-  CHANNEL_TARGET_NOT_POD = 22,
-  BUNDLE_EDGE_INVALID = 23,
-  BUNDLE_CYCLE = 24,
-  CHANNEL_NO_EXIT = 25,
-  CHANNEL_NO_TRANSIT = 26,
-  LANES_STALE = 27,
-  UNRECOGNIZED = -1,
-}
-
-export function problemKindFromJSON(object: any): ProblemKind {
-  switch (object) {
-    case 0:
-    case "PROBLEM_KIND_UNSPECIFIED":
-      return ProblemKind.UNSPECIFIED;
-    case 1:
-    case "PORT_KIND_MISMATCH":
-      return ProblemKind.PORT_KIND_MISMATCH;
-    case 2:
-    case "EDGE_DIRECTION_INVALID":
-      return ProblemKind.EDGE_DIRECTION_INVALID;
-    case 3:
-    case "EDGE_SELF_NODE":
-      return ProblemKind.EDGE_SELF_NODE;
-    case 4:
-    case "EDGE_CROSS_CANVAS":
-      return ProblemKind.EDGE_CROSS_CANVAS;
-    case 5:
-    case "PORT_OVERSUBSCRIBED":
-      return ProblemKind.PORT_OVERSUBSCRIBED;
-    case 6:
-    case "PORT_SHAPE_INVALID":
-      return ProblemKind.PORT_SHAPE_INVALID;
-    case 7:
-    case "CYCLE":
-      return ProblemKind.CYCLE;
-    case 8:
-    case "DUPLICATE_LISTEN":
-      return ProblemKind.DUPLICATE_LISTEN;
-    case 10:
-    case "EXIT_DESTINATION_INVALID":
-      return ProblemKind.EXIT_DESTINATION_INVALID;
-    case 11:
-    case "IP_HASH_WITHOUT_CLIENT_IP":
-      return ProblemKind.IP_HASH_WITHOUT_CLIENT_IP;
-    case 13:
-    case "POD_PORT_UNCONNECTED":
-      return ProblemKind.POD_PORT_UNCONNECTED;
-    case 14:
-    case "RELAY_SAME_SERVER":
-      return ProblemKind.RELAY_SAME_SERVER;
-    case 15:
-    case "DISTRIBUTE_SINGLE_MEMBER":
-      return ProblemKind.DISTRIBUTE_SINGLE_MEMBER;
-    case 16:
-    case "CANVAS_IMPORT_SELF":
-      return ProblemKind.CANVAS_IMPORT_SELF;
-    case 17:
-    case "CANVAS_IMPORT_ANCESTOR":
-      return ProblemKind.CANVAS_IMPORT_ANCESTOR;
-    case 18:
-    case "CANVAS_IMPORT_DUPLICATE":
-      return ProblemKind.CANVAS_IMPORT_DUPLICATE;
-    case 19:
-    case "CANVAS_IMPORT_UNRESOLVED":
-      return ProblemKind.CANVAS_IMPORT_UNRESOLVED;
-    case 20:
-    case "POD_SERVER_FOREIGN":
-      return ProblemKind.POD_SERVER_FOREIGN;
-    case 21:
-    case "SERVER_NO_ADDRESS":
-      return ProblemKind.SERVER_NO_ADDRESS;
-    case 22:
-    case "CHANNEL_TARGET_NOT_POD":
-      return ProblemKind.CHANNEL_TARGET_NOT_POD;
-    case 23:
-    case "BUNDLE_EDGE_INVALID":
-      return ProblemKind.BUNDLE_EDGE_INVALID;
-    case 24:
-    case "BUNDLE_CYCLE":
-      return ProblemKind.BUNDLE_CYCLE;
-    case 25:
-    case "CHANNEL_NO_EXIT":
-      return ProblemKind.CHANNEL_NO_EXIT;
-    case 26:
-    case "CHANNEL_NO_TRANSIT":
-      return ProblemKind.CHANNEL_NO_TRANSIT;
-    case 27:
-    case "LANES_STALE":
-      return ProblemKind.LANES_STALE;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return ProblemKind.UNRECOGNIZED;
-  }
-}
-
-export function problemKindToJSON(object: ProblemKind): string {
-  switch (object) {
-    case ProblemKind.UNSPECIFIED:
-      return "PROBLEM_KIND_UNSPECIFIED";
-    case ProblemKind.PORT_KIND_MISMATCH:
-      return "PORT_KIND_MISMATCH";
-    case ProblemKind.EDGE_DIRECTION_INVALID:
-      return "EDGE_DIRECTION_INVALID";
-    case ProblemKind.EDGE_SELF_NODE:
-      return "EDGE_SELF_NODE";
-    case ProblemKind.EDGE_CROSS_CANVAS:
-      return "EDGE_CROSS_CANVAS";
-    case ProblemKind.PORT_OVERSUBSCRIBED:
-      return "PORT_OVERSUBSCRIBED";
-    case ProblemKind.PORT_SHAPE_INVALID:
-      return "PORT_SHAPE_INVALID";
-    case ProblemKind.CYCLE:
-      return "CYCLE";
-    case ProblemKind.DUPLICATE_LISTEN:
-      return "DUPLICATE_LISTEN";
-    case ProblemKind.EXIT_DESTINATION_INVALID:
-      return "EXIT_DESTINATION_INVALID";
-    case ProblemKind.IP_HASH_WITHOUT_CLIENT_IP:
-      return "IP_HASH_WITHOUT_CLIENT_IP";
-    case ProblemKind.POD_PORT_UNCONNECTED:
-      return "POD_PORT_UNCONNECTED";
-    case ProblemKind.RELAY_SAME_SERVER:
-      return "RELAY_SAME_SERVER";
-    case ProblemKind.DISTRIBUTE_SINGLE_MEMBER:
-      return "DISTRIBUTE_SINGLE_MEMBER";
-    case ProblemKind.CANVAS_IMPORT_SELF:
-      return "CANVAS_IMPORT_SELF";
-    case ProblemKind.CANVAS_IMPORT_ANCESTOR:
-      return "CANVAS_IMPORT_ANCESTOR";
-    case ProblemKind.CANVAS_IMPORT_DUPLICATE:
-      return "CANVAS_IMPORT_DUPLICATE";
-    case ProblemKind.CANVAS_IMPORT_UNRESOLVED:
-      return "CANVAS_IMPORT_UNRESOLVED";
-    case ProblemKind.POD_SERVER_FOREIGN:
-      return "POD_SERVER_FOREIGN";
-    case ProblemKind.SERVER_NO_ADDRESS:
-      return "SERVER_NO_ADDRESS";
-    case ProblemKind.CHANNEL_TARGET_NOT_POD:
-      return "CHANNEL_TARGET_NOT_POD";
-    case ProblemKind.BUNDLE_EDGE_INVALID:
-      return "BUNDLE_EDGE_INVALID";
-    case ProblemKind.BUNDLE_CYCLE:
-      return "BUNDLE_CYCLE";
-    case ProblemKind.CHANNEL_NO_EXIT:
-      return "CHANNEL_NO_EXIT";
-    case ProblemKind.CHANNEL_NO_TRANSIT:
-      return "CHANNEL_NO_TRANSIT";
-    case ProblemKind.LANES_STALE:
-      return "LANES_STALE";
-    case ProblemKind.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-/** The role a lane node plays in the expansion of a universal node. */
-export enum LaneRole {
-  UNSPECIFIED = 0,
-  LANE_DISTRIBUTE = 1,
-  LANE_RELAY = 2,
-  LANE_LANDING = 3,
-  LANE_AGGREGATE = 4,
-  UNRECOGNIZED = -1,
-}
-
-export function laneRoleFromJSON(object: any): LaneRole {
-  switch (object) {
-    case 0:
-    case "LANE_ROLE_UNSPECIFIED":
-      return LaneRole.UNSPECIFIED;
-    case 1:
-    case "LANE_DISTRIBUTE":
-      return LaneRole.LANE_DISTRIBUTE;
-    case 2:
-    case "LANE_RELAY":
-      return LaneRole.LANE_RELAY;
-    case 3:
-    case "LANE_LANDING":
-      return LaneRole.LANE_LANDING;
-    case 4:
-    case "LANE_AGGREGATE":
-      return LaneRole.LANE_AGGREGATE;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return LaneRole.UNRECOGNIZED;
-  }
-}
-
-export function laneRoleToJSON(object: LaneRole): string {
-  switch (object) {
-    case LaneRole.UNSPECIFIED:
-      return "LANE_ROLE_UNSPECIFIED";
-    case LaneRole.LANE_DISTRIBUTE:
-      return "LANE_DISTRIBUTE";
-    case LaneRole.LANE_RELAY:
-      return "LANE_RELAY";
-    case LaneRole.LANE_LANDING:
-      return "LANE_LANDING";
-    case LaneRole.LANE_AGGREGATE:
-      return "LANE_AGGREGATE";
-    case LaneRole.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
-/**
- * The handle groups of a bundle-capable node, for connects that create a port
- * on demand: `CHANNEL_OUT` on a load-balance distribute node or a universal pod
- * (one port per channel), `BUNDLE_IN` on a universal pod or a load-balance
- * distribute node (one port per incoming bundle). Bundles leave through ports
- * that already exist (a distribute node's members, a universal pod's
- * `bundle_out`) and enter an aggregate node through its members, so those
- * ends are given by port id.
- */
-export enum UniversalGroup {
-  UNSPECIFIED = 0,
-  CHANNEL_OUT = 1,
-  BUNDLE_IN = 2,
-  UNRECOGNIZED = -1,
-}
-
-export function universalGroupFromJSON(object: any): UniversalGroup {
-  switch (object) {
-    case 0:
-    case "UNIVERSAL_GROUP_UNSPECIFIED":
-      return UniversalGroup.UNSPECIFIED;
-    case 1:
-    case "CHANNEL_OUT":
-      return UniversalGroup.CHANNEL_OUT;
-    case 2:
-    case "BUNDLE_IN":
-      return UniversalGroup.BUNDLE_IN;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return UniversalGroup.UNRECOGNIZED;
-  }
-}
-
-export function universalGroupToJSON(object: UniversalGroup): string {
-  switch (object) {
-    case UniversalGroup.UNSPECIFIED:
-      return "UNIVERSAL_GROUP_UNSPECIFIED";
-    case UniversalGroup.CHANNEL_OUT:
-      return "CHANNEL_OUT";
-    case UniversalGroup.BUNDLE_IN:
-      return "BUNDLE_IN";
-    case UniversalGroup.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
 export enum ServerHealthStatus {
   UNSPECIFIED = 0,
   SERVER_ONLINE = 1,
@@ -725,46 +186,108 @@ export function serverHealthStatusToJSON(object: ServerHealthStatus): string {
   }
 }
 
-export enum NodeHealthStatus {
+export enum PodHealthStatus {
   UNSPECIFIED = 0,
-  NODE_READY = 1,
-  NODE_DEPLOYING = 2,
-  NODE_FAILED = 3,
+  POD_READY = 1,
+  POD_DEPLOYING = 2,
+  POD_FAILED = 3,
   UNRECOGNIZED = -1,
 }
 
-export function nodeHealthStatusFromJSON(object: any): NodeHealthStatus {
+export function podHealthStatusFromJSON(object: any): PodHealthStatus {
   switch (object) {
     case 0:
-    case "NODE_HEALTH_STATUS_UNSPECIFIED":
-      return NodeHealthStatus.UNSPECIFIED;
+    case "POD_HEALTH_STATUS_UNSPECIFIED":
+      return PodHealthStatus.UNSPECIFIED;
     case 1:
-    case "NODE_READY":
-      return NodeHealthStatus.NODE_READY;
+    case "POD_READY":
+      return PodHealthStatus.POD_READY;
     case 2:
-    case "NODE_DEPLOYING":
-      return NodeHealthStatus.NODE_DEPLOYING;
+    case "POD_DEPLOYING":
+      return PodHealthStatus.POD_DEPLOYING;
     case 3:
-    case "NODE_FAILED":
-      return NodeHealthStatus.NODE_FAILED;
+    case "POD_FAILED":
+      return PodHealthStatus.POD_FAILED;
     case -1:
     case "UNRECOGNIZED":
     default:
-      return NodeHealthStatus.UNRECOGNIZED;
+      return PodHealthStatus.UNRECOGNIZED;
   }
 }
 
-export function nodeHealthStatusToJSON(object: NodeHealthStatus): string {
+export function podHealthStatusToJSON(object: PodHealthStatus): string {
   switch (object) {
-    case NodeHealthStatus.UNSPECIFIED:
-      return "NODE_HEALTH_STATUS_UNSPECIFIED";
-    case NodeHealthStatus.NODE_READY:
-      return "NODE_READY";
-    case NodeHealthStatus.NODE_DEPLOYING:
-      return "NODE_DEPLOYING";
-    case NodeHealthStatus.NODE_FAILED:
-      return "NODE_FAILED";
-    case NodeHealthStatus.UNRECOGNIZED:
+    case PodHealthStatus.UNSPECIFIED:
+      return "POD_HEALTH_STATUS_UNSPECIFIED";
+    case PodHealthStatus.POD_READY:
+      return "POD_READY";
+    case PodHealthStatus.POD_DEPLOYING:
+      return "POD_DEPLOYING";
+    case PodHealthStatus.POD_FAILED:
+      return "POD_FAILED";
+    case PodHealthStatus.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/**
+ * How traffic arrives at a pod: clients connect to it directly (raw, or TLS
+ * terminated with an ACME certificate), or other pods relay to it in one
+ * protocol. An edge into a pod dials it in the protocol the pod listens with.
+ */
+export enum Ingress {
+  UNSPECIFIED = 0,
+  CLIENT_RAW = 1,
+  CLIENT_TLS = 2,
+  RELAY_TCP = 3,
+  RELAY_TLS = 4,
+  RELAY_QUIC = 5,
+  UNRECOGNIZED = -1,
+}
+
+export function ingressFromJSON(object: any): Ingress {
+  switch (object) {
+    case 0:
+    case "INGRESS_UNSPECIFIED":
+      return Ingress.UNSPECIFIED;
+    case 1:
+    case "CLIENT_RAW":
+      return Ingress.CLIENT_RAW;
+    case 2:
+    case "CLIENT_TLS":
+      return Ingress.CLIENT_TLS;
+    case 3:
+    case "RELAY_TCP":
+      return Ingress.RELAY_TCP;
+    case 4:
+    case "RELAY_TLS":
+      return Ingress.RELAY_TLS;
+    case 5:
+    case "RELAY_QUIC":
+      return Ingress.RELAY_QUIC;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return Ingress.UNRECOGNIZED;
+  }
+}
+
+export function ingressToJSON(object: Ingress): string {
+  switch (object) {
+    case Ingress.UNSPECIFIED:
+      return "INGRESS_UNSPECIFIED";
+    case Ingress.CLIENT_RAW:
+      return "CLIENT_RAW";
+    case Ingress.CLIENT_TLS:
+      return "CLIENT_TLS";
+    case Ingress.RELAY_TCP:
+      return "RELAY_TCP";
+    case Ingress.RELAY_TLS:
+      return "RELAY_TLS";
+    case Ingress.RELAY_QUIC:
+      return "RELAY_QUIC";
+    case Ingress.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
@@ -899,130 +422,6 @@ export function addressSourceToJSON(object: AddressSource): string {
   }
 }
 
-export enum CanvasChangeKind {
-  /** UNSPECIFIED - the opening snapshot, or a refresh after a bus reconnect */
-  UNSPECIFIED = 0,
-  CANVAS_UPDATED = 1,
-  CANVAS_DELETED = 2,
-  SERVER_CREATED = 3,
-  SERVER_UPDATED = 4,
-  SERVER_MOVED = 5,
-  SERVER_DELETED = 6,
-  SERVER_IP_CHANGED = 7,
-  NODE_CREATED = 8,
-  NODE_REPLACED = 9,
-  NODE_META_UPDATED = 10,
-  NODE_RETIRED = 11,
-  NODE_DELETED = 12,
-  EDGE_CONNECTED = 13,
-  EDGE_RETIRED = 14,
-  EDGE_DELETED = 15,
-  SERVER_HEALTH_CHANGED = 16,
-  UNRECOGNIZED = -1,
-}
-
-export function canvasChangeKindFromJSON(object: any): CanvasChangeKind {
-  switch (object) {
-    case 0:
-    case "CANVAS_CHANGE_KIND_UNSPECIFIED":
-      return CanvasChangeKind.UNSPECIFIED;
-    case 1:
-    case "CANVAS_UPDATED":
-      return CanvasChangeKind.CANVAS_UPDATED;
-    case 2:
-    case "CANVAS_DELETED":
-      return CanvasChangeKind.CANVAS_DELETED;
-    case 3:
-    case "SERVER_CREATED":
-      return CanvasChangeKind.SERVER_CREATED;
-    case 4:
-    case "SERVER_UPDATED":
-      return CanvasChangeKind.SERVER_UPDATED;
-    case 5:
-    case "SERVER_MOVED":
-      return CanvasChangeKind.SERVER_MOVED;
-    case 6:
-    case "SERVER_DELETED":
-      return CanvasChangeKind.SERVER_DELETED;
-    case 7:
-    case "SERVER_IP_CHANGED":
-      return CanvasChangeKind.SERVER_IP_CHANGED;
-    case 8:
-    case "NODE_CREATED":
-      return CanvasChangeKind.NODE_CREATED;
-    case 9:
-    case "NODE_REPLACED":
-      return CanvasChangeKind.NODE_REPLACED;
-    case 10:
-    case "NODE_META_UPDATED":
-      return CanvasChangeKind.NODE_META_UPDATED;
-    case 11:
-    case "NODE_RETIRED":
-      return CanvasChangeKind.NODE_RETIRED;
-    case 12:
-    case "NODE_DELETED":
-      return CanvasChangeKind.NODE_DELETED;
-    case 13:
-    case "EDGE_CONNECTED":
-      return CanvasChangeKind.EDGE_CONNECTED;
-    case 14:
-    case "EDGE_RETIRED":
-      return CanvasChangeKind.EDGE_RETIRED;
-    case 15:
-    case "EDGE_DELETED":
-      return CanvasChangeKind.EDGE_DELETED;
-    case 16:
-    case "SERVER_HEALTH_CHANGED":
-      return CanvasChangeKind.SERVER_HEALTH_CHANGED;
-    case -1:
-    case "UNRECOGNIZED":
-    default:
-      return CanvasChangeKind.UNRECOGNIZED;
-  }
-}
-
-export function canvasChangeKindToJSON(object: CanvasChangeKind): string {
-  switch (object) {
-    case CanvasChangeKind.UNSPECIFIED:
-      return "CANVAS_CHANGE_KIND_UNSPECIFIED";
-    case CanvasChangeKind.CANVAS_UPDATED:
-      return "CANVAS_UPDATED";
-    case CanvasChangeKind.CANVAS_DELETED:
-      return "CANVAS_DELETED";
-    case CanvasChangeKind.SERVER_CREATED:
-      return "SERVER_CREATED";
-    case CanvasChangeKind.SERVER_UPDATED:
-      return "SERVER_UPDATED";
-    case CanvasChangeKind.SERVER_MOVED:
-      return "SERVER_MOVED";
-    case CanvasChangeKind.SERVER_DELETED:
-      return "SERVER_DELETED";
-    case CanvasChangeKind.SERVER_IP_CHANGED:
-      return "SERVER_IP_CHANGED";
-    case CanvasChangeKind.NODE_CREATED:
-      return "NODE_CREATED";
-    case CanvasChangeKind.NODE_REPLACED:
-      return "NODE_REPLACED";
-    case CanvasChangeKind.NODE_META_UPDATED:
-      return "NODE_META_UPDATED";
-    case CanvasChangeKind.NODE_RETIRED:
-      return "NODE_RETIRED";
-    case CanvasChangeKind.NODE_DELETED:
-      return "NODE_DELETED";
-    case CanvasChangeKind.EDGE_CONNECTED:
-      return "EDGE_CONNECTED";
-    case CanvasChangeKind.EDGE_RETIRED:
-      return "EDGE_RETIRED";
-    case CanvasChangeKind.EDGE_DELETED:
-      return "EDGE_DELETED";
-    case CanvasChangeKind.SERVER_HEALTH_CHANGED:
-      return "SERVER_HEALTH_CHANGED";
-    case CanvasChangeKind.UNRECOGNIZED:
-    default:
-      return "UNRECOGNIZED";
-  }
-}
-
 /**
  * A server's side of every QUIC relay link it takes part in. `up_mbps` is what
  * it sends at (brutal's fixed rate), `down_mbps` what it can receive; on each
@@ -1055,139 +454,104 @@ export interface TlsConfig {
  * One listener on one server. `bind_ip` empty means every address of the host
  * (dual-stack `::`); `advertise_ip` empty means the server's effective address.
  */
-export interface PodConfig {
-  port: number;
+export interface Pod {
+  id: string;
+  /** The canvas the pod is drawn on; any canvas of its server's tree. */
+  canvasId: string;
   serverId: string;
+  name: string;
+  comment: string;
+  /** On a write, 0 picks a free port of the server (40000-59999). */
+  port: number;
   bindIp: string;
   advertiseIp: string;
-}
-
-export interface EntryConfig {
+  ingress: Ingress;
+  /** Client ingress only. */
   receiveProxyProtocol: ProxyProtocolVersion;
-  tls: TlsConfig | undefined;
-}
-
-export interface RelayConfig {
-  protocol: RelayProtocol;
-  overrideIpAddress: string;
-  overridePort: number;
-}
-
-export interface ExitConfig {
-  destination: string;
-  passProxyProtocol: ProxyProtocolVersion;
-}
-
-/**
- * One member of a load-balance node, as the operator declares it: `slot` is the
- * member's stable number (its port is `member_<slot>`, so renaming keeps the
- * bundle drawn on it), `name` is what the operator calls it.
- */
-export interface LoadBalanceMember {
-  slot: number;
-  name: string;
-}
-
-/**
- * The operator's rule: `members` are the bundles this node splits into, one
- * port each, in the order given (1 to 256, unique names and slots).
- * `protocol` is how the channels bundled out are relayed to the universal
- * pods they land on (unspecified = raw TCP).
- */
-export interface LoadBalanceDistributeConfig {
-  mode: LoadBalanceMode;
-  protocol: RelayProtocol;
-  members: LoadBalanceMember[];
-}
-
-/** `members` are the bundles this node joins, one port each (1 to 256). */
-export interface LoadBalanceAggregateConfig {
-  members: LoadBalanceMember[];
-}
-
-export interface CanvasImportConfig {
-  canvasId: string;
-}
-
-export interface CanvasExportConfig {
-  kind: PortKind;
-  direction: CanvasExportAs;
-}
-
-/**
- * The universal pod of a server: created with the server, one per server. It
- * takes bundles in and lands every channel they carry on a real pod of its own
- * (a "lane"), then hands the bundle on through `bundle_out`. Bundles start at a
- * load-balance distribute node (one per entry pod connected to its channel
- * handle) and end at a load-balance aggregate node, which grows one input per
- * channel for an exit; both are ordinary load-balance nodes whose ports adapt.
- */
-export interface UniversalPodConfig {
-  serverId: string;
-}
-
-export interface NodeSpec {
-  pod?: PodConfig | undefined;
-  entry?: EntryConfig | undefined;
-  relay?: RelayConfig | undefined;
-  exit?: ExitConfig | undefined;
-  loadBalanceDistribute?: LoadBalanceDistributeConfig | undefined;
-  loadBalanceAggregate?: LoadBalanceAggregateConfig | undefined;
-  canvasImport?: CanvasImportConfig | undefined;
-  canvasExport?: CanvasExportConfig | undefined;
-  universalPod?: UniversalPodConfig | undefined;
-}
-
-/**
- * Why a node exists: it was generated by the expansion of a universal node
- * (`group_node_id`) for one channel (`channel_pod_id`, the entry pod the
- * channel starts at). Such a node is managed: it cannot be retired or
- * re-wired by hand, only a landing pod's port may be edited.
- */
-export interface Lane {
-  key: string;
-  groupNodeId: string;
-  channelPodId: string;
-  role: LaneRole;
+  /** CLIENT_TLS only. */
+  tls:
+    | TlsConfig
+    | undefined;
   /**
-   * The universal node the bundle came from (a landing pod) or the universal
-   * pod a relay dials (a distributor's relay); empty otherwise.
+   * How the pod chooses between its out-edges, as the JSON document the pod row
+   * stores; empty when it has none. A route names every out-edge exactly once:
+   *   {"edge": "<edge id>"}
+   *   {"balance": [{"weight": 2, "to": <route>}, {"to": <route>}], "sticky": "client_ip"}
+   *   {"failover": [<route>, <route>]}
    */
-  sourceNodeId: string;
+  routeJson: string;
 }
 
-export interface Port {
-  id: string;
-  nodeId: string;
-  kind: PortKind;
-  direction: PortDirection;
-  key: string;
-  position: bigint;
-}
-
-export interface Node {
+/** A destination outside the fabric. */
+export interface Exit {
   id: string;
   canvasId: string;
   name: string;
   comment: string;
-  spec: NodeSpec | undefined;
+  /** `host:port`. */
+  destination: string;
+  sendProxyProtocol: ProxyProtocolVersion;
   position: CanvasUiPosition | undefined;
-  ports: Port[];
-  /**
-   * Set only for a canvas_import node: the canvas it embeds. An import node's
-   * ports mirror that canvas's export nodes (port key = export node id).
-   */
-  importTarget:
-    | Canvas
-    | undefined;
-  /** Set only for a node generated by a universal node's expansion. */
-  lane: Lane | undefined;
 }
 
+/**
+ * A pod's way on: to another pod, or to an exit. An edge's ends are its
+ * identity; its overrides say how the target pod is dialed.
+ */
 export interface Edge {
   id: string;
-  sourcePortId: string;
-  targetPortId: string;
+  sourcePodId: string;
+  targetPodId?: string | undefined;
+  targetExitId?:
+    | string
+    | undefined;
+  /** An IP literal or a host name; empty dials the target pod's address. */
+  overrideIp: string;
+  /** 0 dials the target pod's port. */
+  overridePort: number;
+}
+
+export interface GroupMember {
+  podId?: string | undefined;
+  edgeId?: string | undefined;
+  exitId?: string | undefined;
+  serverId?: string | undefined;
+}
+
+/**
+ * How the dashboard draws part of the graph (a splitter, an aggregator, a
+ * rule): a kind it defines, and whatever it keeps about the drawing in
+ * `props_json`. Nothing is derived from a group.
+ */
+export interface Group {
+  id: string;
+  canvasId: string;
+  kind: string;
+  name: string;
+  propsJson: string;
+  members: GroupMember[];
+}
+
+export interface GraphSubject {
+  serverId?: string | undefined;
+  podId?: string | undefined;
+  exitId?: string | undefined;
+  edgeId?: string | undefined;
+  groupId?: string | undefined;
+  canvasId?: string | undefined;
+}
+
+/**
+ * A problem with a graph, or with a change to it. `problem` is a stable
+ * snake_case name (`cycle`, `listener_conflict`, `route_missing_edge`,
+ * `listener_in_use`, `unknown_pod`, ...); an error blocks a write, a warning
+ * never does.
+ */
+export interface Diagnostic {
+  problem: string;
+  error: boolean;
+  subjects: GraphSubject[];
+  message: string;
 }
 
 /**
@@ -1264,21 +628,21 @@ export interface Server {
    * master keeps up on its own timer, so this is what "online" is judged on.
    */
   lastHealthReportAt: string;
+  /**
+   * What the worker reads beyond the tree form every worker reads
+   * (`route_table`, `relay_confirm`), as it last registered.
+   */
+  capabilities: string[];
 }
 
 export interface Canvas {
   id: string;
   name: string;
   description: string;
-}
-
-export interface Problem {
-  severity: ProblemSeverity;
-  kind: ProblemKind;
-  message: string;
-  nodeIds: string[];
-  edgeIds: string[];
-  portIds: string[];
+  /** The canvas this one is drawn inside; empty for a root. */
+  parentId: string;
+  /** Where it is drawn on its parent. */
+  position: CanvasUiPosition | undefined;
 }
 
 /**
@@ -1306,6 +670,9 @@ export interface ConfigSnapshot {
 export interface CreateCanvasRequest {
   name: string;
   description: string;
+  /** Set to create a subcanvas drawn at `position` inside that canvas. */
+  parentId: string;
+  position: CanvasUiPosition | undefined;
 }
 
 export interface CreateCanvasReply {
@@ -1313,7 +680,7 @@ export interface CreateCanvasReply {
 }
 
 export interface ListCanvasesRequest {
-  /** Subcanvases (canvases imported by another canvas) are omitted unless set. */
+  /** Subcanvases (canvases with a parent) are omitted unless set. */
   includeSubcanvases: boolean;
 }
 
@@ -1321,17 +688,85 @@ export interface ListCanvasesReply {
   canvases: Canvas[];
 }
 
-export interface GetCanvasRequest {
+/**
+ * Any canvas of the tree may be given; the reply is always the whole tree:
+ * every canvas, server, pod, exit, edge and group of it, and the diagnostics the
+ * graph checks with.
+ */
+export interface GetGraphRequest {
   canvasId: string;
 }
 
-export interface GetCanvasReply {
-  canvas: Canvas | undefined;
+export interface GetGraphReply {
+  /** Root first, then by depth. */
+  canvases: Canvas[];
   servers: Server[];
-  nodes: Node[];
+  pods: Pod[];
+  exits: Exit[];
   edges: Edge[];
-  /** Root first, parent last; empty for a root canvas. */
-  ancestors: Canvas[];
+  groups: Group[];
+  diagnostics: Diagnostic[];
+  /** The root's edit counter: pass it back as `expected_generation`. */
+  generation: bigint;
+}
+
+/**
+ * One batch of changes to a tree's graph, all of it or none. A put replaces the
+ * row with its id, or creates it when no row has that id; ids of new rows are
+ * chosen by the caller (20 characters of `[a-z0-9]`), so one batch can create a
+ * pod, the edges into and out of it and the routes naming them. Deleting a pod
+ * or an exit takes no edge with it: delete the edges and rewrite the routes
+ * that name them in the same batch.
+ */
+export interface GraphChange {
+  putPods: Pod[];
+  putExits: Exit[];
+  putEdges: Edge[];
+  putGroups: Group[];
+  deletePodIds: string[];
+  deleteExitIds: string[];
+  deleteEdgeIds: string[];
+  deleteGroupIds: string[];
+}
+
+/**
+ * `dry_run` answers the diagnostics without writing. `expected_generation`, when
+ * not 0, refuses a change computed against a tree that has moved on since.
+ */
+export interface ApplyGraphRequest {
+  canvasId: string;
+  change: GraphChange | undefined;
+  dryRun: boolean;
+  expectedGeneration: bigint;
+}
+
+export interface ApplyGraphReply {
+  applied: boolean;
+  generation: bigint;
+  /**
+   * Every diagnostic of the graph the change produces, and of the change itself;
+   * any error means nothing was written.
+   */
+  diagnostics: Diagnostic[];
+  /** The pods the change put, as written: one put with port 0 carries its port. */
+  pods: Pod[];
+}
+
+export interface ItemPosition {
+  id: string;
+  position: CanvasUiPosition | undefined;
+}
+
+/** Where servers, exits and subcanvases are drawn; nothing a worker reads. */
+export interface MoveItemsRequest {
+  /** Any canvas of the tree the items belong to. */
+  canvasId: string;
+  servers: ItemPosition[];
+  exits: ItemPosition[];
+  canvases: ItemPosition[];
+}
+
+export interface MoveItemsReply {
 }
 
 /** Any canvas of the tree may be given; the reply is always the whole tree. */
@@ -1352,6 +787,8 @@ export interface UpdateCanvasRequest {
   canvasId: string;
   name: string;
   description: string;
+  /** Where a subcanvas is drawn on its parent; unset leaves it. */
+  position: CanvasUiPosition | undefined;
 }
 
 export interface UpdateCanvasReply {
@@ -1363,14 +800,6 @@ export interface DeleteCanvasRequest {
 }
 
 export interface DeleteCanvasReply {
-}
-
-export interface ValidateCanvasRequest {
-  canvasId: string;
-}
-
-export interface ValidateCanvasReply {
-  problems: Problem[];
 }
 
 export interface CreateServerRequest {
@@ -1479,99 +908,6 @@ export interface MoveServerRequest {
 export interface MoveServerReply {
 }
 
-export interface CreateNodeRequest {
-  canvasId: string;
-  name: string;
-  comment: string;
-  spec: NodeSpec | undefined;
-  position:
-    | CanvasUiPosition
-    | undefined;
-  /**
-   * Reserved for specs with a hand-drawn member count; load-balance nodes
-   * declare their members in the spec and take 0 here.
-   */
-  itemCount: number;
-}
-
-export interface CreateNodeReply {
-  node: Node | undefined;
-}
-
-export interface ReplaceNodeSpecRequest {
-  nodeId: string;
-  spec: NodeSpec | undefined;
-  itemCount: number;
-}
-
-export interface ReplaceNodeSpecReply {
-  node: Node | undefined;
-}
-
-export interface UpdateNodeMetaRequest {
-  nodeId: string;
-  name: string;
-  comment: string;
-  position: CanvasUiPosition | undefined;
-}
-
-export interface UpdateNodeMetaReply {
-  node: Node | undefined;
-}
-
-export interface RetireNodeRequest {
-  nodeId: string;
-}
-
-export interface RetireNodeReply {
-}
-
-export interface ForceDeleteNodeRequest {
-  nodeId: string;
-}
-
-export interface ForceDeleteNodeReply {
-}
-
-/**
- * One end of a connect on a universal node's handle group instead of a port: the
- * port is created on demand (a distributor's `chan:<pod>`, a bundle port) and
- * the node's lanes are regenerated in the same transaction.
- */
-export interface UniversalHandle {
-  nodeId: string;
-  group: UniversalGroup;
-}
-
-/**
- * Each end is either a port id or a universal handle; the handle is used when
- * the port id is empty.
- */
-export interface ConnectRequest {
-  outputPortId: string;
-  inputPortId: string;
-  outputHandle: UniversalHandle | undefined;
-  inputHandle: UniversalHandle | undefined;
-}
-
-export interface ConnectReply {
-  edge: Edge | undefined;
-}
-
-export interface DisconnectRequest {
-  edgeId: string;
-}
-
-export interface DisconnectReply {
-}
-
-export interface ForceDisconnectRequest {
-  edgeId: string;
-}
-
-export interface ForceDisconnectReply {
-}
-
 export interface GetServerConfigRequest {
   serverId: string;
 }
@@ -1586,12 +922,11 @@ export interface GetServerRolloutStatusRequest {
 }
 
 /**
- * One pod that failed to derive on its own. `listen` is the `bind:port` it would
- * have served (`[::]:port` for a wildcard bind), `error` the rendered derivation
- * error.
+ * One pod that could not be compiled on its own. `listen` is the `bind:port` it
+ * would have served (`[::]:port` for a wildcard bind), `error` why not.
  */
 export interface InvalidPod {
-  nodeId: string;
+  podId: string;
   podName: string;
   listen: string;
   error: string;
@@ -1641,10 +976,10 @@ export interface ServerHealthRecord {
   maxConnections: bigint;
 }
 
-export interface NodeHealthRecord {
+export interface PodHealthRecord {
   id: string;
-  nodeId: string;
-  status: NodeHealthStatus;
+  podId: string;
+  status: PodHealthStatus;
   message: string;
   reportTime: string;
 }
@@ -1664,15 +999,15 @@ export interface ListServerHealthHistoryReply {
 }
 
 /** `limit` of 0 means the server default; records come newest first. */
-export interface ListNodeHealthHistoryRequest {
-  nodeId: string;
+export interface ListPodHealthHistoryRequest {
+  podId: string;
   start: string;
   end: string;
   limit: number;
 }
 
-export interface ListNodeHealthHistoryReply {
-  records: NodeHealthRecord[];
+export interface ListPodHealthHistoryReply {
+  records: PodHealthRecord[];
 }
 
 /**
@@ -1684,7 +1019,7 @@ export interface DnsProvider {
   name: string;
   provider: DnsProviderKind;
   /**
-   * Cloudflare: unused (the zone id lives on the Entry's `TlsConfig.domain_id`).
+   * Cloudflare: unused (the zone id lives on the pod's `TlsConfig.domain_id`).
    * Vercel: the team id, or empty for a personal account.
    */
   accountId: string;
@@ -1721,7 +1056,7 @@ export interface UpdateDnsProviderReply {
   provider: DnsProvider | undefined;
 }
 
-/** Refused while an Entry still references the provider. */
+/** Refused while a pod still references the provider. */
 export interface DeleteDnsProviderRequest {
   dnsProviderId: string;
 }
@@ -1766,7 +1101,7 @@ export interface RetryCertificateReply {
 }
 
 /**
- * Admin only. Refused while an Entry still references the certificate's
+ * Admin only. Refused while a pod still references the certificate's
  * `(sni, acme_directory)`.
  */
 export interface DeleteCertificateRequest {
@@ -1813,27 +1148,6 @@ export interface SetOrchestrationConfigReply {
 export interface KeepAlive {
 }
 
-export interface WatchCanvasRequest {
-  canvasId: string;
-}
-
-/**
- * The whole GetCanvas reply again. `generation` is the root canvas's edit counter
- * and is informational only: metadata edits (positions, names) do not bump it.
- * Several changes may collapse into one snapshot; `cause` is then the latest.
- */
-export interface CanvasSnapshot {
-  generation: bigint;
-  cause: CanvasChangeKind;
-  affectedIds: string[];
-  contents: GetCanvasReply | undefined;
-}
-
-export interface CanvasEvent {
-  snapshot?: CanvasSnapshot | undefined;
-  keepAlive?: KeepAlive | undefined;
-}
-
 /** `since` is RFC 3339; empty means one hour ago. */
 export interface WatchServerHealthRequest {
   serverId: string;
@@ -1850,25 +1164,6 @@ export interface ServerHealthSnapshot {
 export interface ServerHealthEvent {
   snapshot?: ServerHealthSnapshot | undefined;
   record?: ServerHealthRecord | undefined;
-  keepAlive?: KeepAlive | undefined;
-}
-
-/** `limit` bounds the opening snapshot; 0 means 50. */
-export interface WatchNodeHealthRequest {
-  nodeId: string;
-  limit: number;
-}
-
-export interface NodeHealthSnapshot {
-  /** the newest record's status; UNSPECIFIED when there is none */
-  status: NodeHealthStatus;
-  /** newest first */
-  records: NodeHealthRecord[];
-}
-
-export interface NodeHealthEvent {
-  snapshot?: NodeHealthSnapshot | undefined;
-  record?: NodeHealthRecord | undefined;
   keepAlive?: KeepAlive | undefined;
 }
 
@@ -2241,1227 +1536,68 @@ export const TlsConfig: MessageFns<TlsConfig> = {
   },
 };
 
-function createBasePodConfig(): PodConfig {
-  return { port: 0, serverId: "", bindIp: "", advertiseIp: "" };
+function createBasePod(): Pod {
+  return {
+    id: "",
+    canvasId: "",
+    serverId: "",
+    name: "",
+    comment: "",
+    port: 0,
+    bindIp: "",
+    advertiseIp: "",
+    ingress: 0,
+    receiveProxyProtocol: 0,
+    tls: undefined,
+    routeJson: "",
+  };
 }
 
-export const PodConfig: MessageFns<PodConfig> = {
-  encode(message: PodConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.port !== 0) {
-      writer.uint32(16).uint32(message.port);
+export const Pod: MessageFns<Pod> = {
+  encode(message: Pod, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.canvasId !== "") {
+      writer.uint32(18).string(message.canvasId);
     }
     if (message.serverId !== "") {
       writer.uint32(26).string(message.serverId);
     }
-    if (message.bindIp !== "") {
-      writer.uint32(34).string(message.bindIp);
+    if (message.name !== "") {
+      writer.uint32(34).string(message.name);
     }
-    if (message.advertiseIp !== "") {
-      writer.uint32(42).string(message.advertiseIp);
+    if (message.comment !== "") {
+      writer.uint32(42).string(message.comment);
     }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): PodConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBasePodConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.port = reader.uint32();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.serverId = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.bindIp = reader.string();
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.advertiseIp = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): PodConfig {
-    return {
-      port: isSet(object.port) ? globalThis.Number(object.port) : 0,
-      serverId: isSet(object.serverId)
-        ? globalThis.String(object.serverId)
-        : isSet(object.server_id)
-        ? globalThis.String(object.server_id)
-        : "",
-      bindIp: isSet(object.bindIp)
-        ? globalThis.String(object.bindIp)
-        : isSet(object.bind_ip)
-        ? globalThis.String(object.bind_ip)
-        : "",
-      advertiseIp: isSet(object.advertiseIp)
-        ? globalThis.String(object.advertiseIp)
-        : isSet(object.advertise_ip)
-        ? globalThis.String(object.advertise_ip)
-        : "",
-    };
-  },
-
-  toJSON(message: PodConfig): unknown {
-    const obj: any = {};
     if (message.port !== 0) {
-      obj.port = Math.round(message.port);
-    }
-    if (message.serverId !== "") {
-      obj.serverId = message.serverId;
+      writer.uint32(48).uint32(message.port);
     }
     if (message.bindIp !== "") {
-      obj.bindIp = message.bindIp;
+      writer.uint32(58).string(message.bindIp);
     }
     if (message.advertiseIp !== "") {
-      obj.advertiseIp = message.advertiseIp;
+      writer.uint32(66).string(message.advertiseIp);
     }
-    return obj;
-  },
-
-  create(base?: DeepPartial<PodConfig>): PodConfig {
-    return PodConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<PodConfig>): PodConfig {
-    const message = createBasePodConfig();
-    message.port = object.port ?? 0;
-    message.serverId = object.serverId ?? "";
-    message.bindIp = object.bindIp ?? "";
-    message.advertiseIp = object.advertiseIp ?? "";
-    return message;
-  },
-};
-
-function createBaseEntryConfig(): EntryConfig {
-  return { receiveProxyProtocol: 0, tls: undefined };
-}
-
-export const EntryConfig: MessageFns<EntryConfig> = {
-  encode(message: EntryConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.ingress !== 0) {
+      writer.uint32(72).int32(message.ingress);
+    }
     if (message.receiveProxyProtocol !== 0) {
-      writer.uint32(8).int32(message.receiveProxyProtocol);
+      writer.uint32(80).int32(message.receiveProxyProtocol);
     }
     if (message.tls !== undefined) {
-      TlsConfig.encode(message.tls, writer.uint32(18).fork()).join();
+      TlsConfig.encode(message.tls, writer.uint32(90).fork()).join();
+    }
+    if (message.routeJson !== "") {
+      writer.uint32(98).string(message.routeJson);
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): EntryConfig {
+  decode(input: BinaryReader | Uint8Array, length?: number): Pod {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseEntryConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.receiveProxyProtocol = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.tls = TlsConfig.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): EntryConfig {
-    return {
-      receiveProxyProtocol: isSet(object.receiveProxyProtocol)
-        ? proxyProtocolVersionFromJSON(object.receiveProxyProtocol)
-        : isSet(object.receive_proxy_protocol)
-        ? proxyProtocolVersionFromJSON(object.receive_proxy_protocol)
-        : 0,
-      tls: isSet(object.tls) ? TlsConfig.fromJSON(object.tls) : undefined,
-    };
-  },
-
-  toJSON(message: EntryConfig): unknown {
-    const obj: any = {};
-    if (message.receiveProxyProtocol !== 0) {
-      obj.receiveProxyProtocol = proxyProtocolVersionToJSON(message.receiveProxyProtocol);
-    }
-    if (message.tls !== undefined) {
-      obj.tls = TlsConfig.toJSON(message.tls);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<EntryConfig>): EntryConfig {
-    return EntryConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<EntryConfig>): EntryConfig {
-    const message = createBaseEntryConfig();
-    message.receiveProxyProtocol = object.receiveProxyProtocol ?? 0;
-    message.tls = (object.tls !== undefined && object.tls !== null) ? TlsConfig.fromPartial(object.tls) : undefined;
-    return message;
-  },
-};
-
-function createBaseRelayConfig(): RelayConfig {
-  return { protocol: 0, overrideIpAddress: "", overridePort: 0 };
-}
-
-export const RelayConfig: MessageFns<RelayConfig> = {
-  encode(message: RelayConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.protocol !== 0) {
-      writer.uint32(8).int32(message.protocol);
-    }
-    if (message.overrideIpAddress !== "") {
-      writer.uint32(18).string(message.overrideIpAddress);
-    }
-    if (message.overridePort !== 0) {
-      writer.uint32(24).uint32(message.overridePort);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): RelayConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseRelayConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.protocol = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.overrideIpAddress = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 24) {
-            break;
-          }
-
-          message.overridePort = reader.uint32();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): RelayConfig {
-    return {
-      protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
-      overrideIpAddress: isSet(object.overrideIpAddress)
-        ? globalThis.String(object.overrideIpAddress)
-        : isSet(object.override_ip_address)
-        ? globalThis.String(object.override_ip_address)
-        : "",
-      overridePort: isSet(object.overridePort)
-        ? globalThis.Number(object.overridePort)
-        : isSet(object.override_port)
-        ? globalThis.Number(object.override_port)
-        : 0,
-    };
-  },
-
-  toJSON(message: RelayConfig): unknown {
-    const obj: any = {};
-    if (message.protocol !== 0) {
-      obj.protocol = relayProtocolToJSON(message.protocol);
-    }
-    if (message.overrideIpAddress !== "") {
-      obj.overrideIpAddress = message.overrideIpAddress;
-    }
-    if (message.overridePort !== 0) {
-      obj.overridePort = Math.round(message.overridePort);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<RelayConfig>): RelayConfig {
-    return RelayConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<RelayConfig>): RelayConfig {
-    const message = createBaseRelayConfig();
-    message.protocol = object.protocol ?? 0;
-    message.overrideIpAddress = object.overrideIpAddress ?? "";
-    message.overridePort = object.overridePort ?? 0;
-    return message;
-  },
-};
-
-function createBaseExitConfig(): ExitConfig {
-  return { destination: "", passProxyProtocol: 0 };
-}
-
-export const ExitConfig: MessageFns<ExitConfig> = {
-  encode(message: ExitConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.destination !== "") {
-      writer.uint32(10).string(message.destination);
-    }
-    if (message.passProxyProtocol !== 0) {
-      writer.uint32(16).int32(message.passProxyProtocol);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ExitConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseExitConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.destination = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.passProxyProtocol = reader.int32() as any;
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ExitConfig {
-    return {
-      destination: isSet(object.destination) ? globalThis.String(object.destination) : "",
-      passProxyProtocol: isSet(object.passProxyProtocol)
-        ? proxyProtocolVersionFromJSON(object.passProxyProtocol)
-        : isSet(object.pass_proxy_protocol)
-        ? proxyProtocolVersionFromJSON(object.pass_proxy_protocol)
-        : 0,
-    };
-  },
-
-  toJSON(message: ExitConfig): unknown {
-    const obj: any = {};
-    if (message.destination !== "") {
-      obj.destination = message.destination;
-    }
-    if (message.passProxyProtocol !== 0) {
-      obj.passProxyProtocol = proxyProtocolVersionToJSON(message.passProxyProtocol);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ExitConfig>): ExitConfig {
-    return ExitConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ExitConfig>): ExitConfig {
-    const message = createBaseExitConfig();
-    message.destination = object.destination ?? "";
-    message.passProxyProtocol = object.passProxyProtocol ?? 0;
-    return message;
-  },
-};
-
-function createBaseLoadBalanceMember(): LoadBalanceMember {
-  return { slot: 0, name: "" };
-}
-
-export const LoadBalanceMember: MessageFns<LoadBalanceMember> = {
-  encode(message: LoadBalanceMember, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== 0) {
-      writer.uint32(8).uint32(message.slot);
-    }
-    if (message.name !== "") {
-      writer.uint32(18).string(message.name);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): LoadBalanceMember {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseLoadBalanceMember();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.slot = reader.uint32();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.name = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): LoadBalanceMember {
-    return {
-      slot: isSet(object.slot) ? globalThis.Number(object.slot) : 0,
-      name: isSet(object.name) ? globalThis.String(object.name) : "",
-    };
-  },
-
-  toJSON(message: LoadBalanceMember): unknown {
-    const obj: any = {};
-    if (message.slot !== 0) {
-      obj.slot = Math.round(message.slot);
-    }
-    if (message.name !== "") {
-      obj.name = message.name;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<LoadBalanceMember>): LoadBalanceMember {
-    return LoadBalanceMember.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<LoadBalanceMember>): LoadBalanceMember {
-    const message = createBaseLoadBalanceMember();
-    message.slot = object.slot ?? 0;
-    message.name = object.name ?? "";
-    return message;
-  },
-};
-
-function createBaseLoadBalanceDistributeConfig(): LoadBalanceDistributeConfig {
-  return { mode: 0, protocol: 0, members: [] };
-}
-
-export const LoadBalanceDistributeConfig: MessageFns<LoadBalanceDistributeConfig> = {
-  encode(message: LoadBalanceDistributeConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.mode !== 0) {
-      writer.uint32(8).int32(message.mode);
-    }
-    if (message.protocol !== 0) {
-      writer.uint32(16).int32(message.protocol);
-    }
-    for (const v of message.members) {
-      LoadBalanceMember.encode(v!, writer.uint32(26).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): LoadBalanceDistributeConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseLoadBalanceDistributeConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.mode = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.protocol = reader.int32() as any;
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.members.push(LoadBalanceMember.decode(reader, reader.uint32()));
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): LoadBalanceDistributeConfig {
-    return {
-      mode: isSet(object.mode) ? loadBalanceModeFromJSON(object.mode) : 0,
-      protocol: isSet(object.protocol) ? relayProtocolFromJSON(object.protocol) : 0,
-      members: globalThis.Array.isArray(object?.members)
-        ? object.members.map((e: any) => LoadBalanceMember.fromJSON(e))
-        : [],
-    };
-  },
-
-  toJSON(message: LoadBalanceDistributeConfig): unknown {
-    const obj: any = {};
-    if (message.mode !== 0) {
-      obj.mode = loadBalanceModeToJSON(message.mode);
-    }
-    if (message.protocol !== 0) {
-      obj.protocol = relayProtocolToJSON(message.protocol);
-    }
-    if (message.members?.length) {
-      obj.members = message.members.map((e) => LoadBalanceMember.toJSON(e));
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<LoadBalanceDistributeConfig>): LoadBalanceDistributeConfig {
-    return LoadBalanceDistributeConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<LoadBalanceDistributeConfig>): LoadBalanceDistributeConfig {
-    const message = createBaseLoadBalanceDistributeConfig();
-    message.mode = object.mode ?? 0;
-    message.protocol = object.protocol ?? 0;
-    message.members = object.members?.map((e) => LoadBalanceMember.fromPartial(e)) || [];
-    return message;
-  },
-};
-
-function createBaseLoadBalanceAggregateConfig(): LoadBalanceAggregateConfig {
-  return { members: [] };
-}
-
-export const LoadBalanceAggregateConfig: MessageFns<LoadBalanceAggregateConfig> = {
-  encode(message: LoadBalanceAggregateConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    for (const v of message.members) {
-      LoadBalanceMember.encode(v!, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): LoadBalanceAggregateConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseLoadBalanceAggregateConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.members.push(LoadBalanceMember.decode(reader, reader.uint32()));
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): LoadBalanceAggregateConfig {
-    return {
-      members: globalThis.Array.isArray(object?.members)
-        ? object.members.map((e: any) => LoadBalanceMember.fromJSON(e))
-        : [],
-    };
-  },
-
-  toJSON(message: LoadBalanceAggregateConfig): unknown {
-    const obj: any = {};
-    if (message.members?.length) {
-      obj.members = message.members.map((e) => LoadBalanceMember.toJSON(e));
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<LoadBalanceAggregateConfig>): LoadBalanceAggregateConfig {
-    return LoadBalanceAggregateConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<LoadBalanceAggregateConfig>): LoadBalanceAggregateConfig {
-    const message = createBaseLoadBalanceAggregateConfig();
-    message.members = object.members?.map((e) => LoadBalanceMember.fromPartial(e)) || [];
-    return message;
-  },
-};
-
-function createBaseCanvasImportConfig(): CanvasImportConfig {
-  return { canvasId: "" };
-}
-
-export const CanvasImportConfig: MessageFns<CanvasImportConfig> = {
-  encode(message: CanvasImportConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.canvasId !== "") {
-      writer.uint32(10).string(message.canvasId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CanvasImportConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCanvasImportConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.canvasId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CanvasImportConfig {
-    return {
-      canvasId: isSet(object.canvasId)
-        ? globalThis.String(object.canvasId)
-        : isSet(object.canvas_id)
-        ? globalThis.String(object.canvas_id)
-        : "",
-    };
-  },
-
-  toJSON(message: CanvasImportConfig): unknown {
-    const obj: any = {};
-    if (message.canvasId !== "") {
-      obj.canvasId = message.canvasId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CanvasImportConfig>): CanvasImportConfig {
-    return CanvasImportConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CanvasImportConfig>): CanvasImportConfig {
-    const message = createBaseCanvasImportConfig();
-    message.canvasId = object.canvasId ?? "";
-    return message;
-  },
-};
-
-function createBaseCanvasExportConfig(): CanvasExportConfig {
-  return { kind: 0, direction: 0 };
-}
-
-export const CanvasExportConfig: MessageFns<CanvasExportConfig> = {
-  encode(message: CanvasExportConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.kind !== 0) {
-      writer.uint32(8).int32(message.kind);
-    }
-    if (message.direction !== 0) {
-      writer.uint32(16).int32(message.direction);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CanvasExportConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCanvasExportConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.kind = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.direction = reader.int32() as any;
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CanvasExportConfig {
-    return {
-      kind: isSet(object.kind) ? portKindFromJSON(object.kind) : 0,
-      direction: isSet(object.direction) ? canvasExportAsFromJSON(object.direction) : 0,
-    };
-  },
-
-  toJSON(message: CanvasExportConfig): unknown {
-    const obj: any = {};
-    if (message.kind !== 0) {
-      obj.kind = portKindToJSON(message.kind);
-    }
-    if (message.direction !== 0) {
-      obj.direction = canvasExportAsToJSON(message.direction);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CanvasExportConfig>): CanvasExportConfig {
-    return CanvasExportConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CanvasExportConfig>): CanvasExportConfig {
-    const message = createBaseCanvasExportConfig();
-    message.kind = object.kind ?? 0;
-    message.direction = object.direction ?? 0;
-    return message;
-  },
-};
-
-function createBaseUniversalPodConfig(): UniversalPodConfig {
-  return { serverId: "" };
-}
-
-export const UniversalPodConfig: MessageFns<UniversalPodConfig> = {
-  encode(message: UniversalPodConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.serverId !== "") {
-      writer.uint32(10).string(message.serverId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UniversalPodConfig {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUniversalPodConfig();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.serverId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): UniversalPodConfig {
-    return {
-      serverId: isSet(object.serverId)
-        ? globalThis.String(object.serverId)
-        : isSet(object.server_id)
-        ? globalThis.String(object.server_id)
-        : "",
-    };
-  },
-
-  toJSON(message: UniversalPodConfig): unknown {
-    const obj: any = {};
-    if (message.serverId !== "") {
-      obj.serverId = message.serverId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<UniversalPodConfig>): UniversalPodConfig {
-    return UniversalPodConfig.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<UniversalPodConfig>): UniversalPodConfig {
-    const message = createBaseUniversalPodConfig();
-    message.serverId = object.serverId ?? "";
-    return message;
-  },
-};
-
-function createBaseNodeSpec(): NodeSpec {
-  return {
-    pod: undefined,
-    entry: undefined,
-    relay: undefined,
-    exit: undefined,
-    loadBalanceDistribute: undefined,
-    loadBalanceAggregate: undefined,
-    canvasImport: undefined,
-    canvasExport: undefined,
-    universalPod: undefined,
-  };
-}
-
-export const NodeSpec: MessageFns<NodeSpec> = {
-  encode(message: NodeSpec, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.pod !== undefined) {
-      PodConfig.encode(message.pod, writer.uint32(10).fork()).join();
-    }
-    if (message.entry !== undefined) {
-      EntryConfig.encode(message.entry, writer.uint32(18).fork()).join();
-    }
-    if (message.relay !== undefined) {
-      RelayConfig.encode(message.relay, writer.uint32(26).fork()).join();
-    }
-    if (message.exit !== undefined) {
-      ExitConfig.encode(message.exit, writer.uint32(34).fork()).join();
-    }
-    if (message.loadBalanceDistribute !== undefined) {
-      LoadBalanceDistributeConfig.encode(message.loadBalanceDistribute, writer.uint32(42).fork()).join();
-    }
-    if (message.loadBalanceAggregate !== undefined) {
-      LoadBalanceAggregateConfig.encode(message.loadBalanceAggregate, writer.uint32(50).fork()).join();
-    }
-    if (message.canvasImport !== undefined) {
-      CanvasImportConfig.encode(message.canvasImport, writer.uint32(58).fork()).join();
-    }
-    if (message.canvasExport !== undefined) {
-      CanvasExportConfig.encode(message.canvasExport, writer.uint32(66).fork()).join();
-    }
-    if (message.universalPod !== undefined) {
-      UniversalPodConfig.encode(message.universalPod, writer.uint32(74).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): NodeSpec {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseNodeSpec();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.pod = PodConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.entry = EntryConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.relay = RelayConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.exit = ExitConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.loadBalanceDistribute = LoadBalanceDistributeConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 6: {
-          if (tag !== 50) {
-            break;
-          }
-
-          message.loadBalanceAggregate = LoadBalanceAggregateConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 7: {
-          if (tag !== 58) {
-            break;
-          }
-
-          message.canvasImport = CanvasImportConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 8: {
-          if (tag !== 66) {
-            break;
-          }
-
-          message.canvasExport = CanvasExportConfig.decode(reader, reader.uint32());
-          continue;
-        }
-        case 9: {
-          if (tag !== 74) {
-            break;
-          }
-
-          message.universalPod = UniversalPodConfig.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): NodeSpec {
-    return {
-      pod: isSet(object.pod) ? PodConfig.fromJSON(object.pod) : undefined,
-      entry: isSet(object.entry) ? EntryConfig.fromJSON(object.entry) : undefined,
-      relay: isSet(object.relay) ? RelayConfig.fromJSON(object.relay) : undefined,
-      exit: isSet(object.exit) ? ExitConfig.fromJSON(object.exit) : undefined,
-      loadBalanceDistribute: isSet(object.loadBalanceDistribute)
-        ? LoadBalanceDistributeConfig.fromJSON(object.loadBalanceDistribute)
-        : isSet(object.load_balance_distribute)
-        ? LoadBalanceDistributeConfig.fromJSON(object.load_balance_distribute)
-        : undefined,
-      loadBalanceAggregate: isSet(object.loadBalanceAggregate)
-        ? LoadBalanceAggregateConfig.fromJSON(object.loadBalanceAggregate)
-        : isSet(object.load_balance_aggregate)
-        ? LoadBalanceAggregateConfig.fromJSON(object.load_balance_aggregate)
-        : undefined,
-      canvasImport: isSet(object.canvasImport)
-        ? CanvasImportConfig.fromJSON(object.canvasImport)
-        : isSet(object.canvas_import)
-        ? CanvasImportConfig.fromJSON(object.canvas_import)
-        : undefined,
-      canvasExport: isSet(object.canvasExport)
-        ? CanvasExportConfig.fromJSON(object.canvasExport)
-        : isSet(object.canvas_export)
-        ? CanvasExportConfig.fromJSON(object.canvas_export)
-        : undefined,
-      universalPod: isSet(object.universalPod)
-        ? UniversalPodConfig.fromJSON(object.universalPod)
-        : isSet(object.universal_pod)
-        ? UniversalPodConfig.fromJSON(object.universal_pod)
-        : undefined,
-    };
-  },
-
-  toJSON(message: NodeSpec): unknown {
-    const obj: any = {};
-    if (message.pod !== undefined) {
-      obj.pod = PodConfig.toJSON(message.pod);
-    }
-    if (message.entry !== undefined) {
-      obj.entry = EntryConfig.toJSON(message.entry);
-    }
-    if (message.relay !== undefined) {
-      obj.relay = RelayConfig.toJSON(message.relay);
-    }
-    if (message.exit !== undefined) {
-      obj.exit = ExitConfig.toJSON(message.exit);
-    }
-    if (message.loadBalanceDistribute !== undefined) {
-      obj.loadBalanceDistribute = LoadBalanceDistributeConfig.toJSON(message.loadBalanceDistribute);
-    }
-    if (message.loadBalanceAggregate !== undefined) {
-      obj.loadBalanceAggregate = LoadBalanceAggregateConfig.toJSON(message.loadBalanceAggregate);
-    }
-    if (message.canvasImport !== undefined) {
-      obj.canvasImport = CanvasImportConfig.toJSON(message.canvasImport);
-    }
-    if (message.canvasExport !== undefined) {
-      obj.canvasExport = CanvasExportConfig.toJSON(message.canvasExport);
-    }
-    if (message.universalPod !== undefined) {
-      obj.universalPod = UniversalPodConfig.toJSON(message.universalPod);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<NodeSpec>): NodeSpec {
-    return NodeSpec.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<NodeSpec>): NodeSpec {
-    const message = createBaseNodeSpec();
-    message.pod = (object.pod !== undefined && object.pod !== null) ? PodConfig.fromPartial(object.pod) : undefined;
-    message.entry = (object.entry !== undefined && object.entry !== null)
-      ? EntryConfig.fromPartial(object.entry)
-      : undefined;
-    message.relay = (object.relay !== undefined && object.relay !== null)
-      ? RelayConfig.fromPartial(object.relay)
-      : undefined;
-    message.exit = (object.exit !== undefined && object.exit !== null)
-      ? ExitConfig.fromPartial(object.exit)
-      : undefined;
-    message.loadBalanceDistribute =
-      (object.loadBalanceDistribute !== undefined && object.loadBalanceDistribute !== null)
-        ? LoadBalanceDistributeConfig.fromPartial(object.loadBalanceDistribute)
-        : undefined;
-    message.loadBalanceAggregate = (object.loadBalanceAggregate !== undefined && object.loadBalanceAggregate !== null)
-      ? LoadBalanceAggregateConfig.fromPartial(object.loadBalanceAggregate)
-      : undefined;
-    message.canvasImport = (object.canvasImport !== undefined && object.canvasImport !== null)
-      ? CanvasImportConfig.fromPartial(object.canvasImport)
-      : undefined;
-    message.canvasExport = (object.canvasExport !== undefined && object.canvasExport !== null)
-      ? CanvasExportConfig.fromPartial(object.canvasExport)
-      : undefined;
-    message.universalPod = (object.universalPod !== undefined && object.universalPod !== null)
-      ? UniversalPodConfig.fromPartial(object.universalPod)
-      : undefined;
-    return message;
-  },
-};
-
-function createBaseLane(): Lane {
-  return { key: "", groupNodeId: "", channelPodId: "", role: 0, sourceNodeId: "" };
-}
-
-export const Lane: MessageFns<Lane> = {
-  encode(message: Lane, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.key !== "") {
-      writer.uint32(10).string(message.key);
-    }
-    if (message.groupNodeId !== "") {
-      writer.uint32(18).string(message.groupNodeId);
-    }
-    if (message.channelPodId !== "") {
-      writer.uint32(26).string(message.channelPodId);
-    }
-    if (message.role !== 0) {
-      writer.uint32(32).int32(message.role);
-    }
-    if (message.sourceNodeId !== "") {
-      writer.uint32(42).string(message.sourceNodeId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): Lane {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseLane();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.key = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.groupNodeId = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.channelPodId = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 32) {
-            break;
-          }
-
-          message.role = reader.int32() as any;
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.sourceNodeId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): Lane {
-    return {
-      key: isSet(object.key) ? globalThis.String(object.key) : "",
-      groupNodeId: isSet(object.groupNodeId)
-        ? globalThis.String(object.groupNodeId)
-        : isSet(object.group_node_id)
-        ? globalThis.String(object.group_node_id)
-        : "",
-      channelPodId: isSet(object.channelPodId)
-        ? globalThis.String(object.channelPodId)
-        : isSet(object.channel_pod_id)
-        ? globalThis.String(object.channel_pod_id)
-        : "",
-      role: isSet(object.role) ? laneRoleFromJSON(object.role) : 0,
-      sourceNodeId: isSet(object.sourceNodeId)
-        ? globalThis.String(object.sourceNodeId)
-        : isSet(object.source_node_id)
-        ? globalThis.String(object.source_node_id)
-        : "",
-    };
-  },
-
-  toJSON(message: Lane): unknown {
-    const obj: any = {};
-    if (message.key !== "") {
-      obj.key = message.key;
-    }
-    if (message.groupNodeId !== "") {
-      obj.groupNodeId = message.groupNodeId;
-    }
-    if (message.channelPodId !== "") {
-      obj.channelPodId = message.channelPodId;
-    }
-    if (message.role !== 0) {
-      obj.role = laneRoleToJSON(message.role);
-    }
-    if (message.sourceNodeId !== "") {
-      obj.sourceNodeId = message.sourceNodeId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<Lane>): Lane {
-    return Lane.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<Lane>): Lane {
-    const message = createBaseLane();
-    message.key = object.key ?? "";
-    message.groupNodeId = object.groupNodeId ?? "";
-    message.channelPodId = object.channelPodId ?? "";
-    message.role = object.role ?? 0;
-    message.sourceNodeId = object.sourceNodeId ?? "";
-    return message;
-  },
-};
-
-function createBasePort(): Port {
-  return { id: "", nodeId: "", kind: 0, direction: 0, key: "", position: 0n };
-}
-
-export const Port: MessageFns<Port> = {
-  encode(message: Port, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.id !== "") {
-      writer.uint32(10).string(message.id);
-    }
-    if (message.nodeId !== "") {
-      writer.uint32(18).string(message.nodeId);
-    }
-    if (message.kind !== 0) {
-      writer.uint32(24).int32(message.kind);
-    }
-    if (message.direction !== 0) {
-      writer.uint32(32).int32(message.direction);
-    }
-    if (message.key !== "") {
-      writer.uint32(42).string(message.key);
-    }
-    if (message.position !== 0n) {
-      if (BigInt.asIntN(64, message.position) !== message.position) {
-        throw new globalThis.Error("value provided for field message.position of type int64 too large");
-      }
-      writer.uint32(48).int64(message.position);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): Port {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBasePort();
+    const message = createBasePod();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -3478,23 +1614,23 @@ export const Port: MessageFns<Port> = {
             break;
           }
 
-          message.nodeId = reader.string();
+          message.canvasId = reader.string();
           continue;
         }
         case 3: {
-          if (tag !== 24) {
+          if (tag !== 26) {
             break;
           }
 
-          message.kind = reader.int32() as any;
+          message.serverId = reader.string();
           continue;
         }
         case 4: {
-          if (tag !== 32) {
+          if (tag !== 34) {
             break;
           }
 
-          message.direction = reader.int32() as any;
+          message.name = reader.string();
           continue;
         }
         case 5: {
@@ -3502,7 +1638,7 @@ export const Port: MessageFns<Port> = {
             break;
           }
 
-          message.key = reader.string();
+          message.comment = reader.string();
           continue;
         }
         case 6: {
@@ -3510,7 +1646,55 @@ export const Port: MessageFns<Port> = {
             break;
           }
 
-          message.position = reader.int64() as bigint;
+          message.port = reader.uint32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.bindIp = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.advertiseIp = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.ingress = reader.int32() as any;
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.receiveProxyProtocol = reader.int32() as any;
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.tls = TlsConfig.decode(reader, reader.uint32());
+          continue;
+        }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.routeJson = reader.string();
           continue;
         }
       }
@@ -3522,75 +1706,115 @@ export const Port: MessageFns<Port> = {
     return message;
   },
 
-  fromJSON(object: any): Port {
+  fromJSON(object: any): Pod {
     return {
       id: isSet(object.id) ? globalThis.String(object.id) : "",
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
         : "",
-      kind: isSet(object.kind) ? portKindFromJSON(object.kind) : 0,
-      direction: isSet(object.direction) ? portDirectionFromJSON(object.direction) : 0,
-      key: isSet(object.key) ? globalThis.String(object.key) : "",
-      position: isSet(object.position) ? BigInt(object.position) : 0n,
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      comment: isSet(object.comment) ? globalThis.String(object.comment) : "",
+      port: isSet(object.port) ? globalThis.Number(object.port) : 0,
+      bindIp: isSet(object.bindIp)
+        ? globalThis.String(object.bindIp)
+        : isSet(object.bind_ip)
+        ? globalThis.String(object.bind_ip)
+        : "",
+      advertiseIp: isSet(object.advertiseIp)
+        ? globalThis.String(object.advertiseIp)
+        : isSet(object.advertise_ip)
+        ? globalThis.String(object.advertise_ip)
+        : "",
+      ingress: isSet(object.ingress) ? ingressFromJSON(object.ingress) : 0,
+      receiveProxyProtocol: isSet(object.receiveProxyProtocol)
+        ? proxyProtocolVersionFromJSON(object.receiveProxyProtocol)
+        : isSet(object.receive_proxy_protocol)
+        ? proxyProtocolVersionFromJSON(object.receive_proxy_protocol)
+        : 0,
+      tls: isSet(object.tls) ? TlsConfig.fromJSON(object.tls) : undefined,
+      routeJson: isSet(object.routeJson)
+        ? globalThis.String(object.routeJson)
+        : isSet(object.route_json)
+        ? globalThis.String(object.route_json)
+        : "",
     };
   },
 
-  toJSON(message: Port): unknown {
+  toJSON(message: Pod): unknown {
     const obj: any = {};
     if (message.id !== "") {
       obj.id = message.id;
     }
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
     }
-    if (message.kind !== 0) {
-      obj.kind = portKindToJSON(message.kind);
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
     }
-    if (message.direction !== 0) {
-      obj.direction = portDirectionToJSON(message.direction);
+    if (message.name !== "") {
+      obj.name = message.name;
     }
-    if (message.key !== "") {
-      obj.key = message.key;
+    if (message.comment !== "") {
+      obj.comment = message.comment;
     }
-    if (message.position !== 0n) {
-      obj.position = message.position.toString();
+    if (message.port !== 0) {
+      obj.port = Math.round(message.port);
+    }
+    if (message.bindIp !== "") {
+      obj.bindIp = message.bindIp;
+    }
+    if (message.advertiseIp !== "") {
+      obj.advertiseIp = message.advertiseIp;
+    }
+    if (message.ingress !== 0) {
+      obj.ingress = ingressToJSON(message.ingress);
+    }
+    if (message.receiveProxyProtocol !== 0) {
+      obj.receiveProxyProtocol = proxyProtocolVersionToJSON(message.receiveProxyProtocol);
+    }
+    if (message.tls !== undefined) {
+      obj.tls = TlsConfig.toJSON(message.tls);
+    }
+    if (message.routeJson !== "") {
+      obj.routeJson = message.routeJson;
     }
     return obj;
   },
 
-  create(base?: DeepPartial<Port>): Port {
-    return Port.fromPartial(base ?? {});
+  create(base?: DeepPartial<Pod>): Pod {
+    return Pod.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<Port>): Port {
-    const message = createBasePort();
+  fromPartial(object: DeepPartial<Pod>): Pod {
+    const message = createBasePod();
     message.id = object.id ?? "";
-    message.nodeId = object.nodeId ?? "";
-    message.kind = object.kind ?? 0;
-    message.direction = object.direction ?? 0;
-    message.key = object.key ?? "";
-    message.position = (object.position !== undefined && object.position !== null) ? BigInt(object.position) : 0n;
+    message.canvasId = object.canvasId ?? "";
+    message.serverId = object.serverId ?? "";
+    message.name = object.name ?? "";
+    message.comment = object.comment ?? "";
+    message.port = object.port ?? 0;
+    message.bindIp = object.bindIp ?? "";
+    message.advertiseIp = object.advertiseIp ?? "";
+    message.ingress = object.ingress ?? 0;
+    message.receiveProxyProtocol = object.receiveProxyProtocol ?? 0;
+    message.tls = (object.tls !== undefined && object.tls !== null) ? TlsConfig.fromPartial(object.tls) : undefined;
+    message.routeJson = object.routeJson ?? "";
     return message;
   },
 };
 
-function createBaseNode(): Node {
-  return {
-    id: "",
-    canvasId: "",
-    name: "",
-    comment: "",
-    spec: undefined,
-    position: undefined,
-    ports: [],
-    importTarget: undefined,
-    lane: undefined,
-  };
+function createBaseExit(): Exit {
+  return { id: "", canvasId: "", name: "", comment: "", destination: "", sendProxyProtocol: 0, position: undefined };
 }
 
-export const Node: MessageFns<Node> = {
-  encode(message: Node, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const Exit: MessageFns<Exit> = {
+  encode(message: Exit, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.id !== "") {
       writer.uint32(10).string(message.id);
     }
@@ -3603,28 +1827,22 @@ export const Node: MessageFns<Node> = {
     if (message.comment !== "") {
       writer.uint32(34).string(message.comment);
     }
-    if (message.spec !== undefined) {
-      NodeSpec.encode(message.spec, writer.uint32(42).fork()).join();
+    if (message.destination !== "") {
+      writer.uint32(42).string(message.destination);
+    }
+    if (message.sendProxyProtocol !== 0) {
+      writer.uint32(48).int32(message.sendProxyProtocol);
     }
     if (message.position !== undefined) {
-      CanvasUiPosition.encode(message.position, writer.uint32(50).fork()).join();
-    }
-    for (const v of message.ports) {
-      Port.encode(v!, writer.uint32(58).fork()).join();
-    }
-    if (message.importTarget !== undefined) {
-      Canvas.encode(message.importTarget, writer.uint32(66).fork()).join();
-    }
-    if (message.lane !== undefined) {
-      Lane.encode(message.lane, writer.uint32(74).fork()).join();
+      CanvasUiPosition.encode(message.position, writer.uint32(58).fork()).join();
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): Node {
+  decode(input: BinaryReader | Uint8Array, length?: number): Exit {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseNode();
+    const message = createBaseExit();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -3665,15 +1883,15 @@ export const Node: MessageFns<Node> = {
             break;
           }
 
-          message.spec = NodeSpec.decode(reader, reader.uint32());
+          message.destination = reader.string();
           continue;
         }
         case 6: {
-          if (tag !== 50) {
+          if (tag !== 48) {
             break;
           }
 
-          message.position = CanvasUiPosition.decode(reader, reader.uint32());
+          message.sendProxyProtocol = reader.int32() as any;
           continue;
         }
         case 7: {
@@ -3681,23 +1899,7 @@ export const Node: MessageFns<Node> = {
             break;
           }
 
-          message.ports.push(Port.decode(reader, reader.uint32()));
-          continue;
-        }
-        case 8: {
-          if (tag !== 66) {
-            break;
-          }
-
-          message.importTarget = Canvas.decode(reader, reader.uint32());
-          continue;
-        }
-        case 9: {
-          if (tag !== 74) {
-            break;
-          }
-
-          message.lane = Lane.decode(reader, reader.uint32());
+          message.position = CanvasUiPosition.decode(reader, reader.uint32());
           continue;
         }
       }
@@ -3709,7 +1911,7 @@ export const Node: MessageFns<Node> = {
     return message;
   },
 
-  fromJSON(object: any): Node {
+  fromJSON(object: any): Exit {
     return {
       id: isSet(object.id) ? globalThis.String(object.id) : "",
       canvasId: isSet(object.canvasId)
@@ -3719,19 +1921,17 @@ export const Node: MessageFns<Node> = {
         : "",
       name: isSet(object.name) ? globalThis.String(object.name) : "",
       comment: isSet(object.comment) ? globalThis.String(object.comment) : "",
-      spec: isSet(object.spec) ? NodeSpec.fromJSON(object.spec) : undefined,
+      destination: isSet(object.destination) ? globalThis.String(object.destination) : "",
+      sendProxyProtocol: isSet(object.sendProxyProtocol)
+        ? proxyProtocolVersionFromJSON(object.sendProxyProtocol)
+        : isSet(object.send_proxy_protocol)
+        ? proxyProtocolVersionFromJSON(object.send_proxy_protocol)
+        : 0,
       position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
-      ports: globalThis.Array.isArray(object?.ports) ? object.ports.map((e: any) => Port.fromJSON(e)) : [],
-      importTarget: isSet(object.importTarget)
-        ? Canvas.fromJSON(object.importTarget)
-        : isSet(object.import_target)
-        ? Canvas.fromJSON(object.import_target)
-        : undefined,
-      lane: isSet(object.lane) ? Lane.fromJSON(object.lane) : undefined,
     };
   },
 
-  toJSON(message: Node): unknown {
+  toJSON(message: Exit): unknown {
     const obj: any = {};
     if (message.id !== "") {
       obj.id = message.id;
@@ -3745,48 +1945,38 @@ export const Node: MessageFns<Node> = {
     if (message.comment !== "") {
       obj.comment = message.comment;
     }
-    if (message.spec !== undefined) {
-      obj.spec = NodeSpec.toJSON(message.spec);
+    if (message.destination !== "") {
+      obj.destination = message.destination;
+    }
+    if (message.sendProxyProtocol !== 0) {
+      obj.sendProxyProtocol = proxyProtocolVersionToJSON(message.sendProxyProtocol);
     }
     if (message.position !== undefined) {
       obj.position = CanvasUiPosition.toJSON(message.position);
     }
-    if (message.ports?.length) {
-      obj.ports = message.ports.map((e) => Port.toJSON(e));
-    }
-    if (message.importTarget !== undefined) {
-      obj.importTarget = Canvas.toJSON(message.importTarget);
-    }
-    if (message.lane !== undefined) {
-      obj.lane = Lane.toJSON(message.lane);
-    }
     return obj;
   },
 
-  create(base?: DeepPartial<Node>): Node {
-    return Node.fromPartial(base ?? {});
+  create(base?: DeepPartial<Exit>): Exit {
+    return Exit.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<Node>): Node {
-    const message = createBaseNode();
+  fromPartial(object: DeepPartial<Exit>): Exit {
+    const message = createBaseExit();
     message.id = object.id ?? "";
     message.canvasId = object.canvasId ?? "";
     message.name = object.name ?? "";
     message.comment = object.comment ?? "";
-    message.spec = (object.spec !== undefined && object.spec !== null) ? NodeSpec.fromPartial(object.spec) : undefined;
+    message.destination = object.destination ?? "";
+    message.sendProxyProtocol = object.sendProxyProtocol ?? 0;
     message.position = (object.position !== undefined && object.position !== null)
       ? CanvasUiPosition.fromPartial(object.position)
       : undefined;
-    message.ports = object.ports?.map((e) => Port.fromPartial(e)) || [];
-    message.importTarget = (object.importTarget !== undefined && object.importTarget !== null)
-      ? Canvas.fromPartial(object.importTarget)
-      : undefined;
-    message.lane = (object.lane !== undefined && object.lane !== null) ? Lane.fromPartial(object.lane) : undefined;
     return message;
   },
 };
 
 function createBaseEdge(): Edge {
-  return { id: "", sourcePortId: "", targetPortId: "" };
+  return { id: "", sourcePodId: "", targetPodId: undefined, targetExitId: undefined, overrideIp: "", overridePort: 0 };
 }
 
 export const Edge: MessageFns<Edge> = {
@@ -3794,11 +1984,20 @@ export const Edge: MessageFns<Edge> = {
     if (message.id !== "") {
       writer.uint32(10).string(message.id);
     }
-    if (message.sourcePortId !== "") {
-      writer.uint32(18).string(message.sourcePortId);
+    if (message.sourcePodId !== "") {
+      writer.uint32(18).string(message.sourcePodId);
     }
-    if (message.targetPortId !== "") {
-      writer.uint32(26).string(message.targetPortId);
+    if (message.targetPodId !== undefined) {
+      writer.uint32(26).string(message.targetPodId);
+    }
+    if (message.targetExitId !== undefined) {
+      writer.uint32(34).string(message.targetExitId);
+    }
+    if (message.overrideIp !== "") {
+      writer.uint32(42).string(message.overrideIp);
+    }
+    if (message.overridePort !== 0) {
+      writer.uint32(48).uint32(message.overridePort);
     }
     return writer;
   },
@@ -3823,7 +2022,7 @@ export const Edge: MessageFns<Edge> = {
             break;
           }
 
-          message.sourcePortId = reader.string();
+          message.sourcePodId = reader.string();
           continue;
         }
         case 3: {
@@ -3831,7 +2030,31 @@ export const Edge: MessageFns<Edge> = {
             break;
           }
 
-          message.targetPortId = reader.string();
+          message.targetPodId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.targetExitId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.overrideIp = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.overridePort = reader.uint32();
           continue;
         }
       }
@@ -3846,16 +2069,31 @@ export const Edge: MessageFns<Edge> = {
   fromJSON(object: any): Edge {
     return {
       id: isSet(object.id) ? globalThis.String(object.id) : "",
-      sourcePortId: isSet(object.sourcePortId)
-        ? globalThis.String(object.sourcePortId)
-        : isSet(object.source_port_id)
-        ? globalThis.String(object.source_port_id)
+      sourcePodId: isSet(object.sourcePodId)
+        ? globalThis.String(object.sourcePodId)
+        : isSet(object.source_pod_id)
+        ? globalThis.String(object.source_pod_id)
         : "",
-      targetPortId: isSet(object.targetPortId)
-        ? globalThis.String(object.targetPortId)
-        : isSet(object.target_port_id)
-        ? globalThis.String(object.target_port_id)
+      targetPodId: isSet(object.targetPodId)
+        ? globalThis.String(object.targetPodId)
+        : isSet(object.target_pod_id)
+        ? globalThis.String(object.target_pod_id)
+        : undefined,
+      targetExitId: isSet(object.targetExitId)
+        ? globalThis.String(object.targetExitId)
+        : isSet(object.target_exit_id)
+        ? globalThis.String(object.target_exit_id)
+        : undefined,
+      overrideIp: isSet(object.overrideIp)
+        ? globalThis.String(object.overrideIp)
+        : isSet(object.override_ip)
+        ? globalThis.String(object.override_ip)
         : "",
+      overridePort: isSet(object.overridePort)
+        ? globalThis.Number(object.overridePort)
+        : isSet(object.override_port)
+        ? globalThis.Number(object.override_port)
+        : 0,
     };
   },
 
@@ -3864,11 +2102,20 @@ export const Edge: MessageFns<Edge> = {
     if (message.id !== "") {
       obj.id = message.id;
     }
-    if (message.sourcePortId !== "") {
-      obj.sourcePortId = message.sourcePortId;
+    if (message.sourcePodId !== "") {
+      obj.sourcePodId = message.sourcePodId;
     }
-    if (message.targetPortId !== "") {
-      obj.targetPortId = message.targetPortId;
+    if (message.targetPodId !== undefined) {
+      obj.targetPodId = message.targetPodId;
+    }
+    if (message.targetExitId !== undefined) {
+      obj.targetExitId = message.targetExitId;
+    }
+    if (message.overrideIp !== "") {
+      obj.overrideIp = message.overrideIp;
+    }
+    if (message.overridePort !== 0) {
+      obj.overridePort = Math.round(message.overridePort);
     }
     return obj;
   },
@@ -3879,8 +2126,566 @@ export const Edge: MessageFns<Edge> = {
   fromPartial(object: DeepPartial<Edge>): Edge {
     const message = createBaseEdge();
     message.id = object.id ?? "";
-    message.sourcePortId = object.sourcePortId ?? "";
-    message.targetPortId = object.targetPortId ?? "";
+    message.sourcePodId = object.sourcePodId ?? "";
+    message.targetPodId = object.targetPodId ?? undefined;
+    message.targetExitId = object.targetExitId ?? undefined;
+    message.overrideIp = object.overrideIp ?? "";
+    message.overridePort = object.overridePort ?? 0;
+    return message;
+  },
+};
+
+function createBaseGroupMember(): GroupMember {
+  return { podId: undefined, edgeId: undefined, exitId: undefined, serverId: undefined };
+}
+
+export const GroupMember: MessageFns<GroupMember> = {
+  encode(message: GroupMember, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.podId !== undefined) {
+      writer.uint32(10).string(message.podId);
+    }
+    if (message.edgeId !== undefined) {
+      writer.uint32(18).string(message.edgeId);
+    }
+    if (message.exitId !== undefined) {
+      writer.uint32(26).string(message.exitId);
+    }
+    if (message.serverId !== undefined) {
+      writer.uint32(34).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GroupMember {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGroupMember();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.podId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.edgeId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.exitId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GroupMember {
+    return {
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
+        : undefined,
+      edgeId: isSet(object.edgeId)
+        ? globalThis.String(object.edgeId)
+        : isSet(object.edge_id)
+        ? globalThis.String(object.edge_id)
+        : undefined,
+      exitId: isSet(object.exitId)
+        ? globalThis.String(object.exitId)
+        : isSet(object.exit_id)
+        ? globalThis.String(object.exit_id)
+        : undefined,
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : undefined,
+    };
+  },
+
+  toJSON(message: GroupMember): unknown {
+    const obj: any = {};
+    if (message.podId !== undefined) {
+      obj.podId = message.podId;
+    }
+    if (message.edgeId !== undefined) {
+      obj.edgeId = message.edgeId;
+    }
+    if (message.exitId !== undefined) {
+      obj.exitId = message.exitId;
+    }
+    if (message.serverId !== undefined) {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GroupMember>): GroupMember {
+    return GroupMember.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GroupMember>): GroupMember {
+    const message = createBaseGroupMember();
+    message.podId = object.podId ?? undefined;
+    message.edgeId = object.edgeId ?? undefined;
+    message.exitId = object.exitId ?? undefined;
+    message.serverId = object.serverId ?? undefined;
+    return message;
+  },
+};
+
+function createBaseGroup(): Group {
+  return { id: "", canvasId: "", kind: "", name: "", propsJson: "", members: [] };
+}
+
+export const Group: MessageFns<Group> = {
+  encode(message: Group, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.canvasId !== "") {
+      writer.uint32(18).string(message.canvasId);
+    }
+    if (message.kind !== "") {
+      writer.uint32(26).string(message.kind);
+    }
+    if (message.name !== "") {
+      writer.uint32(34).string(message.name);
+    }
+    if (message.propsJson !== "") {
+      writer.uint32(42).string(message.propsJson);
+    }
+    for (const v of message.members) {
+      GroupMember.encode(v!, writer.uint32(50).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Group {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGroup();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.kind = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.propsJson = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.members.push(GroupMember.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Group {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+      kind: isSet(object.kind) ? globalThis.String(object.kind) : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      propsJson: isSet(object.propsJson)
+        ? globalThis.String(object.propsJson)
+        : isSet(object.props_json)
+        ? globalThis.String(object.props_json)
+        : "",
+      members: globalThis.Array.isArray(object?.members)
+        ? object.members.map((e: any) => GroupMember.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: Group): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    if (message.kind !== "") {
+      obj.kind = message.kind;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.propsJson !== "") {
+      obj.propsJson = message.propsJson;
+    }
+    if (message.members?.length) {
+      obj.members = message.members.map((e) => GroupMember.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<Group>): Group {
+    return Group.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Group>): Group {
+    const message = createBaseGroup();
+    message.id = object.id ?? "";
+    message.canvasId = object.canvasId ?? "";
+    message.kind = object.kind ?? "";
+    message.name = object.name ?? "";
+    message.propsJson = object.propsJson ?? "";
+    message.members = object.members?.map((e) => GroupMember.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseGraphSubject(): GraphSubject {
+  return {
+    serverId: undefined,
+    podId: undefined,
+    exitId: undefined,
+    edgeId: undefined,
+    groupId: undefined,
+    canvasId: undefined,
+  };
+}
+
+export const GraphSubject: MessageFns<GraphSubject> = {
+  encode(message: GraphSubject, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== undefined) {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.podId !== undefined) {
+      writer.uint32(18).string(message.podId);
+    }
+    if (message.exitId !== undefined) {
+      writer.uint32(26).string(message.exitId);
+    }
+    if (message.edgeId !== undefined) {
+      writer.uint32(34).string(message.edgeId);
+    }
+    if (message.groupId !== undefined) {
+      writer.uint32(42).string(message.groupId);
+    }
+    if (message.canvasId !== undefined) {
+      writer.uint32(50).string(message.canvasId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GraphSubject {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGraphSubject();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.podId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.exitId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.edgeId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.groupId = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GraphSubject {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : undefined,
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
+        : undefined,
+      exitId: isSet(object.exitId)
+        ? globalThis.String(object.exitId)
+        : isSet(object.exit_id)
+        ? globalThis.String(object.exit_id)
+        : undefined,
+      edgeId: isSet(object.edgeId)
+        ? globalThis.String(object.edgeId)
+        : isSet(object.edge_id)
+        ? globalThis.String(object.edge_id)
+        : undefined,
+      groupId: isSet(object.groupId)
+        ? globalThis.String(object.groupId)
+        : isSet(object.group_id)
+        ? globalThis.String(object.group_id)
+        : undefined,
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : undefined,
+    };
+  },
+
+  toJSON(message: GraphSubject): unknown {
+    const obj: any = {};
+    if (message.serverId !== undefined) {
+      obj.serverId = message.serverId;
+    }
+    if (message.podId !== undefined) {
+      obj.podId = message.podId;
+    }
+    if (message.exitId !== undefined) {
+      obj.exitId = message.exitId;
+    }
+    if (message.edgeId !== undefined) {
+      obj.edgeId = message.edgeId;
+    }
+    if (message.groupId !== undefined) {
+      obj.groupId = message.groupId;
+    }
+    if (message.canvasId !== undefined) {
+      obj.canvasId = message.canvasId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GraphSubject>): GraphSubject {
+    return GraphSubject.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GraphSubject>): GraphSubject {
+    const message = createBaseGraphSubject();
+    message.serverId = object.serverId ?? undefined;
+    message.podId = object.podId ?? undefined;
+    message.exitId = object.exitId ?? undefined;
+    message.edgeId = object.edgeId ?? undefined;
+    message.groupId = object.groupId ?? undefined;
+    message.canvasId = object.canvasId ?? undefined;
+    return message;
+  },
+};
+
+function createBaseDiagnostic(): Diagnostic {
+  return { problem: "", error: false, subjects: [], message: "" };
+}
+
+export const Diagnostic: MessageFns<Diagnostic> = {
+  encode(message: Diagnostic, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.problem !== "") {
+      writer.uint32(10).string(message.problem);
+    }
+    if (message.error !== false) {
+      writer.uint32(16).bool(message.error);
+    }
+    for (const v of message.subjects) {
+      GraphSubject.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.message !== "") {
+      writer.uint32(34).string(message.message);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Diagnostic {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDiagnostic();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.problem = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.error = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.subjects.push(GraphSubject.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.message = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Diagnostic {
+    return {
+      problem: isSet(object.problem) ? globalThis.String(object.problem) : "",
+      error: isSet(object.error) ? globalThis.Boolean(object.error) : false,
+      subjects: globalThis.Array.isArray(object?.subjects)
+        ? object.subjects.map((e: any) => GraphSubject.fromJSON(e))
+        : [],
+      message: isSet(object.message) ? globalThis.String(object.message) : "",
+    };
+  },
+
+  toJSON(message: Diagnostic): unknown {
+    const obj: any = {};
+    if (message.problem !== "") {
+      obj.problem = message.problem;
+    }
+    if (message.error !== false) {
+      obj.error = message.error;
+    }
+    if (message.subjects?.length) {
+      obj.subjects = message.subjects.map((e) => GraphSubject.toJSON(e));
+    }
+    if (message.message !== "") {
+      obj.message = message.message;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<Diagnostic>): Diagnostic {
+    return Diagnostic.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Diagnostic>): Diagnostic {
+    const message = createBaseDiagnostic();
+    message.problem = object.problem ?? "";
+    message.error = object.error ?? false;
+    message.subjects = object.subjects?.map((e) => GraphSubject.fromPartial(e)) || [];
+    message.message = object.message ?? "";
     return message;
   },
 };
@@ -4221,6 +3026,7 @@ function createBaseServer(): Server {
     agentUpdateError: "",
     agentKeyIssuedAt: "",
     lastHealthReportAt: "",
+    capabilities: [],
   };
 }
 
@@ -4282,6 +3088,9 @@ export const Server: MessageFns<Server> = {
     }
     if (message.lastHealthReportAt !== "") {
       writer.uint32(154).string(message.lastHealthReportAt);
+    }
+    for (const v of message.capabilities) {
+      writer.uint32(170).string(v!);
     }
     return writer;
   },
@@ -4445,6 +3254,14 @@ export const Server: MessageFns<Server> = {
           message.lastHealthReportAt = reader.string();
           continue;
         }
+        case 21: {
+          if (tag !== 170) {
+            break;
+          }
+
+          message.capabilities.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4523,6 +3340,9 @@ export const Server: MessageFns<Server> = {
         : isSet(object.last_health_report_at)
         ? globalThis.String(object.last_health_report_at)
         : "",
+      capabilities: globalThis.Array.isArray(object?.capabilities)
+        ? object.capabilities.map((e: any) => globalThis.String(e))
+        : [],
     };
   },
 
@@ -4585,6 +3405,9 @@ export const Server: MessageFns<Server> = {
     if (message.lastHealthReportAt !== "") {
       obj.lastHealthReportAt = message.lastHealthReportAt;
     }
+    if (message.capabilities?.length) {
+      obj.capabilities = message.capabilities;
+    }
     return obj;
   },
 
@@ -4618,12 +3441,13 @@ export const Server: MessageFns<Server> = {
     message.agentUpdateError = object.agentUpdateError ?? "";
     message.agentKeyIssuedAt = object.agentKeyIssuedAt ?? "";
     message.lastHealthReportAt = object.lastHealthReportAt ?? "";
+    message.capabilities = object.capabilities?.map((e) => e) || [];
     return message;
   },
 };
 
 function createBaseCanvas(): Canvas {
-  return { id: "", name: "", description: "" };
+  return { id: "", name: "", description: "", parentId: "", position: undefined };
 }
 
 export const Canvas: MessageFns<Canvas> = {
@@ -4636,6 +3460,12 @@ export const Canvas: MessageFns<Canvas> = {
     }
     if (message.description !== "") {
       writer.uint32(26).string(message.description);
+    }
+    if (message.parentId !== "") {
+      writer.uint32(34).string(message.parentId);
+    }
+    if (message.position !== undefined) {
+      CanvasUiPosition.encode(message.position, writer.uint32(42).fork()).join();
     }
     return writer;
   },
@@ -4671,6 +3501,22 @@ export const Canvas: MessageFns<Canvas> = {
           message.description = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.parentId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.position = CanvasUiPosition.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4685,6 +3531,12 @@ export const Canvas: MessageFns<Canvas> = {
       id: isSet(object.id) ? globalThis.String(object.id) : "",
       name: isSet(object.name) ? globalThis.String(object.name) : "",
       description: isSet(object.description) ? globalThis.String(object.description) : "",
+      parentId: isSet(object.parentId)
+        ? globalThis.String(object.parentId)
+        : isSet(object.parent_id)
+        ? globalThis.String(object.parent_id)
+        : "",
+      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
     };
   },
 
@@ -4699,6 +3551,12 @@ export const Canvas: MessageFns<Canvas> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
+    if (message.parentId !== "") {
+      obj.parentId = message.parentId;
+    }
+    if (message.position !== undefined) {
+      obj.position = CanvasUiPosition.toJSON(message.position);
+    }
     return obj;
   },
 
@@ -4710,158 +3568,10 @@ export const Canvas: MessageFns<Canvas> = {
     message.id = object.id ?? "";
     message.name = object.name ?? "";
     message.description = object.description ?? "";
-    return message;
-  },
-};
-
-function createBaseProblem(): Problem {
-  return { severity: 0, kind: 0, message: "", nodeIds: [], edgeIds: [], portIds: [] };
-}
-
-export const Problem: MessageFns<Problem> = {
-  encode(message: Problem, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.severity !== 0) {
-      writer.uint32(8).int32(message.severity);
-    }
-    if (message.kind !== 0) {
-      writer.uint32(16).int32(message.kind);
-    }
-    if (message.message !== "") {
-      writer.uint32(26).string(message.message);
-    }
-    for (const v of message.nodeIds) {
-      writer.uint32(34).string(v!);
-    }
-    for (const v of message.edgeIds) {
-      writer.uint32(42).string(v!);
-    }
-    for (const v of message.portIds) {
-      writer.uint32(50).string(v!);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): Problem {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseProblem();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.severity = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.kind = reader.int32() as any;
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.message = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.nodeIds.push(reader.string());
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.edgeIds.push(reader.string());
-          continue;
-        }
-        case 6: {
-          if (tag !== 50) {
-            break;
-          }
-
-          message.portIds.push(reader.string());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): Problem {
-    return {
-      severity: isSet(object.severity) ? problemSeverityFromJSON(object.severity) : 0,
-      kind: isSet(object.kind) ? problemKindFromJSON(object.kind) : 0,
-      message: isSet(object.message) ? globalThis.String(object.message) : "",
-      nodeIds: globalThis.Array.isArray(object?.nodeIds)
-        ? object.nodeIds.map((e: any) => globalThis.String(e))
-        : globalThis.Array.isArray(object?.node_ids)
-        ? object.node_ids.map((e: any) => globalThis.String(e))
-        : [],
-      edgeIds: globalThis.Array.isArray(object?.edgeIds)
-        ? object.edgeIds.map((e: any) => globalThis.String(e))
-        : globalThis.Array.isArray(object?.edge_ids)
-        ? object.edge_ids.map((e: any) => globalThis.String(e))
-        : [],
-      portIds: globalThis.Array.isArray(object?.portIds)
-        ? object.portIds.map((e: any) => globalThis.String(e))
-        : globalThis.Array.isArray(object?.port_ids)
-        ? object.port_ids.map((e: any) => globalThis.String(e))
-        : [],
-    };
-  },
-
-  toJSON(message: Problem): unknown {
-    const obj: any = {};
-    if (message.severity !== 0) {
-      obj.severity = problemSeverityToJSON(message.severity);
-    }
-    if (message.kind !== 0) {
-      obj.kind = problemKindToJSON(message.kind);
-    }
-    if (message.message !== "") {
-      obj.message = message.message;
-    }
-    if (message.nodeIds?.length) {
-      obj.nodeIds = message.nodeIds;
-    }
-    if (message.edgeIds?.length) {
-      obj.edgeIds = message.edgeIds;
-    }
-    if (message.portIds?.length) {
-      obj.portIds = message.portIds;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<Problem>): Problem {
-    return Problem.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<Problem>): Problem {
-    const message = createBaseProblem();
-    message.severity = object.severity ?? 0;
-    message.kind = object.kind ?? 0;
-    message.message = object.message ?? "";
-    message.nodeIds = object.nodeIds?.map((e) => e) || [];
-    message.edgeIds = object.edgeIds?.map((e) => e) || [];
-    message.portIds = object.portIds?.map((e) => e) || [];
+    message.parentId = object.parentId ?? "";
+    message.position = (object.position !== undefined && object.position !== null)
+      ? CanvasUiPosition.fromPartial(object.position)
+      : undefined;
     return message;
   },
 };
@@ -5146,7 +3856,7 @@ export const ConfigSnapshot: MessageFns<ConfigSnapshot> = {
 };
 
 function createBaseCreateCanvasRequest(): CreateCanvasRequest {
-  return { name: "", description: "" };
+  return { name: "", description: "", parentId: "", position: undefined };
 }
 
 export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
@@ -5156,6 +3866,12 @@ export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
     }
     if (message.description !== "") {
       writer.uint32(18).string(message.description);
+    }
+    if (message.parentId !== "") {
+      writer.uint32(26).string(message.parentId);
+    }
+    if (message.position !== undefined) {
+      CanvasUiPosition.encode(message.position, writer.uint32(34).fork()).join();
     }
     return writer;
   },
@@ -5183,6 +3899,22 @@ export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
           message.description = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.parentId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.position = CanvasUiPosition.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -5196,6 +3928,12 @@ export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
     return {
       name: isSet(object.name) ? globalThis.String(object.name) : "",
       description: isSet(object.description) ? globalThis.String(object.description) : "",
+      parentId: isSet(object.parentId)
+        ? globalThis.String(object.parentId)
+        : isSet(object.parent_id)
+        ? globalThis.String(object.parent_id)
+        : "",
+      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
     };
   },
 
@@ -5207,6 +3945,12 @@ export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
+    if (message.parentId !== "") {
+      obj.parentId = message.parentId;
+    }
+    if (message.position !== undefined) {
+      obj.position = CanvasUiPosition.toJSON(message.position);
+    }
     return obj;
   },
 
@@ -5217,6 +3961,10 @@ export const CreateCanvasRequest: MessageFns<CreateCanvasRequest> = {
     const message = createBaseCreateCanvasRequest();
     message.name = object.name ?? "";
     message.description = object.description ?? "";
+    message.parentId = object.parentId ?? "";
+    message.position = (object.position !== undefined && object.position !== null)
+      ? CanvasUiPosition.fromPartial(object.position)
+      : undefined;
     return message;
   },
 };
@@ -5405,22 +4153,22 @@ export const ListCanvasesReply: MessageFns<ListCanvasesReply> = {
   },
 };
 
-function createBaseGetCanvasRequest(): GetCanvasRequest {
+function createBaseGetGraphRequest(): GetGraphRequest {
   return { canvasId: "" };
 }
 
-export const GetCanvasRequest: MessageFns<GetCanvasRequest> = {
-  encode(message: GetCanvasRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const GetGraphRequest: MessageFns<GetGraphRequest> = {
+  encode(message: GetGraphRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.canvasId !== "") {
       writer.uint32(10).string(message.canvasId);
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): GetCanvasRequest {
+  decode(input: BinaryReader | Uint8Array, length?: number): GetGraphRequest {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseGetCanvasRequest();
+    const message = createBaseGetGraphRequest();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -5441,7 +4189,7 @@ export const GetCanvasRequest: MessageFns<GetCanvasRequest> = {
     return message;
   },
 
-  fromJSON(object: any): GetCanvasRequest {
+  fromJSON(object: any): GetGraphRequest {
     return {
       canvasId: isSet(object.canvasId)
         ? globalThis.String(object.canvasId)
@@ -5451,7 +4199,7 @@ export const GetCanvasRequest: MessageFns<GetCanvasRequest> = {
     };
   },
 
-  toJSON(message: GetCanvasRequest): unknown {
+  toJSON(message: GetGraphRequest): unknown {
     const obj: any = {};
     if (message.canvasId !== "") {
       obj.canvasId = message.canvasId;
@@ -5459,44 +4207,56 @@ export const GetCanvasRequest: MessageFns<GetCanvasRequest> = {
     return obj;
   },
 
-  create(base?: DeepPartial<GetCanvasRequest>): GetCanvasRequest {
-    return GetCanvasRequest.fromPartial(base ?? {});
+  create(base?: DeepPartial<GetGraphRequest>): GetGraphRequest {
+    return GetGraphRequest.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<GetCanvasRequest>): GetCanvasRequest {
-    const message = createBaseGetCanvasRequest();
+  fromPartial(object: DeepPartial<GetGraphRequest>): GetGraphRequest {
+    const message = createBaseGetGraphRequest();
     message.canvasId = object.canvasId ?? "";
     return message;
   },
 };
 
-function createBaseGetCanvasReply(): GetCanvasReply {
-  return { canvas: undefined, servers: [], nodes: [], edges: [], ancestors: [] };
+function createBaseGetGraphReply(): GetGraphReply {
+  return { canvases: [], servers: [], pods: [], exits: [], edges: [], groups: [], diagnostics: [], generation: 0n };
 }
 
-export const GetCanvasReply: MessageFns<GetCanvasReply> = {
-  encode(message: GetCanvasReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.canvas !== undefined) {
-      Canvas.encode(message.canvas, writer.uint32(10).fork()).join();
+export const GetGraphReply: MessageFns<GetGraphReply> = {
+  encode(message: GetGraphReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.canvases) {
+      Canvas.encode(v!, writer.uint32(10).fork()).join();
     }
     for (const v of message.servers) {
       Server.encode(v!, writer.uint32(18).fork()).join();
     }
-    for (const v of message.nodes) {
-      Node.encode(v!, writer.uint32(26).fork()).join();
+    for (const v of message.pods) {
+      Pod.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.exits) {
+      Exit.encode(v!, writer.uint32(34).fork()).join();
     }
     for (const v of message.edges) {
-      Edge.encode(v!, writer.uint32(34).fork()).join();
+      Edge.encode(v!, writer.uint32(42).fork()).join();
     }
-    for (const v of message.ancestors) {
-      Canvas.encode(v!, writer.uint32(42).fork()).join();
+    for (const v of message.groups) {
+      Group.encode(v!, writer.uint32(50).fork()).join();
+    }
+    for (const v of message.diagnostics) {
+      Diagnostic.encode(v!, writer.uint32(58).fork()).join();
+    }
+    if (message.generation !== 0n) {
+      if (BigInt.asIntN(64, message.generation) !== message.generation) {
+        throw new globalThis.Error("value provided for field message.generation of type int64 too large");
+      }
+      writer.uint32(64).int64(message.generation);
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): GetCanvasReply {
+  decode(input: BinaryReader | Uint8Array, length?: number): GetGraphReply {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseGetCanvasReply();
+    const message = createBaseGetGraphReply();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -5505,7 +4265,7 @@ export const GetCanvasReply: MessageFns<GetCanvasReply> = {
             break;
           }
 
-          message.canvas = Canvas.decode(reader, reader.uint32());
+          message.canvases.push(Canvas.decode(reader, reader.uint32()));
           continue;
         }
         case 2: {
@@ -5521,7 +4281,7 @@ export const GetCanvasReply: MessageFns<GetCanvasReply> = {
             break;
           }
 
-          message.nodes.push(Node.decode(reader, reader.uint32()));
+          message.pods.push(Pod.decode(reader, reader.uint32()));
           continue;
         }
         case 4: {
@@ -5529,7 +4289,7 @@ export const GetCanvasReply: MessageFns<GetCanvasReply> = {
             break;
           }
 
-          message.edges.push(Edge.decode(reader, reader.uint32()));
+          message.exits.push(Exit.decode(reader, reader.uint32()));
           continue;
         }
         case 5: {
@@ -5537,7 +4297,31 @@ export const GetCanvasReply: MessageFns<GetCanvasReply> = {
             break;
           }
 
-          message.ancestors.push(Canvas.decode(reader, reader.uint32()));
+          message.edges.push(Edge.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.groups.push(Group.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.diagnostics.push(Diagnostic.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.generation = reader.int64() as bigint;
           continue;
         }
       }
@@ -5549,50 +4333,757 @@ export const GetCanvasReply: MessageFns<GetCanvasReply> = {
     return message;
   },
 
-  fromJSON(object: any): GetCanvasReply {
+  fromJSON(object: any): GetGraphReply {
     return {
-      canvas: isSet(object.canvas) ? Canvas.fromJSON(object.canvas) : undefined,
+      canvases: globalThis.Array.isArray(object?.canvases) ? object.canvases.map((e: any) => Canvas.fromJSON(e)) : [],
       servers: globalThis.Array.isArray(object?.servers) ? object.servers.map((e: any) => Server.fromJSON(e)) : [],
-      nodes: globalThis.Array.isArray(object?.nodes) ? object.nodes.map((e: any) => Node.fromJSON(e)) : [],
+      pods: globalThis.Array.isArray(object?.pods) ? object.pods.map((e: any) => Pod.fromJSON(e)) : [],
+      exits: globalThis.Array.isArray(object?.exits) ? object.exits.map((e: any) => Exit.fromJSON(e)) : [],
       edges: globalThis.Array.isArray(object?.edges) ? object.edges.map((e: any) => Edge.fromJSON(e)) : [],
-      ancestors: globalThis.Array.isArray(object?.ancestors)
-        ? object.ancestors.map((e: any) => Canvas.fromJSON(e))
+      groups: globalThis.Array.isArray(object?.groups) ? object.groups.map((e: any) => Group.fromJSON(e)) : [],
+      diagnostics: globalThis.Array.isArray(object?.diagnostics)
+        ? object.diagnostics.map((e: any) => Diagnostic.fromJSON(e))
         : [],
+      generation: isSet(object.generation) ? BigInt(object.generation) : 0n,
     };
   },
 
-  toJSON(message: GetCanvasReply): unknown {
+  toJSON(message: GetGraphReply): unknown {
     const obj: any = {};
-    if (message.canvas !== undefined) {
-      obj.canvas = Canvas.toJSON(message.canvas);
+    if (message.canvases?.length) {
+      obj.canvases = message.canvases.map((e) => Canvas.toJSON(e));
     }
     if (message.servers?.length) {
       obj.servers = message.servers.map((e) => Server.toJSON(e));
     }
-    if (message.nodes?.length) {
-      obj.nodes = message.nodes.map((e) => Node.toJSON(e));
+    if (message.pods?.length) {
+      obj.pods = message.pods.map((e) => Pod.toJSON(e));
+    }
+    if (message.exits?.length) {
+      obj.exits = message.exits.map((e) => Exit.toJSON(e));
     }
     if (message.edges?.length) {
       obj.edges = message.edges.map((e) => Edge.toJSON(e));
     }
-    if (message.ancestors?.length) {
-      obj.ancestors = message.ancestors.map((e) => Canvas.toJSON(e));
+    if (message.groups?.length) {
+      obj.groups = message.groups.map((e) => Group.toJSON(e));
+    }
+    if (message.diagnostics?.length) {
+      obj.diagnostics = message.diagnostics.map((e) => Diagnostic.toJSON(e));
+    }
+    if (message.generation !== 0n) {
+      obj.generation = message.generation.toString();
     }
     return obj;
   },
 
-  create(base?: DeepPartial<GetCanvasReply>): GetCanvasReply {
-    return GetCanvasReply.fromPartial(base ?? {});
+  create(base?: DeepPartial<GetGraphReply>): GetGraphReply {
+    return GetGraphReply.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<GetCanvasReply>): GetCanvasReply {
-    const message = createBaseGetCanvasReply();
-    message.canvas = (object.canvas !== undefined && object.canvas !== null)
-      ? Canvas.fromPartial(object.canvas)
-      : undefined;
+  fromPartial(object: DeepPartial<GetGraphReply>): GetGraphReply {
+    const message = createBaseGetGraphReply();
+    message.canvases = object.canvases?.map((e) => Canvas.fromPartial(e)) || [];
     message.servers = object.servers?.map((e) => Server.fromPartial(e)) || [];
-    message.nodes = object.nodes?.map((e) => Node.fromPartial(e)) || [];
+    message.pods = object.pods?.map((e) => Pod.fromPartial(e)) || [];
+    message.exits = object.exits?.map((e) => Exit.fromPartial(e)) || [];
     message.edges = object.edges?.map((e) => Edge.fromPartial(e)) || [];
-    message.ancestors = object.ancestors?.map((e) => Canvas.fromPartial(e)) || [];
+    message.groups = object.groups?.map((e) => Group.fromPartial(e)) || [];
+    message.diagnostics = object.diagnostics?.map((e) => Diagnostic.fromPartial(e)) || [];
+    message.generation = (object.generation !== undefined && object.generation !== null)
+      ? BigInt(object.generation)
+      : 0n;
+    return message;
+  },
+};
+
+function createBaseGraphChange(): GraphChange {
+  return {
+    putPods: [],
+    putExits: [],
+    putEdges: [],
+    putGroups: [],
+    deletePodIds: [],
+    deleteExitIds: [],
+    deleteEdgeIds: [],
+    deleteGroupIds: [],
+  };
+}
+
+export const GraphChange: MessageFns<GraphChange> = {
+  encode(message: GraphChange, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.putPods) {
+      Pod.encode(v!, writer.uint32(10).fork()).join();
+    }
+    for (const v of message.putExits) {
+      Exit.encode(v!, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.putEdges) {
+      Edge.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.putGroups) {
+      Group.encode(v!, writer.uint32(34).fork()).join();
+    }
+    for (const v of message.deletePodIds) {
+      writer.uint32(42).string(v!);
+    }
+    for (const v of message.deleteExitIds) {
+      writer.uint32(50).string(v!);
+    }
+    for (const v of message.deleteEdgeIds) {
+      writer.uint32(58).string(v!);
+    }
+    for (const v of message.deleteGroupIds) {
+      writer.uint32(66).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GraphChange {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGraphChange();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.putPods.push(Pod.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.putExits.push(Exit.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.putEdges.push(Edge.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.putGroups.push(Group.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.deletePodIds.push(reader.string());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.deleteExitIds.push(reader.string());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.deleteEdgeIds.push(reader.string());
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.deleteGroupIds.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GraphChange {
+    return {
+      putPods: globalThis.Array.isArray(object?.putPods)
+        ? object.putPods.map((e: any) => Pod.fromJSON(e))
+        : globalThis.Array.isArray(object?.put_pods)
+        ? object.put_pods.map((e: any) => Pod.fromJSON(e))
+        : [],
+      putExits: globalThis.Array.isArray(object?.putExits)
+        ? object.putExits.map((e: any) => Exit.fromJSON(e))
+        : globalThis.Array.isArray(object?.put_exits)
+        ? object.put_exits.map((e: any) => Exit.fromJSON(e))
+        : [],
+      putEdges: globalThis.Array.isArray(object?.putEdges)
+        ? object.putEdges.map((e: any) => Edge.fromJSON(e))
+        : globalThis.Array.isArray(object?.put_edges)
+        ? object.put_edges.map((e: any) => Edge.fromJSON(e))
+        : [],
+      putGroups: globalThis.Array.isArray(object?.putGroups)
+        ? object.putGroups.map((e: any) => Group.fromJSON(e))
+        : globalThis.Array.isArray(object?.put_groups)
+        ? object.put_groups.map((e: any) => Group.fromJSON(e))
+        : [],
+      deletePodIds: globalThis.Array.isArray(object?.deletePodIds)
+        ? object.deletePodIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.delete_pod_ids)
+        ? object.delete_pod_ids.map((e: any) => globalThis.String(e))
+        : [],
+      deleteExitIds: globalThis.Array.isArray(object?.deleteExitIds)
+        ? object.deleteExitIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.delete_exit_ids)
+        ? object.delete_exit_ids.map((e: any) => globalThis.String(e))
+        : [],
+      deleteEdgeIds: globalThis.Array.isArray(object?.deleteEdgeIds)
+        ? object.deleteEdgeIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.delete_edge_ids)
+        ? object.delete_edge_ids.map((e: any) => globalThis.String(e))
+        : [],
+      deleteGroupIds: globalThis.Array.isArray(object?.deleteGroupIds)
+        ? object.deleteGroupIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.delete_group_ids)
+        ? object.delete_group_ids.map((e: any) => globalThis.String(e))
+        : [],
+    };
+  },
+
+  toJSON(message: GraphChange): unknown {
+    const obj: any = {};
+    if (message.putPods?.length) {
+      obj.putPods = message.putPods.map((e) => Pod.toJSON(e));
+    }
+    if (message.putExits?.length) {
+      obj.putExits = message.putExits.map((e) => Exit.toJSON(e));
+    }
+    if (message.putEdges?.length) {
+      obj.putEdges = message.putEdges.map((e) => Edge.toJSON(e));
+    }
+    if (message.putGroups?.length) {
+      obj.putGroups = message.putGroups.map((e) => Group.toJSON(e));
+    }
+    if (message.deletePodIds?.length) {
+      obj.deletePodIds = message.deletePodIds;
+    }
+    if (message.deleteExitIds?.length) {
+      obj.deleteExitIds = message.deleteExitIds;
+    }
+    if (message.deleteEdgeIds?.length) {
+      obj.deleteEdgeIds = message.deleteEdgeIds;
+    }
+    if (message.deleteGroupIds?.length) {
+      obj.deleteGroupIds = message.deleteGroupIds;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GraphChange>): GraphChange {
+    return GraphChange.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GraphChange>): GraphChange {
+    const message = createBaseGraphChange();
+    message.putPods = object.putPods?.map((e) => Pod.fromPartial(e)) || [];
+    message.putExits = object.putExits?.map((e) => Exit.fromPartial(e)) || [];
+    message.putEdges = object.putEdges?.map((e) => Edge.fromPartial(e)) || [];
+    message.putGroups = object.putGroups?.map((e) => Group.fromPartial(e)) || [];
+    message.deletePodIds = object.deletePodIds?.map((e) => e) || [];
+    message.deleteExitIds = object.deleteExitIds?.map((e) => e) || [];
+    message.deleteEdgeIds = object.deleteEdgeIds?.map((e) => e) || [];
+    message.deleteGroupIds = object.deleteGroupIds?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseApplyGraphRequest(): ApplyGraphRequest {
+  return { canvasId: "", change: undefined, dryRun: false, expectedGeneration: 0n };
+}
+
+export const ApplyGraphRequest: MessageFns<ApplyGraphRequest> = {
+  encode(message: ApplyGraphRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.canvasId !== "") {
+      writer.uint32(10).string(message.canvasId);
+    }
+    if (message.change !== undefined) {
+      GraphChange.encode(message.change, writer.uint32(18).fork()).join();
+    }
+    if (message.dryRun !== false) {
+      writer.uint32(24).bool(message.dryRun);
+    }
+    if (message.expectedGeneration !== 0n) {
+      if (BigInt.asIntN(64, message.expectedGeneration) !== message.expectedGeneration) {
+        throw new globalThis.Error("value provided for field message.expectedGeneration of type int64 too large");
+      }
+      writer.uint32(32).int64(message.expectedGeneration);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ApplyGraphRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseApplyGraphRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.change = GraphChange.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.dryRun = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.expectedGeneration = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ApplyGraphRequest {
+    return {
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+      change: isSet(object.change) ? GraphChange.fromJSON(object.change) : undefined,
+      dryRun: isSet(object.dryRun)
+        ? globalThis.Boolean(object.dryRun)
+        : isSet(object.dry_run)
+        ? globalThis.Boolean(object.dry_run)
+        : false,
+      expectedGeneration: isSet(object.expectedGeneration)
+        ? BigInt(object.expectedGeneration)
+        : isSet(object.expected_generation)
+        ? BigInt(object.expected_generation)
+        : 0n,
+    };
+  },
+
+  toJSON(message: ApplyGraphRequest): unknown {
+    const obj: any = {};
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    if (message.change !== undefined) {
+      obj.change = GraphChange.toJSON(message.change);
+    }
+    if (message.dryRun !== false) {
+      obj.dryRun = message.dryRun;
+    }
+    if (message.expectedGeneration !== 0n) {
+      obj.expectedGeneration = message.expectedGeneration.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ApplyGraphRequest>): ApplyGraphRequest {
+    return ApplyGraphRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ApplyGraphRequest>): ApplyGraphRequest {
+    const message = createBaseApplyGraphRequest();
+    message.canvasId = object.canvasId ?? "";
+    message.change = (object.change !== undefined && object.change !== null)
+      ? GraphChange.fromPartial(object.change)
+      : undefined;
+    message.dryRun = object.dryRun ?? false;
+    message.expectedGeneration = (object.expectedGeneration !== undefined && object.expectedGeneration !== null)
+      ? BigInt(object.expectedGeneration)
+      : 0n;
+    return message;
+  },
+};
+
+function createBaseApplyGraphReply(): ApplyGraphReply {
+  return { applied: false, generation: 0n, diagnostics: [], pods: [] };
+}
+
+export const ApplyGraphReply: MessageFns<ApplyGraphReply> = {
+  encode(message: ApplyGraphReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.applied !== false) {
+      writer.uint32(8).bool(message.applied);
+    }
+    if (message.generation !== 0n) {
+      if (BigInt.asIntN(64, message.generation) !== message.generation) {
+        throw new globalThis.Error("value provided for field message.generation of type int64 too large");
+      }
+      writer.uint32(16).int64(message.generation);
+    }
+    for (const v of message.diagnostics) {
+      Diagnostic.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.pods) {
+      Pod.encode(v!, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ApplyGraphReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseApplyGraphReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.applied = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.generation = reader.int64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.diagnostics.push(Diagnostic.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.pods.push(Pod.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ApplyGraphReply {
+    return {
+      applied: isSet(object.applied) ? globalThis.Boolean(object.applied) : false,
+      generation: isSet(object.generation) ? BigInt(object.generation) : 0n,
+      diagnostics: globalThis.Array.isArray(object?.diagnostics)
+        ? object.diagnostics.map((e: any) => Diagnostic.fromJSON(e))
+        : [],
+      pods: globalThis.Array.isArray(object?.pods) ? object.pods.map((e: any) => Pod.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: ApplyGraphReply): unknown {
+    const obj: any = {};
+    if (message.applied !== false) {
+      obj.applied = message.applied;
+    }
+    if (message.generation !== 0n) {
+      obj.generation = message.generation.toString();
+    }
+    if (message.diagnostics?.length) {
+      obj.diagnostics = message.diagnostics.map((e) => Diagnostic.toJSON(e));
+    }
+    if (message.pods?.length) {
+      obj.pods = message.pods.map((e) => Pod.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ApplyGraphReply>): ApplyGraphReply {
+    return ApplyGraphReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ApplyGraphReply>): ApplyGraphReply {
+    const message = createBaseApplyGraphReply();
+    message.applied = object.applied ?? false;
+    message.generation = (object.generation !== undefined && object.generation !== null)
+      ? BigInt(object.generation)
+      : 0n;
+    message.diagnostics = object.diagnostics?.map((e) => Diagnostic.fromPartial(e)) || [];
+    message.pods = object.pods?.map((e) => Pod.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseItemPosition(): ItemPosition {
+  return { id: "", position: undefined };
+}
+
+export const ItemPosition: MessageFns<ItemPosition> = {
+  encode(message: ItemPosition, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.position !== undefined) {
+      CanvasUiPosition.encode(message.position, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ItemPosition {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseItemPosition();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.position = CanvasUiPosition.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ItemPosition {
+    return {
+      id: isSet(object.id) ? globalThis.String(object.id) : "",
+      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
+    };
+  },
+
+  toJSON(message: ItemPosition): unknown {
+    const obj: any = {};
+    if (message.id !== "") {
+      obj.id = message.id;
+    }
+    if (message.position !== undefined) {
+      obj.position = CanvasUiPosition.toJSON(message.position);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ItemPosition>): ItemPosition {
+    return ItemPosition.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ItemPosition>): ItemPosition {
+    const message = createBaseItemPosition();
+    message.id = object.id ?? "";
+    message.position = (object.position !== undefined && object.position !== null)
+      ? CanvasUiPosition.fromPartial(object.position)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseMoveItemsRequest(): MoveItemsRequest {
+  return { canvasId: "", servers: [], exits: [], canvases: [] };
+}
+
+export const MoveItemsRequest: MessageFns<MoveItemsRequest> = {
+  encode(message: MoveItemsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.canvasId !== "") {
+      writer.uint32(10).string(message.canvasId);
+    }
+    for (const v of message.servers) {
+      ItemPosition.encode(v!, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.exits) {
+      ItemPosition.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.canvases) {
+      ItemPosition.encode(v!, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MoveItemsRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMoveItemsRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.servers.push(ItemPosition.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.exits.push(ItemPosition.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.canvases.push(ItemPosition.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MoveItemsRequest {
+    return {
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+      servers: globalThis.Array.isArray(object?.servers)
+        ? object.servers.map((e: any) => ItemPosition.fromJSON(e))
+        : [],
+      exits: globalThis.Array.isArray(object?.exits) ? object.exits.map((e: any) => ItemPosition.fromJSON(e)) : [],
+      canvases: globalThis.Array.isArray(object?.canvases)
+        ? object.canvases.map((e: any) => ItemPosition.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: MoveItemsRequest): unknown {
+    const obj: any = {};
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    if (message.servers?.length) {
+      obj.servers = message.servers.map((e) => ItemPosition.toJSON(e));
+    }
+    if (message.exits?.length) {
+      obj.exits = message.exits.map((e) => ItemPosition.toJSON(e));
+    }
+    if (message.canvases?.length) {
+      obj.canvases = message.canvases.map((e) => ItemPosition.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<MoveItemsRequest>): MoveItemsRequest {
+    return MoveItemsRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<MoveItemsRequest>): MoveItemsRequest {
+    const message = createBaseMoveItemsRequest();
+    message.canvasId = object.canvasId ?? "";
+    message.servers = object.servers?.map((e) => ItemPosition.fromPartial(e)) || [];
+    message.exits = object.exits?.map((e) => ItemPosition.fromPartial(e)) || [];
+    message.canvases = object.canvases?.map((e) => ItemPosition.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseMoveItemsReply(): MoveItemsReply {
+  return {};
+}
+
+export const MoveItemsReply: MessageFns<MoveItemsReply> = {
+  encode(_: MoveItemsReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MoveItemsReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMoveItemsReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): MoveItemsReply {
+    return {};
+  },
+
+  toJSON(_: MoveItemsReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<MoveItemsReply>): MoveItemsReply {
+    return MoveItemsReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<MoveItemsReply>): MoveItemsReply {
+    const message = createBaseMoveItemsReply();
     return message;
   },
 };
@@ -5802,7 +5293,7 @@ export const GetCanvasTreeReply: MessageFns<GetCanvasTreeReply> = {
 };
 
 function createBaseUpdateCanvasRequest(): UpdateCanvasRequest {
-  return { canvasId: "", name: "", description: "" };
+  return { canvasId: "", name: "", description: "", position: undefined };
 }
 
 export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
@@ -5815,6 +5306,9 @@ export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
     }
     if (message.description !== "") {
       writer.uint32(26).string(message.description);
+    }
+    if (message.position !== undefined) {
+      CanvasUiPosition.encode(message.position, writer.uint32(34).fork()).join();
     }
     return writer;
   },
@@ -5850,6 +5344,14 @@ export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
           message.description = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.position = CanvasUiPosition.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -5868,6 +5370,7 @@ export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
         : "",
       name: isSet(object.name) ? globalThis.String(object.name) : "",
       description: isSet(object.description) ? globalThis.String(object.description) : "",
+      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
     };
   },
 
@@ -5882,6 +5385,9 @@ export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
+    if (message.position !== undefined) {
+      obj.position = CanvasUiPosition.toJSON(message.position);
+    }
     return obj;
   },
 
@@ -5893,6 +5399,9 @@ export const UpdateCanvasRequest: MessageFns<UpdateCanvasRequest> = {
     message.canvasId = object.canvasId ?? "";
     message.name = object.name ?? "";
     message.description = object.description ?? "";
+    message.position = (object.position !== undefined && object.position !== null)
+      ? CanvasUiPosition.fromPartial(object.position)
+      : undefined;
     return message;
   },
 };
@@ -6060,130 +5569,6 @@ export const DeleteCanvasReply: MessageFns<DeleteCanvasReply> = {
   },
   fromPartial(_: DeepPartial<DeleteCanvasReply>): DeleteCanvasReply {
     const message = createBaseDeleteCanvasReply();
-    return message;
-  },
-};
-
-function createBaseValidateCanvasRequest(): ValidateCanvasRequest {
-  return { canvasId: "" };
-}
-
-export const ValidateCanvasRequest: MessageFns<ValidateCanvasRequest> = {
-  encode(message: ValidateCanvasRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.canvasId !== "") {
-      writer.uint32(10).string(message.canvasId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ValidateCanvasRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseValidateCanvasRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.canvasId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ValidateCanvasRequest {
-    return {
-      canvasId: isSet(object.canvasId)
-        ? globalThis.String(object.canvasId)
-        : isSet(object.canvas_id)
-        ? globalThis.String(object.canvas_id)
-        : "",
-    };
-  },
-
-  toJSON(message: ValidateCanvasRequest): unknown {
-    const obj: any = {};
-    if (message.canvasId !== "") {
-      obj.canvasId = message.canvasId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ValidateCanvasRequest>): ValidateCanvasRequest {
-    return ValidateCanvasRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ValidateCanvasRequest>): ValidateCanvasRequest {
-    const message = createBaseValidateCanvasRequest();
-    message.canvasId = object.canvasId ?? "";
-    return message;
-  },
-};
-
-function createBaseValidateCanvasReply(): ValidateCanvasReply {
-  return { problems: [] };
-}
-
-export const ValidateCanvasReply: MessageFns<ValidateCanvasReply> = {
-  encode(message: ValidateCanvasReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    for (const v of message.problems) {
-      Problem.encode(v!, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ValidateCanvasReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseValidateCanvasReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.problems.push(Problem.decode(reader, reader.uint32()));
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ValidateCanvasReply {
-    return {
-      problems: globalThis.Array.isArray(object?.problems) ? object.problems.map((e: any) => Problem.fromJSON(e)) : [],
-    };
-  },
-
-  toJSON(message: ValidateCanvasReply): unknown {
-    const obj: any = {};
-    if (message.problems?.length) {
-      obj.problems = message.problems.map((e) => Problem.toJSON(e));
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ValidateCanvasReply>): ValidateCanvasReply {
-    return ValidateCanvasReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ValidateCanvasReply>): ValidateCanvasReply {
-    const message = createBaseValidateCanvasReply();
-    message.problems = object.problems?.map((e) => Problem.fromPartial(e)) || [];
     return message;
   },
 };
@@ -7532,1238 +6917,6 @@ export const MoveServerReply: MessageFns<MoveServerReply> = {
   },
 };
 
-function createBaseCreateNodeRequest(): CreateNodeRequest {
-  return { canvasId: "", name: "", comment: "", spec: undefined, position: undefined, itemCount: 0 };
-}
-
-export const CreateNodeRequest: MessageFns<CreateNodeRequest> = {
-  encode(message: CreateNodeRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.canvasId !== "") {
-      writer.uint32(10).string(message.canvasId);
-    }
-    if (message.name !== "") {
-      writer.uint32(18).string(message.name);
-    }
-    if (message.comment !== "") {
-      writer.uint32(26).string(message.comment);
-    }
-    if (message.spec !== undefined) {
-      NodeSpec.encode(message.spec, writer.uint32(34).fork()).join();
-    }
-    if (message.position !== undefined) {
-      CanvasUiPosition.encode(message.position, writer.uint32(42).fork()).join();
-    }
-    if (message.itemCount !== 0) {
-      writer.uint32(48).uint32(message.itemCount);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CreateNodeRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCreateNodeRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.canvasId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.name = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.comment = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.spec = NodeSpec.decode(reader, reader.uint32());
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.position = CanvasUiPosition.decode(reader, reader.uint32());
-          continue;
-        }
-        case 6: {
-          if (tag !== 48) {
-            break;
-          }
-
-          message.itemCount = reader.uint32();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CreateNodeRequest {
-    return {
-      canvasId: isSet(object.canvasId)
-        ? globalThis.String(object.canvasId)
-        : isSet(object.canvas_id)
-        ? globalThis.String(object.canvas_id)
-        : "",
-      name: isSet(object.name) ? globalThis.String(object.name) : "",
-      comment: isSet(object.comment) ? globalThis.String(object.comment) : "",
-      spec: isSet(object.spec) ? NodeSpec.fromJSON(object.spec) : undefined,
-      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
-      itemCount: isSet(object.itemCount)
-        ? globalThis.Number(object.itemCount)
-        : isSet(object.item_count)
-        ? globalThis.Number(object.item_count)
-        : 0,
-    };
-  },
-
-  toJSON(message: CreateNodeRequest): unknown {
-    const obj: any = {};
-    if (message.canvasId !== "") {
-      obj.canvasId = message.canvasId;
-    }
-    if (message.name !== "") {
-      obj.name = message.name;
-    }
-    if (message.comment !== "") {
-      obj.comment = message.comment;
-    }
-    if (message.spec !== undefined) {
-      obj.spec = NodeSpec.toJSON(message.spec);
-    }
-    if (message.position !== undefined) {
-      obj.position = CanvasUiPosition.toJSON(message.position);
-    }
-    if (message.itemCount !== 0) {
-      obj.itemCount = Math.round(message.itemCount);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CreateNodeRequest>): CreateNodeRequest {
-    return CreateNodeRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CreateNodeRequest>): CreateNodeRequest {
-    const message = createBaseCreateNodeRequest();
-    message.canvasId = object.canvasId ?? "";
-    message.name = object.name ?? "";
-    message.comment = object.comment ?? "";
-    message.spec = (object.spec !== undefined && object.spec !== null) ? NodeSpec.fromPartial(object.spec) : undefined;
-    message.position = (object.position !== undefined && object.position !== null)
-      ? CanvasUiPosition.fromPartial(object.position)
-      : undefined;
-    message.itemCount = object.itemCount ?? 0;
-    return message;
-  },
-};
-
-function createBaseCreateNodeReply(): CreateNodeReply {
-  return { node: undefined };
-}
-
-export const CreateNodeReply: MessageFns<CreateNodeReply> = {
-  encode(message: CreateNodeReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.node !== undefined) {
-      Node.encode(message.node, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CreateNodeReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCreateNodeReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.node = Node.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CreateNodeReply {
-    return { node: isSet(object.node) ? Node.fromJSON(object.node) : undefined };
-  },
-
-  toJSON(message: CreateNodeReply): unknown {
-    const obj: any = {};
-    if (message.node !== undefined) {
-      obj.node = Node.toJSON(message.node);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CreateNodeReply>): CreateNodeReply {
-    return CreateNodeReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CreateNodeReply>): CreateNodeReply {
-    const message = createBaseCreateNodeReply();
-    message.node = (object.node !== undefined && object.node !== null) ? Node.fromPartial(object.node) : undefined;
-    return message;
-  },
-};
-
-function createBaseReplaceNodeSpecRequest(): ReplaceNodeSpecRequest {
-  return { nodeId: "", spec: undefined, itemCount: 0 };
-}
-
-export const ReplaceNodeSpecRequest: MessageFns<ReplaceNodeSpecRequest> = {
-  encode(message: ReplaceNodeSpecRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    if (message.spec !== undefined) {
-      NodeSpec.encode(message.spec, writer.uint32(18).fork()).join();
-    }
-    if (message.itemCount !== 0) {
-      writer.uint32(24).uint32(message.itemCount);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ReplaceNodeSpecRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseReplaceNodeSpecRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.spec = NodeSpec.decode(reader, reader.uint32());
-          continue;
-        }
-        case 3: {
-          if (tag !== 24) {
-            break;
-          }
-
-          message.itemCount = reader.uint32();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ReplaceNodeSpecRequest {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-      spec: isSet(object.spec) ? NodeSpec.fromJSON(object.spec) : undefined,
-      itemCount: isSet(object.itemCount)
-        ? globalThis.Number(object.itemCount)
-        : isSet(object.item_count)
-        ? globalThis.Number(object.item_count)
-        : 0,
-    };
-  },
-
-  toJSON(message: ReplaceNodeSpecRequest): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    if (message.spec !== undefined) {
-      obj.spec = NodeSpec.toJSON(message.spec);
-    }
-    if (message.itemCount !== 0) {
-      obj.itemCount = Math.round(message.itemCount);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ReplaceNodeSpecRequest>): ReplaceNodeSpecRequest {
-    return ReplaceNodeSpecRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ReplaceNodeSpecRequest>): ReplaceNodeSpecRequest {
-    const message = createBaseReplaceNodeSpecRequest();
-    message.nodeId = object.nodeId ?? "";
-    message.spec = (object.spec !== undefined && object.spec !== null) ? NodeSpec.fromPartial(object.spec) : undefined;
-    message.itemCount = object.itemCount ?? 0;
-    return message;
-  },
-};
-
-function createBaseReplaceNodeSpecReply(): ReplaceNodeSpecReply {
-  return { node: undefined };
-}
-
-export const ReplaceNodeSpecReply: MessageFns<ReplaceNodeSpecReply> = {
-  encode(message: ReplaceNodeSpecReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.node !== undefined) {
-      Node.encode(message.node, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ReplaceNodeSpecReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseReplaceNodeSpecReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.node = Node.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ReplaceNodeSpecReply {
-    return { node: isSet(object.node) ? Node.fromJSON(object.node) : undefined };
-  },
-
-  toJSON(message: ReplaceNodeSpecReply): unknown {
-    const obj: any = {};
-    if (message.node !== undefined) {
-      obj.node = Node.toJSON(message.node);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ReplaceNodeSpecReply>): ReplaceNodeSpecReply {
-    return ReplaceNodeSpecReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ReplaceNodeSpecReply>): ReplaceNodeSpecReply {
-    const message = createBaseReplaceNodeSpecReply();
-    message.node = (object.node !== undefined && object.node !== null) ? Node.fromPartial(object.node) : undefined;
-    return message;
-  },
-};
-
-function createBaseUpdateNodeMetaRequest(): UpdateNodeMetaRequest {
-  return { nodeId: "", name: "", comment: "", position: undefined };
-}
-
-export const UpdateNodeMetaRequest: MessageFns<UpdateNodeMetaRequest> = {
-  encode(message: UpdateNodeMetaRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    if (message.name !== "") {
-      writer.uint32(18).string(message.name);
-    }
-    if (message.comment !== "") {
-      writer.uint32(26).string(message.comment);
-    }
-    if (message.position !== undefined) {
-      CanvasUiPosition.encode(message.position, writer.uint32(34).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UpdateNodeMetaRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUpdateNodeMetaRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.name = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.comment = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.position = CanvasUiPosition.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): UpdateNodeMetaRequest {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-      name: isSet(object.name) ? globalThis.String(object.name) : "",
-      comment: isSet(object.comment) ? globalThis.String(object.comment) : "",
-      position: isSet(object.position) ? CanvasUiPosition.fromJSON(object.position) : undefined,
-    };
-  },
-
-  toJSON(message: UpdateNodeMetaRequest): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    if (message.name !== "") {
-      obj.name = message.name;
-    }
-    if (message.comment !== "") {
-      obj.comment = message.comment;
-    }
-    if (message.position !== undefined) {
-      obj.position = CanvasUiPosition.toJSON(message.position);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<UpdateNodeMetaRequest>): UpdateNodeMetaRequest {
-    return UpdateNodeMetaRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<UpdateNodeMetaRequest>): UpdateNodeMetaRequest {
-    const message = createBaseUpdateNodeMetaRequest();
-    message.nodeId = object.nodeId ?? "";
-    message.name = object.name ?? "";
-    message.comment = object.comment ?? "";
-    message.position = (object.position !== undefined && object.position !== null)
-      ? CanvasUiPosition.fromPartial(object.position)
-      : undefined;
-    return message;
-  },
-};
-
-function createBaseUpdateNodeMetaReply(): UpdateNodeMetaReply {
-  return { node: undefined };
-}
-
-export const UpdateNodeMetaReply: MessageFns<UpdateNodeMetaReply> = {
-  encode(message: UpdateNodeMetaReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.node !== undefined) {
-      Node.encode(message.node, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UpdateNodeMetaReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUpdateNodeMetaReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.node = Node.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): UpdateNodeMetaReply {
-    return { node: isSet(object.node) ? Node.fromJSON(object.node) : undefined };
-  },
-
-  toJSON(message: UpdateNodeMetaReply): unknown {
-    const obj: any = {};
-    if (message.node !== undefined) {
-      obj.node = Node.toJSON(message.node);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<UpdateNodeMetaReply>): UpdateNodeMetaReply {
-    return UpdateNodeMetaReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<UpdateNodeMetaReply>): UpdateNodeMetaReply {
-    const message = createBaseUpdateNodeMetaReply();
-    message.node = (object.node !== undefined && object.node !== null) ? Node.fromPartial(object.node) : undefined;
-    return message;
-  },
-};
-
-function createBaseRetireNodeRequest(): RetireNodeRequest {
-  return { nodeId: "" };
-}
-
-export const RetireNodeRequest: MessageFns<RetireNodeRequest> = {
-  encode(message: RetireNodeRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): RetireNodeRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseRetireNodeRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): RetireNodeRequest {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-    };
-  },
-
-  toJSON(message: RetireNodeRequest): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<RetireNodeRequest>): RetireNodeRequest {
-    return RetireNodeRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<RetireNodeRequest>): RetireNodeRequest {
-    const message = createBaseRetireNodeRequest();
-    message.nodeId = object.nodeId ?? "";
-    return message;
-  },
-};
-
-function createBaseRetireNodeReply(): RetireNodeReply {
-  return {};
-}
-
-export const RetireNodeReply: MessageFns<RetireNodeReply> = {
-  encode(_: RetireNodeReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): RetireNodeReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseRetireNodeReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): RetireNodeReply {
-    return {};
-  },
-
-  toJSON(_: RetireNodeReply): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<RetireNodeReply>): RetireNodeReply {
-    return RetireNodeReply.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<RetireNodeReply>): RetireNodeReply {
-    const message = createBaseRetireNodeReply();
-    return message;
-  },
-};
-
-function createBaseForceDeleteNodeRequest(): ForceDeleteNodeRequest {
-  return { nodeId: "" };
-}
-
-export const ForceDeleteNodeRequest: MessageFns<ForceDeleteNodeRequest> = {
-  encode(message: ForceDeleteNodeRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ForceDeleteNodeRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseForceDeleteNodeRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ForceDeleteNodeRequest {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-    };
-  },
-
-  toJSON(message: ForceDeleteNodeRequest): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ForceDeleteNodeRequest>): ForceDeleteNodeRequest {
-    return ForceDeleteNodeRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ForceDeleteNodeRequest>): ForceDeleteNodeRequest {
-    const message = createBaseForceDeleteNodeRequest();
-    message.nodeId = object.nodeId ?? "";
-    return message;
-  },
-};
-
-function createBaseForceDeleteNodeReply(): ForceDeleteNodeReply {
-  return {};
-}
-
-export const ForceDeleteNodeReply: MessageFns<ForceDeleteNodeReply> = {
-  encode(_: ForceDeleteNodeReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ForceDeleteNodeReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseForceDeleteNodeReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): ForceDeleteNodeReply {
-    return {};
-  },
-
-  toJSON(_: ForceDeleteNodeReply): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<ForceDeleteNodeReply>): ForceDeleteNodeReply {
-    return ForceDeleteNodeReply.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<ForceDeleteNodeReply>): ForceDeleteNodeReply {
-    const message = createBaseForceDeleteNodeReply();
-    return message;
-  },
-};
-
-function createBaseUniversalHandle(): UniversalHandle {
-  return { nodeId: "", group: 0 };
-}
-
-export const UniversalHandle: MessageFns<UniversalHandle> = {
-  encode(message: UniversalHandle, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    if (message.group !== 0) {
-      writer.uint32(16).int32(message.group);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): UniversalHandle {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseUniversalHandle();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.group = reader.int32() as any;
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): UniversalHandle {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-      group: isSet(object.group) ? universalGroupFromJSON(object.group) : 0,
-    };
-  },
-
-  toJSON(message: UniversalHandle): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    if (message.group !== 0) {
-      obj.group = universalGroupToJSON(message.group);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<UniversalHandle>): UniversalHandle {
-    return UniversalHandle.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<UniversalHandle>): UniversalHandle {
-    const message = createBaseUniversalHandle();
-    message.nodeId = object.nodeId ?? "";
-    message.group = object.group ?? 0;
-    return message;
-  },
-};
-
-function createBaseConnectRequest(): ConnectRequest {
-  return { outputPortId: "", inputPortId: "", outputHandle: undefined, inputHandle: undefined };
-}
-
-export const ConnectRequest: MessageFns<ConnectRequest> = {
-  encode(message: ConnectRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.outputPortId !== "") {
-      writer.uint32(10).string(message.outputPortId);
-    }
-    if (message.inputPortId !== "") {
-      writer.uint32(18).string(message.inputPortId);
-    }
-    if (message.outputHandle !== undefined) {
-      UniversalHandle.encode(message.outputHandle, writer.uint32(26).fork()).join();
-    }
-    if (message.inputHandle !== undefined) {
-      UniversalHandle.encode(message.inputHandle, writer.uint32(34).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ConnectRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseConnectRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.outputPortId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.inputPortId = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.outputHandle = UniversalHandle.decode(reader, reader.uint32());
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.inputHandle = UniversalHandle.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ConnectRequest {
-    return {
-      outputPortId: isSet(object.outputPortId)
-        ? globalThis.String(object.outputPortId)
-        : isSet(object.output_port_id)
-        ? globalThis.String(object.output_port_id)
-        : "",
-      inputPortId: isSet(object.inputPortId)
-        ? globalThis.String(object.inputPortId)
-        : isSet(object.input_port_id)
-        ? globalThis.String(object.input_port_id)
-        : "",
-      outputHandle: isSet(object.outputHandle)
-        ? UniversalHandle.fromJSON(object.outputHandle)
-        : isSet(object.output_handle)
-        ? UniversalHandle.fromJSON(object.output_handle)
-        : undefined,
-      inputHandle: isSet(object.inputHandle)
-        ? UniversalHandle.fromJSON(object.inputHandle)
-        : isSet(object.input_handle)
-        ? UniversalHandle.fromJSON(object.input_handle)
-        : undefined,
-    };
-  },
-
-  toJSON(message: ConnectRequest): unknown {
-    const obj: any = {};
-    if (message.outputPortId !== "") {
-      obj.outputPortId = message.outputPortId;
-    }
-    if (message.inputPortId !== "") {
-      obj.inputPortId = message.inputPortId;
-    }
-    if (message.outputHandle !== undefined) {
-      obj.outputHandle = UniversalHandle.toJSON(message.outputHandle);
-    }
-    if (message.inputHandle !== undefined) {
-      obj.inputHandle = UniversalHandle.toJSON(message.inputHandle);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ConnectRequest>): ConnectRequest {
-    return ConnectRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ConnectRequest>): ConnectRequest {
-    const message = createBaseConnectRequest();
-    message.outputPortId = object.outputPortId ?? "";
-    message.inputPortId = object.inputPortId ?? "";
-    message.outputHandle = (object.outputHandle !== undefined && object.outputHandle !== null)
-      ? UniversalHandle.fromPartial(object.outputHandle)
-      : undefined;
-    message.inputHandle = (object.inputHandle !== undefined && object.inputHandle !== null)
-      ? UniversalHandle.fromPartial(object.inputHandle)
-      : undefined;
-    return message;
-  },
-};
-
-function createBaseConnectReply(): ConnectReply {
-  return { edge: undefined };
-}
-
-export const ConnectReply: MessageFns<ConnectReply> = {
-  encode(message: ConnectReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.edge !== undefined) {
-      Edge.encode(message.edge, writer.uint32(10).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ConnectReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseConnectReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.edge = Edge.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ConnectReply {
-    return { edge: isSet(object.edge) ? Edge.fromJSON(object.edge) : undefined };
-  },
-
-  toJSON(message: ConnectReply): unknown {
-    const obj: any = {};
-    if (message.edge !== undefined) {
-      obj.edge = Edge.toJSON(message.edge);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ConnectReply>): ConnectReply {
-    return ConnectReply.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ConnectReply>): ConnectReply {
-    const message = createBaseConnectReply();
-    message.edge = (object.edge !== undefined && object.edge !== null) ? Edge.fromPartial(object.edge) : undefined;
-    return message;
-  },
-};
-
-function createBaseDisconnectRequest(): DisconnectRequest {
-  return { edgeId: "" };
-}
-
-export const DisconnectRequest: MessageFns<DisconnectRequest> = {
-  encode(message: DisconnectRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.edgeId !== "") {
-      writer.uint32(10).string(message.edgeId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): DisconnectRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseDisconnectRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.edgeId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): DisconnectRequest {
-    return {
-      edgeId: isSet(object.edgeId)
-        ? globalThis.String(object.edgeId)
-        : isSet(object.edge_id)
-        ? globalThis.String(object.edge_id)
-        : "",
-    };
-  },
-
-  toJSON(message: DisconnectRequest): unknown {
-    const obj: any = {};
-    if (message.edgeId !== "") {
-      obj.edgeId = message.edgeId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<DisconnectRequest>): DisconnectRequest {
-    return DisconnectRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<DisconnectRequest>): DisconnectRequest {
-    const message = createBaseDisconnectRequest();
-    message.edgeId = object.edgeId ?? "";
-    return message;
-  },
-};
-
-function createBaseDisconnectReply(): DisconnectReply {
-  return {};
-}
-
-export const DisconnectReply: MessageFns<DisconnectReply> = {
-  encode(_: DisconnectReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): DisconnectReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseDisconnectReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): DisconnectReply {
-    return {};
-  },
-
-  toJSON(_: DisconnectReply): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<DisconnectReply>): DisconnectReply {
-    return DisconnectReply.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<DisconnectReply>): DisconnectReply {
-    const message = createBaseDisconnectReply();
-    return message;
-  },
-};
-
-function createBaseForceDisconnectRequest(): ForceDisconnectRequest {
-  return { edgeId: "" };
-}
-
-export const ForceDisconnectRequest: MessageFns<ForceDisconnectRequest> = {
-  encode(message: ForceDisconnectRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.edgeId !== "") {
-      writer.uint32(10).string(message.edgeId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ForceDisconnectRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseForceDisconnectRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.edgeId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): ForceDisconnectRequest {
-    return {
-      edgeId: isSet(object.edgeId)
-        ? globalThis.String(object.edgeId)
-        : isSet(object.edge_id)
-        ? globalThis.String(object.edge_id)
-        : "",
-    };
-  },
-
-  toJSON(message: ForceDisconnectRequest): unknown {
-    const obj: any = {};
-    if (message.edgeId !== "") {
-      obj.edgeId = message.edgeId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<ForceDisconnectRequest>): ForceDisconnectRequest {
-    return ForceDisconnectRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<ForceDisconnectRequest>): ForceDisconnectRequest {
-    const message = createBaseForceDisconnectRequest();
-    message.edgeId = object.edgeId ?? "";
-    return message;
-  },
-};
-
-function createBaseForceDisconnectReply(): ForceDisconnectReply {
-  return {};
-}
-
-export const ForceDisconnectReply: MessageFns<ForceDisconnectReply> = {
-  encode(_: ForceDisconnectReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ForceDisconnectReply {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseForceDisconnectReply();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(_: any): ForceDisconnectReply {
-    return {};
-  },
-
-  toJSON(_: ForceDisconnectReply): unknown {
-    const obj: any = {};
-    return obj;
-  },
-
-  create(base?: DeepPartial<ForceDisconnectReply>): ForceDisconnectReply {
-    return ForceDisconnectReply.fromPartial(base ?? {});
-  },
-  fromPartial(_: DeepPartial<ForceDisconnectReply>): ForceDisconnectReply {
-    const message = createBaseForceDisconnectReply();
-    return message;
-  },
-};
-
 function createBaseGetServerConfigRequest(): GetServerConfigRequest {
   return { serverId: "" };
 }
@@ -8972,13 +7125,13 @@ export const GetServerRolloutStatusRequest: MessageFns<GetServerRolloutStatusReq
 };
 
 function createBaseInvalidPod(): InvalidPod {
-  return { nodeId: "", podName: "", listen: "", error: "" };
+  return { podId: "", podName: "", listen: "", error: "" };
 }
 
 export const InvalidPod: MessageFns<InvalidPod> = {
   encode(message: InvalidPod, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
+    if (message.podId !== "") {
+      writer.uint32(10).string(message.podId);
     }
     if (message.podName !== "") {
       writer.uint32(18).string(message.podName);
@@ -9004,7 +7157,7 @@ export const InvalidPod: MessageFns<InvalidPod> = {
             break;
           }
 
-          message.nodeId = reader.string();
+          message.podId = reader.string();
           continue;
         }
         case 2: {
@@ -9042,10 +7195,10 @@ export const InvalidPod: MessageFns<InvalidPod> = {
 
   fromJSON(object: any): InvalidPod {
     return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
         : "",
       podName: isSet(object.podName)
         ? globalThis.String(object.podName)
@@ -9059,8 +7212,8 @@ export const InvalidPod: MessageFns<InvalidPod> = {
 
   toJSON(message: InvalidPod): unknown {
     const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
+    if (message.podId !== "") {
+      obj.podId = message.podId;
     }
     if (message.podName !== "") {
       obj.podName = message.podName;
@@ -9079,7 +7232,7 @@ export const InvalidPod: MessageFns<InvalidPod> = {
   },
   fromPartial(object: DeepPartial<InvalidPod>): InvalidPod {
     const message = createBaseInvalidPod();
-    message.nodeId = object.nodeId ?? "";
+    message.podId = object.podId ?? "";
     message.podName = object.podName ?? "";
     message.listen = object.listen ?? "";
     message.error = object.error ?? "";
@@ -9651,17 +7804,17 @@ export const ServerHealthRecord: MessageFns<ServerHealthRecord> = {
   },
 };
 
-function createBaseNodeHealthRecord(): NodeHealthRecord {
-  return { id: "", nodeId: "", status: 0, message: "", reportTime: "" };
+function createBasePodHealthRecord(): PodHealthRecord {
+  return { id: "", podId: "", status: 0, message: "", reportTime: "" };
 }
 
-export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
-  encode(message: NodeHealthRecord, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const PodHealthRecord: MessageFns<PodHealthRecord> = {
+  encode(message: PodHealthRecord, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.id !== "") {
       writer.uint32(10).string(message.id);
     }
-    if (message.nodeId !== "") {
-      writer.uint32(18).string(message.nodeId);
+    if (message.podId !== "") {
+      writer.uint32(18).string(message.podId);
     }
     if (message.status !== 0) {
       writer.uint32(24).int32(message.status);
@@ -9675,10 +7828,10 @@ export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthRecord {
+  decode(input: BinaryReader | Uint8Array, length?: number): PodHealthRecord {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseNodeHealthRecord();
+    const message = createBasePodHealthRecord();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -9695,7 +7848,7 @@ export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
             break;
           }
 
-          message.nodeId = reader.string();
+          message.podId = reader.string();
           continue;
         }
         case 3: {
@@ -9731,15 +7884,15 @@ export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
     return message;
   },
 
-  fromJSON(object: any): NodeHealthRecord {
+  fromJSON(object: any): PodHealthRecord {
     return {
       id: isSet(object.id) ? globalThis.String(object.id) : "",
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
         : "",
-      status: isSet(object.status) ? nodeHealthStatusFromJSON(object.status) : 0,
+      status: isSet(object.status) ? podHealthStatusFromJSON(object.status) : 0,
       message: isSet(object.message) ? globalThis.String(object.message) : "",
       reportTime: isSet(object.reportTime)
         ? globalThis.String(object.reportTime)
@@ -9749,16 +7902,16 @@ export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
     };
   },
 
-  toJSON(message: NodeHealthRecord): unknown {
+  toJSON(message: PodHealthRecord): unknown {
     const obj: any = {};
     if (message.id !== "") {
       obj.id = message.id;
     }
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
+    if (message.podId !== "") {
+      obj.podId = message.podId;
     }
     if (message.status !== 0) {
-      obj.status = nodeHealthStatusToJSON(message.status);
+      obj.status = podHealthStatusToJSON(message.status);
     }
     if (message.message !== "") {
       obj.message = message.message;
@@ -9769,13 +7922,13 @@ export const NodeHealthRecord: MessageFns<NodeHealthRecord> = {
     return obj;
   },
 
-  create(base?: DeepPartial<NodeHealthRecord>): NodeHealthRecord {
-    return NodeHealthRecord.fromPartial(base ?? {});
+  create(base?: DeepPartial<PodHealthRecord>): PodHealthRecord {
+    return PodHealthRecord.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<NodeHealthRecord>): NodeHealthRecord {
-    const message = createBaseNodeHealthRecord();
+  fromPartial(object: DeepPartial<PodHealthRecord>): PodHealthRecord {
+    const message = createBasePodHealthRecord();
     message.id = object.id ?? "";
-    message.nodeId = object.nodeId ?? "";
+    message.podId = object.podId ?? "";
     message.status = object.status ?? 0;
     message.message = object.message ?? "";
     message.reportTime = object.reportTime ?? "";
@@ -9941,14 +8094,14 @@ export const ListServerHealthHistoryReply: MessageFns<ListServerHealthHistoryRep
   },
 };
 
-function createBaseListNodeHealthHistoryRequest(): ListNodeHealthHistoryRequest {
-  return { nodeId: "", start: "", end: "", limit: 0 };
+function createBaseListPodHealthHistoryRequest(): ListPodHealthHistoryRequest {
+  return { podId: "", start: "", end: "", limit: 0 };
 }
 
-export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryRequest> = {
-  encode(message: ListNodeHealthHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
+export const ListPodHealthHistoryRequest: MessageFns<ListPodHealthHistoryRequest> = {
+  encode(message: ListPodHealthHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.podId !== "") {
+      writer.uint32(10).string(message.podId);
     }
     if (message.start !== "") {
       writer.uint32(18).string(message.start);
@@ -9962,10 +8115,10 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): ListNodeHealthHistoryRequest {
+  decode(input: BinaryReader | Uint8Array, length?: number): ListPodHealthHistoryRequest {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseListNodeHealthHistoryRequest();
+    const message = createBaseListPodHealthHistoryRequest();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -9974,7 +8127,7 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
             break;
           }
 
-          message.nodeId = reader.string();
+          message.podId = reader.string();
           continue;
         }
         case 2: {
@@ -10010,12 +8163,12 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
     return message;
   },
 
-  fromJSON(object: any): ListNodeHealthHistoryRequest {
+  fromJSON(object: any): ListPodHealthHistoryRequest {
     return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
         : "",
       start: isSet(object.start) ? globalThis.String(object.start) : "",
       end: isSet(object.end) ? globalThis.String(object.end) : "",
@@ -10023,10 +8176,10 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
     };
   },
 
-  toJSON(message: ListNodeHealthHistoryRequest): unknown {
+  toJSON(message: ListPodHealthHistoryRequest): unknown {
     const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
+    if (message.podId !== "") {
+      obj.podId = message.podId;
     }
     if (message.start !== "") {
       obj.start = message.start;
@@ -10040,12 +8193,12 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
     return obj;
   },
 
-  create(base?: DeepPartial<ListNodeHealthHistoryRequest>): ListNodeHealthHistoryRequest {
-    return ListNodeHealthHistoryRequest.fromPartial(base ?? {});
+  create(base?: DeepPartial<ListPodHealthHistoryRequest>): ListPodHealthHistoryRequest {
+    return ListPodHealthHistoryRequest.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<ListNodeHealthHistoryRequest>): ListNodeHealthHistoryRequest {
-    const message = createBaseListNodeHealthHistoryRequest();
-    message.nodeId = object.nodeId ?? "";
+  fromPartial(object: DeepPartial<ListPodHealthHistoryRequest>): ListPodHealthHistoryRequest {
+    const message = createBaseListPodHealthHistoryRequest();
+    message.podId = object.podId ?? "";
     message.start = object.start ?? "";
     message.end = object.end ?? "";
     message.limit = object.limit ?? 0;
@@ -10053,22 +8206,22 @@ export const ListNodeHealthHistoryRequest: MessageFns<ListNodeHealthHistoryReque
   },
 };
 
-function createBaseListNodeHealthHistoryReply(): ListNodeHealthHistoryReply {
+function createBaseListPodHealthHistoryReply(): ListPodHealthHistoryReply {
   return { records: [] };
 }
 
-export const ListNodeHealthHistoryReply: MessageFns<ListNodeHealthHistoryReply> = {
-  encode(message: ListNodeHealthHistoryReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const ListPodHealthHistoryReply: MessageFns<ListPodHealthHistoryReply> = {
+  encode(message: ListPodHealthHistoryReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     for (const v of message.records) {
-      NodeHealthRecord.encode(v!, writer.uint32(10).fork()).join();
+      PodHealthRecord.encode(v!, writer.uint32(10).fork()).join();
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): ListNodeHealthHistoryReply {
+  decode(input: BinaryReader | Uint8Array, length?: number): ListPodHealthHistoryReply {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseListNodeHealthHistoryReply();
+    const message = createBaseListPodHealthHistoryReply();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -10077,7 +8230,7 @@ export const ListNodeHealthHistoryReply: MessageFns<ListNodeHealthHistoryReply> 
             break;
           }
 
-          message.records.push(NodeHealthRecord.decode(reader, reader.uint32()));
+          message.records.push(PodHealthRecord.decode(reader, reader.uint32()));
           continue;
         }
       }
@@ -10089,28 +8242,28 @@ export const ListNodeHealthHistoryReply: MessageFns<ListNodeHealthHistoryReply> 
     return message;
   },
 
-  fromJSON(object: any): ListNodeHealthHistoryReply {
+  fromJSON(object: any): ListPodHealthHistoryReply {
     return {
       records: globalThis.Array.isArray(object?.records)
-        ? object.records.map((e: any) => NodeHealthRecord.fromJSON(e))
+        ? object.records.map((e: any) => PodHealthRecord.fromJSON(e))
         : [],
     };
   },
 
-  toJSON(message: ListNodeHealthHistoryReply): unknown {
+  toJSON(message: ListPodHealthHistoryReply): unknown {
     const obj: any = {};
     if (message.records?.length) {
-      obj.records = message.records.map((e) => NodeHealthRecord.toJSON(e));
+      obj.records = message.records.map((e) => PodHealthRecord.toJSON(e));
     }
     return obj;
   },
 
-  create(base?: DeepPartial<ListNodeHealthHistoryReply>): ListNodeHealthHistoryReply {
-    return ListNodeHealthHistoryReply.fromPartial(base ?? {});
+  create(base?: DeepPartial<ListPodHealthHistoryReply>): ListPodHealthHistoryReply {
+    return ListPodHealthHistoryReply.fromPartial(base ?? {});
   },
-  fromPartial(object: DeepPartial<ListNodeHealthHistoryReply>): ListNodeHealthHistoryReply {
-    const message = createBaseListNodeHealthHistoryReply();
-    message.records = object.records?.map((e) => NodeHealthRecord.fromPartial(e)) || [];
+  fromPartial(object: DeepPartial<ListPodHealthHistoryReply>): ListPodHealthHistoryReply {
+    const message = createBaseListPodHealthHistoryReply();
+    message.records = object.records?.map((e) => PodHealthRecord.fromPartial(e)) || [];
     return message;
   },
 };
@@ -11658,273 +9811,6 @@ export const KeepAlive: MessageFns<KeepAlive> = {
   },
 };
 
-function createBaseWatchCanvasRequest(): WatchCanvasRequest {
-  return { canvasId: "" };
-}
-
-export const WatchCanvasRequest: MessageFns<WatchCanvasRequest> = {
-  encode(message: WatchCanvasRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.canvasId !== "") {
-      writer.uint32(10).string(message.canvasId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): WatchCanvasRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseWatchCanvasRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.canvasId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): WatchCanvasRequest {
-    return {
-      canvasId: isSet(object.canvasId)
-        ? globalThis.String(object.canvasId)
-        : isSet(object.canvas_id)
-        ? globalThis.String(object.canvas_id)
-        : "",
-    };
-  },
-
-  toJSON(message: WatchCanvasRequest): unknown {
-    const obj: any = {};
-    if (message.canvasId !== "") {
-      obj.canvasId = message.canvasId;
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<WatchCanvasRequest>): WatchCanvasRequest {
-    return WatchCanvasRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<WatchCanvasRequest>): WatchCanvasRequest {
-    const message = createBaseWatchCanvasRequest();
-    message.canvasId = object.canvasId ?? "";
-    return message;
-  },
-};
-
-function createBaseCanvasSnapshot(): CanvasSnapshot {
-  return { generation: 0n, cause: 0, affectedIds: [], contents: undefined };
-}
-
-export const CanvasSnapshot: MessageFns<CanvasSnapshot> = {
-  encode(message: CanvasSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.generation !== 0n) {
-      if (BigInt.asIntN(64, message.generation) !== message.generation) {
-        throw new globalThis.Error("value provided for field message.generation of type int64 too large");
-      }
-      writer.uint32(8).int64(message.generation);
-    }
-    if (message.cause !== 0) {
-      writer.uint32(16).int32(message.cause);
-    }
-    for (const v of message.affectedIds) {
-      writer.uint32(26).string(v!);
-    }
-    if (message.contents !== undefined) {
-      GetCanvasReply.encode(message.contents, writer.uint32(34).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CanvasSnapshot {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCanvasSnapshot();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.generation = reader.int64() as bigint;
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.cause = reader.int32() as any;
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.affectedIds.push(reader.string());
-          continue;
-        }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.contents = GetCanvasReply.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CanvasSnapshot {
-    return {
-      generation: isSet(object.generation) ? BigInt(object.generation) : 0n,
-      cause: isSet(object.cause) ? canvasChangeKindFromJSON(object.cause) : 0,
-      affectedIds: globalThis.Array.isArray(object?.affectedIds)
-        ? object.affectedIds.map((e: any) => globalThis.String(e))
-        : globalThis.Array.isArray(object?.affected_ids)
-        ? object.affected_ids.map((e: any) => globalThis.String(e))
-        : [],
-      contents: isSet(object.contents) ? GetCanvasReply.fromJSON(object.contents) : undefined,
-    };
-  },
-
-  toJSON(message: CanvasSnapshot): unknown {
-    const obj: any = {};
-    if (message.generation !== 0n) {
-      obj.generation = message.generation.toString();
-    }
-    if (message.cause !== 0) {
-      obj.cause = canvasChangeKindToJSON(message.cause);
-    }
-    if (message.affectedIds?.length) {
-      obj.affectedIds = message.affectedIds;
-    }
-    if (message.contents !== undefined) {
-      obj.contents = GetCanvasReply.toJSON(message.contents);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CanvasSnapshot>): CanvasSnapshot {
-    return CanvasSnapshot.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CanvasSnapshot>): CanvasSnapshot {
-    const message = createBaseCanvasSnapshot();
-    message.generation = (object.generation !== undefined && object.generation !== null)
-      ? BigInt(object.generation)
-      : 0n;
-    message.cause = object.cause ?? 0;
-    message.affectedIds = object.affectedIds?.map((e) => e) || [];
-    message.contents = (object.contents !== undefined && object.contents !== null)
-      ? GetCanvasReply.fromPartial(object.contents)
-      : undefined;
-    return message;
-  },
-};
-
-function createBaseCanvasEvent(): CanvasEvent {
-  return { snapshot: undefined, keepAlive: undefined };
-}
-
-export const CanvasEvent: MessageFns<CanvasEvent> = {
-  encode(message: CanvasEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.snapshot !== undefined) {
-      CanvasSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
-    }
-    if (message.keepAlive !== undefined) {
-      KeepAlive.encode(message.keepAlive, writer.uint32(18).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): CanvasEvent {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCanvasEvent();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.snapshot = CanvasSnapshot.decode(reader, reader.uint32());
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): CanvasEvent {
-    return {
-      snapshot: isSet(object.snapshot) ? CanvasSnapshot.fromJSON(object.snapshot) : undefined,
-      keepAlive: isSet(object.keepAlive)
-        ? KeepAlive.fromJSON(object.keepAlive)
-        : isSet(object.keep_alive)
-        ? KeepAlive.fromJSON(object.keep_alive)
-        : undefined,
-    };
-  },
-
-  toJSON(message: CanvasEvent): unknown {
-    const obj: any = {};
-    if (message.snapshot !== undefined) {
-      obj.snapshot = CanvasSnapshot.toJSON(message.snapshot);
-    }
-    if (message.keepAlive !== undefined) {
-      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<CanvasEvent>): CanvasEvent {
-    return CanvasEvent.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<CanvasEvent>): CanvasEvent {
-    const message = createBaseCanvasEvent();
-    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
-      ? CanvasSnapshot.fromPartial(object.snapshot)
-      : undefined;
-    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
-      ? KeepAlive.fromPartial(object.keepAlive)
-      : undefined;
-    return message;
-  },
-};
-
 function createBaseWatchServerHealthRequest(): WatchServerHealthRequest {
   return { serverId: "", since: "" };
 }
@@ -12197,266 +10083,6 @@ export const ServerHealthEvent: MessageFns<ServerHealthEvent> = {
       : undefined;
     message.record = (object.record !== undefined && object.record !== null)
       ? ServerHealthRecord.fromPartial(object.record)
-      : undefined;
-    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
-      ? KeepAlive.fromPartial(object.keepAlive)
-      : undefined;
-    return message;
-  },
-};
-
-function createBaseWatchNodeHealthRequest(): WatchNodeHealthRequest {
-  return { nodeId: "", limit: 0 };
-}
-
-export const WatchNodeHealthRequest: MessageFns<WatchNodeHealthRequest> = {
-  encode(message: WatchNodeHealthRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.nodeId !== "") {
-      writer.uint32(10).string(message.nodeId);
-    }
-    if (message.limit !== 0) {
-      writer.uint32(16).uint32(message.limit);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): WatchNodeHealthRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseWatchNodeHealthRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.nodeId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.limit = reader.uint32();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): WatchNodeHealthRequest {
-    return {
-      nodeId: isSet(object.nodeId)
-        ? globalThis.String(object.nodeId)
-        : isSet(object.node_id)
-        ? globalThis.String(object.node_id)
-        : "",
-      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
-    };
-  },
-
-  toJSON(message: WatchNodeHealthRequest): unknown {
-    const obj: any = {};
-    if (message.nodeId !== "") {
-      obj.nodeId = message.nodeId;
-    }
-    if (message.limit !== 0) {
-      obj.limit = Math.round(message.limit);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<WatchNodeHealthRequest>): WatchNodeHealthRequest {
-    return WatchNodeHealthRequest.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<WatchNodeHealthRequest>): WatchNodeHealthRequest {
-    const message = createBaseWatchNodeHealthRequest();
-    message.nodeId = object.nodeId ?? "";
-    message.limit = object.limit ?? 0;
-    return message;
-  },
-};
-
-function createBaseNodeHealthSnapshot(): NodeHealthSnapshot {
-  return { status: 0, records: [] };
-}
-
-export const NodeHealthSnapshot: MessageFns<NodeHealthSnapshot> = {
-  encode(message: NodeHealthSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.status !== 0) {
-      writer.uint32(8).int32(message.status);
-    }
-    for (const v of message.records) {
-      NodeHealthRecord.encode(v!, writer.uint32(18).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthSnapshot {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseNodeHealthSnapshot();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.status = reader.int32() as any;
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.records.push(NodeHealthRecord.decode(reader, reader.uint32()));
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): NodeHealthSnapshot {
-    return {
-      status: isSet(object.status) ? nodeHealthStatusFromJSON(object.status) : 0,
-      records: globalThis.Array.isArray(object?.records)
-        ? object.records.map((e: any) => NodeHealthRecord.fromJSON(e))
-        : [],
-    };
-  },
-
-  toJSON(message: NodeHealthSnapshot): unknown {
-    const obj: any = {};
-    if (message.status !== 0) {
-      obj.status = nodeHealthStatusToJSON(message.status);
-    }
-    if (message.records?.length) {
-      obj.records = message.records.map((e) => NodeHealthRecord.toJSON(e));
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<NodeHealthSnapshot>): NodeHealthSnapshot {
-    return NodeHealthSnapshot.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<NodeHealthSnapshot>): NodeHealthSnapshot {
-    const message = createBaseNodeHealthSnapshot();
-    message.status = object.status ?? 0;
-    message.records = object.records?.map((e) => NodeHealthRecord.fromPartial(e)) || [];
-    return message;
-  },
-};
-
-function createBaseNodeHealthEvent(): NodeHealthEvent {
-  return { snapshot: undefined, record: undefined, keepAlive: undefined };
-}
-
-export const NodeHealthEvent: MessageFns<NodeHealthEvent> = {
-  encode(message: NodeHealthEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.snapshot !== undefined) {
-      NodeHealthSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
-    }
-    if (message.record !== undefined) {
-      NodeHealthRecord.encode(message.record, writer.uint32(18).fork()).join();
-    }
-    if (message.keepAlive !== undefined) {
-      KeepAlive.encode(message.keepAlive, writer.uint32(26).fork()).join();
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): NodeHealthEvent {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseNodeHealthEvent();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.snapshot = NodeHealthSnapshot.decode(reader, reader.uint32());
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.record = NodeHealthRecord.decode(reader, reader.uint32());
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): NodeHealthEvent {
-    return {
-      snapshot: isSet(object.snapshot) ? NodeHealthSnapshot.fromJSON(object.snapshot) : undefined,
-      record: isSet(object.record) ? NodeHealthRecord.fromJSON(object.record) : undefined,
-      keepAlive: isSet(object.keepAlive)
-        ? KeepAlive.fromJSON(object.keepAlive)
-        : isSet(object.keep_alive)
-        ? KeepAlive.fromJSON(object.keep_alive)
-        : undefined,
-    };
-  },
-
-  toJSON(message: NodeHealthEvent): unknown {
-    const obj: any = {};
-    if (message.snapshot !== undefined) {
-      obj.snapshot = NodeHealthSnapshot.toJSON(message.snapshot);
-    }
-    if (message.record !== undefined) {
-      obj.record = NodeHealthRecord.toJSON(message.record);
-    }
-    if (message.keepAlive !== undefined) {
-      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
-    }
-    return obj;
-  },
-
-  create(base?: DeepPartial<NodeHealthEvent>): NodeHealthEvent {
-    return NodeHealthEvent.fromPartial(base ?? {});
-  },
-  fromPartial(object: DeepPartial<NodeHealthEvent>): NodeHealthEvent {
-    const message = createBaseNodeHealthEvent();
-    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
-      ? NodeHealthSnapshot.fromPartial(object.snapshot)
-      : undefined;
-    message.record = (object.record !== undefined && object.record !== null)
-      ? NodeHealthRecord.fromPartial(object.record)
       : undefined;
     message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
       ? KeepAlive.fromPartial(object.keepAlive)
@@ -12798,14 +10424,6 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
-    getCanvas: {
-      name: "GetCanvas",
-      requestType: GetCanvasRequest as typeof GetCanvasRequest,
-      requestStream: false,
-      responseType: GetCanvasReply as typeof GetCanvasReply,
-      responseStream: false,
-      options: {},
-    },
     updateCanvas: {
       name: "UpdateCanvas",
       requestType: UpdateCanvasRequest as typeof UpdateCanvasRequest,
@@ -12822,19 +10440,35 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
-    validateCanvas: {
-      name: "ValidateCanvas",
-      requestType: ValidateCanvasRequest as typeof ValidateCanvasRequest,
-      requestStream: false,
-      responseType: ValidateCanvasReply as typeof ValidateCanvasReply,
-      responseStream: false,
-      options: {},
-    },
     getCanvasTree: {
       name: "GetCanvasTree",
       requestType: GetCanvasTreeRequest as typeof GetCanvasTreeRequest,
       requestStream: false,
       responseType: GetCanvasTreeReply as typeof GetCanvasTreeReply,
+      responseStream: false,
+      options: {},
+    },
+    getGraph: {
+      name: "GetGraph",
+      requestType: GetGraphRequest as typeof GetGraphRequest,
+      requestStream: false,
+      responseType: GetGraphReply as typeof GetGraphReply,
+      responseStream: false,
+      options: {},
+    },
+    applyGraph: {
+      name: "ApplyGraph",
+      requestType: ApplyGraphRequest as typeof ApplyGraphRequest,
+      requestStream: false,
+      responseType: ApplyGraphReply as typeof ApplyGraphReply,
+      responseStream: false,
+      options: {},
+    },
+    moveItems: {
+      name: "MoveItems",
+      requestType: MoveItemsRequest as typeof MoveItemsRequest,
+      requestStream: false,
+      responseType: MoveItemsReply as typeof MoveItemsReply,
       responseStream: false,
       options: {},
     },
@@ -12867,74 +10501,6 @@ export const OrchestrationDefinition = {
       requestType: MoveServerRequest as typeof MoveServerRequest,
       requestStream: false,
       responseType: MoveServerReply as typeof MoveServerReply,
-      responseStream: false,
-      options: {},
-    },
-    createNode: {
-      name: "CreateNode",
-      requestType: CreateNodeRequest as typeof CreateNodeRequest,
-      requestStream: false,
-      responseType: CreateNodeReply as typeof CreateNodeReply,
-      responseStream: false,
-      options: {},
-    },
-    replaceNodeSpec: {
-      name: "ReplaceNodeSpec",
-      requestType: ReplaceNodeSpecRequest as typeof ReplaceNodeSpecRequest,
-      requestStream: false,
-      responseType: ReplaceNodeSpecReply as typeof ReplaceNodeSpecReply,
-      responseStream: false,
-      options: {},
-    },
-    updateNodeMeta: {
-      name: "UpdateNodeMeta",
-      requestType: UpdateNodeMetaRequest as typeof UpdateNodeMetaRequest,
-      requestStream: false,
-      responseType: UpdateNodeMetaReply as typeof UpdateNodeMetaReply,
-      responseStream: false,
-      options: {},
-    },
-    retireNode: {
-      name: "RetireNode",
-      requestType: RetireNodeRequest as typeof RetireNodeRequest,
-      requestStream: false,
-      responseType: RetireNodeReply as typeof RetireNodeReply,
-      responseStream: false,
-      options: {},
-    },
-    forceDeleteNode: {
-      name: "ForceDeleteNode",
-      requestType: ForceDeleteNodeRequest as typeof ForceDeleteNodeRequest,
-      requestStream: false,
-      responseType: ForceDeleteNodeReply as typeof ForceDeleteNodeReply,
-      responseStream: false,
-      options: {},
-    },
-    /**
-     * `ConnectPorts`, not `Connect`: the generated client already has a `connect`
-     * constructor.
-     */
-    connectPorts: {
-      name: "ConnectPorts",
-      requestType: ConnectRequest as typeof ConnectRequest,
-      requestStream: false,
-      responseType: ConnectReply as typeof ConnectReply,
-      responseStream: false,
-      options: {},
-    },
-    disconnect: {
-      name: "Disconnect",
-      requestType: DisconnectRequest as typeof DisconnectRequest,
-      requestStream: false,
-      responseType: DisconnectReply as typeof DisconnectReply,
-      responseStream: false,
-      options: {},
-    },
-    forceDisconnect: {
-      name: "ForceDisconnect",
-      requestType: ForceDisconnectRequest as typeof ForceDisconnectRequest,
-      requestStream: false,
-      responseType: ForceDisconnectReply as typeof ForceDisconnectReply,
       responseStream: false,
       options: {},
     },
@@ -12994,20 +10560,12 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
-    listNodeHealthHistory: {
-      name: "ListNodeHealthHistory",
-      requestType: ListNodeHealthHistoryRequest as typeof ListNodeHealthHistoryRequest,
+    listPodHealthHistory: {
+      name: "ListPodHealthHistory",
+      requestType: ListPodHealthHistoryRequest as typeof ListPodHealthHistoryRequest,
       requestStream: false,
-      responseType: ListNodeHealthHistoryReply as typeof ListNodeHealthHistoryReply,
+      responseType: ListPodHealthHistoryReply as typeof ListPodHealthHistoryReply,
       responseStream: false,
-      options: {},
-    },
-    watchCanvas: {
-      name: "WatchCanvas",
-      requestType: WatchCanvasRequest as typeof WatchCanvasRequest,
-      requestStream: false,
-      responseType: CanvasEvent as typeof CanvasEvent,
-      responseStream: true,
       options: {},
     },
     watchServerHealth: {
@@ -13015,14 +10573,6 @@ export const OrchestrationDefinition = {
       requestType: WatchServerHealthRequest as typeof WatchServerHealthRequest,
       requestStream: false,
       responseType: ServerHealthEvent as typeof ServerHealthEvent,
-      responseStream: true,
-      options: {},
-    },
-    watchNodeHealth: {
-      name: "WatchNodeHealth",
-      requestType: WatchNodeHealthRequest as typeof WatchNodeHealthRequest,
-      requestStream: false,
-      responseType: NodeHealthEvent as typeof NodeHealthEvent,
       responseStream: true,
       options: {},
     },
@@ -13118,7 +10668,6 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: ListCanvasesRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ListCanvasesReply>>;
-  getCanvas(request: GetCanvasRequest, context: CallContext & CallContextExt): Promise<DeepPartial<GetCanvasReply>>;
   updateCanvas(
     request: UpdateCanvasRequest,
     context: CallContext & CallContextExt,
@@ -13127,14 +10676,13 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: DeleteCanvasRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<DeleteCanvasReply>>;
-  validateCanvas(
-    request: ValidateCanvasRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ValidateCanvasReply>>;
   getCanvasTree(
     request: GetCanvasTreeRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<GetCanvasTreeReply>>;
+  getGraph(request: GetGraphRequest, context: CallContext & CallContextExt): Promise<DeepPartial<GetGraphReply>>;
+  applyGraph(request: ApplyGraphRequest, context: CallContext & CallContextExt): Promise<DeepPartial<ApplyGraphReply>>;
+  moveItems(request: MoveItemsRequest, context: CallContext & CallContextExt): Promise<DeepPartial<MoveItemsReply>>;
   createServer(
     request: CreateServerRequest,
     context: CallContext & CallContextExt,
@@ -13148,30 +10696,6 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<DeleteServerReply>>;
   moveServer(request: MoveServerRequest, context: CallContext & CallContextExt): Promise<DeepPartial<MoveServerReply>>;
-  createNode(request: CreateNodeRequest, context: CallContext & CallContextExt): Promise<DeepPartial<CreateNodeReply>>;
-  replaceNodeSpec(
-    request: ReplaceNodeSpecRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ReplaceNodeSpecReply>>;
-  updateNodeMeta(
-    request: UpdateNodeMetaRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<UpdateNodeMetaReply>>;
-  retireNode(request: RetireNodeRequest, context: CallContext & CallContextExt): Promise<DeepPartial<RetireNodeReply>>;
-  forceDeleteNode(
-    request: ForceDeleteNodeRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ForceDeleteNodeReply>>;
-  /**
-   * `ConnectPorts`, not `Connect`: the generated client already has a `connect`
-   * constructor.
-   */
-  connectPorts(request: ConnectRequest, context: CallContext & CallContextExt): Promise<DeepPartial<ConnectReply>>;
-  disconnect(request: DisconnectRequest, context: CallContext & CallContextExt): Promise<DeepPartial<DisconnectReply>>;
-  forceDisconnect(
-    request: ForceDisconnectRequest,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ForceDisconnectReply>>;
   getServerConfig(
     request: GetServerConfigRequest,
     context: CallContext & CallContextExt,
@@ -13200,22 +10724,14 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: ListServerHealthHistoryRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<ListServerHealthHistoryReply>>;
-  listNodeHealthHistory(
-    request: ListNodeHealthHistoryRequest,
+  listPodHealthHistory(
+    request: ListPodHealthHistoryRequest,
     context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ListNodeHealthHistoryReply>>;
-  watchCanvas(
-    request: WatchCanvasRequest,
-    context: CallContext & CallContextExt,
-  ): ServerStreamingMethodResult<DeepPartial<CanvasEvent>>;
+  ): Promise<DeepPartial<ListPodHealthHistoryReply>>;
   watchServerHealth(
     request: WatchServerHealthRequest,
     context: CallContext & CallContextExt,
   ): ServerStreamingMethodResult<DeepPartial<ServerHealthEvent>>;
-  watchNodeHealth(
-    request: WatchNodeHealthRequest,
-    context: CallContext & CallContextExt,
-  ): ServerStreamingMethodResult<DeepPartial<NodeHealthEvent>>;
   watchRollouts(
     request: WatchRolloutsRequest,
     context: CallContext & CallContextExt,
@@ -13267,7 +10783,6 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<ListCanvasesRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ListCanvasesReply>;
-  getCanvas(request: DeepPartial<GetCanvasRequest>, options?: CallOptions & CallOptionsExt): Promise<GetCanvasReply>;
   updateCanvas(
     request: DeepPartial<UpdateCanvasRequest>,
     options?: CallOptions & CallOptionsExt,
@@ -13276,14 +10791,13 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<DeleteCanvasRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<DeleteCanvasReply>;
-  validateCanvas(
-    request: DeepPartial<ValidateCanvasRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<ValidateCanvasReply>;
   getCanvasTree(
     request: DeepPartial<GetCanvasTreeRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<GetCanvasTreeReply>;
+  getGraph(request: DeepPartial<GetGraphRequest>, options?: CallOptions & CallOptionsExt): Promise<GetGraphReply>;
+  applyGraph(request: DeepPartial<ApplyGraphRequest>, options?: CallOptions & CallOptionsExt): Promise<ApplyGraphReply>;
+  moveItems(request: DeepPartial<MoveItemsRequest>, options?: CallOptions & CallOptionsExt): Promise<MoveItemsReply>;
   createServer(
     request: DeepPartial<CreateServerRequest>,
     options?: CallOptions & CallOptionsExt,
@@ -13297,30 +10811,6 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     options?: CallOptions & CallOptionsExt,
   ): Promise<DeleteServerReply>;
   moveServer(request: DeepPartial<MoveServerRequest>, options?: CallOptions & CallOptionsExt): Promise<MoveServerReply>;
-  createNode(request: DeepPartial<CreateNodeRequest>, options?: CallOptions & CallOptionsExt): Promise<CreateNodeReply>;
-  replaceNodeSpec(
-    request: DeepPartial<ReplaceNodeSpecRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<ReplaceNodeSpecReply>;
-  updateNodeMeta(
-    request: DeepPartial<UpdateNodeMetaRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<UpdateNodeMetaReply>;
-  retireNode(request: DeepPartial<RetireNodeRequest>, options?: CallOptions & CallOptionsExt): Promise<RetireNodeReply>;
-  forceDeleteNode(
-    request: DeepPartial<ForceDeleteNodeRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<ForceDeleteNodeReply>;
-  /**
-   * `ConnectPorts`, not `Connect`: the generated client already has a `connect`
-   * constructor.
-   */
-  connectPorts(request: DeepPartial<ConnectRequest>, options?: CallOptions & CallOptionsExt): Promise<ConnectReply>;
-  disconnect(request: DeepPartial<DisconnectRequest>, options?: CallOptions & CallOptionsExt): Promise<DisconnectReply>;
-  forceDisconnect(
-    request: DeepPartial<ForceDisconnectRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<ForceDisconnectReply>;
   getServerConfig(
     request: DeepPartial<GetServerConfigRequest>,
     options?: CallOptions & CallOptionsExt,
@@ -13349,22 +10839,14 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<ListServerHealthHistoryRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<ListServerHealthHistoryReply>;
-  listNodeHealthHistory(
-    request: DeepPartial<ListNodeHealthHistoryRequest>,
+  listPodHealthHistory(
+    request: DeepPartial<ListPodHealthHistoryRequest>,
     options?: CallOptions & CallOptionsExt,
-  ): Promise<ListNodeHealthHistoryReply>;
-  watchCanvas(
-    request: DeepPartial<WatchCanvasRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): AsyncIterable<CanvasEvent>;
+  ): Promise<ListPodHealthHistoryReply>;
   watchServerHealth(
     request: DeepPartial<WatchServerHealthRequest>,
     options?: CallOptions & CallOptionsExt,
   ): AsyncIterable<ServerHealthEvent>;
-  watchNodeHealth(
-    request: DeepPartial<WatchNodeHealthRequest>,
-    options?: CallOptions & CallOptionsExt,
-  ): AsyncIterable<NodeHealthEvent>;
   watchRollouts(
     request: DeepPartial<WatchRolloutsRequest>,
     options?: CallOptions & CallOptionsExt,

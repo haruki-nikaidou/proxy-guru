@@ -11,20 +11,15 @@
 
 mod common;
 
-use auth::entities::db::account::{AccountId, AccountRole};
-use auth::services::identity::{Identity, IdentityKind};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::db::canvas::CanvasUiPosition;
-use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
 use orchestration::entities::db::server::{ServerIpv6Resolve, ServerLogLevel};
 use orchestration::entities::db::view::FindServerConfigView;
 use orchestration::events::{CanvasDirty, DeriveStaleCanvasesSignal};
 use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::services::canvas::{CanvasService, CreateCanvas};
-use orchestration::services::edge::{Connect, EdgeService};
-use orchestration::services::node::{CreateNode, NodeService};
+use orchestration::services::graph::{ApplyGraph, GraphChange, GraphService};
 use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::utils::secret::SecretKey;
@@ -33,18 +28,6 @@ use std::time::Duration;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use wakuwaku::amqp::{AmqpMessageProcessor, AmqpMessageSend, AmqpPool, setup_consumer};
-
-fn operator() -> Identity {
-    Identity {
-        account_id: AccountId::from_key("admin"),
-        role: AccountRole::Admin,
-        kind: IdentityKind::Session,
-    }
-}
-
-fn pos0() -> CanvasUiPosition {
-    CanvasUiPosition { x: 0, y: 0 }
-}
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -> TestResult {
@@ -93,12 +76,7 @@ async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -
         notifier: notifier.clone(),
         config: OrchestrationConfig::default(),
     };
-    let nodes = NodeService {
-        db: db.clone(),
-        notifier: notifier.clone(),
-        config: OrchestrationConfig::default(),
-    };
-    let edges = EdgeService {
+    let graph = GraphService {
         db: db.clone(),
         notifier,
         config: OrchestrationConfig::default(),
@@ -109,6 +87,8 @@ async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let server = servers
@@ -128,59 +108,24 @@ async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -
             },
         })
         .await?;
-    let create = async |name: &str, spec: NodeSpec| {
-        nodes
-            .process(CreateNode {
-                actor: operator(),
-                canvas: canvas.id.clone(),
-                name: name.to_string(),
-                comment: String::new(),
-                spec,
-                position: pos0(),
-                item_count: 0,
-            })
-            .await
-    };
-    let pod = create(
-        "edge",
-        NodeSpec::Pod(PodConfig {
-            server: server.id.clone(),
-            port: 443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let entry = create(
-        "entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls: None,
-        }),
-    )
-    .await?;
-    let exit = create(
-        "exit",
-        NodeSpec::Exit(ExitConfig {
-            destination: "10.0.0.5:8080".to_string(),
-            pass_proxy_protocol: None,
-        }),
-    )
-    .await?;
-    edges
-        .process(Connect {
+    let entry = client(&canvas, &server, "edge", 443, None);
+    let origin = exit(&canvas, "exit", "10.0.0.5:8080");
+    let out = edge_to_exit("out", &entry, &origin);
+    let outcome = graph
+        .process(ApplyGraph {
             actor: operator(),
-            output_port: port_of(&pod, "listen"),
-            input_port: port_of(&entry, "listen"),
+            canvas: canvas.id.clone(),
+            change: GraphChange {
+                put_pods: vec![routed(entry, via(&out))],
+                put_exits: vec![origin],
+                put_edges: vec![out],
+                ..GraphChange::default()
+            },
+            dry_run: false,
+            expected_generation: None,
         })
         .await?;
-    edges
-        .process(Connect {
-            actor: operator(),
-            output_port: port_of(&exit, "destination"),
-            input_port: port_of(&pod, "destination"),
-        })
-        .await?;
+    assert!(outcome.applied, "{:?}", outcome.diagnostics);
 
     // Every edit publishes, so the first snapshot to arrive is the empty config the
     // bare server derived to. What proves the wiring is that the *last* edit also
@@ -263,12 +208,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
         notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
-    let nodes = NodeService {
-        db: db.clone(),
-        notifier: Notifier::default(),
-        config: OrchestrationConfig::default(),
-    };
-    let edges = EdgeService {
+    let graph = GraphService {
         db: db.clone(),
         notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
@@ -278,6 +218,8 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let server = servers
@@ -297,59 +239,24 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
             },
         })
         .await?;
-    let create = async |name: &str, spec: NodeSpec| {
-        nodes
-            .process(CreateNode {
-                actor: operator(),
-                canvas: canvas.id.clone(),
-                name: name.to_string(),
-                comment: String::new(),
-                spec,
-                position: pos0(),
-                item_count: 0,
-            })
-            .await
-    };
-    let pod = create(
-        "edge",
-        NodeSpec::Pod(PodConfig {
-            server: server.id.clone(),
-            port: 443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let entry = create(
-        "entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls: None,
-        }),
-    )
-    .await?;
-    let exit = create(
-        "exit",
-        NodeSpec::Exit(ExitConfig {
-            destination: "10.0.0.6:8080".to_string(),
-            pass_proxy_protocol: None,
-        }),
-    )
-    .await?;
-    edges
-        .process(Connect {
+    let entry = client(&canvas, &server, "edge", 443, None);
+    let origin = exit(&canvas, "exit", "10.0.0.6:8080");
+    let out = edge_to_exit("out", &entry, &origin);
+    let outcome = graph
+        .process(ApplyGraph {
             actor: operator(),
-            output_port: port_of(&pod, "listen"),
-            input_port: port_of(&entry, "listen"),
+            canvas: canvas.id.clone(),
+            change: GraphChange {
+                put_pods: vec![routed(entry, via(&out))],
+                put_exits: vec![origin],
+                put_edges: vec![out],
+                ..GraphChange::default()
+            },
+            dry_run: false,
+            expected_generation: None,
         })
         .await?;
-    edges
-        .process(Connect {
-            actor: operator(),
-            output_port: port_of(&exit, "destination"),
-            input_port: port_of(&pod, "destination"),
-        })
-        .await?;
+    assert!(outcome.applied, "{:?}", outcome.diagnostics);
 
     // Nothing has derived anything yet: no edit was announced.
     let view = db

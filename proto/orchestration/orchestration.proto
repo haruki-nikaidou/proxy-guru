@@ -31,19 +31,6 @@ message QuicSettings {
   // Bytes; 0 leaves the whole-connection window unlimited.
   uint64 conn_receive_window = 5;
 }
-enum RelayProtocol {
-  RELAY_PROTOCOL_UNSPECIFIED = 0;
-  RELAY_TCP_RAW = 1;
-  RELAY_TCP_TLS = 2;
-  RELAY_QUIC = 3;
-}
-enum LoadBalanceMode {
-  LOAD_BALANCE_MODE_UNSPECIFIED = 0;
-  ROUND_ROBIN = 1;
-  RANDOM = 2;
-  IP_HASH = 3;
-  FALLBACK = 4;
-}
 enum Ipv6Resolve {
   IPV6_RESOLVE_UNSPECIFIED = 0;
   IPV6_REQUIRED = 1;
@@ -51,91 +38,28 @@ enum Ipv6Resolve {
   IPV6_TOLERATED = 3;
   IPV6_FORBIDDEN = 4;
 }
-enum PortKind {
-  PORT_KIND_UNSPECIFIED = 0;
-  DERIVE_LISTEN = 1;
-  DERIVE_DESTINATION = 2;
-  // A bundle carries every channel of a universal node to the next one; it is
-  // expansion metadata, not a traffic port.
-  BUNDLE = 3;
-}
-enum PortDirection {
-  PORT_DIRECTION_UNSPECIFIED = 0;
-  PORT_INPUT = 1;
-  PORT_OUTPUT = 2;
-}
-enum CanvasExportAs {
-  CANVAS_EXPORT_AS_UNSPECIFIED = 0;
-  INPUT_INTO_CANVAS = 1;
-  OUTPUT_OUT_OF_CANVAS = 2;
-}
-enum ProblemSeverity {
-  PROBLEM_SEVERITY_UNSPECIFIED = 0;
-  PROBLEM_ERROR = 1;
-  PROBLEM_WARNING = 2;
-}
-enum ProblemKind {
-  PROBLEM_KIND_UNSPECIFIED = 0;
-  PORT_KIND_MISMATCH = 1;
-  EDGE_DIRECTION_INVALID = 2;
-  EDGE_SELF_NODE = 3;
-  EDGE_CROSS_CANVAS = 4;
-  PORT_OVERSUBSCRIBED = 5;
-  PORT_SHAPE_INVALID = 6;
-  CYCLE = 7;
-  DUPLICATE_LISTEN = 8;
-  reserved 9; // POD_IP_FOREIGN: pods are attributed to a server directly now
-  EXIT_DESTINATION_INVALID = 10;
-  IP_HASH_WITHOUT_CLIENT_IP = 11;
-  reserved 12; // UNSUPPORTED_SPEC: import/export nodes are supported since stage 2
-  POD_PORT_UNCONNECTED = 13;
-  RELAY_SAME_SERVER = 14;
-  DISTRIBUTE_SINGLE_MEMBER = 15;
-  CANVAS_IMPORT_SELF = 16;
-  CANVAS_IMPORT_ANCESTOR = 17;
-  CANVAS_IMPORT_DUPLICATE = 18;
-  CANVAS_IMPORT_UNRESOLVED = 19;
-  POD_SERVER_FOREIGN = 20;
-  SERVER_NO_ADDRESS = 21;
-  CHANNEL_TARGET_NOT_POD = 22;
-  BUNDLE_EDGE_INVALID = 23;
-  BUNDLE_CYCLE = 24;
-  CHANNEL_NO_EXIT = 25;
-  CHANNEL_NO_TRANSIT = 26;
-  LANES_STALE = 27;
-}
-// The role a lane node plays in the expansion of a universal node.
-enum LaneRole {
-  LANE_ROLE_UNSPECIFIED = 0;
-  LANE_DISTRIBUTE = 1;
-  LANE_RELAY = 2;
-  LANE_LANDING = 3;
-  LANE_AGGREGATE = 4;
-}
-// The handle groups of a bundle-capable node, for connects that create a port
-// on demand: `CHANNEL_OUT` on a load-balance distribute node or a universal pod
-// (one port per channel), `BUNDLE_IN` on a universal pod or a load-balance
-// distribute node (one port per incoming bundle). Bundles leave through ports
-// that already exist (a distribute node's members, a universal pod's
-// `bundle_out`) and enter an aggregate node through its members, so those
-// ends are given by port id.
-enum UniversalGroup {
-  UNIVERSAL_GROUP_UNSPECIFIED = 0;
-  CHANNEL_OUT = 1;
-  BUNDLE_IN = 2;
-  reserved 3; // BUNDLE_OUT: bundles now leave through member ports
-}
 enum ServerHealthStatus {
   SERVER_HEALTH_STATUS_UNSPECIFIED = 0;
   SERVER_ONLINE = 1;
   SERVER_DEGRADED = 2;
   SERVER_OFFLINE = 3;
 }
-enum NodeHealthStatus {
-  NODE_HEALTH_STATUS_UNSPECIFIED = 0;
-  NODE_READY = 1;
-  NODE_DEPLOYING = 2;
-  NODE_FAILED = 3;
+enum PodHealthStatus {
+  POD_HEALTH_STATUS_UNSPECIFIED = 0;
+  POD_READY = 1;
+  POD_DEPLOYING = 2;
+  POD_FAILED = 3;
+}
+// How traffic arrives at a pod: clients connect to it directly (raw, or TLS
+// terminated with an ACME certificate), or other pods relay to it in one
+// protocol. An edge into a pod dials it in the protocol the pod listens with.
+enum Ingress {
+  INGRESS_UNSPECIFIED = 0;
+  CLIENT_RAW = 1;
+  CLIENT_TLS = 2;
+  RELAY_TCP = 3;
+  RELAY_TLS = 4;
+  RELAY_QUIC = 5;
 }
 enum DnsProviderKind {
   DNS_PROVIDER_KIND_UNSPECIFIED = 0;
@@ -159,119 +83,100 @@ message TlsConfig {
   string domain_id = 3;
   string acme_directory = 4;
 }
+// ---- the pod graph ------------------------------------------------------------
+// A canvas tree's forwarding topology is a directed acyclic graph: pods are the
+// vertices, exits the sinks, and every edge is a way a pod's traffic may go on.
+
 // One listener on one server. `bind_ip` empty means every address of the host
 // (dual-stack `::`); `advertise_ip` empty means the server's effective address.
-message PodConfig {
-  reserved 1; // ip_record_id
-  uint32 port = 2;
-  string server_id = 3;
-  string bind_ip = 4;
-  string advertise_ip = 5;
-}
-message EntryConfig {
-  ProxyProtocolVersion receive_proxy_protocol = 1;
-  TlsConfig tls = 2;
-}
-message RelayConfig {
-  RelayProtocol protocol = 1;
-  string override_ip_address = 2;
-  uint32 override_port = 3;
-}
-message ExitConfig {
-  string destination = 1;
-  ProxyProtocolVersion pass_proxy_protocol = 2;
-}
-// One member of a load-balance node, as the operator declares it: `slot` is the
-// member's stable number (its port is `member_<slot>`, so renaming keeps the
-// bundle drawn on it), `name` is what the operator calls it.
-message LoadBalanceMember {
-  uint32 slot = 1;
-  string name = 2;
-}
-// The operator's rule: `members` are the bundles this node splits into, one
-// port each, in the order given (1 to 256, unique names and slots).
-// `protocol` is how the channels bundled out are relayed to the universal
-// pods they land on (unspecified = raw TCP).
-message LoadBalanceDistributeConfig {
-  LoadBalanceMode mode = 1;
-  RelayProtocol protocol = 2;
-  repeated LoadBalanceMember members = 3;
-}
-// `members` are the bundles this node joins, one port each (1 to 256).
-message LoadBalanceAggregateConfig {
-  repeated LoadBalanceMember members = 1;
-}
-message CanvasImportConfig {
-  string canvas_id = 1;
-}
-message CanvasExportConfig {
-  PortKind kind = 1;
-  CanvasExportAs direction = 2;
-}
-// The universal pod of a server: created with the server, one per server. It
-// takes bundles in and lands every channel they carry on a real pod of its own
-// (a "lane"), then hands the bundle on through `bundle_out`. Bundles start at a
-// load-balance distribute node (one per entry pod connected to its channel
-// handle) and end at a load-balance aggregate node, which grows one input per
-// channel for an exit; both are ordinary load-balance nodes whose ports adapt.
-message UniversalPodConfig {
-  string server_id = 1;
-}
-message NodeSpec {
-  oneof spec {
-    PodConfig pod = 1;
-    EntryConfig entry = 2;
-    RelayConfig relay = 3;
-    ExitConfig exit = 4;
-    LoadBalanceDistributeConfig load_balance_distribute = 5;
-    LoadBalanceAggregateConfig load_balance_aggregate = 6;
-    CanvasImportConfig canvas_import = 7;
-    CanvasExportConfig canvas_export = 8;
-    UniversalPodConfig universal_pod = 9;
-  }
-  reserved 10, 11; // universal_distribute / universal_aggregate: folded into load balance nodes
-}
-// Why a node exists: it was generated by the expansion of a universal node
-// (`group_node_id`) for one channel (`channel_pod_id`, the entry pod the
-// channel starts at). Such a node is managed: it cannot be retired or
-// re-wired by hand, only a landing pod's port may be edited.
-message Lane {
-  string key = 1;
-  string group_node_id = 2;
-  string channel_pod_id = 3;
-  LaneRole role = 4;
-  // The universal node the bundle came from (a landing pod) or the universal
-  // pod a relay dials (a distributor's relay); empty otherwise.
-  string source_node_id = 5;
-}
-
-message Port {
+message Pod {
   string id = 1;
-  string node_id = 2;
-  PortKind kind = 3;
-  PortDirection direction = 4;
-  string key = 5;
-  int64 position = 6;
+  // The canvas the pod is drawn on; any canvas of its server's tree.
+  string canvas_id = 2;
+  string server_id = 3;
+  string name = 4;
+  string comment = 5;
+  // On a write, 0 picks a free port of the server (40000-59999).
+  uint32 port = 6;
+  string bind_ip = 7;
+  string advertise_ip = 8;
+  Ingress ingress = 9;
+  // Client ingress only.
+  ProxyProtocolVersion receive_proxy_protocol = 10;
+  // CLIENT_TLS only.
+  TlsConfig tls = 11;
+  // How the pod chooses between its out-edges, as the JSON document the pod row
+  // stores; empty when it has none. A route names every out-edge exactly once:
+  //   {"edge": "<edge id>"}
+  //   {"balance": [{"weight": 2, "to": <route>}, {"to": <route>}], "sticky": "client_ip"}
+  //   {"failover": [<route>, <route>]}
+  string route_json = 12;
 }
-message Node {
+// A destination outside the fabric.
+message Exit {
   string id = 1;
   string canvas_id = 2;
   string name = 3;
   string comment = 4;
-  NodeSpec spec = 5;
-  CanvasUiPosition position = 6;
-  repeated Port ports = 7;
-  // Set only for a canvas_import node: the canvas it embeds. An import node's
-  // ports mirror that canvas's export nodes (port key = export node id).
-  Canvas import_target = 8;
-  // Set only for a node generated by a universal node's expansion.
-  Lane lane = 9;
+  // `host:port`.
+  string destination = 5;
+  ProxyProtocolVersion send_proxy_protocol = 6;
+  CanvasUiPosition position = 7;
 }
+// A pod's way on: to another pod, or to an exit. An edge's ends are its
+// identity; its overrides say how the target pod is dialed.
 message Edge {
   string id = 1;
-  string source_port_id = 2;
-  string target_port_id = 3;
+  string source_pod_id = 2;
+  oneof target {
+    string target_pod_id = 3;
+    string target_exit_id = 4;
+  }
+  // An IP literal or a host name; empty dials the target pod's address.
+  string override_ip = 5;
+  // 0 dials the target pod's port.
+  uint32 override_port = 6;
 }
+message GroupMember {
+  oneof member {
+    string pod_id = 1;
+    string edge_id = 2;
+    string exit_id = 3;
+    string server_id = 4;
+  }
+}
+// How the dashboard draws part of the graph (a splitter, an aggregator, a
+// rule): a kind it defines, and whatever it keeps about the drawing in
+// `props_json`. Nothing is derived from a group.
+message Group {
+  string id = 1;
+  string canvas_id = 2;
+  string kind = 3;
+  string name = 4;
+  string props_json = 5;
+  repeated GroupMember members = 6;
+}
+message GraphSubject {
+  oneof subject {
+    string server_id = 1;
+    string pod_id = 2;
+    string exit_id = 3;
+    string edge_id = 4;
+    string group_id = 5;
+    string canvas_id = 6;
+  }
+}
+// A problem with a graph, or with a change to it. `problem` is a stable
+// snake_case name (`cycle`, `listener_conflict`, `route_missing_edge`,
+// `listener_in_use`, `unknown_pod`, ...); an error blocks a write, a warning
+// never does.
+message Diagnostic {
+  string problem = 1;
+  bool error = 2;
+  repeated GraphSubject subjects = 3;
+  string message = 4;
+}
+
 // One of the two fixed address slots of a server (IPv4, IPv6): what the worker
 // reported and what the operator typed over it. Empty strings mean unset.
 message AddressSlot {
@@ -335,19 +240,18 @@ message Server {
   // `last_seen_at` also moves with the config stream's heartbeat, which the
   // master keeps up on its own timer, so this is what "online" is judged on.
   string last_health_report_at = 19;
+  // What the worker reads beyond the tree form every worker reads
+  // (`route_table`, `relay_confirm`), as it last registered.
+  repeated string capabilities = 21;
 }
 message Canvas {
   string id = 1;
   string name = 2;
   string description = 3;
-}
-message Problem {
-  ProblemSeverity severity = 1;
-  ProblemKind kind = 2;
-  string message = 3;
-  repeated string node_ids = 4;
-  repeated string edge_ids = 5;
-  repeated string port_ids = 6;
+  // The canvas this one is drawn inside; empty for a root.
+  string parent_id = 4;
+  // Where it is drawn on its parent.
+  CanvasUiPosition position = 5;
 }
 // A listener a server serves, or that another server points at, identified by
 // the server it lives on. `protocol` is one of `raw`, `relay_tcp`, `relay_tls`,
@@ -371,28 +275,84 @@ message ConfigSnapshot {
 message CreateCanvasRequest {
   string name = 1;
   string description = 2;
+  // Set to create a subcanvas drawn at `position` inside that canvas.
+  string parent_id = 3;
+  CanvasUiPosition position = 4;
 }
 message CreateCanvasReply {
   Canvas canvas = 1;
 }
 message ListCanvasesRequest {
-  // Subcanvases (canvases imported by another canvas) are omitted unless set.
+  // Subcanvases (canvases with a parent) are omitted unless set.
   bool include_subcanvases = 1;
 }
 message ListCanvasesReply {
   repeated Canvas canvases = 1;
 }
-message GetCanvasRequest {
+// Any canvas of the tree may be given; the reply is always the whole tree:
+// every canvas, server, pod, exit, edge and group of it, and the diagnostics the
+// graph checks with.
+message GetGraphRequest {
   string canvas_id = 1;
 }
-message GetCanvasReply {
-  Canvas canvas = 1;
+message GetGraphReply {
+  // Root first, then by depth.
+  repeated Canvas canvases = 1;
   repeated Server servers = 2;
-  repeated Node nodes = 3;
-  repeated Edge edges = 4;
-  // Root first, parent last; empty for a root canvas.
-  repeated Canvas ancestors = 5;
+  repeated Pod pods = 3;
+  repeated Exit exits = 4;
+  repeated Edge edges = 5;
+  repeated Group groups = 6;
+  repeated Diagnostic diagnostics = 7;
+  // The root's edit counter: pass it back as `expected_generation`.
+  int64 generation = 8;
 }
+// One batch of changes to a tree's graph, all of it or none. A put replaces the
+// row with its id, or creates it when no row has that id; ids of new rows are
+// chosen by the caller (20 characters of `[a-z0-9]`), so one batch can create a
+// pod, the edges into and out of it and the routes naming them. Deleting a pod
+// or an exit takes no edge with it: delete the edges and rewrite the routes
+// that name them in the same batch.
+message GraphChange {
+  repeated Pod put_pods = 1;
+  repeated Exit put_exits = 2;
+  repeated Edge put_edges = 3;
+  repeated Group put_groups = 4;
+  repeated string delete_pod_ids = 5;
+  repeated string delete_exit_ids = 6;
+  repeated string delete_edge_ids = 7;
+  repeated string delete_group_ids = 8;
+}
+// `dry_run` answers the diagnostics without writing. `expected_generation`, when
+// not 0, refuses a change computed against a tree that has moved on since.
+message ApplyGraphRequest {
+  string canvas_id = 1;
+  GraphChange change = 2;
+  bool dry_run = 3;
+  int64 expected_generation = 4;
+}
+message ApplyGraphReply {
+  bool applied = 1;
+  int64 generation = 2;
+  // Every diagnostic of the graph the change produces, and of the change itself;
+  // any error means nothing was written.
+  repeated Diagnostic diagnostics = 3;
+  // The pods the change put, as written: one put with port 0 carries its port.
+  repeated Pod pods = 4;
+}
+message ItemPosition {
+  string id = 1;
+  CanvasUiPosition position = 2;
+}
+// Where servers, exits and subcanvases are drawn; nothing a worker reads.
+message MoveItemsRequest {
+  // Any canvas of the tree the items belong to.
+  string canvas_id = 1;
+  repeated ItemPosition servers = 2;
+  repeated ItemPosition exits = 3;
+  repeated ItemPosition canvases = 4;
+}
+message MoveItemsReply {}
 // Any canvas of the tree may be given; the reply is always the whole tree.
 message GetCanvasTreeRequest {
   string canvas_id = 1;
@@ -408,6 +368,8 @@ message UpdateCanvasRequest {
   string canvas_id = 1;
   string name = 2;
   string description = 3;
+  // Where a subcanvas is drawn on its parent; unset leaves it.
+  CanvasUiPosition position = 4;
 }
 message UpdateCanvasReply {
   Canvas canvas = 1;
@@ -416,13 +378,6 @@ message DeleteCanvasRequest {
   string canvas_id = 1;
 }
 message DeleteCanvasReply {}
-message ValidateCanvasRequest {
-  string canvas_id = 1;
-}
-message ValidateCanvasReply {
-  repeated Problem problems = 1;
-}
-
 message CreateServerRequest {
   string canvas_id = 1;
   string name = 2;
@@ -505,72 +460,6 @@ message MoveServerRequest {
 }
 message MoveServerReply {}
 
-message CreateNodeRequest {
-  string canvas_id = 1;
-  string name = 2;
-  string comment = 3;
-  NodeSpec spec = 4;
-  CanvasUiPosition position = 5;
-  // Reserved for specs with a hand-drawn member count; load-balance nodes
-  // declare their members in the spec and take 0 here.
-  uint32 item_count = 6;
-}
-message CreateNodeReply {
-  Node node = 1;
-}
-message ReplaceNodeSpecRequest {
-  string node_id = 1;
-  NodeSpec spec = 2;
-  uint32 item_count = 3;
-}
-message ReplaceNodeSpecReply {
-  Node node = 1;
-}
-message UpdateNodeMetaRequest {
-  string node_id = 1;
-  string name = 2;
-  string comment = 3;
-  CanvasUiPosition position = 4;
-}
-message UpdateNodeMetaReply {
-  Node node = 1;
-}
-message RetireNodeRequest {
-  string node_id = 1;
-}
-message RetireNodeReply {}
-message ForceDeleteNodeRequest {
-  string node_id = 1;
-}
-message ForceDeleteNodeReply {}
-
-// One end of a connect on a universal node's handle group instead of a port: the
-// port is created on demand (a distributor's `chan:<pod>`, a bundle port) and
-// the node's lanes are regenerated in the same transaction.
-message UniversalHandle {
-  string node_id = 1;
-  UniversalGroup group = 2;
-}
-// Each end is either a port id or a universal handle; the handle is used when
-// the port id is empty.
-message ConnectRequest {
-  string output_port_id = 1;
-  string input_port_id = 2;
-  UniversalHandle output_handle = 3;
-  UniversalHandle input_handle = 4;
-}
-message ConnectReply {
-  Edge edge = 1;
-}
-message DisconnectRequest {
-  string edge_id = 1;
-}
-message DisconnectReply {}
-message ForceDisconnectRequest {
-  string edge_id = 1;
-}
-message ForceDisconnectReply {}
-
 message GetServerConfigRequest {
   string server_id = 1;
 }
@@ -581,11 +470,10 @@ message GetServerConfigReply {
 message GetServerRolloutStatusRequest {
   string server_id = 1;
 }
-// One pod that failed to derive on its own. `listen` is the `bind:port` it would
-// have served (`[::]:port` for a wildcard bind), `error` the rendered derivation
-// error.
+// One pod that could not be compiled on its own. `listen` is the `bind:port` it
+// would have served (`[::]:port` for a wildcard bind), `error` why not.
 message InvalidPod {
-  string node_id = 1;
+  string pod_id = 1;
   string pod_name = 2;
   string listen = 3;
   string error = 4;
@@ -626,10 +514,10 @@ message ServerHealthRecord {
   int64 current_connections = 7;
   int64 max_connections = 8;
 }
-message NodeHealthRecord {
+message PodHealthRecord {
   string id = 1;
-  string node_id = 2;
-  NodeHealthStatus status = 3;
+  string pod_id = 2;
+  PodHealthStatus status = 3;
   string message = 4;
   string report_time = 5;
 }
@@ -644,14 +532,14 @@ message ListServerHealthHistoryReply {
   repeated ServerHealthRecord records = 1;
 }
 // `limit` of 0 means the server default; records come newest first.
-message ListNodeHealthHistoryRequest {
-  string node_id = 1;
+message ListPodHealthHistoryRequest {
+  string pod_id = 1;
   string start = 2;
   string end = 3;
   uint32 limit = 4;
 }
-message ListNodeHealthHistoryReply {
-  repeated NodeHealthRecord records = 1;
+message ListPodHealthHistoryReply {
+  repeated PodHealthRecord records = 1;
 }
 
 // DNS providers are Admin only. `api_secret` is write-only: it is never
@@ -660,7 +548,7 @@ message DnsProvider {
   string id = 1;
   string name = 2;
   DnsProviderKind provider = 3;
-  // Cloudflare: unused (the zone id lives on the Entry's `TlsConfig.domain_id`).
+  // Cloudflare: unused (the zone id lives on the pod's `TlsConfig.domain_id`).
   // Vercel: the team id, or empty for a personal account.
   string account_id = 4;
   string created_at = 5;
@@ -688,7 +576,7 @@ message UpdateDnsProviderRequest {
 message UpdateDnsProviderReply {
   DnsProvider provider = 1;
 }
-// Refused while an Entry still references the provider.
+// Refused while a pod still references the provider.
 message DeleteDnsProviderRequest {
   string dns_provider_id = 1;
 }
@@ -720,7 +608,7 @@ message RetryCertificateRequest {
 message RetryCertificateReply {
   Certificate certificate = 1;
 }
-// Admin only. Refused while an Entry still references the certificate's
+// Admin only. Refused while a pod still references the certificate's
 // `(sni, acme_directory)`.
 message DeleteCertificateRequest {
   string certificate_id = 1;
@@ -753,43 +641,6 @@ message SetOrchestrationConfigReply {
 // client to re-request: a slow consumer receives fewer, newer snapshots.
 message KeepAlive {}
 
-enum CanvasChangeKind {
-  CANVAS_CHANGE_KIND_UNSPECIFIED = 0; // the opening snapshot, or a refresh after a bus reconnect
-  CANVAS_UPDATED = 1;
-  CANVAS_DELETED = 2;
-  SERVER_CREATED = 3;
-  SERVER_UPDATED = 4;
-  SERVER_MOVED = 5;
-  SERVER_DELETED = 6;
-  SERVER_IP_CHANGED = 7;
-  NODE_CREATED = 8;
-  NODE_REPLACED = 9;
-  NODE_META_UPDATED = 10;
-  NODE_RETIRED = 11;
-  NODE_DELETED = 12;
-  EDGE_CONNECTED = 13;
-  EDGE_RETIRED = 14;
-  EDGE_DELETED = 15;
-  SERVER_HEALTH_CHANGED = 16;
-}
-message WatchCanvasRequest {
-  string canvas_id = 1;
-}
-// The whole GetCanvas reply again. `generation` is the root canvas's edit counter
-// and is informational only: metadata edits (positions, names) do not bump it.
-// Several changes may collapse into one snapshot; `cause` is then the latest.
-message CanvasSnapshot {
-  int64 generation = 1;
-  CanvasChangeKind cause = 2;
-  repeated string affected_ids = 3;
-  GetCanvasReply contents = 4;
-}
-message CanvasEvent {
-  oneof event {
-    CanvasSnapshot snapshot = 1;
-    KeepAlive keep_alive = 2;
-  }
-}
 // `since` is RFC 3339; empty means one hour ago.
 message WatchServerHealthRequest {
   string server_id = 1;
@@ -804,22 +655,6 @@ message ServerHealthEvent {
   oneof event {
     ServerHealthSnapshot snapshot = 1;
     ServerHealthRecord record = 2;
-    KeepAlive keep_alive = 3;
-  }
-}
-// `limit` bounds the opening snapshot; 0 means 50.
-message WatchNodeHealthRequest {
-  string node_id = 1;
-  uint32 limit = 2;
-}
-message NodeHealthSnapshot {
-  NodeHealthStatus status = 1; // the newest record's status; UNSPECIFIED when there is none
-  repeated NodeHealthRecord records = 2; // newest first
-}
-message NodeHealthEvent {
-  oneof event {
-    NodeHealthSnapshot snapshot = 1;
-    NodeHealthRecord record = 2;
     KeepAlive keep_alive = 3;
   }
 }
@@ -845,25 +680,16 @@ message RolloutEvent {
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
   rpc ListCanvases(ListCanvasesRequest) returns (ListCanvasesReply);
-  rpc GetCanvas(GetCanvasRequest) returns (GetCanvasReply);
   rpc UpdateCanvas(UpdateCanvasRequest) returns (UpdateCanvasReply);
   rpc DeleteCanvas(DeleteCanvasRequest) returns (DeleteCanvasReply);
-  rpc ValidateCanvas(ValidateCanvasRequest) returns (ValidateCanvasReply);
   rpc GetCanvasTree(GetCanvasTreeRequest) returns (GetCanvasTreeReply);
+  rpc GetGraph(GetGraphRequest) returns (GetGraphReply);
+  rpc ApplyGraph(ApplyGraphRequest) returns (ApplyGraphReply);
+  rpc MoveItems(MoveItemsRequest) returns (MoveItemsReply);
   rpc CreateServer(CreateServerRequest) returns (CreateServerReply);
   rpc UpdateServer(UpdateServerRequest) returns (UpdateServerReply);
   rpc DeleteServer(DeleteServerRequest) returns (DeleteServerReply);
   rpc MoveServer(MoveServerRequest) returns (MoveServerReply);
-  rpc CreateNode(CreateNodeRequest) returns (CreateNodeReply);
-  rpc ReplaceNodeSpec(ReplaceNodeSpecRequest) returns (ReplaceNodeSpecReply);
-  rpc UpdateNodeMeta(UpdateNodeMetaRequest) returns (UpdateNodeMetaReply);
-  rpc RetireNode(RetireNodeRequest) returns (RetireNodeReply);
-  rpc ForceDeleteNode(ForceDeleteNodeRequest) returns (ForceDeleteNodeReply);
-  // `ConnectPorts`, not `Connect`: the generated client already has a `connect`
-  // constructor.
-  rpc ConnectPorts(ConnectRequest) returns (ConnectReply);
-  rpc Disconnect(DisconnectRequest) returns (DisconnectReply);
-  rpc ForceDisconnect(ForceDisconnectRequest) returns (ForceDisconnectReply);
   rpc GetServerConfig(GetServerConfigRequest) returns (GetServerConfigReply);
   rpc GetServerRolloutStatus(GetServerRolloutStatusRequest) returns (GetServerRolloutStatusReply);
   rpc ForgetServerApplied(ForgetServerAppliedRequest) returns (ForgetServerAppliedReply);
@@ -871,10 +697,8 @@ service Orchestration {
   rpc GetAgentRelease(GetAgentReleaseRequest) returns (GetAgentReleaseReply);
   rpc RequestAgentUpdate(RequestAgentUpdateRequest) returns (RequestAgentUpdateReply);
   rpc ListServerHealthHistory(ListServerHealthHistoryRequest) returns (ListServerHealthHistoryReply);
-  rpc ListNodeHealthHistory(ListNodeHealthHistoryRequest) returns (ListNodeHealthHistoryReply);
-  rpc WatchCanvas(WatchCanvasRequest) returns (stream CanvasEvent);
+  rpc ListPodHealthHistory(ListPodHealthHistoryRequest) returns (ListPodHealthHistoryReply);
   rpc WatchServerHealth(WatchServerHealthRequest) returns (stream ServerHealthEvent);
-  rpc WatchNodeHealth(WatchNodeHealthRequest) returns (stream NodeHealthEvent);
   rpc WatchRollouts(WatchRolloutsRequest) returns (stream RolloutEvent);
   rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);
   rpc ListDnsProviders(ListDnsProvidersRequest) returns (ListDnsProvidersReply);

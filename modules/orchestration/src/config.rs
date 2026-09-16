@@ -35,9 +35,10 @@ pub struct OrchestrationConfig {
     pub degraded_grace_secs: u64,
     /// Retention of raw `server_health_record` rows.
     pub server_health_ttl_secs: u64,
-    /// Retention of raw `node_health_record` rows.
-    pub node_health_ttl_secs: u64,
-    /// The ACME directory an Entry uses when its `TlsConfig.acme_directory` is
+    /// Retention of raw `pod_health_record` rows.
+    #[serde(alias = "node_health_ttl_secs")]
+    pub pod_health_ttl_secs: u64,
+    /// The ACME directory a TLS client pod uses when its `TlsConfig.acme_directory` is
     /// empty.
     pub default_acme_directory: String,
     /// Renew an ACME certificate this long before `not_after`.
@@ -103,7 +104,7 @@ impl Default for OrchestrationConfig {
             health_offline_after_intervals: 3,
             degraded_grace_secs: 60,
             server_health_ttl_secs: 7 * 24 * 60 * 60,
-            node_health_ttl_secs: 7 * 24 * 60 * 60,
+            pod_health_ttl_secs: 7 * 24 * 60 * 60,
             default_acme_directory: LETS_ENCRYPT_DIRECTORY.to_string(),
             acme_renew_before_secs: 30 * 24 * 60 * 60,
             acme_retry_after_secs: 60 * 60,
@@ -170,8 +171,8 @@ impl OrchestrationConfig {
         Duration::from_secs(self.server_health_ttl_secs)
     }
 
-    pub fn node_health_ttl(&self) -> Duration {
-        Duration::from_secs(self.node_health_ttl_secs)
+    pub fn pod_health_ttl(&self) -> Duration {
+        Duration::from_secs(self.pod_health_ttl_secs)
     }
 
     pub fn acme_renew_before(&self) -> Duration {

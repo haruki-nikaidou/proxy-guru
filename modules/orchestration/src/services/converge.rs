@@ -23,26 +23,21 @@
 //! a pure function of the fabric's current state, so a lost message or a crashed
 //! master costs a retry, never correctness.
 //!
-//! Rule 2 means a pod whose listener moved (a new port, or a new relay protocol
-//! re-rolling a landing port) runs *two* listeners until its dependants have
-//! switched. The worker tells listeners apart by tag, so the held one is renamed
-//! after its socket — `osaka-hop (9443/relay_tcp)` — and drops out, name and all,
-//! once nothing points at it.
+//! Rule 2 means a pod whose listener moved to a new port runs *two* listeners
+//! until its dependants have switched. The worker tells listeners apart by tag
+//! (the pod's id), so the held one is renamed after its socket —
+//! `<pod> (9443/relay_tcp)` — and drops out, name and all, once nothing points at
+//! it.
 
-use crate::config::OrchestrationConfig;
-use crate::entities::db::node::NodeId;
+use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
-use crate::entities::db::topology::CanvasTopology;
 use crate::entities::db::view::{
     CertificateRef, ConfigSnapshot, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
     ServerConfigViewEntity,
 };
-use crate::services::OrchestrationError;
-use crate::services::derive::{
-    DerivationCertificates, DerivedConfig, certificate_union, derive_server_config,
-};
+use crate::services::derive::{DerivedConfig, certificate_union};
 use guru_worker_config::{Config, Forwarding};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// One server's config as it may be rolled out right now.
 #[derive(Debug, Clone)]
@@ -144,7 +139,7 @@ pub fn converge(
     // Rule 3: a pod that stopped deriving keeps what it is already serving. Keyed
     // by pod, never by socket: the edit that broke the pod may also have moved it.
     for pod in &ideal.invalid {
-        if let Some(previous) = old_forwarding_of_pod(own, &pod.node)? {
+        if let Some(previous) = old_forwarding_of_pod(own, &pod.pod)? {
             merged.push(previous);
         }
     }
@@ -219,8 +214,8 @@ pub fn converge(
 }
 
 /// The tag of a held listener that would otherwise share its pod's tag:
-/// `osaka-hop (9443/relay_tcp)`. Applied again only if a pod happens to be named
-/// like one, which is what keeps every tag of a config unique.
+/// `<pod> (9443/relay_tcp)`. Applied again only if a tag happens to read like
+/// one, which is what keeps every tag of a config unique.
 fn held_tag(tag: &str, serves: &ListenerCap) -> String {
     format!("{tag} ({}/{})", serves.port, serves.protocol.name())
 }
@@ -232,7 +227,7 @@ fn held_tag(tag: &str, serves: &ListenerCap) -> String {
 /// listener, and a socket can be reused by a different pod entirely.
 fn old_forwarding_of_pod(
     own: &ServerConfigViewEntity,
-    pod: &NodeId,
+    pod: &PodId,
 ) -> Result<Option<(Forwarding, ForwardingDeps)>, ConvergeError> {
     snapshots_newest_first(own)
         .find_map(|snapshot| {
@@ -288,48 +283,56 @@ fn entry_at(
     Ok((forwarding, snapshot.forwardings[index].clone()))
 }
 
-/// Rejects an edit that would put a different protocol on a socket some server
-/// still points at.
+/// A listener an edit would give a different protocol while some server still
+/// points at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchConflict {
+    pub server: ServerId,
+    pub pod: PodId,
+    pub port: i64,
+    /// The protocol the fabric still depends on.
+    pub in_use: ListenProtocol,
+    pub wanted: ListenProtocol,
+}
+
+/// Every listener of the projected configs that would put a different protocol
+/// on a socket some server still points at.
 ///
 /// Such a switch has no seamless path: the two listeners cannot coexist on one
-/// worker, so whichever way it is sequenced the dependants break. Rejecting it at
-/// edit time turns a runtime outage into an error message that names the fix.
-pub fn ensure_switch_safe(
-    projected: &CanvasTopology,
+/// worker, so whichever way it is sequenced the dependants break. Refusing it
+/// at edit time turns a runtime outage into an error message that names the
+/// fix. `projected` is derived with assumed certificates: a switch is just as
+/// unsafe once its certificate arrives.
+pub fn switch_conflicts(
+    projected: &BTreeMap<ServerId, DerivedConfig>,
     views: &[ServerConfigViewEntity],
-    config: &OrchestrationConfig,
-) -> Result<(), OrchestrationError> {
-    let mut referenced: Vec<ListenerCap> = Vec::new();
+) -> Vec<SwitchConflict> {
+    let mut referenced: Vec<&ListenerCap> = Vec::new();
     for view in views {
         for snapshot in [&view.desired, &view.in_flight, &view.applied]
             .into_iter()
             .flatten()
         {
             for deps in &snapshot.forwardings {
-                referenced.extend(deps.points_at.iter().cloned());
+                referenced.extend(deps.points_at.iter());
             }
         }
     }
-    if referenced.is_empty() {
-        return Ok(());
-    }
-    // Only listener shapes matter here, so certificate availability must not
-    // hide a pod: a switch is just as unsafe once its certificate arrives.
-    let certificates = DerivationCertificates::assumed();
-    for server in &projected.servers {
-        // A server whose config does not derive at all is reported by the
-        // derivation pass, not here.
-        let Ok(derived) = derive_server_config(projected, &server.id, &certificates, config) else {
-            continue;
-        };
+    let mut out = Vec::new();
+    for (server, derived) in projected {
         for deps in &derived.forwardings {
-            if let Some(old) = referenced.iter().find(|cap| cap.conflicts(&deps.serves)) {
-                return Err(OrchestrationError::Conflict(format!(
-                    "listener {}:{} is still in use as {:?}; use a new port instead of changing its protocol",
-                    server.name, deps.serves.port, old.protocol
-                )));
+            if let Some(old) = referenced.iter().find(|cap| cap.conflicts(&deps.serves))
+                && !out.iter().any(|c: &SwitchConflict| c.pod == deps.pod)
+            {
+                out.push(SwitchConflict {
+                    server: server.clone(),
+                    pod: deps.pod.clone(),
+                    port: deps.serves.port,
+                    in_use: old.protocol,
+                    wanted: deps.serves.protocol,
+                });
             }
         }
     }
-    Ok(())
+    out
 }

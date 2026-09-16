@@ -19,8 +19,7 @@ fn grpc(w: &World) -> OrchestrationGrpc {
     OrchestrationGrpc {
         canvases: w.canvases.clone(),
         servers: w.servers.clone(),
-        nodes: w.nodes.clone(),
-        edges: w.edges.clone(),
+        graph: w.graph.clone(),
         rollout: w.rollout.clone(),
         health: w.health.clone(),
         dns: w.dns.clone(),
@@ -52,9 +51,15 @@ fn as_operator<T>(message: T) -> Request<T> {
 }
 
 async fn create_canvas(api: &OrchestrationGrpc, name: &str) -> pb::Canvas {
+    create_subcanvas(api, name, "").await
+}
+
+async fn create_subcanvas(api: &OrchestrationGrpc, name: &str, parent: &str) -> pb::Canvas {
     api.create_canvas(as_operator(pb::CreateCanvasRequest {
         name: name.to_string(),
         description: String::new(),
+        parent_id: parent.to_string(),
+        position: None,
     }))
     .await
     .unwrap()
@@ -63,210 +68,285 @@ async fn create_canvas(api: &OrchestrationGrpc, name: &str) -> pb::Canvas {
     .unwrap()
 }
 
-/// `Node.import_target` is set on every reply that carries an import node, not
-/// only on `GetCanvas`: a client must not need a second round trip to label the
-/// node it just created or moved.
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn mutation_replies_carry_the_import_target(pool: sqlx::PgPool) -> TestResult {
-    let w = world(pool).await?;
-    let api = grpc(&w);
-    let root = create_canvas(&api, "root").await;
-    let sub = create_canvas(&api, "sub").await;
-
-    let created = api
-        .create_node(as_operator(pb::CreateNodeRequest {
-            canvas_id: root.id.clone(),
-            name: "sub".to_string(),
-            comment: String::new(),
-            spec: Some(pb::NodeSpec {
-                spec: Some(pb::node_spec::Spec::CanvasImport(pb::CanvasImportConfig {
-                    canvas_id: sub.id.clone(),
-                })),
-            }),
-            position: None,
-            item_count: 0,
-        }))
-        .await?
-        .into_inner()
-        .node
-        .unwrap();
-    let target = created
-        .import_target
-        .expect("CreateNode reply names the target");
-    assert_eq!(
-        (target.id.as_str(), target.name.as_str()),
-        (sub.id.as_str(), "sub")
-    );
-
-    let moved = api
-        .update_node_meta(as_operator(pb::UpdateNodeMetaRequest {
-            node_id: created.id.clone(),
-            name: "sub".to_string(),
-            comment: "moved".to_string(),
-            position: Some(pb::CanvasUiPosition { x: 5, y: 5 }),
-        }))
-        .await?
-        .into_inner()
-        .node
-        .unwrap();
-    let target = moved
-        .import_target
-        .expect("UpdateNodeMeta reply names the target");
-    assert_eq!(target.id, sub.id);
-
-    // A non-import node never carries one.
-    let exit = api
-        .create_node(as_operator(pb::CreateNodeRequest {
-            canvas_id: root.id.clone(),
-            name: "exit".to_string(),
-            comment: String::new(),
-            spec: Some(pb::NodeSpec {
-                spec: Some(pb::node_spec::Spec::Exit(pb::ExitConfig {
-                    destination: "10.0.0.5:8080".to_string(),
-                    pass_proxy_protocol: pb::ProxyProtocolVersion::Unspecified.into(),
-                })),
-            }),
-            position: None,
-            item_count: 0,
-        }))
-        .await?
-        .into_inner()
-        .node
-        .unwrap();
-    assert!(exit.import_target.is_none());
-    Ok(())
+async fn create_server(api: &OrchestrationGrpc, canvas: &str, name: &str, address: &str) -> pb::Server {
+    api.create_server(as_operator(pb::CreateServerRequest {
+        canvas_id: canvas.to_string(),
+        name: name.to_string(),
+        icon: String::new(),
+        comment: String::new(),
+        position: None,
+        ipv6_resolve: i32::from(pb::Ipv6Resolve::Ipv6Tolerated),
+        log_level: "info".to_string(),
+        override_v4: address.to_string(),
+        override_v6: String::new(),
+        extra_addresses: Vec::new(),
+    }))
+    .await
+    .unwrap()
+    .into_inner()
+    .server
+    .unwrap()
 }
 
-/// `ConnectPorts` takes a universal handle in place of a port id; the reply's
-/// edge starts on the port the handle created.
+fn json(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap()
+}
+
+/// A whole graph crosses the wire and comes back as it was sent: the ids the
+/// client chose, the route and group documents, edge overrides, and the port
+/// picked for a pod put with port 0. A dry run writes nothing.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn connect_ports_accepts_universal_handles(pool: sqlx::PgPool) -> TestResult {
+async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let api = grpc(&w);
     let root = create_canvas(&api, "root").await;
-    let server = api
-        .create_server(as_operator(pb::CreateServerRequest {
-            canvas_id: root.id.clone(),
-            name: "us".to_string(),
-            icon: String::new(),
-            comment: String::new(),
-            position: None,
-            ipv6_resolve: pb::Ipv6Resolve::Ipv6Tolerated.into(),
-            log_level: "info".to_string(),
-            override_v4: "198.51.100.1".to_string(),
-            override_v6: String::new(),
-            extra_addresses: Vec::new(),
-        }))
-        .await?
-        .into_inner()
-        .server
-        .unwrap();
-    let create = |name: &str, spec: pb::node_spec::Spec| {
-        as_operator(pb::CreateNodeRequest {
-            canvas_id: root.id.clone(),
-            name: name.to_string(),
-            comment: String::new(),
-            spec: Some(pb::NodeSpec { spec: Some(spec) }),
-            position: None,
-            item_count: 0,
-        })
+    let sub = create_subcanvas(&api, "sub", &root.id).await;
+    assert_eq!(sub.parent_id, root.id);
+    let tokyo = create_server(&api, &root.id, "tokyo", "203.0.113.10").await;
+    let osaka = create_server(&api, &root.id, "osaka", "198.51.100.10").await;
+
+    let entry = pb::Pod {
+        id: key("entry"),
+        canvas_id: root.id.clone(),
+        server_id: tokyo.id.clone(),
+        name: "entry".to_string(),
+        port: 443,
+        ingress: pb::Ingress::ClientRaw.into(),
+        receive_proxy_protocol: pb::ProxyProtocolVersion::ProxyV2.into(),
+        route_json: format!(
+            r#"{{"balance":[{{"weight":3,"to":{{"edge":"{}"}}}},{{"to":{{"edge":"{}"}}}}],"sticky":"client_ip"}}"#,
+            key("near"),
+            key("far")
+        ),
+        ..Default::default()
     };
-    let pod = api
-        .create_node(create(
-            "p0",
-            pb::node_spec::Spec::Pod(pb::PodConfig {
-                port: 10000,
-                server_id: server.id.clone(),
-                bind_ip: String::new(),
-                advertise_ip: String::new(),
-            }),
-        ))
-        .await?
-        .into_inner()
-        .node
-        .unwrap();
-    let ud = api
-        .create_node(create(
-            "fan",
-            pb::node_spec::Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
-                mode: pb::LoadBalanceMode::RoundRobin.into(),
-                protocol: pb::RelayProtocol::RelayTcpRaw.into(),
-                members: vec![pb::LoadBalanceMember {
-                    slot: 1,
-                    name: "hk-1".to_string(),
-                }],
-            }),
-        ))
-        .await?
-        .into_inner()
-        .node
-        .unwrap();
-    assert_eq!(
-        ud.ports.len(),
-        1,
-        "one bundle port per member: {:?}",
-        ud.ports
-    );
-    assert_eq!(ud.ports[0].key, "member_1");
-    assert_eq!(ud.ports[0].kind, i32::from(pb::PortKind::Bundle));
-    let destination = pod.ports.iter().find(|p| p.key == "destination").unwrap();
-    let edge = api
-        .connect_ports(as_operator(pb::ConnectRequest {
-            output_port_id: String::new(),
-            input_port_id: destination.id.clone(),
-            output_handle: Some(pb::UniversalHandle {
-                node_id: ud.id.clone(),
-                group: pb::UniversalGroup::ChannelOut.into(),
-            }),
-            input_handle: None,
+    let hop = pb::Pod {
+        id: key("hop"),
+        canvas_id: sub.id.clone(),
+        server_id: osaka.id.clone(),
+        name: "hop".to_string(),
+        port: 0,
+        ingress: pb::Ingress::RelayQuic.into(),
+        advertise_ip: "2001:DB8::10".to_string(),
+        route_json: format!(r#"{{"edge":"{}"}}"#, key("out")),
+        ..Default::default()
+    };
+    let origin = pb::Exit {
+        id: key("origin"),
+        canvas_id: sub.id.clone(),
+        name: "origin".to_string(),
+        destination: "10.0.0.5:8080".to_string(),
+        send_proxy_protocol: pb::ProxyProtocolVersion::ProxyV1.into(),
+        position: Some(pb::CanvasUiPosition { x: 5, y: -7 }),
+        ..Default::default()
+    };
+    let edge = |name: &str, source: &str, target: pb::edge::Target| pb::Edge {
+        id: key(name),
+        source_pod_id: key(source),
+        target: Some(target),
+        ..Default::default()
+    };
+    let mut near = edge("near", "entry", pb::edge::Target::TargetPodId(key("hop")));
+    near.override_ip = "hop.example.net".to_string();
+    near.override_port = 19443;
+    let far = edge("far", "entry", pb::edge::Target::TargetPodId(key("hop")));
+    let out = edge("out", "hop", pb::edge::Target::TargetExitId(key("origin")));
+    let group = pb::Group {
+        id: key("splitter"),
+        canvas_id: root.id.clone(),
+        kind: "splitter".to_string(),
+        name: "fan-out".to_string(),
+        props_json: r#"{"x":1,"y":2}"#.to_string(),
+        members: vec![
+            pb::GroupMember {
+                member: Some(pb::group_member::Member::PodId(key("entry"))),
+            },
+            pb::GroupMember {
+                member: Some(pb::group_member::Member::EdgeId(key("near"))),
+            },
+        ],
+    };
+    let change = pb::GraphChange {
+        put_pods: vec![entry.clone(), hop.clone()],
+        put_exits: vec![origin.clone()],
+        put_edges: vec![near.clone(), far.clone(), out.clone()],
+        put_groups: vec![group.clone()],
+        ..Default::default()
+    };
+
+    let dry = api
+        .apply_graph(as_operator(pb::ApplyGraphRequest {
+            canvas_id: sub.id.clone(),
+            change: Some(change.clone()),
+            dry_run: true,
+            expected_generation: 0,
         }))
         .await?
-        .into_inner()
-        .edge
-        .unwrap();
-    assert_eq!(edge.target_port_id, destination.id);
-    let canvas = api
-        .get_canvas(as_operator(pb::GetCanvasRequest {
+        .into_inner();
+    assert!(!dry.applied);
+    assert!(
+        dry.diagnostics.iter().all(|d| !d.error),
+        "{:?}",
+        dry.diagnostics
+    );
+    let empty = api
+        .get_graph(as_operator(pb::GetGraphRequest {
             canvas_id: root.id.clone(),
         }))
         .await?
         .into_inner();
-    let ud_now = canvas.nodes.iter().find(|n| n.id == ud.id).unwrap();
-    let chan = ud_now
-        .ports
-        .iter()
-        .find(|p| p.id == edge.source_port_id)
-        .expect("the edge starts on the created channel port");
-    assert_eq!(chan.key, format!("chan:{}", pod.id));
-    assert_eq!(chan.kind, i32::from(pb::PortKind::DeriveDestination));
-    // The universal pod the server came with is reported with its fixed port.
-    let up = canvas
-        .nodes
-        .iter()
-        .find(|n| {
-            matches!(
-                &n.spec,
-                Some(pb::NodeSpec {
-                    spec: Some(pb::node_spec::Spec::UniversalPod(_))
-                })
-            )
-        })
-        .expect("the server's universal pod");
-    assert_eq!(up.ports.len(), 1);
-    assert_eq!(up.ports[0].kind, i32::from(pb::PortKind::Bundle));
-    assert!(up.lane.is_none());
+    assert!(empty.pods.is_empty(), "a dry run writes nothing");
 
-    // A missing end is an argument error, not a crash.
+    let applied = api
+        .apply_graph(as_operator(pb::ApplyGraphRequest {
+            canvas_id: sub.id.clone(),
+            change: Some(change),
+            dry_run: false,
+            expected_generation: empty.generation,
+        }))
+        .await?
+        .into_inner();
+    assert!(applied.applied, "{:?}", applied.diagnostics);
+    assert_eq!(applied.generation, empty.generation + 1);
+    let picked = applied
+        .pods
+        .iter()
+        .find(|p| p.id == key("hop"))
+        .unwrap()
+        .port;
+    assert!((40000..=59999).contains(&picked), "{picked}");
+
+    let graph = api
+        .get_graph(as_operator(pb::GetGraphRequest {
+            canvas_id: sub.id.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(graph.generation, applied.generation);
+    assert_eq!(
+        graph.canvases.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        vec![root.id.clone(), sub.id.clone()],
+        "the whole tree, root first"
+    );
+    assert_eq!(graph.servers.len(), 2);
+    let find_pod = |id: &str| graph.pods.iter().find(|p| p.id == id).unwrap().clone();
+    let got_entry = find_pod(&key("entry"));
+    assert_eq!(json(&got_entry.route_json), json(&entry.route_json));
+    assert_eq!(
+        pb::Pod {
+            route_json: String::new(),
+            ..got_entry
+        },
+        pb::Pod {
+            route_json: String::new(),
+            ..entry
+        }
+    );
+    let got_hop = find_pod(&key("hop"));
+    assert_eq!(got_hop.port, picked);
+    assert_eq!(got_hop.advertise_ip, "2001:db8::10", "an IP is stored canonically");
+    assert_eq!(graph.exits, vec![origin]);
+    let mut edges = graph.edges.clone();
+    edges.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut sent = vec![near, far, out];
+    sent.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(edges, sent);
+    assert_eq!(graph.groups.len(), 1);
+    assert_eq!(json(&graph.groups[0].props_json), json(&group.props_json));
+    assert_eq!(graph.groups[0].members, group.members);
+    Ok(())
+}
+
+/// What a client can get wrong: a document that does not parse and an edge
+/// without a target are argument errors; a graph that does not check is an
+/// answer, with the diagnostics naming what is wrong, and nothing written.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_bad_graph_change_is_refused_with_what_is_wrong(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let api = grpc(&w);
+    let root = create_canvas(&api, "root").await;
+    let tokyo = create_server(&api, &root.id, "tokyo", "203.0.113.10").await;
+    let pod = |name: &str, route_json: String| pb::Pod {
+        id: key(name),
+        canvas_id: root.id.clone(),
+        server_id: tokyo.id.clone(),
+        name: name.to_string(),
+        port: 443,
+        ingress: pb::Ingress::ClientRaw.into(),
+        route_json,
+        ..Default::default()
+    };
+    let apply = |change: pb::GraphChange| {
+        api.apply_graph(as_operator(pb::ApplyGraphRequest {
+            canvas_id: root.id.clone(),
+            change: Some(change),
+            dry_run: false,
+            expected_generation: 0,
+        }))
+    };
+
+    let err = apply(pb::GraphChange {
+        put_pods: vec![pod("entry", "{\"edge\":".to_string())],
+        ..Default::default()
+    })
+    .await
+    .expect_err("a route that is not JSON");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    let err = apply(pb::GraphChange {
+        put_edges: vec![pb::Edge {
+            id: key("lost"),
+            source_pod_id: key("entry"),
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .await
+    .expect_err("an edge needs a target");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    // A route that names an edge the pod does not have, and an id that is not a
+    // record key.
+    let refused = apply(pb::GraphChange {
+        put_pods: vec![
+            pod("entry", format!(r#"{{"edge":"{}"}}"#, key("ghost"))),
+            pb::Pod {
+                id: "NOT-A-KEY".to_string(),
+                ..pod("other", String::new())
+            },
+        ],
+        ..Default::default()
+    })
+    .await?
+    .into_inner();
+    assert!(!refused.applied);
+    let problems: Vec<&str> = refused
+        .diagnostics
+        .iter()
+        .filter(|d| d.error)
+        .map(|d| d.problem.as_str())
+        .collect();
+    assert!(problems.contains(&"invalid_id"), "{problems:?}");
+    assert!(problems.contains(&"route_unknown_edge"), "{problems:?}");
+    let graph = api
+        .get_graph(as_operator(pb::GetGraphRequest {
+            canvas_id: root.id.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert!(graph.pods.is_empty(), "nothing of a refused batch is written");
+
+    // A change computed against a generation the tree has moved past.
     let err = api
-        .connect_ports(as_operator(pb::ConnectRequest {
-            output_port_id: String::new(),
-            input_port_id: destination.id.clone(),
-            output_handle: None,
-            input_handle: None,
+        .apply_graph(as_operator(pb::ApplyGraphRequest {
+            canvas_id: root.id.clone(),
+            change: Some(pb::GraphChange::default()),
+            dry_run: false,
+            expected_generation: graph.generation + 7,
         }))
         .await
-        .expect_err("no port and no handle");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        .expect_err("a stale generation");
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     Ok(())
 }
 
@@ -335,7 +415,7 @@ async fn next_item<T>(
 /// The three transport contracts of a live stream: it needs a session, it
 /// keeps itself alive, and it ends the moment that session does.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> TestResult {
+async fn watch_rollouts_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> TestResult {
     let w = world_with(
         pool,
         OrchestrationConfig {
@@ -350,7 +430,7 @@ async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> Te
 
     // No session metadata: refused at open, before any view is spawned.
     let err = api
-        .watch_canvas(as_operator(pb::WatchCanvasRequest {
+        .watch_rollouts(as_operator(pb::WatchRolloutsRequest {
             canvas_id: canvas.id.clone(),
         }))
         .await
@@ -358,8 +438,8 @@ async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> Te
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
     let mut stream = api
-        .watch_canvas(as_session(
-            pb::WatchCanvasRequest {
+        .watch_rollouts(as_session(
+            pb::WatchRolloutsRequest {
                 canvas_id: canvas.id.clone(),
             },
             &token,
@@ -371,7 +451,7 @@ async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> Te
         .await
         .expect("an opening item")?;
     assert!(
-        matches!(first.event, Some(pb::canvas_event::Event::Snapshot(_))),
+        matches!(first.event, Some(pb::rollout_event::Event::Snapshot(_))),
         "a stream opens with a snapshot"
     );
 
@@ -379,7 +459,7 @@ async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> Te
         .await
         .expect("a keep-alive on an idle stream")?;
     assert!(
-        matches!(idle.event, Some(pb::canvas_event::Event::KeepAlive(_))),
+        matches!(idle.event, Some(pb::rollout_event::Event::KeepAlive(_))),
         "an idle stream sends keep-alives"
     );
 
@@ -436,8 +516,8 @@ async fn paused_client_gets_newest_not_backlog(pool: sqlx::PgPool) -> TestResult
         .expect("a server");
 
     let mut stream = api
-        .watch_canvas(as_session(
-            pb::WatchCanvasRequest {
+        .watch_rollouts(as_session(
+            pb::WatchRolloutsRequest {
                 canvas_id: canvas.id.clone(),
             },
             &token,
@@ -457,7 +537,7 @@ async fn paused_client_gets_newest_not_backlog(pool: sqlx::PgPool) -> TestResult
     // Drain everything that is ready without waiting for more.
     let mut snapshots = Vec::new();
     while let Some(item) = next_item(&mut stream, std::time::Duration::from_millis(400)).await {
-        if let Some(pb::canvas_event::Event::Snapshot(snapshot)) = item?.event {
+        if let Some(pb::rollout_event::Event::Snapshot(snapshot)) = item?.event {
             snapshots.push(snapshot);
         }
     }
@@ -467,20 +547,9 @@ async fn paused_client_gets_newest_not_backlog(pool: sqlx::PgPool) -> TestResult
         snapshots.len()
     );
     let last = snapshots.last().expect("at least the opening snapshot");
-    let position = last
-        .contents
-        .as_ref()
-        .expect("a snapshot carries the contents")
-        .servers
-        .iter()
-        .find(|s| s.id == server.id)
-        .expect("the server is still there")
-        .position
-        .expect("a server has a position");
-    assert_eq!(
-        (position.x, position.y),
-        (MOVES, MOVES),
-        "the last snapshot carries the final position"
+    assert!(
+        last.servers.iter().any(|s| s.server_id == server.id),
+        "the last snapshot carries the current state"
     );
     Ok(())
 }
@@ -491,20 +560,7 @@ async fn watch_rollouts_covers_the_whole_tree(pool: sqlx::PgPool) -> TestResult 
     let w = world(pool).await?;
     let api = grpc(&w);
     let root = create_canvas(&api, "root").await;
-    let sub = create_canvas(&api, "sub").await;
-    api.create_node(as_operator(pb::CreateNodeRequest {
-        canvas_id: root.id.clone(),
-        name: "sub".to_string(),
-        comment: String::new(),
-        spec: Some(pb::NodeSpec {
-            spec: Some(pb::node_spec::Spec::CanvasImport(pb::CanvasImportConfig {
-                canvas_id: sub.id.clone(),
-            })),
-        }),
-        position: None,
-        item_count: 0,
-    }))
-    .await?;
+    let sub = create_subcanvas(&api, "sub", &root.id).await;
     for (canvas, name, address) in [
         (&root.id, "tokyo", "203.0.113.10"),
         (&sub.id, "osaka", "203.0.113.11"),
@@ -555,13 +611,13 @@ async fn watch_rollouts_covers_the_whole_tree(pool: sqlx::PgPool) -> TestResult 
 
 /// An unknown canvas is a `NOT_FOUND` on the stream, not a silent wait.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn watch_canvas_reports_a_missing_canvas(pool: sqlx::PgPool) -> TestResult {
+async fn watch_rollouts_reports_a_missing_canvas(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let api = grpc(&w);
     let token = w.login().await?;
     let mut stream = api
-        .watch_canvas(as_session(
-            pb::WatchCanvasRequest {
+        .watch_rollouts(as_session(
+            pb::WatchRolloutsRequest {
                 canvas_id: "nope".to_string(),
             },
             &token,

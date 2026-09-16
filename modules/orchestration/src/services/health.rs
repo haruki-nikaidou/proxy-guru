@@ -2,19 +2,19 @@
 //! silence.
 //!
 //! A worker streams one `HealthReport` per interval. Each report becomes one
-//! `server_health_record` plus one `node_health_record` per node the reported
-//! pods carry; the server's current status is denormalised on its row. Nothing
-//! here changes a config, so no canvas is ever dirtied.
+//! `server_health_record` plus one `pod_health_record` per reported pod; the
+//! server's current status is denormalised on its row. Nothing here changes a
+//! config, so no canvas is ever dirtied.
 
 use crate::config::OrchestrationConfig;
 use crate::entities::db::health::{
     DeleteHealthRecordsBefore, HealthWrite, InsertServerHealthRecord,
-    ListNodeHealthHistory as ListNodeHealthHistoryRows,
+    ListPodHealthHistory as ListPodHealthHistoryRows,
     ListServerHealthHistory as ListServerHealthHistoryRows, ListServersForLivenessSweep,
-    NewNodeHealthRecord, NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity,
+    NewPodHealthRecord, PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity,
     ServerHealthStatus, SetServerHealthStatus,
 };
-use crate::entities::db::node::NodeId;
+use crate::entities::db::pod::PodId;
 use crate::entities::db::server::{
     FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId,
     UpdateReportedAddresses,
@@ -35,8 +35,8 @@ use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Node records returned by `ListNodeHealthHistory` when the caller sets no limit.
-pub const DEFAULT_NODE_HISTORY_LIMIT: i64 = 500;
+/// Pod records returned by `ListPodHealthHistory` when the caller sets no limit.
+pub const DEFAULT_POD_HISTORY_LIMIT: i64 = 500;
 
 #[derive(Clone)]
 pub struct HealthService {
@@ -47,10 +47,7 @@ pub struct HealthService {
 
 impl HealthService {
     /// Puts one accepted health write on the live bus: the server record every
-    /// server-health stream follows, plus the node rows it carried.
-    ///
-    /// `status_changed` is what canvas views filter on — a report every interval
-    /// per server would otherwise reload every open canvas.
+    /// server-health stream follows, plus the pod rows it carried.
     async fn publish(&self, server: &ServerId, write: &HealthWrite) {
         self.notifier
             .live(LiveMessage::ServerHealth {
@@ -60,10 +57,10 @@ impl HealthService {
                 status_changed: write.previous_status != write.record.status,
             })
             .await;
-        if !write.nodes.is_empty() {
+        if !write.pods.is_empty() {
             self.notifier
-                .live(LiveMessage::NodeHealth {
-                    records: write.nodes.iter().map(Into::into).collect(),
+                .live(LiveMessage::PodHealth {
+                    records: write.pods.iter().map(Into::into).collect(),
                 })
                 .await;
         }
@@ -79,8 +76,8 @@ pub(crate) struct SnapshotEntry<'a> {
 }
 
 impl SnapshotEntry<'_> {
-    /// The tag is the pod's name at derivation time; it is how a worker names
-    /// the entry back to the master.
+    /// The tag is the pod's id (or, for a held listener, the id with its socket);
+    /// it is how a worker names the entry back to the master.
     pub fn tag(&self) -> &str {
         &self.forwarding.tag
     }
@@ -174,7 +171,7 @@ impl Processor<RecordHealthReport> for HealthService {
                 download_bytes: report.download_bytes,
                 current_connections: report.current_connections,
                 max_connections: report.max_connections,
-                nodes: node_records(&view, &report.pods, now),
+                pods: pod_records(&view, &report.pods, now),
             })
             .await?;
         let Some(write) = write else {
@@ -251,35 +248,32 @@ fn server_status(
     }
 }
 
-/// One verdict per node, the worst of every pod's that runs through it
+/// One verdict per pod, the worst of every entry the pod runs
 /// (`Failed` > `Deploying` > `Ready`), with the message of the winning status.
-/// Shared by the report path and the ack path so a node shared by several pods
-/// gets exactly one row per event.
+/// Shared by the report path and the ack path so a pod running two listeners
+/// (one held for its dependants) gets exactly one row per event.
 #[derive(Default)]
-pub(crate) struct NodeVerdicts<'a> {
-    verdicts: HashMap<&'a NodeId, (NodeHealthStatus, &'a str)>,
+pub(crate) struct PodVerdicts<'a> {
+    verdicts: HashMap<&'a PodId, (PodHealthStatus, &'a str)>,
 }
 
-impl<'a> NodeVerdicts<'a> {
-    /// Applies `status` to the pod and every node its forwarding runs through.
-    pub fn record(&mut self, deps: &'a ForwardingDeps, status: NodeHealthStatus, message: &'a str) {
-        for node in std::iter::once(&deps.pod).chain(&deps.nodes) {
-            self.verdicts
-                .entry(node)
-                .and_modify(|current| {
-                    if severity(status) > severity(current.0) {
-                        *current = (status, message);
-                    }
-                })
-                .or_insert((status, message));
-        }
+impl<'a> PodVerdicts<'a> {
+    pub fn record(&mut self, deps: &'a ForwardingDeps, status: PodHealthStatus, message: &'a str) {
+        self.verdicts
+            .entry(&deps.pod)
+            .and_modify(|current| {
+                if severity(status) > severity(current.0) {
+                    *current = (status, message);
+                }
+            })
+            .or_insert((status, message));
     }
 
-    pub fn into_records(self, now: DateTime<Utc>) -> Vec<NewNodeHealthRecord> {
+    pub fn into_records(self, now: DateTime<Utc>) -> Vec<NewPodHealthRecord> {
         self.verdicts
             .into_iter()
-            .map(|(node, (status, message))| NewNodeHealthRecord {
-                node: node.clone(),
+            .map(|(pod, (status, message))| NewPodHealthRecord {
+                pod: pod.clone(),
                 status,
                 message: message.to_string(),
                 report_time: now,
@@ -288,28 +282,27 @@ impl<'a> NodeVerdicts<'a> {
     }
 }
 
-fn severity(status: NodeHealthStatus) -> u8 {
+fn severity(status: PodHealthStatus) -> u8 {
     match status {
-        NodeHealthStatus::Ready => 0,
-        NodeHealthStatus::Deploying => 1,
-        NodeHealthStatus::Failed => 2,
+        PodHealthStatus::Ready => 0,
+        PodHealthStatus::Deploying => 1,
+        PodHealthStatus::Failed => 2,
     }
 }
 
-/// The node records one report produces: for every reported pod, the pod itself
-/// and every node its forwarding was derived through.
+/// The pod records one report produces: one per reported entry's pod.
 ///
 /// A tag resolves through `applied` first — that is what the worker runs — and
 /// `desired` otherwise, for the moment between a worker applying a revision and
 /// the master taking its ack. A tag in neither is not ours to judge.
-fn node_records(
+fn pod_records(
     view: &ServerConfigViewEntity,
     pods: &[PodResult],
     now: DateTime<Utc>,
-) -> Vec<NewNodeHealthRecord> {
+) -> Vec<NewPodHealthRecord> {
     let applied = entries_or_empty(view.applied.as_ref());
     let desired = entries_or_empty(view.desired.as_ref());
-    let mut verdicts = NodeVerdicts::default();
+    let mut verdicts = PodVerdicts::default();
     for pod in pods {
         let in_applied = applied.iter().find(|entry| entry.tag() == pod.tag);
         let in_desired = desired.iter().find(|entry| entry.tag() == pod.tag);
@@ -319,11 +312,11 @@ fn node_records(
         let failure = pod.error.as_deref().or_else(|| {
             view.failed_pods
                 .iter()
-                .find(|failed| failed.pod.0 == entry.deps.pod.0)
+                .find(|failed| failed.pod == entry.deps.pod)
                 .map(|failed| failed.error.as_str())
         });
         let (status, message) = match failure {
-            Some(error) => (NodeHealthStatus::Failed, error),
+            Some(error) => (PodHealthStatus::Failed, error),
             None => {
                 let pending = match (in_desired, in_applied) {
                     (Some(desired), Some(applied)) => desired.forwarding != applied.forwarding,
@@ -331,9 +324,9 @@ fn node_records(
                     (None, _) => false,
                 };
                 let status = if pending {
-                    NodeHealthStatus::Deploying
+                    PodHealthStatus::Deploying
                 } else {
-                    NodeHealthStatus::Ready
+                    PodHealthStatus::Ready
                 };
                 (status, "")
             }
@@ -470,10 +463,10 @@ impl Processor<TrimHealthHistory> for HealthService {
                             .unwrap_or(chrono::TimeDelta::MAX),
                     )
                     .unwrap_or(DateTime::<Utc>::MIN_UTC),
-                node_records_before: input
+                pod_records_before: input
                     .now
                     .checked_sub_signed(
-                        chrono::Duration::from_std(self.config.node_health_ttl())
+                        chrono::Duration::from_std(self.config.pod_health_ttl())
                             .unwrap_or(chrono::TimeDelta::MAX),
                     )
                     .unwrap_or(DateTime::<Utc>::MIN_UTC),
@@ -507,24 +500,24 @@ impl Processor<ListServerHealthHistory> for HealthService {
     }
 }
 
-pub struct ListNodeHealthHistory {
+pub struct ListPodHealthHistory {
     pub actor: Identity,
-    pub node: NodeId,
+    pub pod: PodId,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub limit: i64,
 }
 
-impl Processor<ListNodeHealthHistory> for HealthService {
-    type Output = Vec<NodeHealthRecordEntity>;
+impl Processor<ListPodHealthHistory> for HealthService {
+    type Output = Vec<PodHealthRecordEntity>;
     type Error = OrchestrationError;
-    #[tracing::instrument(name = "Service:ListNodeHealthHistory", skip_all, err)]
-    async fn process(&self, input: ListNodeHealthHistory) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Service:ListPodHealthHistory", skip_all, err)]
+    async fn process(&self, input: ListPodHealthHistory) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ViewWorkspace)?;
         Ok(self
             .db
-            .process(ListNodeHealthHistoryRows {
-                node: input.node,
+            .process(ListPodHealthHistoryRows {
+                pod: input.pod,
                 start: input.start,
                 end: input.end,
                 limit: input.limit,

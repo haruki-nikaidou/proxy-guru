@@ -20,7 +20,7 @@ use crate::entities::db::ca::{
 };
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::certificate::{ListCertificatesByIds, TouchCanvases};
-use crate::entities::db::node::{ListCanvasesWithRelayTls, NodeId};
+use crate::entities::db::pod::{ListCanvasesWithRelayTls, PodId};
 use crate::entities::db::view::{CertificateKind, CertificateRef};
 use crate::services::OrchestrationError;
 use crate::utils::ids;
@@ -171,7 +171,7 @@ impl Processor<InitInternalCa> for CaService {
 /// pod's leaf is unfenced, and two of those collide on the
 /// `relay_certificate_pod` UNIQUE index instead.
 pub struct EnsureRelayCertificates {
-    pub pods: Vec<NodeId>,
+    pub pods: Vec<PodId>,
 }
 
 impl Processor<EnsureRelayCertificates> for CaService {
@@ -194,7 +194,7 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 pods: input.pods.clone(),
             })
             .await?;
-        let mut by_pod: HashMap<NodeId, RelayCertificateEntity> = existing
+        let mut by_pod: HashMap<PodId, RelayCertificateEntity> = existing
             .into_iter()
             .map(|leaf| (leaf.pod.clone(), leaf))
             .collect();
@@ -280,7 +280,7 @@ impl Processor<EnsureRelayCertificates> for CaService {
 /// on it: `None` means another consumer rotated this leaf first and this pass
 /// must leave it alone.
 pub struct RotateRelayCertificate {
-    pub pod: NodeId,
+    pub pod: PodId,
     pub expected_version: i64,
 }
 
@@ -323,7 +323,7 @@ impl CaService {
     async fn issue_leaf(
         &self,
         issuer: &Issuer<'_, KeyPair>,
-        pod: &NodeId,
+        pod: &PodId,
         sni: String,
         now: DateTime<Utc>,
         expected_version: Option<i64>,
