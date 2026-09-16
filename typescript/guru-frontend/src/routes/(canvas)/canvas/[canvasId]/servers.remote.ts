@@ -1,6 +1,6 @@
 /**
- * The server node: its row on the canvas, the agent that runs on it, and where
- * it stands in a rollout. Reads live in `./topology.remote.js`.
+ * The server card: its row on the canvas, the agent that runs on it, and where
+ * it stands in a rollout. The graph itself is read in `./graph.remote.js`.
  */
 import { Ipv6Resolve } from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
@@ -28,7 +28,7 @@ import {
 	serverQuicSchema
 } from '#lib/server/topology/schemas.js';
 import { command, query } from '$app/server';
-import { getCanvasGraph } from './topology.remote.js';
+import { getCanvasGraph } from './graph.remote.js';
 
 export const createServerNode = command(
 	v.object({ canvasId: idSchema, name: nameSchema, x: coordSchema, y: coordSchema }),
@@ -155,45 +155,15 @@ export const getAgentRelease = query(async (): Promise<AgentReleaseDto> => {
 	};
 });
 
-/** Deliberately does not refresh: the dragged position already matches locally. */
-export const moveServerNode = command(
-	v.object({ canvasId: idSchema, serverId: idSchema, x: coordSchema, y: coordSchema }),
-	async ({ serverId, x, y }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().moveServer({ serverId, position: { x, y } }, { metadata })
-		);
-		return { ok: true as const };
-	}
-);
-
+/**
+ * `DeleteServer` refuses while any pod still runs on the server: the canvas
+ * removes them first, in one graph batch it shows the operator, and calls this
+ * once that batch went through.
+ */
 export const deleteServerNode = command(
-	v.object({
-		canvasId: idSchema,
-		serverId: idSchema,
-		force: v.optional(v.boolean(), false)
-	}),
-	async ({ canvasId, serverId, force }) => {
+	v.object({ canvasId: idSchema, serverId: idSchema }),
+	async ({ canvasId, serverId }) => {
 		const metadata = sessionMetadata(requireSessionId());
-		// `DeleteServer` refuses while any pod is still placed on it, so the pods go
-		// first. The list is re-read here rather than taken from the client: a pod
-		// added since the last refresh would otherwise block the delete.
-		const detail = await callGrpc(() =>
-			orchestrationClient().getCanvas({ canvasId }, { metadata })
-		);
-		for (const node of detail.nodes) {
-			const pod = node.spec?.pod;
-			// A landing lane is not retirable by hand and the universal pod goes
-			// with the server: both are left to `DeleteServer`, which refuses with
-			// the channels still landing here.
-			if (!pod || pod.serverId !== serverId || node.lane) continue;
-			const nodeId = node.id;
-			await callGrpc(() =>
-				force
-					? orchestrationClient().forceDeleteNode({ nodeId }, { metadata })
-					: orchestrationClient().retireNode({ nodeId }, { metadata })
-			);
-		}
 		await callGrpc(() => orchestrationClient().deleteServer({ serverId }, { metadata }));
 		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };
@@ -221,7 +191,7 @@ export const getServerRollout = query(
 			derivationPending: reply.derivationPending,
 			lastSeenAt: reply.lastSeenAt,
 			invalidPods: reply.invalidPods.map(pod => ({
-				nodeId: pod.nodeId,
+				podId: pod.podId,
 				podName: pod.podName,
 				listen: pod.listen,
 				error: pod.error

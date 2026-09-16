@@ -1,57 +1,75 @@
+import type { IngressKind, ProxyVersion, RelayKind } from 'guru-graph';
 import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
 import type {
-	CanvasExportAsName,
-	ExportPortKindName,
 	Ipv6ResolveName,
-	LoadBalanceModeName,
 	LogLevelName,
 	ProxyProtocolName,
 	QuicCongestionName,
-	RelayProtocolName,
 	ServerHealthStatusName
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 
 /**
  * What each variant of an enum is called on screen, and the order a picker
- * offers them in. One place, because a node card and the panel that edits it
- * must say the same word for the same value — they were drifting apart as
- * separate ternaries in a dozen components.
+ * offers them in. One place, because a card and the panel that edits it must
+ * say the same word for the same value — they were drifting apart as separate
+ * ternaries in a dozen components.
  *
  * Every unknown value falls back to the variant the control plane treats as the
  * default, matching how `#lib/server/topology/enums.js` decodes it.
  */
 
 export const PROXY_OPTIONS: ProxyProtocolName[] = ['none', 'v1', 'v2'];
-export const proxyLabel = (value: ProxyProtocolName): string =>
+export const proxyLabel = (value: ProxyProtocolName | ProxyVersion | null): string =>
 	value === 'v1'
 		? m.editor_proxy_v1()
 		: value === 'v2'
 			? m.editor_proxy_v2()
 			: m.editor_proxy_none();
+/** The picker's name for a stored PROXY setting, and back. */
+export const proxyName = (value: ProxyVersion | null): ProxyProtocolName => value ?? 'none';
+export const proxyVersion = (value: ProxyProtocolName): ProxyVersion | null =>
+	value === 'none' ? null : value;
 
-export const RELAY_PROTOCOLS: RelayProtocolName[] = ['tcp_raw', 'tcp_tls', 'quic'];
-export const relayProtocolLabel = (value: RelayProtocolName): string =>
-	value === 'tcp_tls'
-		? m.editor_relay_tcp_tls()
-		: value === 'quic'
-			? m.editor_relay_quic()
-			: m.editor_relay_tcp_raw();
-
-export const BALANCE_MODES: LoadBalanceModeName[] = [
-	'round_robin',
-	'random',
-	'ip_hash',
-	'fallback'
+export const INGRESS_KINDS: IngressKind[] = [
+	'client_raw',
+	'client_tls',
+	'relay_tcp',
+	'relay_tls',
+	'relay_quic'
 ];
-export const balanceModeLabel = (value: LoadBalanceModeName): string =>
-	value === 'random'
-		? m.editor_balance_random()
-		: value === 'ip_hash'
-			? m.editor_balance_ip_hash()
-			: value === 'fallback'
-				? m.editor_balance_fallback()
-				: m.editor_balance_round_robin();
+export const RELAY_KINDS: RelayKind[] = ['relay_quic', 'relay_tls', 'relay_tcp'];
+export const isClientIngress = (kind: IngressKind): boolean =>
+	kind === 'client_raw' || kind === 'client_tls';
+/** How a pod listens, in full: who arrives there, and over what. */
+export const ingressLabel = (kind: IngressKind): string => {
+	switch (kind) {
+		case 'client_raw':
+			return m.editor_ingress_client_raw();
+		case 'client_tls':
+			return m.editor_ingress_client_tls();
+		case 'relay_tcp':
+			return m.editor_ingress_relay_tcp();
+		case 'relay_tls':
+			return m.editor_ingress_relay_tls();
+		default:
+			return m.editor_ingress_relay_quic();
+	}
+};
+/** The protocol alone: what a pod's row shows next to its name. */
+export const ingressProtocolLabel = (kind: IngressKind): string =>
+	kind === 'client_tls' || kind === 'relay_tls' ? 'TLS' : kind === 'relay_quic' ? 'QUIC' : 'TCP';
+
+/** `[::]:port` for a wildcard bind, `[v6]:port` for a literal IPv6. */
+export const listenLabel = (bindIp: string | null, port: number): string =>
+	bindIp === null
+		? `[::]:${port}`
+		: bindIp.includes(':')
+			? `[${bindIp}]:${port}`
+			: `${bindIp}:${port}`;
+
+export const policyLabel = (kind: 'balance' | 'failover'): string =>
+	kind === 'failover' ? m.editor_policy_failover() : m.editor_policy_balance();
 
 export const QUIC_CONGESTION_OPTIONS: QuicCongestionName[] = ['cubic', 'brutal'];
 export const quicCongestionLabel = (value: QuicCongestionName): string =>
@@ -76,19 +94,6 @@ export const ipv6Label = (value: Ipv6ResolveName): string =>
 			: value === 'forbidden'
 				? m.editor_ipv6_forbidden()
 				: m.editor_ipv6_tolerated();
-
-export const EXPORT_PORT_KINDS: ExportPortKindName[] = ['derive_listen', 'derive_destination'];
-export const exportKindLabel = (value: ExportPortKindName): string =>
-	value === 'derive_listen' ? m.editor_port_listen() : m.editor_port_destination();
-
-export const EXPORT_DIRECTIONS: CanvasExportAsName[] = [
-	'input_into_canvas',
-	'output_out_of_canvas'
-];
-export const exportAsLabel = (value: CanvasExportAsName): string =>
-	value === 'input_into_canvas'
-		? m.editor_export_input_into_canvas()
-		: m.editor_export_output_out_of_canvas();
 
 /** A pod binds every address by default; `0.0.0.0` is IPv4 only. */
 export const BIND_ALL = '';

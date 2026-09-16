@@ -1,225 +1,442 @@
 <script lang="ts">
 import {
 	Background,
+	type Connection,
+	type Edge,
 	MiniMap,
 	Panel,
 	SvelteFlow,
 	useSvelteFlow,
-	useUpdateNodeInternals,
-	type Connection,
-	type Edge
+	useUpdateNodeInternals
 } from '@xyflow/svelte';
 import '@xyflow/svelte/dist/style.css';
+import {
+	addSplitterMember,
+	carryLayout,
+	clearSpot,
+	connect,
+	draw,
+	EditError,
+	type GraphChange,
+	isEmptyChange,
+	joinSplitter,
+	locate,
+	moveCards,
+	removeAll,
+	type Subject,
+	type Target
+} from 'guru-graph';
 import { mode } from 'mode-watcher';
 import { tick, untrack } from 'svelte';
 import { toast } from 'svelte-sonner';
-import {
-	connectNodePorts,
-	createServerNode,
-	createStandaloneNode,
-	getCanvasGraph,
-	locateNodeCanvas
-} from '#lib/components/canvas/commands.js';
-import { runDeletes, runMoves } from '#lib/components/canvas/selection.js';
-import { ZOOM_MAX, ZOOM_MIN, canvasViewport } from '#lib/components/canvas/viewport.svelte.js';
-import { setEdgeOpener } from '#lib/components/canvas/edges/open.svelte.js';
-import { setFocusedNode } from '#lib/components/canvas/focus.svelte.js';
-import {
-	buildBackendIndex,
-	canvasNames,
-	connectEnd,
-	buildFlowEdges,
-	buildFlowNodes,
-	buildPortIndex,
-	canConnect,
-	flowNodeId,
-	keepEdges,
-	keepNodes,
-	mergeTombstones,
-	parseFlowNodeId,
-	reconcileFlowEdges,
-	reconcileFlowNodes,
-	type FlowNode,
-	type ForceTarget,
-	type PortIndexEntry,
-	type PanelTarget,
-	type Tombstones
-} from '#lib/components/canvas/graph.js';
-import BundleEdge from '#lib/components/canvas/edges/BundleEdge.svelte';
+import { goto, replaceState } from '$app/navigation';
+import { page } from '$app/state';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CanvasMenubar from '#lib/components/canvas/CanvasMenubar.svelte';
 import CanvasProblems from '#lib/components/canvas/CanvasProblems.svelte';
-import CanvasExportNode from '#lib/components/canvas/nodes/CanvasExportNode.svelte';
-import CanvasImportNode from '#lib/components/canvas/nodes/CanvasImportNode.svelte';
-import EntryNode from '#lib/components/canvas/nodes/EntryNode.svelte';
-import ExitNode from '#lib/components/canvas/nodes/ExitNode.svelte';
-import LoadBalanceNode from '#lib/components/canvas/nodes/LoadBalanceNode.svelte';
-import RelayNode from '#lib/components/canvas/nodes/RelayNode.svelte';
-import ServerNode from '#lib/components/canvas/nodes/ServerNode.svelte';
-import AddExportDialog from '#lib/components/canvas/panels/AddExportDialog.svelte';
-import AddSubcanvasDialog from '#lib/components/canvas/panels/AddSubcanvasDialog.svelte';
-import ForceDeleteDialog from '#lib/components/canvas/panels/ForceDeleteDialog.svelte';
-import NodePanel from '#lib/components/canvas/panels/NodePanel.svelte';
+import {
+	applyGraphChange,
+	createServerNode,
+	deleteServerNode,
+	deleteSubcanvas,
+	getCanvasGraph,
+	moveCanvasItems
+} from '#lib/components/canvas/commands.js';
+import { paletteColor, setCanvasContext } from '#lib/components/canvas/context.svelte.js';
+import AddExitDialog from '#lib/components/canvas/dialogs/AddExitDialog.svelte';
+import AddSubcanvasDialog from '#lib/components/canvas/dialogs/AddSubcanvasDialog.svelte';
+import ReviewDialog from '#lib/components/canvas/dialogs/ReviewDialog.svelte';
+import TargetDialog from '#lib/components/canvas/dialogs/TargetDialog.svelte';
+import {
+	editErrorText,
+	type PickRequest,
+	type ReviewRequest,
+	refusalText,
+	setEditor
+} from '#lib/components/canvas/editor.svelte.js';
+import BusEdge from '#lib/components/canvas/edges/BusEdge.svelte';
+import { buildFlowEdges } from '#lib/components/canvas/flow/edges.js';
+import {
+	buildFlowNodes,
+	type FlowNode,
+	focusedCard,
+	type PanelTarget,
+	problemIndex,
+	usedNames
+} from '#lib/components/canvas/flow/nodes.js';
+import { reconcileFlowEdges, reconcileFlowNodes } from '#lib/components/canvas/flow/reconcile.js';
+import RuleLegend from '#lib/components/canvas/RuleLegend.svelte';
+import AggregatorCard from '#lib/components/canvas/nodes/AggregatorCard.svelte';
+import ExitCard from '#lib/components/canvas/nodes/ExitCard.svelte';
+import PortalCard from '#lib/components/canvas/nodes/PortalCard.svelte';
+import ServerCard from '#lib/components/canvas/nodes/ServerCard.svelte';
+import SplitterCard from '#lib/components/canvas/nodes/SplitterCard.svelte';
+import SubcanvasCard from '#lib/components/canvas/nodes/SubcanvasCard.svelte';
+import InspectorPanel from '#lib/components/canvas/panels/InspectorPanel.svelte';
+import { canvasViewport, ZOOM_MAX, ZOOM_MIN } from '#lib/components/canvas/viewport.svelte.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
+import type { CanvasGraph } from '#lib/dto/topology.js';
 import { errorText } from '#lib/i18n/codes.js';
 import { suggestName } from '#lib/i18n/naming.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
-import type { CanvasGraph } from '#lib/dto/topology.js';
-import BoundaryError from '#lib/components/BoundaryError.svelte';
-import { goto, replaceState } from '$app/navigation';
-import { page } from '$app/state';
 
 let { canvasId, editable, admin }: { canvasId: string; editable: boolean; admin: boolean } =
 	$props();
 
-const graph = $derived(getCanvasGraph({ canvasId }));
+const query = $derived(getCanvasGraph({ canvasId }));
+const graph = $derived(query.current);
+const drawing = $derived(graph ? draw(graph, canvasId) : undefined);
+const problems = $derived(graph && drawing ? problemIndex(graph, drawing) : undefined);
 
 let nodes = $state.raw<FlowNode[]>([]);
 let edges = $state.raw<Edge[]>([]);
-let portIndex = $state.raw(new Map<string, PortIndexEntry>());
 let panelTarget = $state<PanelTarget | null>(null);
-let forceTargets = $state<ForceTarget[]>([]);
+let highlightedRule = $state<string | null>(null);
 let flowEl = $state<HTMLDivElement | null>(null);
 const view = canvasViewport(() => flowEl);
-/**
- * The delete batches still in flight, each owning what it dropped from the
- * mirror. Every delete command refreshes the shared graph query, so without this
- * the first one would pop the items whose command has not run yet back onto the
- * canvas. A batch removes only its own entry when it settles, so two overlapping
- * gestures cannot lift each other's protection; the re-reconcile that follows is
- * what restores anything the control plane refused.
- */
-let deleteBatches = $state.raw<Tombstones[]>([]);
-const pendingDeletes = $derived(mergeTombstones(deleteBatches));
 
-const { updateNode } = useSvelteFlow();
+let reviewRequest = $state<ReviewRequest | null>(null);
+let pick = $state<{ request: PickRequest; resolve: (target: Target | null) => void } | null>(null);
+let subcanvasOpen = $state(false);
+let exitOpen = $state(false);
+
+const { fitView, updateNode } = useSvelteFlow();
 const updateNodeInternals = useUpdateNodeInternals();
 
 const nodeTypes = {
-	server: ServerNode,
-	entry: EntryNode,
-	relay: RelayNode,
-	exit: ExitNode,
-	loadBalance: LoadBalanceNode,
-	canvasImport: CanvasImportNode,
-	canvasExport: CanvasExportNode
+	server: ServerCard,
+	exit: ExitCard,
+	canvas: SubcanvasCard,
+	portal: PortalCard,
+	splitter: SplitterCard,
+	aggregator: AggregatorCard
 };
+const edgeTypes = { bus: BusEdge };
 
-const edgeTypes = { bundle: BundleEdge };
+const podNames = $derived(new Map((graph?.pods ?? []).map(pod => [pod.id, pod.name])));
 
-// The node cards read this to ring the one the panel is editing; an edge in
-// the panel rings nothing, Svelte Flow's own selection marks it.
-setFocusedNode({
-	get current() {
-		return panelTarget && panelTarget.kind !== 'edge'
-			? flowNodeId(panelTarget.kind, panelTarget.id)
-			: null;
-	}
+setCanvasContext({
+	get focusedCard() {
+		return graph ? focusedCard(graph, panelTarget) : null;
+	},
+	get focusedPod() {
+		return panelTarget?.kind === 'pod' ? panelTarget.id : null;
+	},
+	get highlightedRule() {
+		return highlightedRule;
+	},
+	open: target => {
+		if (target.kind === 'bus') clickBus(target.id);
+		else panelTarget = target;
+	},
+	ruleColor: rule => paletteColor(drawing?.rules.colors.get(rule) ?? 0),
+	ruleName: rule => podNames.get(rule) ?? rule
 });
 
-// A bundle's count pill opens its edge; the edge path itself goes through
-// `onedgeclick` below.
-setEdgeOpener({ open: id => (panelTarget = { kind: 'edge', id }) });
-
 // The server owns the graph, but a refresh is merged into the local mirror
-// instead of replacing it: untouched nodes keep their object identity, so they
-// neither re-render nor lose their measured geometry. Only the nodes that
-// actually changed are re-measured — handle counts move with pods and
-// load-balance members, and stale handle geometry would misplace their edges.
-$effect(() => {
-	const current = graph.current;
-	if (!current) return;
-	const gone = pendingDeletes;
-	const nextNodes = gone ? keepNodes(buildFlowNodes(current), gone) : buildFlowNodes(current);
-	const nextEdges = gone ? keepEdges(buildFlowEdges(current), gone) : buildFlowEdges(current);
-	const merged = untrack(() => reconcileFlowNodes(nodes, nextNodes));
+// instead of replacing it: untouched cards keep their object identity, so they
+// neither re-render nor lose their measured geometry. Only the cards that
+// actually changed are re-measured — handles come and go with pods and members,
+// and stale handle geometry would misplace their buses.
+function redraw() {
+	if (!graph || !drawing || !problems) return;
+	const merged = untrack(() => reconcileFlowNodes(nodes, buildFlowNodes(graph, drawing, problems)));
 	nodes = merged.nodes;
-	edges = untrack(() => reconcileFlowEdges(edges, nextEdges));
-	portIndex = buildPortIndex(current);
-	if (merged.remeasure.length > 0) {
-		const ids = merged.remeasure;
-		tick().then(() => updateNodeInternals(ids));
-	}
+	edges = untrack(() => reconcileFlowEdges(edges, buildFlowEdges(drawing, problems)));
+	const measured = merged.remeasure.length > 0 ? merged.remeasure : null;
+	// `fitView` on the flow only runs when it mounts; moving to another canvas
+	// of the tree keeps it mounted, so the first drawing of each canvas is fitted
+	// here, once its cards have been measured.
+	const fit = fittedCanvas !== drawing.canvasId;
+	fittedCanvas = drawing.canvasId;
+	if (!measured && !fit) return;
+	tick().then(() => {
+		if (measured) updateNodeInternals(measured);
+		if (fit)
+			requestAnimationFrame(() =>
+				fitView({ padding: 0.1, maxZoom: 1 }).then(() => view.syncZoom())
+			);
+	});
+}
+let fittedCanvas = '';
+$effect(redraw);
+
+// The component stays mounted when the operator moves to another canvas of the
+// tree: what the panel and the legend were pointed at belongs to the last one.
+let shownCanvas = '';
+$effect.pre(() => {
+	if (canvasId === shownCanvas) return;
+	shownCanvas = canvasId;
+	untrack(() => {
+		panelTarget = null;
+		highlightedRule = null;
+	});
 });
 
 const refresh = () => getCanvasGraph({ canvasId }).refresh();
 
-const reportError = (err: unknown) => toast.error(errorText(err));
+/** Reports what went wrong with a gesture or a write. */
+function report(err: unknown) {
+	toast.error(err instanceof EditError ? editErrorText(err.code) : errorText(err));
+}
 
-const usedNames = () => canvasNames(graph.current);
+async function commit(change: GraphChange | (() => GraphChange), success?: string) {
+	const current = graph;
+	if (!current) return false;
+	try {
+		const batch = carryLayout(current, canvasId, typeof change === 'function' ? change() : change);
+		if (isEmptyChange(batch)) return true;
+		const outcome = await applyGraphChange({
+			canvasId,
+			change: batch,
+			expectedGeneration: current.generation
+		});
+		if (!outcome.applied) {
+			toast.error(refusalText(outcome.diagnostics));
+			return false;
+		}
+		if (success) toast.success(success);
+		return true;
+	} catch (err) {
+		report(err);
+		// A stale generation, or a write that half happened: re-read either way.
+		await refresh();
+		return false;
+	}
+}
+
+function pickTarget(request: PickRequest): Promise<Target | null> {
+	return new Promise(resolve => {
+		pick?.resolve(null);
+		pick = { request, resolve };
+	});
+}
+
+setEditor({
+	get canvasId() {
+		return canvasId;
+	},
+	get graph() {
+		return graph as CanvasGraph;
+	},
+	get drawing() {
+		return drawing as NonNullable<typeof drawing>;
+	},
+	get editable() {
+		return editable;
+	},
+	get admin() {
+		return admin;
+	},
+	commit,
+	review: request => {
+		reviewRequest = request;
+	},
+	pickTarget,
+	open: target => {
+		if (target.kind === 'bus') clickBus(target.id);
+		else panelTarget = target;
+	}
+});
+
+// --- adding ------------------------------------------------------------------
+
+/** Near the middle of the view, clear of every card already drawn. */
+const spotFor = (kind: 'server' | 'exit' | 'canvas') => () =>
+	drawing ? clearSpot(drawing, view.position(), kind) : view.position();
 
 async function addServer() {
-	const { x, y } = view.position();
+	const { x, y } = spotFor('server')();
 	try {
 		await createServerNode({
 			canvasId,
-			name: suggestName(m.editor_add_server(), getLocale(), usedNames()),
+			name: suggestName(m.editor_add_server(), getLocale(), usedNames(graph)),
 			x,
 			y
 		});
 	} catch (err) {
-		reportError(err);
+		report(err);
 	}
 }
 
-/**
- * The default name is the localized type label plus a random word pair, drawn
- * clear of the names already on the canvas.
- */
-async function addNode(
-	kind: 'entry' | 'relay' | 'exit' | 'load_balance_distribute' | 'load_balance_aggregate',
-	typeLabel: string
-) {
-	const { x, y } = view.position();
-	try {
-		await createStandaloneNode({
-			canvasId,
-			kind,
-			name: suggestName(typeLabel, getLocale(), usedNames()),
-			x,
-			y
+// --- connecting --------------------------------------------------------------
+
+/** What a drop on a card means as a target, asking the operator where needed. */
+async function dropTarget(
+	node: string,
+	handle: string,
+	from: string | null
+): Promise<Target | null> {
+	if (handle.startsWith('pod-in:')) return { pod: handle.slice('pod-in:'.length) };
+	if (node.startsWith('exit:')) return { exit: node.slice('exit:'.length) };
+	if (node.startsWith('server:')) {
+		return pickTarget({
+			title: m.editor_target_new_relay_title(),
+			scope: canvasId,
+			server: node.slice('server:'.length)
 		});
+	}
+	const inside = node.startsWith('canvas:')
+		? node.slice('canvas:'.length)
+		: node.startsWith('portal:')
+			? node.slice('portal:'.length)
+			: null;
+	if (inside === null) return null;
+	return pickTarget({
+		title: m.editor_target_title(),
+		scope: inside,
+		excludePods: from ? [from] : []
+	});
+}
+
+/**
+ * A connection drawn on the canvas, as a batch. Svelte Flow inserts no edge of
+ * its own: the buses are redrawn from the graph the control plane kept.
+ */
+async function connectGesture(connection: Connection) {
+	const current = graph;
+	const currentDrawing = drawing;
+	if (!current || !currentDrawing) return;
+	const sourceHandle = connection.sourceHandle ?? '';
+	const targetHandle = connection.targetHandle ?? '';
+	try {
+		if (sourceHandle.startsWith('pod-out:')) {
+			const podId = sourceHandle.slice('pod-out:'.length);
+			if (connection.target.startsWith('split:')) {
+				await commit(
+					() => joinSplitter(current, currentDrawing, podId, connection.target),
+					m.editor_joined_splitter()
+				);
+				return;
+			}
+			const target = await dropTarget(connection.target, targetHandle, podId);
+			if (target) await commit(() => connect(current, podId, target), m.editor_connected());
+		} else if (sourceHandle === 'add' && connection.source.startsWith('split:')) {
+			const target = await dropTarget(connection.target, targetHandle, null);
+			if (target) {
+				await commit(
+					() => addSplitterMember(current, currentDrawing, connection.source, target),
+					m.editor_member_added()
+				);
+			}
+		}
 	} catch (err) {
-		reportError(err);
+		report(err);
 	}
 }
 
-/**
- * The subcanvas dialogs take their placement and default name as callbacks so
- * both are computed when the operator confirms, not when the dialog mounted.
- */
-let subcanvasMode = $state<'create' | 'import'>('create');
-let subcanvasOpen = $state(false);
-let exportDialogOpen = $state(false);
-const suggestSubcanvasName = () => suggestName(m.editor_kind_subcanvas(), getLocale(), usedNames());
-const suggestExportName = () => suggestName(m.editor_kind_export(), getLocale(), usedNames());
+const isValidConnection = (connection: Edge | Connection): boolean => {
+	const sourceHandle = connection.sourceHandle ?? '';
+	const targetHandle = connection.targetHandle ?? '';
+	const fromPod = sourceHandle.startsWith('pod-out:');
+	const fromSplitter = sourceHandle === 'add' && connection.source.startsWith('split:');
+	if (!fromPod && !fromSplitter) return false;
+	if (targetHandle.startsWith('pod-in:')) {
+		return (
+			!fromPod || targetHandle.slice('pod-in:'.length) !== sourceHandle.slice('pod-out:'.length)
+		);
+	}
+	if (targetHandle !== 'in') return false;
+	if (connection.target.startsWith('split:')) {
+		if (!fromPod) return false;
+		const card = drawing?.cards.find(entry => entry.id === connection.target);
+		const podId = sourceHandle.slice('pod-out:'.length);
+		return card?.kind === 'splitter' && !card.members.some(member => member.podId === podId);
+	}
+	return ['server:', 'exit:', 'canvas:', 'portal:'].some(prefix =>
+		connection.target.startsWith(prefix)
+	);
+};
+
+// --- removing ----------------------------------------------------------------
 
 /**
- * Descends into the canvas an import node embeds. Svelte Flow has no
- * double-click event and delivers a pointer event whose `detail` is always 0,
- * so the second click is recognised here: same node, within the usual
- * double-click window.
+ * What a selection takes away, shown before it goes. Servers and subcanvases are
+ * deleted after the batch that removes what runs on them and leads into them.
  */
-const DOUBLE_CLICK_MS = 400;
-let lastClick: { id: string; at: number } | null = null;
-
-function selectNode(node: FlowNode) {
-	panelTarget = parseFlowNodeId(node.id);
-	const now = Date.now();
-	const again = lastClick?.id === node.id && now - lastClick.at < DOUBLE_CLICK_MS;
-	lastClick = again ? null : { id: node.id, at: now };
-	if (!again || node.data.kind !== 'canvas_import') return;
-	const target = node.data.node.targetCanvasId;
-	if (target) goto(`/canvas/${target}`);
+function requestRemoval(nodeIds: string[], busIds: string[]) {
+	const current = graph;
+	const currentDrawing = drawing;
+	if (!current || !currentDrawing || !editable) return;
+	const serverIds = nodeIds
+		.filter(id => id.startsWith('server:'))
+		.map(id => id.slice('server:'.length))
+		.filter(id => current.servers.some(server => server.id === id && server.canvasId === canvasId));
+	const canvasIds = nodeIds
+		.filter(id => id.startsWith('canvas:'))
+		.map(id => id.slice('canvas:'.length));
+	const exitIds = nodeIds.filter(id => id.startsWith('exit:')).map(id => id.slice('exit:'.length));
+	const splitterIds = nodeIds.filter(id => id.startsWith('split:'));
+	const edgeIds = busIds.flatMap(
+		id => currentDrawing.buses.find(bus => bus.id === id)?.edges ?? []
+	);
+	const podIds = current.pods.filter(pod => serverIds.includes(pod.serverId)).map(pod => pod.id);
+	if (
+		serverIds.length + canvasIds.length + exitIds.length + splitterIds.length + edgeIds.length ===
+		0
+	) {
+		return;
+	}
+	const names = (ids: string[], rows: { id: string; name: string }[]) =>
+		ids.map(id => rows.find(row => row.id === id)?.name ?? id);
+	reviewRequest = {
+		title: m.editor_remove_title(),
+		description: m.editor_remove_description(),
+		prunable: true,
+		build: prune =>
+			removeAll(current, currentDrawing, { podIds, exitIds, splitterIds, edgeIds }, prune),
+		alsoDeletes: {
+			servers: names(serverIds, current.servers),
+			canvases: names(canvasIds, current.canvases)
+		},
+		after: async () => {
+			for (const serverId of serverIds) await deleteServerNode({ canvasId, serverId });
+			for (const subcanvasId of canvasIds) await deleteSubcanvas({ canvasId, subcanvasId });
+		},
+		success: m.editor_deleted()
+	};
 }
 
-async function persistMove(dragged: FlowNode[]) {
+/** Always `false`: deletions are batches the operator confirms first. */
+async function beforeDelete({ nodes: doomed, edges: cut }: { nodes: FlowNode[]; edges: Edge[] }) {
+	requestRemoval(
+		doomed.map(node => node.id),
+		cut.map(edge => edge.id)
+	);
+	return false;
+}
+
+// --- moving ------------------------------------------------------------------
+
+async function persistMoves(dragged: FlowNode[]) {
+	const current = graph;
+	if (!current || dragged.length === 0) return;
+	const moves = moveCards(
+		current,
+		canvasId,
+		dragged.map(node => ({ node: node.id, position: node.position }))
+	);
 	try {
-		await runMoves(canvasId, dragged);
+		if (moves.servers.length + moves.exits.length + moves.canvases.length > 0) {
+			await moveCanvasItems({
+				canvasId,
+				servers: moves.servers,
+				exits: moves.exits,
+				canvases: moves.canvases
+			});
+		}
+		if (moves.layout) {
+			const outcome = await applyGraphChange({ canvasId, change: moves.layout });
+			if (!outcome.applied) toast.error(refusalText(outcome.diagnostics));
+		} else {
+			// Rows moved without a batch: re-read, so a later redraw starts from them.
+			await refresh();
+		}
 	} catch (err) {
-		reportError(err);
+		report(err);
 		await refresh();
 	}
 }
@@ -234,131 +451,119 @@ const ARROW_KEYS: Record<string, true> = {
 /**
  * Svelte Flow nudges the selection on arrow keys but never fires a drag stop, so
  * the release is what persists the new positions. Only key events aimed at the
- * flow count: the node panel's inputs handle their own arrows.
+ * flow count: the panel's inputs handle their own arrows.
  */
 function nudgeStop(event: KeyboardEvent) {
 	if (!editable || !view.interactive || !ARROW_KEYS[event.key]) return;
 	if (!(event.target instanceof Node) || !flowEl?.contains(event.target)) return;
-	const selected = nodes.filter(node => node.selected);
-	if (selected.length > 0) persistMove(selected);
+	persistMoves(nodes.filter(node => node.selected));
 }
 
-const isValidConnection = (connection: Edge | Connection): boolean => {
-	const current = graph.current;
-	return current ? canConnect(connection, portIndex, current, edges) : false;
-};
-
-async function connect(connection: Connection) {
-	const current = graph.current;
-	if (!current) return;
-	try {
-		await connectNodePorts({
-			canvasId,
-			output: connectEnd(current, connection.sourceHandle ?? ''),
-			input: connectEnd(current, connection.targetHandle ?? '')
-		});
-		toast.success(m.editor_connected());
-	} catch (err) {
-		reportError(err);
-		// Drops the optimistic edge Svelte Flow inserted.
-		await refresh();
-	}
-}
+// --- opening -----------------------------------------------------------------
 
 /**
- * Always returns `false`: deletions are the server's to make. The whole doomed
- * selection leaves the local mirror before any command is awaited, so the canvas
- * reacts to the keypress immediately instead of trailing the slowest call, and
- * stays gone for the rest of the batch through `pendingDeletes`. Clearing that
- * re-reconciles against the graph the control plane actually kept, which is what
- * puts a refused item back.
+ * Svelte Flow has no double-click event and delivers a pointer event whose
+ * `detail` is always 0, so the second click is recognised here: same card,
+ * within the usual double-click window.
  */
-async function beforeDelete({
-	nodes: doomedNodes,
-	edges: doomedEdges
-}: {
-	nodes: FlowNode[];
-	edges: Edge[];
-}): Promise<boolean> {
-	const gone: Tombstones = {
-		nodes: new Set(doomedNodes.map(node => node.id)),
-		edges: new Set(doomedEdges.map(edge => edge.id))
-	};
-	deleteBatches = [...deleteBatches, gone];
-	nodes = keepNodes(nodes, gone);
-	edges = keepEdges(edges, gone);
+const DOUBLE_CLICK_MS = 400;
+let lastClick: { id: string; at: number } | null = null;
 
-	const outcome = await runDeletes(
-		canvasId,
-		{ nodes: doomedNodes, edges: doomedEdges },
-		errorText
-	).finally(() => {
-		// This batch has settled: it stops hiding its own items, so the reconcile
-		// that follows brings back whatever the control plane refused. Any batch
-		// still running keeps hiding its own.
-		deleteBatches = deleteBatches.filter(batch => batch !== gone);
-	});
-
-	if (outcome.failures.length > 0) {
-		// Forcing needs admin; everyone else only gets the reason.
-		if (admin) forceTargets = outcome.failures;
-		else toast.error(outcome.failures[0]?.message ?? '');
-		// Every refusal above left the server untouched, but a call can also fail
-		// after the control plane acted, so this one case is re-read.
-		await refresh();
-	} else if (outcome.deleted) {
-		toast.success(m.editor_deleted());
+function clickCard(node: FlowNode, event?: MouseEvent | TouchEvent) {
+	const row = event?.target instanceof Element ? event.target.closest('[data-pod-id]') : null;
+	const podId = row?.getAttribute('data-pod-id');
+	if (podId) {
+		panelTarget = { kind: 'pod', id: podId };
+		return;
 	}
-
-	return false;
+	const now = Date.now();
+	const again = lastClick?.id === node.id && now - lastClick.at < DOUBLE_CLICK_MS;
+	lastClick = again ? null : { id: node.id, at: now };
+	const [kind, ...rest] = node.id.split(':');
+	const id = rest.join(':');
+	if (again && (kind === 'canvas' || kind === 'portal')) {
+		goto(`/canvas/${id}`);
+		return;
+	}
+	switch (kind) {
+		case 'server':
+		case 'exit':
+		case 'canvas':
+			panelTarget = { kind, id };
+			break;
+		case 'portal':
+			panelTarget = { kind: 'portal', id: node.id };
+			break;
+		case 'split': {
+			const card = drawing?.cards.find(entry => entry.id === node.id);
+			const anchor = card?.kind === 'splitter' ? card.members[0] : undefined;
+			panelTarget = { kind: 'splitter', id: node.id, anchor };
+			break;
+		}
+		case 'agg': {
+			const card = drawing?.cards.find(entry => entry.id === node.id);
+			const anchor = card?.kind === 'aggregator' ? card.targets[0] : undefined;
+			panelTarget = { kind: 'aggregator', id: node.id, anchor };
+			break;
+		}
+	}
 }
 
-/** Selects a node of this canvas and opens its panel. */
-function focusNode(current: CanvasGraph, nodeId: string): boolean {
-	const located = buildBackendIndex(current).get(nodeId);
-	if (!located) return false;
-	updateNode(located.flowId, { selected: true });
-	panelTarget = located.target;
-	return true;
+function clickBus(id: string) {
+	const anchor = drawing?.buses.find(bus => bus.id === id)?.edges[0];
+	panelTarget = { kind: 'bus', id, anchor };
 }
 
 /**
- * Jumps to the node a problem concerns. Validation runs on the whole canvas
- * tree, so the node may live in another canvas of it: then the editor opens
- * that canvas and hands the node over in `?focus`, which the instance mounted
- * there consumes below.
+ * Opens what a diagnostic is about: its card and panel here, or the canvas of
+ * the tree it lives on, which picks the handover up from `?focus`.
  */
-async function openProblem(nodeIds: string[]) {
-	const current = graph.current;
-	const first = nodeIds[0];
-	if (!current || first === undefined) return;
-	if (focusNode(current, first)) return;
-	try {
-		const owner = await locateNodeCanvas({ canvasId, nodeId: first });
-		if (owner) await goto(`/canvas/${owner}?focus=${encodeURIComponent(first)}`);
-	} catch (err) {
-		reportError(err);
+function openSubject(subject: Subject) {
+	const current = graph;
+	const currentDrawing = drawing;
+	if (!current || !currentDrawing) return;
+	const where = locate(current, currentDrawing, subject);
+	if (where.kind === 'canvas') {
+		if (where.canvasId !== canvasId) {
+			const [key, value] = Object.entries(subject)[0] ?? [];
+			goto(`/canvas/${where.canvasId}?focus=${key}:${encodeURIComponent(String(value))}`);
+		}
+		return;
 	}
+	if (where.kind === 'bus') {
+		clickBus(where.bus);
+		return;
+	}
+	if (where.kind !== 'card') return;
+	updateNode(where.node, { selected: true });
+	if ('pod' in subject && where.node.startsWith('server:')) {
+		panelTarget = { kind: 'pod', id: subject.pod };
+		return;
+	}
+	const node = nodes.find(entry => entry.id === where.node);
+	if (node) clickCard(node);
 }
 
 /**
- * The handover from a problem opened on another canvas of the tree. It runs
+ * The handover from a diagnostic opened on another canvas of the tree. It runs
  * once the graph is there, then drops the parameter so a reload does not
- * re-select a node the operator has since moved on from.
+ * re-select something the operator has since moved on from.
  */
-let focusHandled = $state('');
+let focusHandled = '';
 $effect(() => {
 	const wanted = page.url.searchParams.get('focus');
-	// No parameter: the last handover is spent, so the same node may be handed
-	// over again later — this component instance survives the navigation.
 	if (!wanted) {
 		focusHandled = '';
 		return;
 	}
-	const current = graph.current;
-	if (!current || focusHandled === wanted) return;
+	if (!graph || focusHandled === wanted) return;
 	focusHandled = wanted;
-	if (!untrack(() => focusNode(current, wanted))) return;
+	const separator = wanted.indexOf(':');
+	const key = wanted.slice(0, separator);
+	const value = wanted.slice(separator + 1);
+	if (['server', 'pod', 'exit', 'edge', 'group', 'canvas'].includes(key)) {
+		untrack(() => openSubject({ [key]: value } as Subject));
+	}
 	const url = new URL(page.url.href);
 	url.searchParams.delete('focus');
 	replaceState(url, page.state);
@@ -373,10 +578,9 @@ $effect(() => {
 <svelte:boundary>
 	<!-- Only the first load has nothing to show: a refresh keeps the flow mounted,
 	     otherwise remounting it would re-run `fitView` and reset the viewport. -->
-	{#if graph.current === undefined}
+	{#if graph === undefined || drawing === undefined}
 		<Skeleton class="h-full w-full" />
 	{:else}
-		{@const current = graph.current}
 		<Resizable.PaneGroup direction="horizontal">
 			<Resizable.Pane defaultSize={70} minSize={40} order={1}>
 				<div class="relative h-full w-full" bind:this={flowEl}>
@@ -393,11 +597,14 @@ $effect(() => {
 						nodesConnectable={editable && view.interactive}
 						elementsSelectable={view.interactive}
 						{isValidConnection}
-						onconnect={connect}
+						onbeforeconnect={connection => {
+							connectGesture(connection);
+							return null;
+						}}
 						onbeforedelete={beforeDelete}
-						onnodeclick={({ node }) => selectNode(node)}
-						onedgeclick={({ edge }) => (panelTarget = { kind: 'edge', id: edge.id })}
-						onnodedragstop={({ nodes: dragged }) => persistMove(dragged)}
+						onnodeclick={({ node, event }) => clickCard(node, event)}
+						onedgeclick={({ edge }) => clickBus(edge.id)}
+						onnodedragstop={({ nodes: dragged }) => persistMoves(dragged)}
 						onmove={(_, viewport) => (view.zoom = viewport.zoom)}
 						deleteKey={editable && view.interactive ? 'Delete' : null}
 					>
@@ -409,21 +616,21 @@ $effect(() => {
 								{editable}
 								{view}
 								onAddServer={addServer}
-								onAddNode={addNode}
-								onSubcanvas={mode => {
-									subcanvasMode = mode;
-									subcanvasOpen = true;
-								}}
-								onExport={() => (exportDialogOpen = true)}
+								onAddExit={() => (exitOpen = true)}
+								onAddSubcanvas={() => (subcanvasOpen = true)}
 							/>
 						</Panel>
 
 						<Panel position="bottom-left">
-							<CanvasProblems graph={current} onopen={openProblem} />
+							<CanvasProblems {graph} {drawing} onopen={openSubject} />
+						</Panel>
+
+						<Panel position="top-right">
+							<RuleLegend {graph} {drawing} bind:highlighted={highlightedRule} />
 						</Panel>
 					</SvelteFlow>
 
-					{#if current && current.servers.length === 0 && current.nodes.length === 0}
+					{#if drawing.cards.length === 0}
 						<div class="pointer-events-none absolute inset-0 flex items-center justify-center">
 							<Empty.Root>
 								<Empty.Header>
@@ -440,28 +647,31 @@ $effect(() => {
 			{#if panelTarget}
 				<Resizable.Handle withHandle />
 				<Resizable.Pane defaultSize={30} minSize={20} maxSize={50} order={2}>
-					<NodePanel bind:target={panelTarget} {canvasId} {editable} {admin} graph={current} />
+					<InspectorPanel bind:target={panelTarget} />
 				</Resizable.Pane>
 			{/if}
 		</Resizable.PaneGroup>
 
-		{#if admin}
-			<ForceDeleteDialog bind:targets={forceTargets} {canvasId} />
-		{/if}
-
+		<ReviewDialog bind:request={reviewRequest} {graph} {canvasId} />
+		<TargetDialog
+			request={pick?.request ?? null}
+			{graph}
+			onpick={target => {
+				pick?.resolve(target);
+				pick = null;
+			}}
+		/>
 		{#if editable}
 			<AddSubcanvasDialog
 				bind:open={subcanvasOpen}
-				mode={subcanvasMode}
 				{canvasId}
-				place={view.position}
-				suggest={suggestSubcanvasName}
+				place={spotFor('canvas')}
+				suggest={() => suggestName(m.editor_kind_subcanvas(), getLocale(), usedNames(graph))}
 			/>
-			<AddExportDialog
-				bind:open={exportDialogOpen}
-				{canvasId}
-				place={view.position}
-				suggest={suggestExportName}
+			<AddExitDialog
+				bind:open={exitOpen}
+				place={spotFor('exit')}
+				suggest={() => suggestName(m.editor_add_exit(), getLocale(), usedNames(graph))}
 			/>
 		{/if}
 	{/if}

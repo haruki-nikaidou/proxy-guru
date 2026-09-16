@@ -1,152 +1,75 @@
 /**
- * The two nodes that cross a canvas boundary: an import, which embeds another
- * canvas, and an export, which is one port of this canvas as seen from the
- * parent. Both reshape the canvas on the other side of the boundary, so every
- * write here refreshes more than the canvas being edited.
+ * Subcanvases: canvases drawn inside another one. A subcanvas only organises
+ * the drawing — edges cross canvas boundaries freely — so creating, renaming or
+ * deleting one changes the tree, not the traffic.
  */
 import * as v from 'valibot';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
 import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
-import { fromExportAs, fromPortKind } from '#lib/server/topology/enums.js';
-import {
-	coordSchema,
-	exportAsSchema,
-	nameSchema,
-	portKindSchema
-} from '#lib/server/topology/schemas.js';
+import { coordSchema, nameSchema } from '#lib/server/topology/schemas.js';
 import { command } from '$app/server';
-import { refreshAcrossBoundary, refreshSubcanvasViews } from './refresh.js';
+import { refreshTreeViews } from './refresh.js';
 
-/**
- * A brand-new canvas plus the import node that embeds it. The two steps are not
- * atomic in the control plane, so a failed import takes the canvas it just
- * created back out rather than leaving a stray root behind.
- */
+const descriptionSchema = v.optional(
+	v.pipe(v.string(), v.trim(), v.maxLength(1000, 'canvas_description_too_long')),
+	''
+);
+
 export const createSubcanvas = command(
 	v.object({ canvasId: idSchema, name: nameSchema, x: coordSchema, y: coordSchema }),
 	async ({ canvasId, name, x, y }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		const created = await callGrpc(() =>
-			orchestrationClient().createCanvas({ name, description: '' }, { metadata })
-		);
-		const targetCanvasId = created.canvas?.id ?? '';
-		try {
-			await callGrpc(() =>
-				orchestrationClient().createNode(
-					{
-						canvasId,
-						name,
-						comment: '',
-						spec: { canvasImport: { canvasId: targetCanvasId } },
-						position: { x, y },
-						itemCount: 0
-					},
-					{ metadata }
-				)
-			);
-		} catch (err) {
-			await orchestrationClient()
-				.deleteCanvas({ canvasId: targetCanvasId }, { metadata })
-				.catch(() => undefined);
-			throw err;
-		}
-		await refreshSubcanvasViews(canvasId, targetCanvasId);
-		return { ok: true as const, subcanvasId: targetCanvasId };
-	}
-);
-
-/** Embeds an existing canvas. Its target is immutable once the node exists. */
-export const importCanvas = command(
-	v.object({
-		canvasId: idSchema,
-		targetCanvasId: idSchema,
-		name: nameSchema,
-		x: coordSchema,
-		y: coordSchema
-	}),
-	async ({ canvasId, targetCanvasId, name, x, y }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().createNode(
+			orchestrationClient().createCanvas(
 				{
-					canvasId,
 					name,
-					comment: '',
-					spec: { canvasImport: { canvasId: targetCanvasId } },
-					position: { x, y },
-					itemCount: 0
+					description: '',
+					parentId: canvasId,
+					position: { x: BigInt(x), y: BigInt(y) }
 				},
 				{ metadata }
 			)
 		);
-		await refreshSubcanvasViews(canvasId, targetCanvasId);
+		await refreshTreeViews(canvasId);
+		return { ok: true as const, subcanvasId: created.canvas?.id ?? '' };
+	}
+);
+
+/** `UpdateCanvas` replaces both texts; an unset position leaves it where it is. */
+export const updateSubcanvas = command(
+	v.object({
+		canvasId: idSchema,
+		subcanvasId: idSchema,
+		name: nameSchema,
+		description: descriptionSchema
+	}),
+	async ({ canvasId, subcanvasId, name, description }) => {
+		const metadata = sessionMetadata(requireSessionId());
+		await callGrpc(() =>
+			orchestrationClient().updateCanvas(
+				{ canvasId: subcanvasId, name, description, position: undefined },
+				{ metadata }
+			)
+		);
+		await refreshTreeViews(canvasId);
 		return { ok: true as const };
 	}
 );
 
 /**
- * One boundary port of this canvas. Creating it reshapes the importer's ports
- * in the same transaction, so the parent gains a matching port at once.
+ * Deletes the subcanvas with everything inside it. The control plane refuses
+ * while a pod outside still leads into it, or runs on a server inside it.
  */
-export const createExportNode = command(
-	v.object({
-		canvasId: idSchema,
-		name: nameSchema,
-		portKind: portKindSchema,
-		exportAs: exportAsSchema,
-		x: coordSchema,
-		y: coordSchema
-	}),
-	async ({ canvasId, name, portKind, exportAs, x, y }) => {
+export const deleteSubcanvas = command(
+	v.object({ canvasId: idSchema, subcanvasId: idSchema }),
+	async ({ canvasId, subcanvasId }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() =>
-			orchestrationClient().createNode(
-				{
-					canvasId,
-					name,
-					comment: '',
-					spec: {
-						canvasExport: { kind: fromPortKind(portKind), direction: fromExportAs(exportAs) }
-					},
-					position: { x, y },
-					itemCount: 0
-				},
-				{ metadata }
-			)
+			orchestrationClient().deleteCanvas({ canvasId: subcanvasId }, { metadata })
 		);
-		await refreshAcrossBoundary(canvasId, metadata);
-		return { ok: true as const };
-	}
-);
-
-/**
- * Re-kinding an export reshapes the mirrored port on the importer, which drops
- * whatever edge the parent had attached to it.
- */
-export const replaceExportSpec = command(
-	v.object({
-		canvasId: idSchema,
-		nodeId: idSchema,
-		portKind: portKindSchema,
-		exportAs: exportAsSchema
-	}),
-	async ({ canvasId, nodeId, portKind, exportAs }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() =>
-			orchestrationClient().replaceNodeSpec(
-				{
-					nodeId,
-					spec: {
-						canvasExport: { kind: fromPortKind(portKind), direction: fromExportAs(exportAs) }
-					},
-					itemCount: 0
-				},
-				{ metadata }
-			)
-		);
-		await refreshAcrossBoundary(canvasId, metadata);
+		await refreshTreeViews(canvasId);
 		return { ok: true as const };
 	}
 );

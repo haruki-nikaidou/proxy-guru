@@ -1,5 +1,5 @@
 import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
-import type { HealthWindowMinutes, NodeHealthStatusName } from '#lib/dto/health.js';
+import type { HealthWindowMinutes, PodHealthStatusName } from '#lib/dto/health.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 
@@ -25,20 +25,20 @@ export function formatBytes(value: number): string {
 export const formatCount = (value: number): string =>
 	new Intl.NumberFormat(getLocale()).format(value);
 
-export function nodeStatusLabel(status: NodeHealthStatusName): string {
+export function podStatusLabel(status: PodHealthStatusName): string {
 	switch (status) {
 		case 'ready':
-			return m.health_node_status_ready();
+			return m.health_pod_status_ready();
 		case 'deploying':
-			return m.health_node_status_deploying();
+			return m.health_pod_status_deploying();
 		case 'failed':
-			return m.health_node_status_failed();
+			return m.health_pod_status_failed();
 		default:
-			return m.health_node_status_unknown();
+			return m.health_pod_status_unknown();
 	}
 }
 
-export function nodeStatusVariant(status: NodeHealthStatusName): BadgeVariant {
+export function podStatusVariant(status: PodHealthStatusName): BadgeVariant {
 	switch (status) {
 		case 'ready':
 			return 'secondary';

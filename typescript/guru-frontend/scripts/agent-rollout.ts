@@ -24,10 +24,11 @@ if (!release.version) throw new Error('no published agent release');
 const target = release.version;
 console.log('published release', target);
 
-const canvases = (await orch.listCanvases({}, opts)).canvases;
+// Roots only: a tree's graph holds the servers of every canvas in it.
+const canvases = (await orch.listCanvases({ includeSubcanvases: false }, opts)).canvases;
 const servers: { id: string; name: string }[] = [];
 for (const canvas of canvases) {
-	const detail = await orch.getCanvas({ canvasId: canvas.id }, opts);
+	const detail = await orch.getGraph({ canvasId: canvas.id }, opts);
 	for (const server of detail.servers) {
 		servers.push({ id: server.id, name: server.name });
 		if (server.agentVersion === target) {
@@ -44,7 +45,7 @@ const pending = new Set(servers.map(s => s.id));
 while (pending.size > 0 && Date.now() < deadline) {
 	await new Promise(r => setTimeout(r, 5000));
 	for (const canvas of canvases) {
-		const detail = await orch.getCanvas({ canvasId: canvas.id }, opts);
+		const detail = await orch.getGraph({ canvasId: canvas.id }, opts);
 		for (const server of detail.servers) {
 			if (!pending.has(server.id)) continue;
 			if (server.agentUpdateError) {

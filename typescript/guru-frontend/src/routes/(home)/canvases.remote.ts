@@ -1,5 +1,7 @@
-import type { CanvasTreeNode as ProtoCanvasTreeNode } from 'app-protobuf/orchestration/orchestration';
-import { ProblemKind, ProblemSeverity } from 'app-protobuf/orchestration/orchestration';
+import type {
+	GetGraphReply,
+	CanvasTreeNode as ProtoCanvasTreeNode
+} from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
 import type {
 	CanvasOption,
@@ -30,16 +32,49 @@ const descriptionSchema = v.optional(
 
 const PROBLEM_LIMIT = 5;
 
-function toProblem(severity: ProblemSeverity, kind: ProblemKind, message: string): CanvasProblem {
+/**
+ * One canvas's share of its tree: the servers, pods and exits placed on it, the
+ * edges leaving its pods, and the diagnostics about any of them. A diagnostic
+ * naming nothing belongs to the root.
+ */
+function summarise(graph: GetGraphReply, canvasId: string, isRoot: boolean) {
+	const pods = new Map(graph.pods.map(pod => [pod.id, pod.canvasId]));
+	const servers = new Map(graph.servers.map(server => [server.id, server.canvasId]));
+	const exits = new Map(graph.exits.map(exit => [exit.id, exit.canvasId]));
+	const edges = new Map(graph.edges.map(edge => [edge.id, pods.get(edge.sourcePodId)]));
+	const groups = new Map(graph.groups.map(group => [group.id, group.canvasId]));
+	const here = graph.diagnostics.filter(diagnostic =>
+		diagnostic.subjects.length === 0
+			? isRoot
+			: diagnostic.subjects.some(
+					subject =>
+						(subject.podId !== undefined && pods.get(subject.podId) === canvasId) ||
+						(subject.serverId !== undefined && servers.get(subject.serverId) === canvasId) ||
+						(subject.exitId !== undefined && exits.get(subject.exitId) === canvasId) ||
+						(subject.edgeId !== undefined && edges.get(subject.edgeId) === canvasId) ||
+						(subject.groupId !== undefined && groups.get(subject.groupId) === canvasId) ||
+						subject.canvasId === canvasId
+				)
+	);
+	const problems: CanvasProblem[] = here.map(diagnostic => ({
+		severity: diagnostic.error ? 'error' : 'warning',
+		kind: diagnostic.problem,
+		message: diagnostic.message
+	}));
 	return {
-		severity:
-			severity === ProblemSeverity.PROBLEM_ERROR
-				? 'error'
-				: severity === ProblemSeverity.PROBLEM_WARNING
-					? 'warning'
-					: 'unknown',
-		kind: ProblemKind[kind] ?? 'UNSPECIFIED',
-		message
+		stats: {
+			servers: graph.servers.filter(server => server.canvasId === canvasId).length,
+			pods: graph.pods.filter(pod => pod.canvasId === canvasId).length,
+			edges: [...edges.values()].filter(owner => owner === canvasId).length
+		},
+		health: {
+			errors: problems.filter(problem => problem.severity === 'error').length,
+			warnings: problems.filter(problem => problem.severity === 'warning').length,
+			// Errors first: they are what blocks the next edit.
+			problems: [...problems]
+				.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1))
+				.slice(0, PROBLEM_LIMIT)
+		}
 	};
 }
 
@@ -67,8 +102,8 @@ function pathTo(node: CanvasTreeNode, canvasId: string): CanvasOption[] | null {
 
 /**
  * Names only: what the editor's canvas switcher and settings page need. Kept
- * apart from `listCanvases` so opening a canvas does not pay for the per-canvas
- * detail/validate fan-out behind the dashboard cards.
+ * apart from `listCanvases` so opening a canvas does not pay for the per-tree
+ * graph reads behind the dashboard cards.
  *
  * Subcanvases are listed too — a subcanvas has its own settings page and its
  * own title — and `isRoot` is the difference between the two cheap listings, so
@@ -76,19 +111,15 @@ function pathTo(node: CanvasTreeNode, canvasId: string): CanvasOption[] | null {
  */
 export const listCanvasOptions = query(async (): Promise<CanvasOptionEntry[]> => {
 	const metadata = sessionMetadata(requireSessionId());
-	const [all, roots] = await callGrpc(() =>
-		Promise.all([
-			orchestrationClient().listCanvases({ includeSubcanvases: true }, { metadata }),
-			orchestrationClient().listCanvases({ includeSubcanvases: false }, { metadata })
-		])
+	const { canvases } = await callGrpc(() =>
+		orchestrationClient().listCanvases({ includeSubcanvases: true }, { metadata })
 	);
-	const rootIds = new Set(roots.canvases.map(canvas => canvas.id));
-	return all.canvases
+	return canvases
 		.map(canvas => ({
 			id: canvas.id,
 			name: canvas.name,
 			description: canvas.description,
-			isRoot: rootIds.has(canvas.id)
+			isRoot: canvas.parentId === ''
 		}))
 		.sort((a, b) => a.name.localeCompare(b.name));
 });
@@ -98,53 +129,55 @@ export const listCanvases = query(
 	async ({ includeSubcanvases }): Promise<CanvasSummary[]> => {
 		const metadata = sessionMetadata(requireSessionId());
 
+		// Every canvas, whichever listing is asked for: a subcanvas's card names its
+		// parent, and its stats come from its tree's graph.
 		const { canvases } = await callGrpc(() =>
-			orchestrationClient().listCanvases({ includeSubcanvases }, { metadata })
+			orchestrationClient().listCanvases({ includeSubcanvases: true }, { metadata })
 		);
-		// The backend returns no ordering and no timestamps to sort by.
-		const ordered = [...canvases].sort((a, b) => a.name.localeCompare(b.name));
+		const byId = new Map(canvases.map(canvas => [canvas.id, canvas]));
+		const rootOf = (id: string): string => {
+			let current = byId.get(id);
+			for (let depth = 0; current?.parentId && depth < 64; depth += 1) {
+				const parent = byId.get(current.parentId);
+				if (!parent) break;
+				current = parent;
+			}
+			return current?.id ?? id;
+		};
+		const listed = canvases
+			.filter(canvas => includeSubcanvases || canvas.parentId === '')
+			// The backend returns no ordering and no timestamps to sort by.
+			.sort((a, b) => a.name.localeCompare(b.name));
+
+		// One graph per tree. Deliberately outside `callGrpc`: a tree deleted
+		// between the list and this fan-out must degrade its cards, not 404 the page.
+		const graphs = new Map<string, Promise<GetGraphReply | null>>();
+		for (const canvas of listed) {
+			const root = rootOf(canvas.id);
+			if (!graphs.has(root)) {
+				graphs.set(
+					root,
+					orchestrationClient()
+						.getGraph({ canvasId: root }, { metadata })
+						.catch(() => null)
+				);
+			}
+		}
 
 		return Promise.all(
-			ordered.map(async (canvas): Promise<CanvasSummary> => {
+			listed.map(async (canvas): Promise<CanvasSummary> => {
 				const base = { id: canvas.id, name: canvas.name, description: canvas.description };
-				try {
-					// Deliberately outside `callGrpc`: a canvas deleted between the list and
-					// this fan-out must degrade one card, not 404 the whole page.
-					const [detail, validation] = await Promise.all([
-						orchestrationClient().getCanvas({ canvasId: canvas.id }, { metadata }),
-						orchestrationClient().validateCanvas({ canvasId: canvas.id }, { metadata })
-					]);
-
-					let errors = 0;
-					let warnings = 0;
-					for (const problem of validation.problems) {
-						if (problem.severity === ProblemSeverity.PROBLEM_ERROR) errors += 1;
-						else if (problem.severity === ProblemSeverity.PROBLEM_WARNING) warnings += 1;
-					}
-
-					// `ancestors` is root first, parent last.
-					const parent = detail.ancestors.at(-1);
-					return {
-						...base,
-						stats: {
-							servers: detail.servers.length,
-							nodes: detail.nodes.length,
-							edges: detail.edges.length
-						},
-						health: {
-							errors,
-							warnings,
-							problems: validation.problems
-								.slice(0, PROBLEM_LIMIT)
-								.map(problem => toProblem(problem.severity, problem.kind, problem.message))
-						},
-						parent: parent
-							? { id: parent.id, name: parent.name, description: parent.description }
-							: null
-					};
-				} catch {
-					return { ...base, stats: null, health: null, parent: null };
-				}
+				const parent = canvas.parentId === '' ? undefined : byId.get(canvas.parentId);
+				const graph = await graphs.get(rootOf(canvas.id));
+				return {
+					...base,
+					...(graph
+						? summarise(graph, canvas.id, canvas.parentId === '')
+						: { stats: null, health: null }),
+					parent: parent
+						? { id: parent.id, name: parent.name, description: parent.description }
+						: null
+				};
 			})
 		);
 	}

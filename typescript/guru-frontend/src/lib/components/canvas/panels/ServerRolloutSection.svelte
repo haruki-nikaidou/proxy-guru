@@ -214,7 +214,7 @@ const forget = () =>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
-						{#each status.invalidPods as invalid (invalid.nodeId)}
+						{#each status.invalidPods as invalid (invalid.podId)}
 							<Table.Row>
 								<Table.Cell class="font-medium">{invalid.podName}</Table.Cell>
 								<Table.Cell class="font-mono text-xs">{invalid.listen}</Table.Cell>

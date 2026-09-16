@@ -1,5 +1,6 @@
 <script lang="ts">
 import CopyButton from '#lib/components/CopyButton.svelte';
+import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import { Separator } from '#lib/components/ui/separator/index.js';
 import type { ServerDto } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
@@ -9,26 +10,18 @@ import ServerRolloutSection from './ServerRolloutSection.svelte';
 import ServerSettingsForm from './ServerSettingsForm.svelte';
 
 /**
- * The inspector for a server node. It is four panels stacked: what the server
- * is, what it carries, the worker running on it, and where it stands in a
+ * The inspector for a server. It is four panels stacked: what the server is,
+ * the pods that run on it, the worker running on it, and where it stands in a
  * rollout. Each section owns its own drafts and its own writes — they share
  * only the server they are pointed at.
  */
-let {
-	canvasId,
-	server,
-	editable,
-	admin,
-	serverNames
-}: {
-	canvasId: string;
-	server: ServerDto;
-	editable: boolean;
-	/** `ForgetServerApplied` is admin-only in the control plane. */
-	admin: boolean;
-	/** Server id → name, for the ids a rollout says it is waiting for. */
-	serverNames: ReadonlyMap<string, string>;
-} = $props();
+let { server }: { server: ServerDto } = $props();
+
+const editor = useEditor();
+
+// A rollout names the servers it waits for by id; the whole tree's servers can
+// be resolved to a name here.
+const serverNames = $derived(new Map(editor.graph.servers.map(entry => [entry.id, entry.name])));
 </script>
 
 <div class="mb-4 flex items-center gap-1 text-xs text-muted-foreground">
@@ -42,16 +35,16 @@ let {
 	/>
 </div>
 
-<ServerSettingsForm {canvasId} {server} {editable} />
+<ServerSettingsForm canvasId={editor.canvasId} {server} editable={editor.editable} />
 
 <Separator class="my-6" />
 
-<ServerPodsSection {canvasId} {server} {editable} />
+<ServerPodsSection {server} />
 
 <Separator class="my-6" />
 
-<ServerAgentSection {canvasId} {server} {editable} />
+<ServerAgentSection canvasId={editor.canvasId} {server} editable={editor.editable} />
 
 <Separator class="my-6" />
 
-<ServerRolloutSection {canvasId} {server} {admin} {serverNames} />
+<ServerRolloutSection canvasId={editor.canvasId} {server} admin={editor.admin} {serverNames} />

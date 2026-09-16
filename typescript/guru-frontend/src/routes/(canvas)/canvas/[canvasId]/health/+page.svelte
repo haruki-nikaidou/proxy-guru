@@ -9,7 +9,6 @@ import { HEALTH_WINDOWS, type HealthWindowMinutes } from '#lib/dto/health.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import BoundaryError from '#lib/components/BoundaryError.svelte';
-import CanvasNodeEvents from './CanvasNodeEvents.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
 import { formatCount, windowLabel } from './format.js';
 import { serverHealthLabel } from '#lib/i18n/labels.js';
@@ -111,8 +110,6 @@ function pickWindow(value: string) {
 			{#each servers as series (series.serverId)}
 				<ServerHealthCard {series} {canvasId} {windowMinutes} />
 			{/each}
-
-			<CanvasNodeEvents {canvasId} {windowMinutes} />
 		{/if}
 
 		{#snippet failed(error)}

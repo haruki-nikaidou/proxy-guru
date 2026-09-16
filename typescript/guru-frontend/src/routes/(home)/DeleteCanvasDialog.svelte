@@ -50,7 +50,7 @@ async function confirm() {
 		{#if stats}
 			<p class="text-sm text-muted-foreground">
 				{m.canvas_servers_count({ count: stats.servers })} ·
-				{m.canvas_nodes_count({ count: stats.nodes })} ·
+				{m.canvas_pods_count({ count: stats.pods })} ·
 				{m.canvas_edges_count({ count: stats.edges })}
 			</p>
 		{/if}
