@@ -10,13 +10,14 @@ use common::*;
 use guru_worker_config::{Config, ForwardingTo, Remote};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
+use orchestration::entities::db::canvas::CanvasEntity;
+use orchestration::entities::db::edge::EdgeEntity;
+use orchestration::entities::db::exit::ExitEntity;
 use orchestration::entities::db::health::{
-    InsertServerHealthRecord, ListNodeHealthHistory, ListServerHealthHistory, NewNodeHealthRecord,
-    NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+    InsertServerHealthRecord, ListPodHealthHistory, ListServerHealthHistory, NewPodHealthRecord,
+    PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use orchestration::entities::db::node::{
-    EntryConfig, ExitConfig, LoadBalanceAggregateConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig,
-};
+use orchestration::entities::db::pod::{PodEntity, PodId};
 use orchestration::entities::db::server::{
     ClaimServerWatchSession, FindServerById, RenewServerWatchSession, ServerEntity, ServerId,
     ServerIpv6Resolve, ServerLogLevel,
@@ -29,112 +30,38 @@ use orchestration::services::agent::{
     AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
 };
 use orchestration::services::canvas as canvas_service;
-use orchestration::services::edge::Connect;
+use orchestration::services::graph::GraphChange;
 use orchestration::services::health::HealthService;
 use orchestration::services::health::{
     HealthReportInput, MarkServerOffline, RecordHealthReport, SweepLiveness, TrimHealthHistory,
 };
-use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
 use orchestration::services::server::{AddressOverrides, CreateServer};
 
-/// One server, two pods: `web` (443, entry `web-in` → exit `web-out`) and
-/// `api` (8443, entry `api-in` → exit `api-out`).
+/// One server, two client pods: `web` (443 → exit `web-out`) and `api`
+/// (8443 → exit `api-out`).
 struct Fixture {
     canvas: CanvasId,
+    canvas_row: CanvasEntity,
     server: ServerId,
-    ip: ServerIpRecordId,
-    web: NodeWithPorts,
-    web_in: NodeWithPorts,
-    web_out: NodeWithPorts,
-    api: NodeWithPorts,
-    api_in: NodeWithPorts,
-    api_out: NodeWithPorts,
-}
-
-fn exit_spec(destination: &str) -> NodeSpec {
-    NodeSpec::Exit(ExitConfig {
-        destination: destination.to_string(),
-        pass_proxy_protocol: None,
-    })
-}
-
-fn entry_spec() -> NodeSpec {
-    NodeSpec::Entry(EntryConfig {
-        receive_proxy_protocol: None,
-        tls: None,
-    })
-}
-
-async fn create(
-    w: &World,
-    canvas: &CanvasId,
-    name: &str,
-    spec: NodeSpec,
-) -> Result<NodeWithPorts, OrchestrationError> {
-    create_with(w, canvas, name, spec, 0).await
-}
-
-async fn create_with(
-    w: &World,
-    canvas: &CanvasId,
-    name: &str,
-    spec: NodeSpec,
-    item_count: u32,
-) -> Result<NodeWithPorts, OrchestrationError> {
-    w.nodes
-        .process(CreateNode {
-            actor: operator(),
-            canvas: canvas.clone(),
-            name: name.to_string(),
-            comment: String::new(),
-            spec,
-            position: pos0(),
-            item_count,
-        })
-        .await
-}
-
-async fn connect(
-    w: &World,
-    output: orchestration::entities::db::port::PortId,
-    input: orchestration::entities::db::port::PortId,
-) -> Result<(), OrchestrationError> {
-    w.edges
-        .process(Connect {
-            actor: operator(),
-            output_port: output,
-            input_port: input,
-        })
-        .await?;
-    Ok(())
-}
-
-/// Wires `entry -> pod -> exit`.
-async fn wire(
-    w: &World,
-    pod: &NodeWithPorts,
-    entry: &NodeWithPorts,
-    exit: &NodeWithPorts,
-) -> Result<(), OrchestrationError> {
-    connect(w, port_of(pod, "listen"), port_of(entry, "listen")).await?;
-    connect(w, port_of(exit, "destination"), port_of(pod, "destination")).await
+    server_row: ServerEntity,
+    web: PodEntity,
+    web_out: ExitEntity,
+    api: PodEntity,
+    api_out: ExitEntity,
 }
 
 type CanvasId = orchestration::entities::db::canvas::CanvasId;
-// Kept as a name for the third tuple element, now the server id (addresses live
-// on the server).
-type ServerIpRecordId = orchestration::entities::db::server::ServerId;
 
-/// A canvas with one server carrying one IP; the topology goes on top.
-async fn base(
-    w: &World,
-) -> Result<(CanvasId, ServerId, ServerIpRecordId), Box<dyn std::error::Error>> {
+/// A canvas with one server carrying one IP; the graph goes on top.
+async fn base(w: &World) -> Result<(CanvasEntity, ServerEntity), Box<dyn std::error::Error>> {
     let canvas = w
         .canvases
         .process(canvas_service::CreateCanvas {
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let server = w
@@ -155,38 +82,54 @@ async fn base(
             },
         })
         .await?;
-    Ok((canvas.id, server.id.clone(), server.id))
+    Ok((canvas, server))
 }
 
-fn pod_spec_on(server: &ServerIpRecordId, port: u16) -> NodeSpec {
-    NodeSpec::Pod(PodConfig {
-        server: server.clone(),
-        port,
-        bind_ip: None,
-        advertise_ip: None,
-    })
+/// A client pod on `server` going straight to a new exit, as one change.
+fn to_exit(
+    canvas: &CanvasEntity,
+    server: &ServerEntity,
+    name: &str,
+    port: u16,
+    destination: &str,
+) -> (PodEntity, ExitEntity, EdgeEntity, GraphChange) {
+    let pod = client(canvas, server, name, port, None);
+    let out = exit(canvas, &format!("{name}-out"), destination);
+    let edge = edge_to_exit(&format!("{name}-edge"), &pod, &out);
+    let pod = routed(pod, via(&edge));
+    let change = GraphChange {
+        put_pods: vec![pod.clone()],
+        put_exits: vec![out.clone()],
+        put_edges: vec![edge.clone()],
+        ..GraphChange::default()
+    };
+    (pod, out, edge, change)
+}
+
+fn merge(changes: Vec<GraphChange>) -> GraphChange {
+    let mut out = GraphChange::default();
+    for change in changes {
+        out.put_pods.extend(change.put_pods);
+        out.put_exits.extend(change.put_exits);
+        out.put_edges.extend(change.put_edges);
+    }
+    out
 }
 
 async fn fixture(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
-    let (canvas, server, ip) = base(w).await?;
-    let web = create(w, &canvas, "web", pod_spec_on(&ip, 443)).await?;
-    let web_in = create(w, &canvas, "web-in", entry_spec()).await?;
-    let web_out = create(w, &canvas, "web-out", exit_spec("10.0.0.5:8080")).await?;
-    let api = create(w, &canvas, "api", pod_spec_on(&ip, 8443)).await?;
-    let api_in = create(w, &canvas, "api-in", entry_spec()).await?;
-    let api_out = create(w, &canvas, "api-out", exit_spec("10.0.0.6:9090")).await?;
-    wire(w, &web, &web_in, &web_out).await?;
-    wire(w, &api, &api_in, &api_out).await?;
-    w.derive(&canvas).await?;
+    let (canvas, server) = base(w).await?;
+    let (web, web_out, _, web_change) = to_exit(&canvas, &server, "web", 443, "10.0.0.5:8080");
+    let (api, api_out, _, api_change) = to_exit(&canvas, &server, "api", 8443, "10.0.0.6:9090");
+    w.apply(&canvas, merge(vec![web_change, api_change])).await?;
+    w.derive(&canvas.id).await?;
     Ok(Fixture {
-        canvas,
-        server,
-        ip,
+        canvas: canvas.id.clone(),
+        canvas_row: canvas,
+        server: server.id.clone(),
+        server_row: server,
         web,
-        web_in,
         web_out,
         api,
-        api_in,
         api_out,
     })
 }
@@ -213,6 +156,7 @@ async fn register(
             reported: None,
             agent_version: None,
             agent_arch: None,
+            capabilities: Vec::new(),
             last_update_error: None,
         })
         .await?;
@@ -249,16 +193,17 @@ async fn take_and_ack(
     Ok(snapshot.revision)
 }
 
-fn ok(tag: &str) -> PodResult {
+/// The pod named `name` applied fine; the tag a worker reports is the pod's id.
+fn ok(name: &str) -> PodResult {
     PodResult {
-        tag: tag.to_string(),
+        tag: key(name),
         error: None,
     }
 }
 
-fn failed(tag: &str, error: &str) -> PodResult {
+fn failed(name: &str, error: &str) -> PodResult {
     PodResult {
-        tag: tag.to_string(),
+        tag: key(name),
         error: Some(error.to_string()),
     }
 }
@@ -315,10 +260,10 @@ async fn server_history(w: &World, server: &ServerId) -> Vec<ServerHealthRecordE
     .unwrap()
 }
 
-/// The newest record of a node, if any.
-async fn latest_node(w: &World, node: &NodeId) -> Option<NodeHealthRecordEntity> {
-    w.db.process(ListNodeHealthHistory {
-        node: node.clone(),
+/// The newest record of a pod, if any.
+async fn latest_pod(w: &World, pod: &PodId) -> Option<PodHealthRecordEntity> {
+    w.db.process(ListPodHealthHistory {
+        pod: pod.clone(),
         start: Utc::now() - TimeDelta::days(30),
         end: Utc::now() + TimeDelta::days(1),
         limit: 1,
@@ -329,22 +274,18 @@ async fn latest_node(w: &World, node: &NodeId) -> Option<NodeHealthRecordEntity>
     .next()
 }
 
-async fn assert_nodes(
-    w: &World,
-    nodes: &[&NodeWithPorts],
-    status: NodeHealthStatus,
-    message: &str,
-) {
-    for node in nodes {
-        let record = latest_node(w, &node.node.id)
+async fn assert_pods(w: &World, pods: &[&PodEntity], status: PodHealthStatus, message: &str) {
+    for pod in pods {
+        let record = latest_pod(w, &pod.id)
             .await
-            .unwrap_or_else(|| panic!("{} has no record", node.node.name));
-        assert_eq!(record.status, status, "{}", node.node.name);
-        assert_eq!(record.message, message, "{}", node.node.name);
+            .unwrap_or_else(|| panic!("{} has no record", pod.name));
+        assert_eq!(record.status, status, "{}", pod.name);
+        assert_eq!(record.message, message, "{}", pod.name);
     }
 }
 
-fn destination_of(config: &Config, tag: &str) -> Remote {
+fn destination_of(config: &Config, name: &str) -> Remote {
+    let tag = key(name);
     let forwarding = config
         .forwardings
         .iter()
@@ -357,7 +298,7 @@ fn destination_of(config: &Config, tag: &str) -> Remote {
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn a_report_records_the_server_and_every_node_the_pods_carry(
+async fn a_report_records_the_server_and_every_pod(
     pool: sqlx::PgPool,
 ) -> TestResult {
     let w = world(pool).await?;
@@ -392,13 +333,7 @@ async fn a_report_records_the_server_and_every_node_the_pods_carry(
     assert_eq!(row.health_status, ServerHealthStatus::Online);
     assert_eq!(row.last_health_report_at, Some(record.report_time));
     assert_eq!(row.last_seen_at, Some(record.report_time));
-    assert_nodes(
-        &w,
-        &[&f.web, &f.web_in, &f.web_out, &f.api, &f.api_in, &f.api_out],
-        NodeHealthStatus::Ready,
-        "",
-    )
-    .await;
+    assert_pods(&w, &[&f.web, &f.api], PodHealthStatus::Ready, "").await;
     Ok(())
 }
 
@@ -425,99 +360,6 @@ async fn a_report_with_a_stale_running_revision_is_degraded(pool: sqlx::PgPool) 
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Online
     );
-    Ok(())
-}
-
-/// Two pods feeding one exit through an aggregate: the aggregate and the exit
-/// get exactly one row per event, carrying the worst of the two pods' verdicts.
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict(
-    pool: sqlx::PgPool,
-) -> TestResult {
-    let w = world(pool).await?;
-    let (canvas, server, ip) = base(&w).await?;
-    let web = create(&w, &canvas, "web", pod_spec_on(&ip, 443)).await?;
-    let web_in = create(&w, &canvas, "web-in", entry_spec()).await?;
-    let api = create(&w, &canvas, "api", pod_spec_on(&ip, 8443)).await?;
-    let api_in = create(&w, &canvas, "api-in", entry_spec()).await?;
-    // A thin aggregate, laid out the way the expansion lays out its lanes (an
-    // operator's aggregate node takes bundles on named members instead).
-    let thin = |key: &str, direction, position| orchestration::entities::db::node::NewPort {
-        kind: orchestration::entities::db::port::PortKind::DeriveDestination,
-        direction,
-        key: key.to_string(),
-        position,
-    };
-    let agg =
-        w.db.process(orchestration::entities::db::node::CreateNodeRow {
-            canvas: canvas.clone(),
-            name: "agg".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig::default()),
-            position: pos0(),
-            ports: vec![
-                thin(
-                    "source",
-                    orchestration::entities::db::port::PortDirection::Input,
-                    0,
-                ),
-                thin(
-                    "copy_0",
-                    orchestration::entities::db::port::PortDirection::Output,
-                    1,
-                ),
-                thin(
-                    "copy_1",
-                    orchestration::entities::db::port::PortDirection::Output,
-                    2,
-                ),
-            ],
-            import_sync: None,
-            fence: None,
-            target_fence: None,
-        })
-        .await?;
-    let exit = create(&w, &canvas, "shared-out", exit_spec("10.0.0.5:8080")).await?;
-    connect(&w, port_of(&web, "listen"), port_of(&web_in, "listen")).await?;
-    connect(&w, port_of(&api, "listen"), port_of(&api_in, "listen")).await?;
-    connect(&w, port_of(&agg, "copy_0"), port_of(&web, "destination")).await?;
-    connect(&w, port_of(&agg, "copy_1"), port_of(&api, "destination")).await?;
-    connect(&w, port_of(&exit, "destination"), port_of(&agg, "source")).await?;
-    w.derive(&canvas).await?;
-    let agent = register(&w, &server).await?;
-
-    let rows = async |node: &NodeWithPorts| {
-        w.db.process(ListNodeHealthHistory {
-            node: node.node.id.clone(),
-            start: Utc::now() - TimeDelta::days(30),
-            end: Utc::now() + TimeDelta::days(1),
-            limit: 100,
-        })
-        .await
-    };
-    let before = rows(&exit).await?.len();
-
-    take_and_ack(&w, &agent, vec![ok("web"), failed("api", "boom")]).await?;
-    let after_ack = rows(&exit).await?;
-    assert_eq!(after_ack.len(), before + 1, "one row per node per ack");
-    assert_eq!(after_ack[0].status, NodeHealthStatus::Failed);
-    assert_eq!(after_ack[0].message, "boom");
-    assert_eq!(rows(&agg).await?.len(), before + 1);
-
-    record(&w, &agent, vec![ok("web"), ok("api")]).await?;
-    let after_report = rows(&exit).await?;
-    assert_eq!(
-        after_report.len(),
-        before + 2,
-        "one row per node per report"
-    );
-    assert_eq!(
-        after_report[0].status,
-        NodeHealthStatus::Failed,
-        "the failed pod's verdict wins"
-    );
-    assert_eq!(after_report[0].message, "boom");
-    assert_nodes(&w, &[&web, &web_in], NodeHealthStatus::Ready, "").await;
     Ok(())
 }
 
@@ -556,10 +398,10 @@ async fn a_revision_refused_as_a_whole_fails_every_pod_at_ack_time(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Degraded
     );
-    assert_nodes(
+    assert_pods(
         &w,
-        &[&f.web, &f.web_in, &f.web_out, &f.api, &f.api_in, &f.api_out],
-        NodeHealthStatus::Failed,
+        &[&f.web, &f.api],
+        PodHealthStatus::Failed,
         "config: cannot write certs",
     )
     .await;
@@ -579,8 +421,8 @@ async fn a_report_from_a_superseded_session_is_refused_and_records_nothing(
     };
 
     // The derivation hook may already have written `Deploying` records for the
-    // nodes; a refused report must add nothing on top.
-    let before = latest_node(&w, &f.web.node.id).await.map(|r| r.id.0);
+    // pods; a refused report must add nothing on top.
+    let before = latest_pod(&w, &f.web.id).await.map(|r| r.id.0);
     let refused = record(&w, &stale, vec![ok("web"), ok("api")]).await;
     assert!(
         matches!(refused, Err(OrchestrationError::PermissionDenied)),
@@ -588,7 +430,7 @@ async fn a_report_from_a_superseded_session_is_refused_and_records_nothing(
     );
     assert!(server_history(&w, &f.server).await.is_empty());
     assert_eq!(
-        latest_node(&w, &f.web.node.id).await.map(|r| r.id.0),
+        latest_pod(&w, &f.web.id).await.map(|r| r.id.0),
         before
     );
     assert_eq!(
@@ -608,14 +450,17 @@ async fn a_pod_whose_desired_entry_changed_is_deploying_until_applied(
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
 
     // Move api's exit: a new desired revision the worker has not been handed.
-    w.nodes
-        .process(ReplaceNodeSpec {
-            actor: operator(),
-            node: f.api_out.node.id.clone(),
-            spec: exit_spec("10.0.0.7:9090"),
-            item_count: 0,
-        })
-        .await?;
+    w.apply(
+        &f.canvas_row,
+        GraphChange {
+            put_exits: vec![ExitEntity {
+                destination: "10.0.0.7:9090".to_string(),
+                ..f.api_out.clone()
+            }],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
     w.derive(&f.canvas).await?;
     let view = w.view(&f.server).await?;
     assert_eq!(view.desired.as_ref().unwrap().revision, 2);
@@ -623,20 +468,8 @@ async fn a_pod_whose_desired_entry_changed_is_deploying_until_applied(
 
     record(&w, &agent, vec![ok("web"), ok("api")]).await?;
 
-    assert_nodes(
-        &w,
-        &[&f.api, &f.api_in, &f.api_out],
-        NodeHealthStatus::Deploying,
-        "",
-    )
-    .await;
-    assert_nodes(
-        &w,
-        &[&f.web, &f.web_in, &f.web_out],
-        NodeHealthStatus::Ready,
-        "",
-    )
-    .await;
+    assert_pods(&w, &[&f.api], PodHealthStatus::Deploying, "").await;
+    assert_pods(&w, &[&f.web], PodHealthStatus::Ready, "").await;
     // Lagging within the grace period is not degraded.
     assert_eq!(
         server_history(&w, &f.server).await.last().unwrap().status,
@@ -655,31 +488,18 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
 
     // Revision 2: web's exit moves, api's exit moves, and a brand-new pod appears.
-    for (node, destination) in [(&f.web_out, "10.0.0.5:8081"), (&f.api_out, "10.0.0.7:9090")] {
-        w.nodes
-            .process(ReplaceNodeSpec {
-                actor: operator(),
-                node: node.node.id.clone(),
-                spec: exit_spec(destination),
-                item_count: 0,
-            })
-            .await?;
-    }
-    let fresh = create(
-        &w,
-        &f.canvas,
-        "fresh",
-        NodeSpec::Pod(PodConfig {
-            server: f.ip.clone(),
-            port: 9443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let fresh_in = create(&w, &f.canvas, "fresh-in", entry_spec()).await?;
-    let fresh_out = create(&w, &f.canvas, "fresh-out", exit_spec("10.0.0.8:1000")).await?;
-    wire(&w, &fresh, &fresh_in, &fresh_out).await?;
+    let (fresh, _, _, fresh_change) =
+        to_exit(&f.canvas_row, &f.server_row, "fresh", 9443, "10.0.0.8:1000");
+    let mut change = fresh_change;
+    change.put_exits.push(ExitEntity {
+        destination: "10.0.0.5:8081".to_string(),
+        ..f.web_out.clone()
+    });
+    change.put_exits.push(ExitEntity {
+        destination: "10.0.0.7:9090".to_string(),
+        ..f.api_out.clone()
+    });
+    w.apply(&f.canvas_row, change).await?;
     w.derive(&f.canvas).await?;
 
     let revision = take_and_ack(
@@ -700,7 +520,7 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
     assert_eq!(view.failed_revision, Some(2));
     let mut failed_tags: Vec<&str> = view.failed_pods.iter().map(|p| p.tag.as_str()).collect();
     failed_tags.sort_unstable();
-    assert_eq!(failed_tags, ["api", "fresh"]);
+    assert_eq!(failed_tags, [key("api"), key("fresh")]);
 
     let applied = view.applied.as_ref().expect("the mix is applied");
     assert_eq!(applied.revision, 2);
@@ -716,7 +536,7 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
         "the failed pod keeps the shape it was running"
     );
     assert!(
-        !config.forwardings.iter().any(|f| f.tag == "fresh"),
+        !config.forwardings.iter().any(|f| f.tag == key("fresh")),
         "a failed pod with no previous shape runs nothing"
     );
     assert_eq!(
@@ -727,7 +547,7 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
     let api_deps = applied
         .forwardings
         .iter()
-        .find(|d| d.pod.0 == f.api.node.id.0)
+        .find(|d| d.pod == f.api.id)
         .expect("api keeps its dependency entry");
     assert_eq!(api_deps.serves.port, 8443);
 
@@ -740,27 +560,21 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
     assert_eq!(first_ack.status, ServerHealthStatus::Online);
     assert_eq!(ack_record.status, ServerHealthStatus::Degraded);
     assert_eq!((ack_record.upload_bytes, ack_record.download_bytes), (0, 0));
-    assert_nodes(
+    assert_pods(
         &w,
-        &[&f.api, &f.api_in, &f.api_out],
-        NodeHealthStatus::Failed,
+        &[&f.api],
+        PodHealthStatus::Failed,
         "bind 203.0.113.10:8443: address in use",
     )
     .await;
-    assert_nodes(
+    assert_pods(
         &w,
-        &[&fresh, &fresh_in, &fresh_out],
-        NodeHealthStatus::Failed,
+        &[&fresh],
+        PodHealthStatus::Failed,
         "bind 203.0.113.10:9443: permission denied",
     )
     .await;
-    assert_nodes(
-        &w,
-        &[&f.web, &f.web_in, &f.web_out],
-        NodeHealthStatus::Ready,
-        "",
-    )
-    .await;
+    assert_pods(&w, &[&f.web], PodHealthStatus::Ready, "").await;
 
     // The worker reports what it actually runs.
     record(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -771,20 +585,14 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
         server_history(&w, &f.server).await.last().unwrap().status,
         ServerHealthStatus::Degraded
     );
-    assert_nodes(
+    assert_pods(
         &w,
-        &[&f.api, &f.api_in, &f.api_out],
-        NodeHealthStatus::Failed,
+        &[&f.api],
+        PodHealthStatus::Failed,
         "bind 203.0.113.10:8443: address in use",
     )
     .await;
-    assert_nodes(
-        &w,
-        &[&f.web, &f.web_in, &f.web_out],
-        NodeHealthStatus::Ready,
-        "",
-    )
-    .await;
+    assert_pods(&w, &[&f.web], PodHealthStatus::Ready, "").await;
     Ok(())
 }
 
@@ -1038,7 +846,7 @@ async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> 
             download_bytes: 0,
             current_connections: 0,
             max_connections: 0,
-            nodes: Vec::new(),
+            pods: Vec::new(),
         })
         .await?
         .is_some()
@@ -1131,9 +939,9 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
             download_bytes: 1,
             current_connections: 1,
             max_connections: 1,
-            nodes: vec![NewNodeHealthRecord {
-                node: f.web.node.id.clone(),
-                status: NodeHealthStatus::Ready,
+            pods: vec![NewPodHealthRecord {
+                pod: f.web.id.clone(),
+                status: PodHealthStatus::Ready,
                 message: String::new(),
                 report_time,
             }],
@@ -1154,15 +962,15 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
     );
     // The derivation hook wrote its own `Deploying` record for `web` at publish
     // time; only the stale row we inserted must be gone.
-    let nodes =
-        w.db.process(ListNodeHealthHistory {
-            node: f.web.node.id.clone(),
+    let pods =
+        w.db.process(ListPodHealthHistory {
+            pod: f.web.id.clone(),
             start: now - TimeDelta::days(30),
             end: now,
             limit: 10,
         })
         .await?;
-    let times: Vec<_> = nodes.iter().map(|r| r.report_time).collect();
+    let times: Vec<_> = pods.iter().map(|r| r.report_time).collect();
     assert!(times.contains(&fresh), "{times:?}");
     assert!(!times.contains(&stale), "{times:?}");
     Ok(())
@@ -1184,7 +992,7 @@ async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> DateTime<Ut
             download_bytes: 0,
             current_connections: 0,
             max_connections: 0,
-            nodes: Vec::new(),
+            pods: Vec::new(),
         })
         .await
         .unwrap()
@@ -1306,19 +1114,22 @@ async fn two_consumers_handed_one_signal_run_the_pass_once(pool: sqlx::PgPool) -
 // --- many workers at once ---------------------------------------------------
 
 /// Five servers on one canvas, each running one pod, derived once. Returns the
-/// canvas and each server with its pod.
+/// canvas and each server with its pod and that pod's edge.
 async fn five_servers(
     w: &World,
-) -> Result<(CanvasId, Vec<(ServerId, NodeWithPorts)>), Box<dyn std::error::Error>> {
+) -> Result<(CanvasEntity, Vec<(ServerId, PodEntity, EdgeEntity)>), Box<dyn std::error::Error>> {
     let canvas = w
         .canvases
         .process(canvas_service::CreateCanvas {
             actor: operator(),
             name: "fleet".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let mut servers = Vec::new();
+    let mut changes = Vec::new();
     for i in 0..5u8 {
         let server = w
             .servers
@@ -1338,26 +1149,14 @@ async fn five_servers(
                 },
             })
             .await?;
-        let pod = create(
-            w,
-            &canvas.id,
-            &format!("pod-{i}"),
-            pod_spec_on(&server.id, 443),
-        )
-        .await?;
-        let entry = create(w, &canvas.id, &format!("in-{i}"), entry_spec()).await?;
-        let exit = create(
-            w,
-            &canvas.id,
-            &format!("out-{i}"),
-            exit_spec("10.0.0.5:8080"),
-        )
-        .await?;
-        wire(w, &pod, &entry, &exit).await?;
-        servers.push((server.id, pod));
+        let (pod, _, edge, change) =
+            to_exit(&canvas, &server, &format!("pod-{i}"), 443, "10.0.0.5:8080");
+        changes.push(change);
+        servers.push((server.id, pod, edge));
     }
+    w.apply(&canvas, merge(changes)).await?;
     w.derive(&canvas.id).await?;
-    Ok((canvas.id, servers))
+    Ok((canvas, servers))
 }
 
 async fn canvas_generation(w: &World, canvas: &CanvasId) -> i64 {
@@ -1379,8 +1178,9 @@ async fn is_stale(w: &World, canvas: &CanvasId) -> Result<bool, Box<dyn std::err
 async fn five_workers_acking_at_once_all_land(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let (canvas, servers) = five_servers(&w).await?;
+    let canvas = canvas.id;
     let mut acks = Vec::new();
-    for (server, pod) in &servers {
+    for (server, pod, _) in &servers {
         let agent = register(&w, server).await?;
         let row = server_row(&w, server).await;
         let snapshot =
@@ -1391,7 +1191,7 @@ async fn five_workers_acking_at_once_all_land(pool: sqlx::PgPool) -> TestResult 
             })
             .await?
             .ok_or("nothing in flight")?;
-        acks.push((agent, snapshot.revision, pod.node.name.clone()));
+        acks.push((agent, snapshot.revision, pod.name.clone()));
     }
     // Start the ack round caught up, so what the acks change is visible on its
     // own.
@@ -1416,7 +1216,7 @@ async fn five_workers_acking_at_once_all_land(pool: sqlx::PgPool) -> TestResult 
     for handle in handles {
         handle.await??;
     }
-    for (server, _) in &servers {
+    for (server, _, _) in &servers {
         let view = w.view(server).await?;
         assert!(
             view.in_flight.is_none() && view.applied.is_some(),
@@ -1444,7 +1244,7 @@ async fn five_workers_registering_at_once_all_land(pool: sqlx::PgPool) -> TestRe
     let w = world(pool).await?;
     let (_canvas, servers) = five_servers(&w).await?;
     let mut handles = Vec::new();
-    for (server, _) in &servers {
+    for (server, _, _) in &servers {
         let agents = w.agents.clone();
         let server = server.clone();
         handles.push(tokio::spawn(async move {
@@ -1457,6 +1257,7 @@ async fn five_workers_registering_at_once_all_land(pool: sqlx::PgPool) -> TestRe
                     reported: None,
                     agent_version: None,
                     agent_arch: None,
+                    capabilities: Vec::new(),
                     last_update_error: None,
                 })
                 .await
@@ -1465,7 +1266,7 @@ async fn five_workers_registering_at_once_all_land(pool: sqlx::PgPool) -> TestRe
     for handle in handles {
         handle.await??;
     }
-    for (server, _) in &servers {
+    for (server, _, _) in &servers {
         assert_eq!(server_row(&w, server).await.refresh_key_generation, 1);
     }
     Ok(())
@@ -1477,38 +1278,45 @@ async fn five_workers_registering_at_once_all_land(pool: sqlx::PgPool) -> TestRe
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn deleting_a_server_after_an_ack_keeps_the_canvas_stale(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
-    let (canvas, servers) = five_servers(&w).await?;
+    let (canvas_row, servers) = five_servers(&w).await?;
+    let canvas = canvas_row.id.clone();
     let mut agents = Vec::new();
-    for (server, pod) in &servers {
+    for (server, pod, _) in &servers {
         let agent = register(&w, server).await?;
-        take_and_ack(&w, &agent, vec![ok(&pod.node.name)]).await?;
+        take_and_ack(&w, &agent, vec![ok(&pod.name)]).await?;
         agents.push(agent);
     }
     w.derive(&canvas).await?;
     assert!(!is_stale(&w, &canvas).await?);
 
     // One more ack on s0, which needs a new revision: move its pod.
-    let (s0, pod0) = &servers[0];
-    w.nodes
-        .process(ReplaceNodeSpec {
-            actor: operator(),
-            node: pod0.node.id.clone(),
-            spec: pod_spec_on(s0, 444),
-            item_count: 0,
-        })
-        .await?;
+    let (_, pod0, _) = &servers[0];
+    w.apply(
+        &canvas_row,
+        GraphChange {
+            put_pods: vec![PodEntity {
+                port: 444,
+                ..pod0.clone()
+            }],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
     w.derive(&canvas).await?;
-    take_and_ack(&w, &agents[0], vec![ok(&pod0.node.name)]).await?;
+    take_and_ack(&w, &agents[0], vec![ok(&pod0.name)]).await?;
     assert!(is_stale(&w, &canvas).await?);
 
     // Delete s4, whose view row carried a larger counter than s0's ack added.
     // Its pod goes first: a server with pods cannot be deleted.
-    w.nodes
-        .process(orchestration::services::node::RetireNode {
-            actor: operator(),
-            node: servers[4].1.node.id.clone(),
-        })
-        .await?;
+    w.apply(
+        &canvas_row,
+        GraphChange {
+            delete_pods: vec![servers[4].1.id.clone()],
+            delete_edges: vec![servers[4].2.id.clone()],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
     w.servers
         .process(orchestration::services::server::DeleteServer {
             actor: operator(),

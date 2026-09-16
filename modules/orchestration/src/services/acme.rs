@@ -1,4 +1,4 @@
-//! ACME (DNS-01) issuance and renewal of the public certificates Entry nodes ask
+//! ACME (DNS-01) issuance and renewal of the public certificates TLS client pods ask
 //! for.
 //!
 //! The pipeline is [`IssueCertificate`]: load the `certificate` row, decrypt the
@@ -86,7 +86,7 @@ pub fn challenge_record_name(sni: &str) -> String {
 /// A DNS name the CA can issue for: labels of `[A-Za-z0-9-]`, no wildcard, at
 /// least one dot, no trailing dot or whitespace. Lower-cases the input so the
 /// row key is canonical; every query that joins Entries to certificate rows
-/// lower-cases the Entry side the same way.
+/// lower-cases the pod side the same way.
 pub fn validate_sni(sni: &str) -> Result<String, AcmeError> {
     let sni = sni.to_ascii_lowercase();
     let labels: Vec<&str> = sni.split('.').collect();
@@ -742,7 +742,7 @@ impl Processor<IssueCertificate> for AcmeService {
 }
 
 /// Makes sure a `certificate` row exists for every `(sni, acme_directory)` an
-/// Entry asks for; the cron's first step. An Entry whose SNI is not a hostname
+/// pod asks for; the cron's first step. A pod whose SNI is not a hostname
 /// is skipped with a warning: the row would never issue. Returns the ids of the
 /// rows ensured.
 pub struct EnsureRequestedCertificates;
@@ -759,7 +759,7 @@ impl Processor<EnsureRequestedCertificates> for AcmeService {
             let sni = match validate_sni(&request.tls.sni) {
                 Ok(sni) => sni,
                 Err(e) => {
-                    tracing::warn!(error = %e, canvas = ?request.canvas, "skipping an entry's tls request");
+                    tracing::warn!(error = %e, canvas = ?request.canvas, "skipping a pod's tls request");
                     continue;
                 }
             };
@@ -834,7 +834,7 @@ impl Processor<RetryCertificate> for AcmeService {
     }
 }
 
-/// Admin only. Refused while an Entry still asks for the certificate's
+/// Admin only. Refused while a pod still asks for the certificate's
 /// `(sni, acme_directory)`: the cron would recreate the row and start over,
 /// and until then every server serving the SNI would lose its listener.
 pub struct DeleteCertificate {
@@ -867,7 +867,7 @@ impl Processor<DeleteCertificate> for AcmeService {
             .count();
         if referenced > 0 {
             return Err(OrchestrationError::Conflict(format!(
-                "certificate for {} is still used by {referenced} entry node(s)",
+                "certificate for {} is still used by {referenced} pod(s)",
                 row.sni
             )));
         }

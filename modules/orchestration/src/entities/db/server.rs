@@ -13,10 +13,7 @@ use std::net::{IpAddr, Ipv4Addr};
 table_record!(ServerId, "orchestration_server");
 
 /// The conflict reported when a server that still has pods is deleted.
-pub const SERVER_HAS_PODS: &str = "server still has live pods";
-/// The conflict reported when a server whose universal pod is still bundled is deleted.
-pub const UNIVERSAL_POD_BUNDLED: &str =
-    "server's universal pod is still bundled; disconnect its bundles first";
+pub const SERVER_HAS_PODS: &str = "server still has pods; delete them first";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ServerEntity {
@@ -626,15 +623,13 @@ impl Processor<MoveServerPosition> for Db {
     }
 }
 
-/// Deletes a server with its universal pod, config view and health history.
+/// Deletes a server with its config view and health history.
 ///
 /// Refuses ([`SERVER_HAS_PODS`]) while any pod is still placed on the server: a
 /// pod whose server is gone belongs to nobody, and derivation could then neither
 /// publish nor report it. The service pre-checks the same thing and phrases the
-/// message; this is the race guard, and the `pod_server` foreign key is the
-/// guard behind the guard. The server's own universal pod is not a pod in that
-/// sense: it was created with the server and goes with it, once nothing is
-/// bundled into or out of it ([`UNIVERSAL_POD_BUNDLED`]).
+/// message; this is the race guard, and the pod's `server` foreign key is the
+/// guard behind the guard.
 #[derive(Debug)]
 pub struct DeleteServerRow {
     pub id: ServerId,
@@ -649,36 +644,15 @@ impl Processor<DeleteServerRow> for Db {
     #[tracing::instrument(name = "Query-Transaction:DeleteServerRow", skip_all, err)]
     async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
-        let live_pods: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM orchestration_node
-             WHERE pod_server = $1 AND spec ->> 'type' <> 'universal_pod'",
-        )
-        .bind(&input.id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if live_pods > 0 {
+        let pods: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM orchestration_pod WHERE server = $1")
+                .bind(&input.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if pods > 0 {
             return Err(Error::Conflict(SERVER_HAS_PODS));
         }
-        let bundled: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM orchestration_edge_connection e
-             JOIN orchestration_port p ON p.id IN (e.source_port, e.target_port)
-             JOIN orchestration_node n ON n.id = p.owner
-             WHERE n.pod_server = $1 AND n.spec ->> 'type' = 'universal_pod'",
-        )
-        .bind(&input.id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if bundled > 0 {
-            return Err(Error::Conflict(UNIVERSAL_POD_BUNDLED));
-        }
-        // The universal pod first (its ports and health history cascade), then
-        // the server (its view and health history cascade).
-        sqlx::query(
-            "DELETE FROM orchestration_node WHERE pod_server = $1 AND spec ->> 'type' = 'universal_pod'",
-        )
-        .bind(&input.id)
-        .execute(&mut *tx)
-        .await?;
+        // Its view, health history and group memberships cascade.
         sqlx::query("DELETE FROM orchestration_server WHERE id = $1")
             .bind(&input.id)
             .execute(&mut *tx)
@@ -724,6 +698,9 @@ pub struct RegisterWorkerSession {
     /// The worker's build, when it reported one; `None` keeps the stored values.
     pub agent_version: Option<String>,
     pub agent_arch: Option<String>,
+    /// What the worker reads beyond the tree form (`route_table`, ...): always
+    /// replaced, since a worker too old to report any has none.
+    pub capabilities: Vec<String>,
 }
 
 /// The three snapshot slots of a view row, as the registration reads them.
@@ -756,7 +733,8 @@ impl Processor<RegisterWorkerSession> for Db {
                  observed_address = $5, observed_at = $4,
                  reported_addresses = COALESCE($6, reported_addresses),
                  agent_version = COALESCE($7, agent_version),
-                 agent_arch = COALESCE($8, agent_arch)
+                 agent_arch = COALESCE($8, agent_arch),
+                 capabilities = $9
              WHERE id = $1 AND (session_lease_until IS NULL OR session_lease_until <= $4)
              RETURNING *",
         )
@@ -768,6 +746,7 @@ impl Processor<RegisterWorkerSession> for Db {
         .bind(input.reported.as_ref().map(Json))
         .bind(&input.agent_version)
         .bind(&input.agent_arch)
+        .bind(&input.capabilities)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(server) = rotated else {
@@ -1046,5 +1025,23 @@ impl Processor<FindServerByRefreshKeyDigest> for Db {
         .bind(input.digest)
         .fetch_optional(self.db())
         .await?)
+    }
+}
+
+pub struct FindCanvasOfServer {
+    pub server: ServerId,
+}
+
+impl Processor<FindCanvasOfServer> for Db {
+    type Output = Option<CanvasId>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:FindCanvasOfServer", skip_all, err)]
+    async fn process(&self, input: FindCanvasOfServer) -> Result<Self::Output, Self::Error> {
+        Ok(
+            sqlx::query_scalar("SELECT canvas FROM orchestration_server WHERE id = $1")
+                .bind(input.server)
+                .fetch_optional(self.db())
+                .await?,
+        )
     }
 }

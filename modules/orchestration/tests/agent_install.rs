@@ -41,6 +41,7 @@ fn register(credential: RegisterCredential, server: &ServerId) -> RegisterWorker
         reported: None,
         agent_version: None,
         agent_arch: None,
+        capabilities: Vec::new(),
         last_update_error: None,
     }
 }
@@ -265,6 +266,7 @@ async fn register_as(
             reported: None,
             agent_version: Some(version.to_string()),
             agent_arch: Some("x86_64".to_string()),
+            capabilities: Vec::new(),
             last_update_error: last_update_error.map(str::to_owned),
         })
         .await?;

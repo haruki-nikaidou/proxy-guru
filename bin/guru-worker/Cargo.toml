@@ -48,6 +48,7 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 orchestration = { path = "../../modules/orchestration" }
+guru_topology = { path = "../../lib/guru_topology" }
 auth = { path = "../../modules/auth" }
 base = { path = "../../modules/base" }
 wakuwaku = { workspace = true }

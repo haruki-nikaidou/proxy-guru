@@ -1,0 +1,63 @@
+ipv6_resolve = "tolerated"
+
+[log]
+level = "info"
+
+[quic]
+congestion = "brutal"
+send_mbps = 1000
+receive_mbps = 50
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0
+
+[[forwarding]]
+tag = "gcore01xxxxxxxxxxxxx"
+listen = "[::]:7443"
+to = "u:gcore010outxxxxxxxxx"
+
+[forwarding.listen_as.relay]
+relay_type = "quic"
+key = "certs/relay/gcore01xxxxxxxxxxxxx/key.pem"
+full_chain = "certs/relay/gcore01xxxxxxxxxxxxx/full_chain.pem"
+
+[forwarding.quic]
+congestion = "brutal"
+send_mbps = 500
+receive_mbps = 50
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0
+
+[[forwarding.upstream]]
+id = "u:gcore010outxxxxxxxxx"
+
+[forwarding.upstream.exit]
+destination = "origin.example.com:443"
+
+[[forwarding]]
+tag = "gcore02xxxxxxxxxxxxx"
+listen = "[::]:7444"
+to = "u:gcore020outxxxxxxxxx"
+
+[forwarding.listen_as.relay]
+relay_type = "quic"
+key = "certs/relay/gcore02xxxxxxxxxxxxx/key.pem"
+full_chain = "certs/relay/gcore02xxxxxxxxxxxxx/full_chain.pem"
+
+[forwarding.quic]
+congestion = "brutal"
+send_mbps = 500
+receive_mbps = 50
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0
+
+[[forwarding.upstream]]
+id = "u:gcore020outxxxxxxxxx"
+
+[forwarding.upstream.exit]
+destination = "origin.example.com:443"

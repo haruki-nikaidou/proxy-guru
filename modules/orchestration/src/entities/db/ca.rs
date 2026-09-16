@@ -6,7 +6,7 @@
 //! CA certificate, which every config revision delivers as `certs/ca.pem`.
 //! Private keys are stored encrypted with the master key.
 
-use crate::entities::db::node::NodeId;
+use crate::entities::db::pod::PodId;
 use base::db::{Db, Error};
 use chrono::{DateTime, Utc};
 use db_types::table_record;
@@ -24,7 +24,7 @@ pub fn internal_ca_id() -> InternalCaId {
 }
 
 /// The SNI a relay listener presents and its dialers verify.
-pub fn relay_sni(pod: &NodeId) -> String {
+pub fn relay_sni(pod: &PodId) -> String {
     format!("{pod}{RELAY_SNI_SUFFIX}")
 }
 
@@ -91,7 +91,7 @@ table_record!(RelayCertificateId, "relay_certificate");
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RelayCertificateEntity {
     pub id: RelayCertificateId,
-    pub pod: NodeId,
+    pub pod: PodId,
     pub sni: String,
     /// Encrypted.
     pub private_key_pem: String,
@@ -114,7 +114,7 @@ pub struct RelayCertificateEntity {
 /// row; a second concurrent create for the same pod finds the row and replaces it.
 #[derive(Debug)]
 pub struct StoreRelayCertificate {
-    pub pod: NodeId,
+    pub pod: PodId,
     pub sni: String,
     pub private_key_pem: String,
     pub certificate_pem: String,
@@ -176,7 +176,7 @@ impl Processor<StoreRelayCertificate> for Db {
 
 #[derive(Debug)]
 pub struct ListRelayCertificatesByPods {
-    pub pods: Vec<NodeId>,
+    pub pods: Vec<PodId>,
 }
 
 impl Processor<ListRelayCertificatesByPods> for Db {

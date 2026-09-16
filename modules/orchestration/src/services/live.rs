@@ -1,16 +1,16 @@
-//! Live streams: shared per-key views, and the four watch operations behind the
+//! Live streams: shared per-key views, and the watch operations behind the
 //! `Watch*` RPCs.
 //!
 //! # Two shapes, on purpose
 //!
-//! A canvas and a rollout tree are *state*: every watcher of the same key wants
+//! A rollout tree is *state*: every watcher of the same key wants
 //! the same picture, and a watcher that fell behind wants the newest picture, not
 //! the intermediate ones. Those are [`ViewRegistry`] views — one reload per
 //! change per key, shared by reference count, published through
 //! [`tokio::sync::watch`] so a slow consumer collapses a burst into one value and
 //! can never make the server buffer.
 //!
-//! Server and node health are *logs*: the records are the content, and skipping
+//! Server health is a *log*: the records are the content, and skipping
 //! one loses information. Those are forwarded straight from the bus, and a gap
 //! (a lag, a bus reconnect) is closed by re-reading the database from the last
 //! record the stream actually sent.
@@ -19,20 +19,16 @@
 //! no `Resync` on the wire.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::db::canvas::{CanvasContents, CanvasId, CanvasTree, LoadCanvasTree};
+use crate::entities::db::canvas::CanvasId;
+use crate::entities::db::graph::LoadCanvasGraph;
 use crate::entities::db::health::{
-    ListNodeHealthHistory as ListNodeHealthHistoryRows,
-    ListServerHealthHistory as ListServerHealthHistoryRows, NodeHealthRecordEntity,
-    ServerHealthRecordEntity,
+    ListServerHealthHistory as ListServerHealthHistoryRows, ServerHealthRecordEntity,
 };
-use crate::entities::db::node::{FindNodeWithPorts, NodeId};
 use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
-use crate::entities::db::topology::{LoadCanvasContents, LoadCanvasTopology};
 use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::{LiveMessage, RolloutScope};
 use crate::hooks::live::{LiveBus, LiveEvent};
 use crate::services::OrchestrationError;
-use crate::services::health::DEFAULT_NODE_HISTORY_LIMIT;
 use crate::services::rollout::{RolloutStatus, rollout_status};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -273,70 +269,6 @@ async fn load_until_ok<V: LiveView>(view: &V, db: &Db) -> Option<V::State> {
     }
 }
 
-// --- the canvas view ---------------------------------------------------------
-
-/// Everything the dashboard renders for one canvas, refreshed as a whole.
-pub struct CanvasView {
-    pub canvas: CanvasId,
-}
-
-#[derive(Clone)]
-pub struct CanvasLive {
-    pub contents: CanvasContents,
-    /// Every canvas of the tree this canvas belongs to, as record keys. An edit
-    /// in a subcanvas changes what the import node shows here, so the whole tree
-    /// is the match set — not just this canvas.
-    pub tree: HashSet<String>,
-}
-
-impl LiveView for CanvasView {
-    type State = CanvasLive;
-
-    fn matches(state: &Self::State, message: &LiveMessage) -> bool {
-        match message {
-            LiveMessage::CanvasChanged { canvas, .. } => state.tree.contains(canvas),
-            // The `Server` message carries `health_status` and `last_seen_at`,
-            // so a flip is a rendered change — a routine report is not.
-            LiveMessage::ServerHealth {
-                canvas,
-                status_changed: true,
-                ..
-            } => state.tree.contains(canvas),
-            _ => false,
-        }
-    }
-
-    async fn load(&self, db: &Db) -> Result<Option<CanvasLive>, OrchestrationError> {
-        let Some(contents) = db
-            .process(LoadCanvasContents {
-                canvas: self.canvas.clone(),
-            })
-            .await?
-        else {
-            return Ok(None);
-        };
-        let tree = db
-            .process(LoadCanvasTree {
-                canvas: self.canvas.clone(),
-            })
-            .await?
-            .map(|tree| {
-                let mut keys = HashSet::new();
-                collect_tree(&tree, &mut keys);
-                keys
-            })
-            .unwrap_or_default();
-        Ok(Some(CanvasLive { contents, tree }))
-    }
-}
-
-fn collect_tree(tree: &CanvasTree, out: &mut HashSet<String>) {
-    out.insert(tree.canvas.id.to_string());
-    for child in &tree.children {
-        collect_tree(child, out);
-    }
-}
-
 // --- the rollouts view -------------------------------------------------------
 
 /// The rollout state of every server of one canvas tree.
@@ -378,26 +310,26 @@ impl LiveView for RolloutsView {
     }
 
     async fn load(&self, db: &Db) -> Result<Option<RolloutsLive>, OrchestrationError> {
-        let topology = db
-            .process(LoadCanvasTopology {
+        let graph = db
+            .process(LoadCanvasGraph {
                 canvas: self.canvas.clone(),
             })
             .await?;
-        // An empty topology is how the query reports a canvas that is not there.
-        let Some(root) = topology.canvases.first() else {
+        // An empty graph is how the query reports a canvas that is not there.
+        let Some(root) = graph.canvases.first() else {
             return Ok(None);
         };
         let views = db
             .process(ListServerConfigViewsByCanvases {
-                canvases: topology.canvas_ids(),
+                canvases: graph.canvas_ids(),
             })
             .await?;
         let mut by_server: HashMap<ServerId, _> = views
             .into_iter()
             .map(|view| (view.server.clone(), view))
             .collect();
-        let mut servers = Vec::with_capacity(topology.servers.len());
-        for server in &topology.servers {
+        let mut servers = Vec::with_capacity(graph.servers.len());
+        for server in &graph.servers {
             let Some(view) = by_server.remove(&server.id) else {
                 // Same call as the deriver makes: a server without its view row
                 // is a broken write, not something to fail a dashboard over.
@@ -409,7 +341,7 @@ impl LiveView for RolloutsView {
                 server: server.clone(),
             });
         }
-        let tree = topology.canvases.iter().map(|c| c.id.to_string()).collect();
+        let tree = graph.canvases.iter().map(|c| c.id.to_string()).collect();
         Ok(Some(RolloutsLive { tree, servers }))
     }
 }
@@ -420,7 +352,6 @@ impl LiveView for RolloutsView {
 pub struct LiveService {
     pub db: Db,
     pub bus: LiveBus,
-    pub canvases: ViewRegistry<CanvasView>,
     pub rollouts: ViewRegistry<RolloutsView>,
     /// Read by the gRPC layer for the stream keep-alive cadence; the views
     /// themselves are event-driven and have no tunables.
@@ -430,32 +361,11 @@ pub struct LiveService {
 impl LiveService {
     pub fn new(db: Db, bus: LiveBus, config: OrchestrationConfig) -> Self {
         Self {
-            canvases: ViewRegistry::new(db.clone(), bus.clone()),
             rollouts: ViewRegistry::new(db.clone(), bus.clone()),
             db,
             bus,
             config,
         }
-    }
-}
-
-pub struct WatchCanvas {
-    pub actor: Identity,
-    pub canvas: CanvasId,
-}
-
-impl Processor<WatchCanvas> for LiveService {
-    type Output = ViewHandle<CanvasLive>;
-    type Error = OrchestrationError;
-    #[tracing::instrument(name = "Service:WatchCanvas", skip_all, err)]
-    async fn process(&self, input: WatchCanvas) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ViewWorkspace)?;
-        Ok(self.canvases.subscribe(
-            input.canvas.to_string(),
-            CanvasView {
-                canvas: input.canvas,
-            },
-        ))
     }
 }
 
@@ -522,48 +432,5 @@ impl Processor<WatchServerHealth> for LiveService {
             records,
             events,
         })
-    }
-}
-
-/// The opening snapshot of a node-health stream, plus its feed.
-pub struct NodeHealthWatch {
-    /// Newest first, as the history RPC returns them.
-    pub records: Vec<NodeHealthRecordEntity>,
-    pub events: broadcast::Receiver<LiveEvent>,
-}
-
-pub struct WatchNodeHealth {
-    pub actor: Identity,
-    pub node: NodeId,
-    pub limit: i64,
-}
-
-impl Processor<WatchNodeHealth> for LiveService {
-    type Output = NodeHealthWatch;
-    type Error = OrchestrationError;
-    #[tracing::instrument(name = "Service:WatchNodeHealth", skip_all, err)]
-    async fn process(&self, input: WatchNodeHealth) -> Result<Self::Output, Self::Error> {
-        input.actor.ensure(Permission::ViewWorkspace)?;
-        let events = self.bus.subscribe();
-        self.db
-            .process(FindNodeWithPorts {
-                id: input.node.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
-        let records = self
-            .db
-            .process(ListNodeHealthHistoryRows {
-                node: input.node,
-                start: DateTime::UNIX_EPOCH,
-                end: Utc::now(),
-                limit: if input.limit > 0 {
-                    input.limit
-                } else {
-                    DEFAULT_NODE_HISTORY_LIMIT
-                },
-            })
-            .await?;
-        Ok(NodeHealthWatch { records, events })
     }
 }

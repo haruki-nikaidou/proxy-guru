@@ -86,3 +86,15 @@ pub(crate) async fn insert_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> R
     .await?;
     Ok(())
 }
+
+/// Rewrites what an existing edge dials. Its ends are its identity: moving an
+/// edge is deleting it and drawing another.
+pub(crate) async fn update_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> Result<(), Error> {
+    sqlx::query("UPDATE orchestration_edge SET override_ip = $2, override_port = $3 WHERE id = $1")
+        .bind(&edge.id)
+        .bind(&edge.override_ip)
+        .bind(edge.override_port.map(i32::from))
+        .execute(conn)
+        .await?;
+    Ok(())
+}

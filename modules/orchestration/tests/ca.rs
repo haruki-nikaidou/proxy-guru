@@ -15,11 +15,9 @@ use orchestration::entities::db::ca::{
 use orchestration::entities::db::canvas::CanvasId;
 use orchestration::entities::db::certificate::{EnsureCertificate, StoreIssuedCertificate};
 use orchestration::entities::db::dns::{CreateDnsProvider, DnsProvider};
-use orchestration::entities::db::health::{ListNodeHealthHistory, NodeHealthStatus};
-use orchestration::entities::db::node::{
-    EntryConfig, ExitConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig,
-    RelayProtocol, TlsConfig,
-};
+use orchestration::entities::db::health::{ListPodHealthHistory, PodHealthStatus};
+use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, TlsConfig};
+use orchestration::services::graph::GraphChange;
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -34,8 +32,6 @@ use orchestration::services::ca::{
     InitInternalCa,
 };
 use orchestration::services::canvas as canvas_service;
-use orchestration::services::edge::Connect;
-use orchestration::services::node::CreateNode;
 use orchestration::services::server::{AddressOverrides, CreateServer};
 use x509_parser::prelude::*;
 
@@ -115,18 +111,12 @@ async fn init_ca_refuses_a_second_init(pool: sqlx::PgPool) -> TestResult {
 }
 
 /// A real pod row for a leaf to hang off: `relay_certificate.pod` is a foreign key.
-async fn some_pod(w: &World) -> Result<NodeId, Box<dyn std::error::Error>> {
+async fn some_pod(w: &World) -> Result<PodId, Box<dyn std::error::Error>> {
     let canvas = canvas(&w.db, "leaves").await?;
     let server = server(&w.db, &canvas, "host").await?;
-    let pod = node(
-        &w.db,
-        &canvas,
-        "pod-a",
-        pod_spec(&server, 10800),
-        pod_ports(),
-    )
-    .await?;
-    Ok(pod.node.id)
+    let pod = pod(&canvas, &server, "pod-a", 10800, PodIngress::RelayTls);
+    insert_rows(&w.db, &canvas, vec![pod.clone()], Vec::new(), Vec::new()).await?;
+    Ok(pod.id)
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
@@ -311,15 +301,14 @@ struct Fixture {
     canvas: CanvasId,
     tokyo: ServerId,
     osaka: ServerId,
-    ingress: NodeWithPorts,
-    osaka_hop: NodeWithPorts,
-    entry: NodeWithPorts,
+    ingress: PodEntity,
+    osaka_hop: PodEntity,
 }
 
-/// tokyo (entry -> ingress -> relay) -> osaka (osaka-hop -> exit).
+/// tokyo (ingress, a client pod) -> osaka (osaka-hop, listening as `hop`) -> exit.
 async fn relay_chain(
     w: &World,
-    relay: RelayProtocol,
+    hop: PodIngress,
     tls: Option<TlsConfig>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     let canvas = w
@@ -328,6 +317,8 @@ async fn relay_chain(
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let mut servers = Vec::new();
@@ -350,101 +341,49 @@ async fn relay_chain(
                 },
             })
             .await?;
-        servers.push((server.id.clone(), server.id));
+        servers.push(server);
     }
-    let (tokyo, tokyo_ip) = servers[0].clone();
-    let (osaka, osaka_ip) = servers[1].clone();
-
-    let create = async |name: &str, spec: NodeSpec| {
-        w.nodes
-            .process(CreateNode {
-                actor: operator(),
-                canvas: canvas.id.clone(),
-                name: name.to_string(),
-                comment: String::new(),
-                spec,
-                position: pos0(),
-                item_count: 0,
-            })
-            .await
-    };
-    let ingress = create(
+    let ingress = pod(
+        &canvas,
+        &servers[0],
         "ingress",
-        NodeSpec::Pod(PodConfig {
-            server: tokyo_ip,
-            port: 443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let entry = create(
-        "entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls,
-        }),
-    )
-    .await?;
-    let to_osaka = create(
-        "to-osaka",
-        NodeSpec::Relay(RelayConfig {
-            protocol: relay,
-            override_ip_address: None,
-            override_port: None,
-        }),
-    )
-    .await?;
-    let osaka_hop = create(
-        "osaka-hop",
-        NodeSpec::Pod(PodConfig {
-            server: osaka_ip,
-            port: 9443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let exit = create(
-        "exit",
-        NodeSpec::Exit(ExitConfig {
-            destination: "10.0.0.5:8080".to_string(),
-            pass_proxy_protocol: None,
-        }),
-    )
-    .await?;
-    let connect = async |output, input| {
-        w.edges
-            .process(Connect {
-                actor: operator(),
-                output_port: output,
-                input_port: input,
-            })
-            .await
-    };
-    connect(port_of(&ingress, "listen"), port_of(&entry, "listen")).await?;
-    connect(
-        port_of(&to_osaka, "destination"),
-        port_of(&ingress, "destination"),
-    )
-    .await?;
-    connect(port_of(&osaka_hop, "listen"), port_of(&to_osaka, "listen")).await?;
-    connect(
-        port_of(&exit, "destination"),
-        port_of(&osaka_hop, "destination"),
+        443,
+        match tls {
+            None => PodIngress::ClientRaw {
+                receive_proxy_protocol: None,
+            },
+            Some(tls) => PodIngress::ClientTls {
+                receive_proxy_protocol: None,
+                tls,
+            },
+        },
+    );
+    let osaka_hop = pod(&canvas, &servers[1], "osaka-hop", 9443, hop);
+    let origin = exit(&canvas, "exit", "10.0.0.5:8080");
+    let to_osaka = edge_to_pod("to-osaka", &ingress, &osaka_hop);
+    let out = edge_to_exit("out", &osaka_hop, &origin);
+    let ingress = routed(ingress, via(&to_osaka));
+    let osaka_hop = routed(osaka_hop, via(&out));
+    w.apply(
+        &canvas,
+        GraphChange {
+            put_pods: vec![ingress.clone(), osaka_hop.clone()],
+            put_exits: vec![origin],
+            put_edges: vec![to_osaka, out],
+            ..GraphChange::default()
+        },
     )
     .await?;
     Ok(Fixture {
         canvas: canvas.id,
-        tokyo,
-        osaka,
+        tokyo: servers[0].id.clone(),
+        osaka: servers[1].id.clone(),
         ingress,
         osaka_hop,
-        entry,
     })
 }
 
-async fn leaf_of(w: &World, pod: &NodeId) -> RelayCertificateEntity {
+async fn leaf_of(w: &World, pod: &PodId) -> RelayCertificateEntity {
     w.db.process(ListRelayCertificatesByPods {
         pods: vec![pod.clone()],
     })
@@ -470,6 +409,7 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 reported: None,
                 agent_version: None,
                 agent_arch: None,
+                capabilities: Vec::new(),
                 last_update_error: None,
             })
             .await?;
@@ -504,7 +444,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     pool: sqlx::PgPool,
 ) -> TestResult {
     let w = world(pool).await?;
-    let f = relay_chain(&w, RelayProtocol::TcpTls, None).await?;
+    let f = relay_chain(&w, PodIngress::RelayTls, None).await?;
 
     // Without a CA both ends are invalid and nothing is published.
     w.derive(&f.canvas).await?;
@@ -535,8 +475,8 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
         [f.canvas.to_string()]
     );
     w.derive(&f.canvas).await?;
-    let leaf = leaf_of(&w, &f.osaka_hop.node.id).await;
-    assert_eq!(leaf.sni, relay_sni(&f.osaka_hop.node.id));
+    let leaf = leaf_of(&w, &f.osaka_hop.id).await;
+    assert_eq!(leaf.sni, relay_sni(&f.osaka_hop.id));
     assert_leaf_signed_by(&leaf.certificate_pem, &ca.certificate_pem, &leaf.sni);
     let relay_ref = CertificateRef {
         kind: CertificateKind::Relay,
@@ -549,7 +489,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert_eq!(desired.revision, 2);
     assert_eq!(desired.certificates, vec![relay_ref.clone()]);
     assert_eq!(desired.forwardings[0].certificates, vec![relay_ref.clone()]);
-    let osaka_key = f.osaka_hop.node.id.to_string();
+    let osaka_key = f.osaka_hop.id.to_string();
     assert!(
         desired
             .toml
@@ -582,7 +522,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
         desired.toml.contains("protocol = \"tls\"")
             && desired
                 .toml
-                .contains(&format!("sni = \"{}\"", relay_sni(&f.osaka_hop.node.id)))
+                .contains(&format!("sni = \"{}\"", relay_sni(&f.osaka_hop.id)))
             && desired.toml.contains("relay_ca = \"certs/ca.pem\""),
         "{}",
         desired.toml
@@ -600,7 +540,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     // Rotation: the leaf expires within the renewal window, the cron re-issues
     // it and the same TOML ships as a new revision pinning the new version.
     w.db.process(StoreRelayCertificate {
-        pod: f.osaka_hop.node.id.clone(),
+        pod: f.osaka_hop.id.clone(),
         sni: leaf.sni.clone(),
         private_key_pem: leaf.private_key_pem.clone(),
         certificate_pem: leaf.certificate_pem.clone(),
@@ -611,7 +551,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     .await?
     .expect("the unconditional store writes the row");
     rotate_expiring_relay_certificates(&w.deriver).await?;
-    let rotated = leaf_of(&w, &f.osaka_hop.node.id).await;
+    let rotated = leaf_of(&w, &f.osaka_hop.id).await;
     assert_eq!(rotated.version, 3);
     assert_ne!(rotated.certificate_pem, leaf.certificate_pem);
     let osaka = w.view(&f.osaka).await?;
@@ -652,7 +592,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) -> TestResult {
+async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let dns =
         w.db.process(CreateDnsProvider {
@@ -665,7 +605,7 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
         .await?;
     let f = relay_chain(
         &w,
-        RelayProtocol::TcpRaw,
+        PodIngress::RelayTcp,
         Some(TlsConfig {
             sni: "example.com".to_string(),
             dns_provider: dns.id.clone(),
@@ -697,22 +637,21 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
     );
     assert!(w.view(&f.osaka).await?.desired.is_some());
     // Osaka serves its listener, so tokyo's forwarding can be published once its
-    // certificate arrives. That first publish already marked osaka's path
-    // (osaka-hop and the relay) Deploying.
+    // certificate arrives. That first publish already marked osaka-hop Deploying.
     ack_current(&w, &f.osaka).await?;
     let since = Utc::now();
-    let history = async |node: &NodeId| {
-        w.db.process(ListNodeHealthHistory {
-            node: node.clone(),
+    let history = async |pod: &PodId| {
+        w.db.process(ListPodHealthHistory {
+            pod: pod.clone(),
             start: since - chrono::Duration::hours(1),
             end: since + chrono::Duration::hours(1),
             limit: 10,
         })
         .await
     };
-    assert!(history(&f.ingress.node.id).await?.is_empty());
+    assert!(history(&f.ingress.id).await?.is_empty());
 
-    // Issued: the pod publishes as TLS and every node on its path is Deploying.
+    // Issued: the pod publishes as TLS and is Deploying.
     w.db.process(StoreIssuedCertificate {
         id: certificate.id.clone(),
         acme_account_key: w.secrets.encrypt_str("acct")?,
@@ -746,27 +685,14 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
             version: 1,
         }]
     );
-    for node in [&f.ingress.node.id, &f.entry.node.id] {
-        let records = history(node).await?;
-        assert_eq!(records.len(), 1, "{records:?}");
-        assert_eq!(records[0].status, NodeHealthStatus::Deploying);
-    }
-    // The relay is on the ingress path too (destination side) and on osaka's
-    // (listen side): one record from each server's publish.
-    let relay_records = history(
-        &desired.forwardings[0]
-            .nodes
-            .iter()
-            .find(|n| **n != f.entry.node.id)
-            .cloned()
-            .expect("the relay node"),
-    )
-    .await?;
-    assert_eq!(relay_records.len(), 2, "{relay_records:?}");
-    assert!(
-        relay_records
-            .iter()
-            .all(|r| r.status == NodeHealthStatus::Deploying)
+    let records = history(&f.ingress.id).await?;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].status, PodHealthStatus::Deploying);
+    let hop_records = history(&f.osaka_hop.id).await?;
+    assert_eq!(
+        hop_records.len(),
+        1,
+        "osaka-hop was marked by its own first publish only: {hop_records:?}"
     );
 
     // A pass that changes nothing adds no records.
@@ -775,7 +701,7 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) ->
     })
     .await?;
     w.derive(&f.canvas).await?;
-    assert_eq!(history(&f.ingress.node.id).await?.len(), 1);
+    assert_eq!(history(&f.ingress.id).await?.len(), 1);
     Ok(())
 }
 

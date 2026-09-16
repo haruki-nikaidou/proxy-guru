@@ -1,6 +1,3 @@
-use crate::entities::db::connection::EdgeConnectionEntity;
-use crate::entities::db::node::NodeWithPorts;
-use crate::entities::db::server::ServerEntity;
 use crate::entities::db::tree;
 use base::db::{Db, Error};
 use db_types::table_record;
@@ -9,13 +6,14 @@ use std::collections::HashMap;
 
 table_record!(CanvasId, "orchestration_canvas");
 
-/// The conflict reported when a canvas that another canvas imports is deleted.
-pub const CANVAS_IMPORTED: &str = "canvas is imported by another canvas";
+/// The conflict reported when a subcanvas would be created under a canvas that
+/// does not exist.
+pub const PARENT_MISSING: &str = "the parent canvas does not exist";
 
 /// The root identity and generation a validated write fences against: the tree
 /// as the snapshot read it. Passed to [`crate::entities::db::fence::touch_checked`]
-/// so a concurrent edit that advanced the generation — or re-parented the tree —
-/// makes the write roll back instead of committing against stale validation.
+/// so a concurrent edit that advanced the generation makes the write roll back
+/// instead of committing against stale validation.
 #[derive(Debug, Clone)]
 pub struct CanvasFence {
     pub root: CanvasId,
@@ -27,6 +25,11 @@ pub struct CanvasEntity {
     pub id: CanvasId,
     pub name: String,
     pub description: String,
+    /// The canvas this one is drawn inside; `None` for a root.
+    pub parent: Option<CanvasId>,
+    /// Where it is drawn on its parent.
+    #[sqlx(flatten)]
+    pub position: CanvasUiPosition,
     /// Bumped by every mutating transaction; the derivation fence.
     pub generation: i64,
     /// The generation the stored config views were derived from.
@@ -35,25 +38,12 @@ pub struct CanvasEntity {
 
 /// A position on the dashboard canvas, stored as the `position_x` / `position_y`
 /// columns of the row it belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, sqlx::FromRow)]
 pub struct CanvasUiPosition {
     #[sqlx(rename = "position_x")]
     pub x: i64,
     #[sqlx(rename = "position_y")]
     pub y: i64,
-}
-
-/// Everything the dashboard renders for one canvas.
-#[derive(Debug, Clone)]
-pub struct CanvasContents {
-    pub canvas: CanvasEntity,
-    /// Root first, parent last; empty for a root.
-    pub ancestors: Vec<CanvasEntity>,
-    /// The canvases this canvas's import nodes embed.
-    pub import_targets: Vec<CanvasEntity>,
-    pub servers: Vec<ServerEntity>,
-    pub nodes: Vec<NodeWithPorts>,
-    pub edges: Vec<EdgeConnectionEntity>,
 }
 
 /// A canvas tree, children ordered by id.
@@ -67,22 +57,48 @@ pub struct CanvasTree {
 pub struct CreateCanvas {
     pub name: String,
     pub description: String,
+    /// `Some` creates a subcanvas drawn at `position` inside that canvas.
+    pub parent: Option<CanvasId>,
+    pub position: CanvasUiPosition,
 }
 
 impl Processor<CreateCanvas> for Db {
     type Output = CanvasEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:CreateCanvas", skip_all, err)]
+    #[tracing::instrument(name = "Query-Transaction:CreateCanvas", skip_all, err)]
     async fn process(&self, input: CreateCanvas) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "INSERT INTO orchestration_canvas (id, name, description)
-             VALUES ($1, $2, $3) RETURNING *",
+        let mut tx = self.db().begin().await?;
+        if let Some(parent) = &input.parent {
+            // The parent's tree gets a new member; its depth is checked by the
+            // walk, and the root is bumped so the tree's readers notice.
+            let exists: Option<CanvasId> =
+                sqlx::query_scalar("SELECT id FROM orchestration_canvas WHERE id = $1 FOR UPDATE")
+                    .bind(parent)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if exists.is_none() {
+                return Err(Error::Conflict(PARENT_MISSING));
+            }
+            if tree::ancestors_of(&mut tx, parent).await?.len()
+                >= usize::try_from(tree::MAX_DEPTH - 1).unwrap_or(0)
+            {
+                return Err(Error::Conflict(tree::NESTING_TOO_DEEP));
+            }
+        }
+        let canvas: CanvasEntity = sqlx::query_as(
+            "INSERT INTO orchestration_canvas (id, name, description, parent, position_x, position_y)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
         )
         .bind(CanvasId::new())
         .bind(input.name)
         .bind(input.description)
-        .fetch_one(self.db())
-        .await?)
+        .bind(&input.parent)
+        .bind(input.position.x)
+        .bind(input.position.y)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(canvas)
     }
 }
 
@@ -100,9 +116,7 @@ impl Processor<ListCanvases> for Db {
         let sql = if input.include_subcanvases {
             "SELECT * FROM orchestration_canvas ORDER BY id"
         } else {
-            "SELECT * FROM orchestration_canvas
-             WHERE id NOT IN (SELECT import_canvas FROM orchestration_node WHERE import_canvas IS NOT NULL)
-             ORDER BY id"
+            "SELECT * FROM orchestration_canvas WHERE parent IS NULL ORDER BY id"
         };
         let result: Vec<CanvasEntity> = sqlx::query_as(sql).fetch_all(self.db()).await?;
         tracing::Span::current().record("result_count", result.len());
@@ -151,24 +165,8 @@ impl Processor<LoadCanvasTree> for Db {
                 .bind(&ids)
                 .fetch_all(&mut *tx)
                 .await?;
-        let links: Vec<(CanvasId, CanvasId)> = sqlx::query_as(
-            "SELECT canvas, import_canvas FROM orchestration_node
-             WHERE canvas = ANY($1) AND import_canvas IS NOT NULL",
-        )
-        .bind(&ids)
-        .fetch_all(&mut *tx)
-        .await?;
         tx.commit().await?;
-        if canvases.is_empty() {
-            return Ok(None);
-        }
-        let mut by_id: HashMap<CanvasId, CanvasEntity> =
-            canvases.into_iter().map(|c| (c.id.clone(), c)).collect();
-        let mut children_of: HashMap<CanvasId, Vec<CanvasId>> = HashMap::new();
-        for (canvas, target) in links {
-            children_of.entry(canvas).or_default().push(target);
-        }
-        Ok(assemble_tree(&root, &mut by_id, &children_of, 0))
+        Ok(assemble_tree(&root, canvases))
     }
 }
 
@@ -177,14 +175,30 @@ impl Processor<LoadCanvasTree> for Db {
 /// or all after it.
 pub(crate) const SNAPSHOT_READ: &str = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
 
-fn assemble_tree(
+/// The tree below `root` out of a flat list of its canvases.
+pub fn assemble_tree(root: &CanvasId, canvases: Vec<CanvasEntity>) -> Option<CanvasTree> {
+    let mut children_of: HashMap<CanvasId, Vec<CanvasId>> = HashMap::new();
+    for canvas in &canvases {
+        if let Some(parent) = &canvas.parent {
+            children_of
+                .entry(parent.clone())
+                .or_default()
+                .push(canvas.id.clone());
+        }
+    }
+    let mut by_id: HashMap<CanvasId, CanvasEntity> =
+        canvases.into_iter().map(|c| (c.id.clone(), c)).collect();
+    assemble(root, &mut by_id, &children_of, 0)
+}
+
+fn assemble(
     id: &CanvasId,
     by_id: &mut HashMap<CanvasId, CanvasEntity>,
     children_of: &HashMap<CanvasId, Vec<CanvasId>>,
     depth: usize,
 ) -> Option<CanvasTree> {
     // The tree walk already refuses deeper trees; the guard only keeps a corrupt
-    // link set from recursing forever.
+    // parent chain from recursing forever.
     if depth > 32 {
         return None;
     }
@@ -193,7 +207,7 @@ fn assemble_tree(
     child_ids.sort();
     let children = child_ids
         .iter()
-        .filter_map(|child| assemble_tree(child, by_id, children_of, depth.saturating_add(1)))
+        .filter_map(|child| assemble(child, by_id, children_of, depth.saturating_add(1)))
         .collect();
     Some(CanvasTree { canvas, children })
 }
@@ -217,11 +231,14 @@ impl Processor<FindCanvasById> for Db {
     }
 }
 
+/// Name, description and, when given, the position on the parent: nothing a
+/// worker reads, so no generation bump.
 #[derive(Debug)]
 pub struct UpdateCanvasMeta {
     pub id: CanvasId,
     pub name: String,
     pub description: String,
+    pub position: Option<CanvasUiPosition>,
 }
 
 impl Processor<UpdateCanvasMeta> for Db {
@@ -230,19 +247,25 @@ impl Processor<UpdateCanvasMeta> for Db {
     #[tracing::instrument(name = "Query:UpdateCanvasMeta", skip_all, err, fields(canvas_id = %input.id))]
     async fn process(&self, input: UpdateCanvasMeta) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as(
-            "UPDATE orchestration_canvas SET name = $2, description = $3 WHERE id = $1 RETURNING *",
+            "UPDATE orchestration_canvas
+             SET name = $2, description = $3,
+                 position_x = COALESCE($4, position_x), position_y = COALESCE($5, position_y)
+             WHERE id = $1 RETURNING *",
         )
         .bind(input.id)
         .bind(input.name)
         .bind(input.description)
+        .bind(input.position.map(|p| p.x))
+        .bind(input.position.map(|p| p.y))
         .fetch_one(self.db())
         .await?)
     }
 }
 
-/// Deletes a canvas and its whole tree; refuses an imported canvas with
-/// [`CANVAS_IMPORTED`] (the service reports the importer to the operator, this
-/// is the race guard).
+/// Deletes a canvas with everything below it: subcanvases, servers, pods,
+/// exits, groups, the edges leaving its pods, views and health history. The
+/// service refuses first when something outside the subtree still leads into
+/// it; the foreign keys are the race guard.
 #[derive(Debug)]
 pub struct DeleteCanvasRow {
     pub id: CanvasId,
@@ -254,23 +277,32 @@ impl Processor<DeleteCanvasRow> for Db {
     #[tracing::instrument(name = "Query-Transaction:DeleteCanvasRow", skip_all, err, fields(canvas_id = %input.id))]
     async fn process(&self, input: DeleteCanvasRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
-        let importer: Option<crate::entities::db::node::NodeId> =
-            sqlx::query_scalar("SELECT id FROM orchestration_node WHERE import_canvas = $1")
+        let parent: Option<Option<CanvasId>> =
+            sqlx::query_scalar("SELECT parent FROM orchestration_canvas WHERE id = $1")
                 .bind(&input.id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        if importer.is_some() {
-            return Err(Error::Conflict(CANVAS_IMPORTED));
-        }
+        let Some(parent) = parent else {
+            return Ok(());
+        };
         let ids = tree::tree_of(&mut tx, &input.id).await?;
-        // Servers, nodes, ports, edges, views, health history and relay leaves
-        // all cascade from the canvas rows; the import and pod-server foreign
-        // keys are checked at the end of the statement, when the importing nodes
-        // and the pods of the tree are gone as well.
+        // Edges do not cascade from their pods: a route names them, and a route
+        // is only ever rewritten together with its edges. The subtree's own
+        // routes go with it.
+        sqlx::query(
+            "DELETE FROM orchestration_edge e USING orchestration_pod p
+             WHERE p.id = e.source_pod AND p.canvas = ANY($1)",
+        )
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM orchestration_canvas WHERE id = ANY($1)")
             .bind(&ids)
             .execute(&mut *tx)
             .await?;
+        if let Some(parent) = parent {
+            crate::entities::db::fence::touch(&mut tx, &parent).await?;
+        }
         tx.commit().await?;
         Ok(())
     }

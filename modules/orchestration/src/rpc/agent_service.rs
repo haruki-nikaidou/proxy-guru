@@ -217,6 +217,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                 reported: input.reported_addresses.map(reported_from_proto),
                 agent_version: non_empty(input.agent_version),
                 agent_arch: non_empty(input.agent_arch),
+                capabilities: input.capabilities,
                 last_update_error: non_empty(input.last_update_error),
             }),
         )

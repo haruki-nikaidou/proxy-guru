@@ -3,40 +3,32 @@
 //! Handlers are thin: decode ids and specs, call a service, encode the reply. All
 //! rules live in `services`.
 
-use crate::entities::db::canvas::{CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition};
+use crate::entities::db::canvas::{CanvasEntity, CanvasTree, CanvasUiPosition};
 use crate::entities::db::certificate::{CertificateEntity, CertificateStatus};
-use crate::entities::db::connection::EdgeConnectionEntity;
 use crate::entities::db::dns::DnsProvider;
+use crate::entities::db::edge::{EdgeEntity, EdgeTarget};
+use crate::entities::db::exit::ExitEntity;
+use crate::entities::db::group::{GroupEntity, GroupMember};
 use crate::entities::db::health::{
-    ListNodeHealthAfter, ListServerHealthHistory as ListServerHealthHistoryRows,
-    NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+    ListServerHealthHistory as ListServerHealthHistoryRows, PodHealthRecordEntity,
+    PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use crate::entities::db::node::{
-    CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
-    LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMember,
-    LoadBalanceMode, NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion,
-    RelayConfig, RelayProtocol, TlsConfig, UniversalPodConfig,
-};
-use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
+use crate::entities::db::pod::{PodEntity, PodIngress, ProxyProtocolVersion, TlsConfig};
 use crate::entities::db::server::{
     AddressSource, QuicCongestion, ServerEntity, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
 };
 use crate::entities::db::view::{ConfigSnapshot, ListenerCap};
-use crate::events::live::{
-    CanvasChangeKind, LiveMessage, NodeHealthLive, ServerHealthLive, live_time,
-};
+use crate::events::live::{LiveMessage, ServerHealthLive, live_time};
 use crate::hooks::live::LiveEvent;
 use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
 use crate::services::config::{self, OrchestrationConfigService};
 use crate::services::dns::{self, DnsProviderService, DnsProviderSummary};
-use crate::services::edge::{self, EdgeService};
+use crate::services::graph::{self, GraphDiagnostic, GraphService, GraphSubject};
 use crate::services::health::{self, HealthService};
 use crate::services::live::{self, LiveService, ViewValue};
-use crate::services::node::{self, NodeService};
 use crate::services::rollout::{self, RolloutService, RolloutStatus};
 use crate::services::server::{self, ServerService};
-use crate::services::topology::{ProblemKind, ProblemSeverity, TopologyProblem};
 use crate::utils::ids;
 use auth::services::session::SessionService;
 use chrono::{DateTime, Utc};
@@ -48,21 +40,11 @@ use tonic::{Request, Response, Status};
 
 /// How many events a stream may have queued before the sender waits.
 ///
-/// Small on purpose. A canvas or rollout snapshot is a whole picture, so a
+/// Small on purpose. A rollout snapshot is a whole picture, so a
 /// client that cannot keep up wants the newest one, not a backlog: the shared
 /// view coalesces while this channel is full, and the stream then sends one
 /// up-to-date snapshot instead of four stale ones.
 const STREAM_CAPACITY: usize = 4;
-
-/// The opening window of a node-health stream when the client sets no `limit`.
-/// Smaller than the history RPC's default: a live view shows recent events, and
-/// anything older is what `ListNodeHealthHistory` is for.
-const DEFAULT_WATCH_NODE_HISTORY: i64 = 50;
-
-/// How many node records one recovery read fetches. The loop pages until a
-/// short page, so this bounds memory per round, not how much a stream can
-/// catch up on.
-const NODE_RECOVERY_PAGE: i64 = 200;
 
 /// How many times a stream's recovery read is retried before it gives up and
 /// ends the stream. The `Resync`/`Lagged` signal that triggered the read is
@@ -94,30 +76,11 @@ where
     }
 }
 
-/// One page of a node-health recovery read, retried.
-async fn refetch_node_health(
-    db: &base::db::Db,
-    node: &crate::entities::db::node::NodeId,
-    after: DateTime<Utc>,
-    after_id: Option<&str>,
-) -> Result<Vec<NodeHealthRecordEntity>, base::db::Error> {
-    retry_read(|| {
-        db.process(ListNodeHealthAfter {
-            node: node.clone(),
-            after,
-            after_id: after_id.map(ids::node_health_record_id),
-            limit: NODE_RECOVERY_PAGE,
-        })
-    })
-    .await
-}
-
 #[derive(Clone)]
 pub struct OrchestrationGrpc {
     pub canvases: CanvasService,
     pub servers: ServerService,
-    pub nodes: NodeService,
-    pub edges: EdgeService,
+    pub graph: GraphService,
     pub rollout: RolloutService,
     pub health: HealthService,
     pub dns: DnsProviderService,
@@ -194,29 +157,6 @@ fn session_id<T>(request: &Request<T>) -> Result<String, Status> {
         .ok_or_else(|| Status::unauthenticated("live streams require a session"))
 }
 
-impl OrchestrationGrpc {
-    /// The canvas an import node embeds, as the lookup `node_to_proto` takes;
-    /// empty for every other node kind.
-    async fn import_target_of(
-        &self,
-        actor: &auth::services::identity::Identity,
-        node: &NodeEntity,
-    ) -> Result<Vec<CanvasEntity>, Status> {
-        let NodeSpec::CanvasImport(cfg) = &node.spec else {
-            return Ok(Vec::new());
-        };
-        Ok(self
-            .canvases
-            .process(canvas::FindCanvas {
-                actor: actor.clone(),
-                canvas: cfg.canvas.clone(),
-            })
-            .await?
-            .into_iter()
-            .collect())
-    }
-}
-
 /// Both document fields are pretty-printed: an operator edits this text.
 fn config_to_proto(
     document: config::ConfigDocument,
@@ -269,6 +209,12 @@ fn canvas_to_proto(canvas: &CanvasEntity) -> pb::Canvas {
         id: canvas.id.to_string(),
         name: canvas.name.clone(),
         description: canvas.description.clone(),
+        parent_id: canvas
+            .parent
+            .as_ref()
+            .map(|parent| parent.to_string())
+            .unwrap_or_default(),
+        position: Some(position_to_proto(canvas.position)),
     }
 }
 
@@ -291,11 +237,11 @@ pub(crate) fn server_health_to_proto(value: ServerHealthStatus) -> i32 {
     .into()
 }
 
-fn node_health_to_proto(value: NodeHealthStatus) -> i32 {
+fn pod_health_to_proto(value: PodHealthStatus) -> i32 {
     match value {
-        NodeHealthStatus::Ready => pb::NodeHealthStatus::NodeReady,
-        NodeHealthStatus::Deploying => pb::NodeHealthStatus::NodeDeploying,
-        NodeHealthStatus::Failed => pb::NodeHealthStatus::NodeFailed,
+        PodHealthStatus::Ready => pb::PodHealthStatus::PodReady,
+        PodHealthStatus::Deploying => pb::PodHealthStatus::PodDeploying,
+        PodHealthStatus::Failed => pb::PodHealthStatus::PodFailed,
     }
     .into()
 }
@@ -313,11 +259,11 @@ fn server_health_record_to_proto(record: &ServerHealthRecordEntity) -> pb::Serve
     }
 }
 
-fn node_health_record_to_proto(record: &NodeHealthRecordEntity) -> pb::NodeHealthRecord {
-    pb::NodeHealthRecord {
+fn pod_health_record_to_proto(record: &PodHealthRecordEntity) -> pb::PodHealthRecord {
+    pb::PodHealthRecord {
         id: record.id.to_string(),
-        node_id: record.node.to_string(),
-        status: node_health_to_proto(record.status),
+        pod_id: record.pod.to_string(),
+        status: pod_health_to_proto(record.status),
         message: record.message.clone(),
         report_time: record.report_time.to_rfc3339(),
     }
@@ -375,20 +321,6 @@ fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
     }
 }
 
-fn contents_to_proto(contents: &CanvasContents) -> pb::GetCanvasReply {
-    pb::GetCanvasReply {
-        canvas: Some(canvas_to_proto(&contents.canvas)),
-        servers: contents.servers.iter().map(server_to_proto).collect(),
-        nodes: contents
-            .nodes
-            .iter()
-            .map(|n| node_to_proto(n, &contents.import_targets))
-            .collect(),
-        edges: contents.edges.iter().map(edge_to_proto).collect(),
-        ancestors: contents.ancestors.iter().map(canvas_to_proto).collect(),
-    }
-}
-
 fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusReply {
     pb::GetServerRolloutStatusReply {
         desired: status.desired.as_ref().map(snapshot_to_proto),
@@ -401,8 +333,8 @@ fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusR
             .invalid_pods
             .into_iter()
             .map(|pod| pb::InvalidPod {
-                node_id: pod.node.to_string(),
-                pod_name: pod.pod,
+                pod_id: pod.pod.to_string(),
+                pod_name: pod.name,
                 listen: pod.listen,
                 error: pod.error,
             })
@@ -413,43 +345,6 @@ fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusR
             .map(|t| t.to_rfc3339())
             .unwrap_or_default(),
     }
-}
-
-/// What a live canvas snapshot says caused it.
-fn cause_to_proto(cause: Option<&LiveMessage>) -> (i32, Vec<String>) {
-    match cause {
-        Some(LiveMessage::CanvasChanged { kind, ids, .. }) => {
-            (canvas_change_kind_to_proto(*kind), ids.clone())
-        }
-        Some(LiveMessage::ServerHealth { server, .. }) => (
-            pb::CanvasChangeKind::ServerHealthChanged.into(),
-            vec![server.clone()],
-        ),
-        // The opening snapshot, a refresh after a bus reconnect, or a cause the
-        // canvas view does not describe in these terms.
-        _ => (pb::CanvasChangeKind::Unspecified.into(), Vec::new()),
-    }
-}
-
-fn canvas_change_kind_to_proto(kind: CanvasChangeKind) -> i32 {
-    match kind {
-        CanvasChangeKind::CanvasUpdated => pb::CanvasChangeKind::CanvasUpdated,
-        CanvasChangeKind::CanvasDeleted => pb::CanvasChangeKind::CanvasDeleted,
-        CanvasChangeKind::ServerCreated => pb::CanvasChangeKind::ServerCreated,
-        CanvasChangeKind::ServerUpdated => pb::CanvasChangeKind::ServerUpdated,
-        CanvasChangeKind::ServerMoved => pb::CanvasChangeKind::ServerMoved,
-        CanvasChangeKind::ServerDeleted => pb::CanvasChangeKind::ServerDeleted,
-        CanvasChangeKind::ServerIpChanged => pb::CanvasChangeKind::ServerIpChanged,
-        CanvasChangeKind::NodeCreated => pb::CanvasChangeKind::NodeCreated,
-        CanvasChangeKind::NodeReplaced => pb::CanvasChangeKind::NodeReplaced,
-        CanvasChangeKind::NodeMetaUpdated => pb::CanvasChangeKind::NodeMetaUpdated,
-        CanvasChangeKind::NodeRetired => pb::CanvasChangeKind::NodeRetired,
-        CanvasChangeKind::NodeDeleted => pb::CanvasChangeKind::NodeDeleted,
-        CanvasChangeKind::EdgeConnected => pb::CanvasChangeKind::EdgeConnected,
-        CanvasChangeKind::EdgeRetired => pb::CanvasChangeKind::EdgeRetired,
-        CanvasChangeKind::EdgeDeleted => pb::CanvasChangeKind::EdgeDeleted,
-    }
-    .into()
 }
 
 /// A bus health record as the wire type. The live payload carries the same
@@ -464,16 +359,6 @@ fn server_health_live_to_proto(server: &str, record: &ServerHealthLive) -> pb::S
         download_bytes: record.download_bytes,
         current_connections: record.current_connections,
         max_connections: record.max_connections,
-    }
-}
-
-fn node_health_live_to_proto(record: &NodeHealthLive) -> pb::NodeHealthRecord {
-    pb::NodeHealthRecord {
-        id: record.id.clone(),
-        node_id: record.node.clone(),
-        status: node_health_to_proto(record.status),
-        message: record.message.clone(),
-        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
     }
 }
 
@@ -594,6 +479,7 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
             .agent_key_issued_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_default(),
+        capabilities: server.capabilities.clone(),
     }
 }
 
@@ -637,114 +523,6 @@ fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
     }
 }
 
-fn port_kind_to_proto(kind: PortKind) -> i32 {
-    match kind {
-        PortKind::DeriveListen => pb::PortKind::DeriveListen,
-        PortKind::DeriveDestination => pb::PortKind::DeriveDestination,
-        PortKind::Bundle => pb::PortKind::Bundle,
-    }
-    .into()
-}
-
-fn lb_mode_to_proto(mode: LoadBalanceMode) -> i32 {
-    match mode {
-        LoadBalanceMode::RoundRobin => pb::LoadBalanceMode::RoundRobin,
-        LoadBalanceMode::Random => pb::LoadBalanceMode::Random,
-        LoadBalanceMode::IpHash => pb::LoadBalanceMode::IpHash,
-        LoadBalanceMode::Fallback => pb::LoadBalanceMode::Fallback,
-    }
-    .into()
-}
-
-fn lb_mode_from_proto(mode: i32) -> Result<LoadBalanceMode, Status> {
-    match pb::LoadBalanceMode::try_from(mode) {
-        Ok(pb::LoadBalanceMode::RoundRobin) => Ok(LoadBalanceMode::RoundRobin),
-        Ok(pb::LoadBalanceMode::Random) => Ok(LoadBalanceMode::Random),
-        Ok(pb::LoadBalanceMode::IpHash) => Ok(LoadBalanceMode::IpHash),
-        Ok(pb::LoadBalanceMode::Fallback) => Ok(LoadBalanceMode::Fallback),
-        Ok(pb::LoadBalanceMode::Unspecified) | Err(_) => Err(Status::invalid_argument(format!(
-            "mode: unknown load balance mode {mode}"
-        ))),
-    }
-}
-
-fn members_to_proto(members: &[LoadBalanceMember]) -> Vec<pb::LoadBalanceMember> {
-    members
-        .iter()
-        .map(|m| pb::LoadBalanceMember {
-            slot: m.slot,
-            name: m.name.clone(),
-        })
-        .collect()
-}
-
-/// Names are trimmed here; the service checks the list (see
-/// `services::node::members_ok`).
-fn members_from_proto(members: Vec<pb::LoadBalanceMember>) -> Vec<LoadBalanceMember> {
-    members
-        .into_iter()
-        .map(|m| LoadBalanceMember {
-            slot: m.slot,
-            name: m.name.trim().to_string(),
-        })
-        .collect()
-}
-
-fn relay_protocol_to_proto(protocol: RelayProtocol) -> i32 {
-    match protocol {
-        RelayProtocol::TcpRaw => pb::RelayProtocol::RelayTcpRaw,
-        RelayProtocol::TcpTls => pb::RelayProtocol::RelayTcpTls,
-        RelayProtocol::Quic => pb::RelayProtocol::RelayQuic,
-    }
-    .into()
-}
-
-fn relay_protocol_from_proto(protocol: i32) -> Result<RelayProtocol, Status> {
-    match pb::RelayProtocol::try_from(protocol) {
-        Ok(pb::RelayProtocol::RelayTcpRaw) => Ok(RelayProtocol::TcpRaw),
-        Ok(pb::RelayProtocol::RelayTcpTls) => Ok(RelayProtocol::TcpTls),
-        Ok(pb::RelayProtocol::RelayQuic) => Ok(RelayProtocol::Quic),
-        Ok(pb::RelayProtocol::Unspecified) | Err(_) => Err(Status::invalid_argument(format!(
-            "protocol: unknown relay protocol {protocol}"
-        ))),
-    }
-}
-
-fn lane_to_proto(lane: &Lane) -> pb::Lane {
-    pb::Lane {
-        key: lane.key.clone(),
-        group_node_id: lane.group.to_string(),
-        channel_pod_id: lane.channel.to_string(),
-        role: match lane.role {
-            LaneRole::Distribute => pb::LaneRole::LaneDistribute,
-            LaneRole::Relay => pb::LaneRole::LaneRelay,
-            LaneRole::Landing => pb::LaneRole::LaneLanding,
-            LaneRole::Aggregate => pb::LaneRole::LaneAggregate,
-        }
-        .into(),
-        source_node_id: lane
-            .source
-            .as_ref()
-            .map(|s| s.to_string())
-            .unwrap_or_default(),
-    }
-}
-
-fn port_to_proto(port: &PortEntity) -> pb::Port {
-    pb::Port {
-        id: port.id.to_string(),
-        node_id: port.owner.to_string(),
-        kind: port_kind_to_proto(port.kind),
-        direction: match port.direction {
-            PortDirection::Input => pb::PortDirection::PortInput,
-            PortDirection::Output => pb::PortDirection::PortOutput,
-        }
-        .into(),
-        key: port.key.clone(),
-        position: port.position,
-    }
-}
-
 fn proxy_to_proto(value: Option<ProxyProtocolVersion>) -> i32 {
     match value {
         None => pb::ProxyProtocolVersion::Unspecified,
@@ -766,221 +544,6 @@ fn proxy_from_proto(field: &str, value: i32) -> Result<Option<ProxyProtocolVersi
     }
 }
 
-fn spec_to_proto(spec: &NodeSpec) -> pb::NodeSpec {
-    use pb::node_spec::Spec;
-    let spec = match spec {
-        NodeSpec::Pod(cfg) => Spec::Pod(pb::PodConfig {
-            server_id: cfg.server.to_string(),
-            port: u32::from(cfg.port),
-            bind_ip: cfg.bind_ip.clone().unwrap_or_default(),
-            advertise_ip: cfg.advertise_ip.clone().unwrap_or_default(),
-        }),
-        NodeSpec::Entry(cfg) => Spec::Entry(pb::EntryConfig {
-            receive_proxy_protocol: proxy_to_proto(cfg.receive_proxy_protocol),
-            tls: cfg.tls.as_ref().map(|tls| pb::TlsConfig {
-                sni: tls.sni.clone(),
-                dns_provider_id: tls.dns_provider.to_string(),
-                domain_id: tls.domain_id.clone(),
-                acme_directory: tls.acme_directory.clone(),
-            }),
-        }),
-        NodeSpec::Relay(cfg) => Spec::Relay(pb::RelayConfig {
-            protocol: relay_protocol_to_proto(cfg.protocol),
-            override_ip_address: cfg.override_ip_address.clone().unwrap_or_default(),
-            override_port: cfg.override_port.map(u32::from).unwrap_or_default(),
-        }),
-        NodeSpec::Exit(cfg) => Spec::Exit(pb::ExitConfig {
-            destination: cfg.destination.clone(),
-            pass_proxy_protocol: proxy_to_proto(cfg.pass_proxy_protocol),
-        }),
-        NodeSpec::LoadBalanceDistribute(cfg) => {
-            Spec::LoadBalanceDistribute(pb::LoadBalanceDistributeConfig {
-                mode: lb_mode_to_proto(cfg.mode),
-                protocol: relay_protocol_to_proto(cfg.protocol),
-                members: members_to_proto(&cfg.members),
-            })
-        }
-        NodeSpec::LoadBalanceAggregate(cfg) => {
-            Spec::LoadBalanceAggregate(pb::LoadBalanceAggregateConfig {
-                members: members_to_proto(&cfg.members),
-            })
-        }
-        NodeSpec::UniversalPod(cfg) => Spec::UniversalPod(pb::UniversalPodConfig {
-            server_id: cfg.server.to_string(),
-        }),
-
-        NodeSpec::CanvasImport(cfg) => Spec::CanvasImport(pb::CanvasImportConfig {
-            canvas_id: cfg.canvas.to_string(),
-        }),
-        NodeSpec::CanvasExport(cfg) => Spec::CanvasExport(pb::CanvasExportConfig {
-            kind: port_kind_to_proto(cfg.kind),
-            direction: match cfg.direction {
-                CanvasExportAs::InputIntoCanvas => pb::CanvasExportAs::InputIntoCanvas,
-                CanvasExportAs::OutputOutOfCanvas => pb::CanvasExportAs::OutputOutOfCanvas,
-            }
-            .into(),
-        }),
-    };
-    pb::NodeSpec { spec: Some(spec) }
-}
-
-/// An optional IP on the wire: empty is unset, anything else must parse and is
-/// stored in its canonical form.
-fn optional_ip(label: &str, raw: &str) -> Result<Option<String>, Status> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    raw.parse::<std::net::IpAddr>()
-        .map(|ip| Some(ip.to_string()))
-        .map_err(|_| Status::invalid_argument(format!("{label}: '{raw}' is not an IP address")))
-}
-
-fn spec_from_proto(spec: Option<pb::NodeSpec>) -> Result<NodeSpec, Status> {
-    use pb::node_spec::Spec;
-    let spec = spec
-        .and_then(|s| s.spec)
-        .ok_or_else(|| Status::invalid_argument("spec is required"))?;
-    Ok(match spec {
-        Spec::Pod(cfg) => NodeSpec::Pod(PodConfig {
-            server: {
-                if cfg.server_id.is_empty() {
-                    return Err(Status::invalid_argument("server_id is required"));
-                }
-                ids::server_id(&cfg.server_id)
-            },
-            bind_ip: optional_ip("bind_ip", &cfg.bind_ip)?,
-            advertise_ip: optional_ip("advertise_ip", &cfg.advertise_ip)?,
-            port: match u16::try_from(cfg.port) {
-                Ok(port) if port != 0 => port,
-                _ => {
-                    return Err(Status::invalid_argument(format!(
-                        "port: {} is out of range (1-65535)",
-                        cfg.port
-                    )));
-                }
-            },
-        }),
-        Spec::Entry(cfg) => NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: proxy_from_proto(
-                "receive_proxy_protocol",
-                cfg.receive_proxy_protocol,
-            )?,
-            tls: cfg.tls.map(|tls| TlsConfig {
-                sni: tls.sni,
-                dns_provider: ids::dns_provider_id(&tls.dns_provider_id),
-                domain_id: tls.domain_id,
-                acme_directory: tls.acme_directory,
-            }),
-        }),
-        Spec::Relay(cfg) => NodeSpec::Relay(RelayConfig {
-            protocol: relay_protocol_from_proto(cfg.protocol)?,
-            override_ip_address: (!cfg.override_ip_address.is_empty())
-                .then_some(cfg.override_ip_address),
-            override_port: match cfg.override_port {
-                0 => None,
-                port => Some(
-                    u16::try_from(port)
-                        .map_err(|_| Status::invalid_argument("override_port out of range"))?,
-                ),
-            },
-        }),
-        Spec::Exit(cfg) => NodeSpec::Exit(ExitConfig {
-            destination: cfg.destination,
-            pass_proxy_protocol: proxy_from_proto("pass_proxy_protocol", cfg.pass_proxy_protocol)?,
-        }),
-        Spec::LoadBalanceDistribute(cfg) => {
-            NodeSpec::LoadBalanceDistribute(LoadBalanceDistributeConfig {
-                mode: lb_mode_from_proto(cfg.mode)?,
-                // Unspecified is the default: raw TCP, like a relay's default.
-                protocol: match pb::RelayProtocol::try_from(cfg.protocol) {
-                    Ok(pb::RelayProtocol::Unspecified) => RelayProtocol::TcpRaw,
-                    _ => relay_protocol_from_proto(cfg.protocol)?,
-                },
-                members: members_from_proto(cfg.members),
-            })
-        }
-        Spec::LoadBalanceAggregate(cfg) => {
-            NodeSpec::LoadBalanceAggregate(LoadBalanceAggregateConfig {
-                members: members_from_proto(cfg.members),
-            })
-        }
-        Spec::UniversalPod(cfg) => {
-            if cfg.server_id.is_empty() {
-                return Err(Status::invalid_argument("server_id is required"));
-            }
-            NodeSpec::UniversalPod(UniversalPodConfig {
-                server: ids::server_id(&cfg.server_id),
-            })
-        }
-
-        Spec::CanvasImport(cfg) => {
-            if cfg.canvas_id.is_empty() {
-                return Err(Status::invalid_argument("canvas_id is required"));
-            }
-            NodeSpec::CanvasImport(CanvasImportConfig {
-                canvas: ids::canvas_id(&cfg.canvas_id),
-            })
-        }
-        Spec::CanvasExport(cfg) => NodeSpec::CanvasExport(CanvasExportConfig {
-            kind: match pb::PortKind::try_from(cfg.kind) {
-                Ok(pb::PortKind::DeriveListen) => PortKind::DeriveListen,
-                Ok(pb::PortKind::DeriveDestination) => PortKind::DeriveDestination,
-                Ok(pb::PortKind::Unspecified | pb::PortKind::Bundle) | Err(_) => {
-                    return Err(Status::invalid_argument(format!(
-                        "kind: unknown port kind {}",
-                        cfg.kind
-                    )));
-                }
-            },
-            direction: match pb::CanvasExportAs::try_from(cfg.direction) {
-                Ok(pb::CanvasExportAs::InputIntoCanvas) => CanvasExportAs::InputIntoCanvas,
-                Ok(pb::CanvasExportAs::OutputOutOfCanvas) => CanvasExportAs::OutputOutOfCanvas,
-                Ok(pb::CanvasExportAs::Unspecified) | Err(_) => {
-                    return Err(Status::invalid_argument(format!(
-                        "direction: unknown canvas export direction {}",
-                        cfg.direction
-                    )));
-                }
-            },
-        }),
-    })
-}
-
-/// `import_targets` resolves an import node's `import_target`; a node that is
-/// not an import, or whose target is not in the list, leaves it unset.
-fn node_row_to_proto(
-    node: &NodeEntity,
-    ports: &[PortEntity],
-    import_targets: &[CanvasEntity],
-) -> pb::Node {
-    let import_target = match &node.spec {
-        NodeSpec::CanvasImport(cfg) => {
-            let key = cfg.canvas.to_string();
-            import_targets
-                .iter()
-                .find(|c| c.id.to_string() == key)
-                .map(canvas_to_proto)
-        }
-        _ => None,
-    };
-    pb::Node {
-        id: node.id.to_string(),
-        canvas_id: node.canvas.to_string(),
-        name: node.name.clone(),
-        comment: node.comment.clone(),
-        spec: Some(spec_to_proto(&node.spec)),
-        position: Some(position_to_proto(node.position)),
-        ports: ports.iter().map(port_to_proto).collect(),
-        import_target,
-        lane: node.lane.as_ref().map(lane_to_proto),
-    }
-}
-
-fn node_to_proto(node: &NodeWithPorts, import_targets: &[CanvasEntity]) -> pb::Node {
-    node_row_to_proto(&node.node, &node.ports, import_targets)
-}
-
 fn tree_to_proto(tree: &CanvasTree) -> pb::CanvasTreeNode {
     pb::CanvasTreeNode {
         canvas: Some(canvas_to_proto(&tree.canvas)),
@@ -988,12 +551,298 @@ fn tree_to_proto(tree: &CanvasTree) -> pb::CanvasTreeNode {
     }
 }
 
-fn edge_to_proto(edge: &EdgeConnectionEntity) -> pb::Edge {
+// --- the graph ---------------------------------------------------------------
+
+fn required(field: &str, value: String) -> Result<String, Status> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(Status::invalid_argument(format!("{field} is required")));
+    }
+    Ok(value)
+}
+
+/// An optional address on the wire: empty is unset, an IP literal is stored in
+/// its canonical form, anything else as typed (the graph check names it).
+fn optional_address(raw: String) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(
+        raw.parse::<std::net::IpAddr>()
+            .map_or_else(|_| raw.to_string(), |ip| ip.to_string()),
+    )
+}
+
+fn tls_to_proto(tls: &TlsConfig) -> pb::TlsConfig {
+    pb::TlsConfig {
+        sni: tls.sni.clone(),
+        dns_provider_id: tls.dns_provider.to_string(),
+        domain_id: tls.domain_id.clone(),
+        acme_directory: tls.acme_directory.clone(),
+    }
+}
+
+fn pod_to_proto(pod: &PodEntity) -> pb::Pod {
+    let ingress = match &pod.ingress {
+        PodIngress::ClientRaw { .. } => pb::Ingress::ClientRaw,
+        PodIngress::ClientTls { .. } => pb::Ingress::ClientTls,
+        PodIngress::RelayTcp => pb::Ingress::RelayTcp,
+        PodIngress::RelayTls => pb::Ingress::RelayTls,
+        PodIngress::RelayQuic => pb::Ingress::RelayQuic,
+    };
+    pb::Pod {
+        id: pod.id.to_string(),
+        canvas_id: pod.canvas.to_string(),
+        server_id: pod.server.to_string(),
+        name: pod.name.clone(),
+        comment: pod.comment.clone(),
+        port: u32::from(pod.port),
+        bind_ip: pod.bind_ip.clone().unwrap_or_default(),
+        advertise_ip: pod.advertise_ip.clone().unwrap_or_default(),
+        ingress: ingress.into(),
+        receive_proxy_protocol: proxy_to_proto(pod.ingress.receive_proxy_protocol()),
+        tls: pod.ingress.tls().map(tls_to_proto),
+        route_json: pod
+            .route
+            .as_ref()
+            .and_then(|route| serde_json::to_string(route).ok())
+            .unwrap_or_default(),
+    }
+}
+
+fn pod_from_proto(pod: pb::Pod) -> Result<PodEntity, Status> {
+    let proxy = proxy_from_proto("receive_proxy_protocol", pod.receive_proxy_protocol)?;
+    let ingress = match pb::Ingress::try_from(pod.ingress) {
+        Ok(pb::Ingress::ClientRaw) => PodIngress::ClientRaw {
+            receive_proxy_protocol: proxy,
+        },
+        Ok(pb::Ingress::ClientTls) => {
+            let tls = pod
+                .tls
+                .ok_or_else(|| Status::invalid_argument("a CLIENT_TLS pod needs tls"))?;
+            PodIngress::ClientTls {
+                receive_proxy_protocol: proxy,
+                tls: TlsConfig {
+                    sni: required("tls.sni", tls.sni)?,
+                    dns_provider: ids::dns_provider_id(&required(
+                        "tls.dns_provider_id",
+                        tls.dns_provider_id,
+                    )?),
+                    domain_id: tls.domain_id.trim().to_string(),
+                    acme_directory: tls.acme_directory.trim().to_string(),
+                },
+            }
+        }
+        Ok(pb::Ingress::RelayTcp) => PodIngress::RelayTcp,
+        Ok(pb::Ingress::RelayTls) => PodIngress::RelayTls,
+        Ok(pb::Ingress::RelayQuic) => PodIngress::RelayQuic,
+        Ok(pb::Ingress::Unspecified) | Err(_) => {
+            return Err(Status::invalid_argument(format!(
+                "ingress: unknown value {}",
+                pod.ingress
+            )));
+        }
+    };
+    let route = match pod.route_json.trim() {
+        "" => None,
+        json => Some(serde_json::from_str(json).map_err(|error| {
+            Status::invalid_argument(format!("pod {}: route_json: {error}", pod.id))
+        })?),
+    };
+    Ok(PodEntity {
+        id: ids::pod_id(&required("pod id", pod.id)?),
+        canvas: ids::canvas_id(&required("canvas_id", pod.canvas_id)?),
+        server: ids::server_id(&required("server_id", pod.server_id)?),
+        name: pod.name.trim().to_string(),
+        comment: pod.comment,
+        port: u16::try_from(pod.port)
+            .map_err(|_| Status::invalid_argument(format!("port {} out of range", pod.port)))?,
+        bind_ip: optional_address(pod.bind_ip),
+        advertise_ip: optional_address(pod.advertise_ip),
+        ingress,
+        route,
+    })
+}
+
+fn exit_to_proto(exit: &ExitEntity) -> pb::Exit {
+    pb::Exit {
+        id: exit.id.to_string(),
+        canvas_id: exit.canvas.to_string(),
+        name: exit.name.clone(),
+        comment: exit.comment.clone(),
+        destination: exit.destination.clone(),
+        send_proxy_protocol: proxy_to_proto(exit.send_proxy_protocol),
+        position: Some(position_to_proto(exit.position)),
+    }
+}
+
+fn exit_from_proto(exit: pb::Exit) -> Result<ExitEntity, Status> {
+    Ok(ExitEntity {
+        id: ids::exit_id(&required("exit id", exit.id)?),
+        canvas: ids::canvas_id(&required("canvas_id", exit.canvas_id)?),
+        name: exit.name.trim().to_string(),
+        comment: exit.comment,
+        destination: exit.destination.trim().to_string(),
+        send_proxy_protocol: proxy_from_proto("send_proxy_protocol", exit.send_proxy_protocol)?,
+        position: position_or_origin(exit.position),
+    })
+}
+
+fn edge_to_proto(edge: &EdgeEntity) -> pb::Edge {
     pb::Edge {
         id: edge.id.to_string(),
-        source_port_id: edge.source.to_string(),
-        target_port_id: edge.target.to_string(),
+        source_pod_id: edge.source.to_string(),
+        target: Some(match &edge.target {
+            EdgeTarget::Pod(pod) => pb::edge::Target::TargetPodId(pod.to_string()),
+            EdgeTarget::Exit(exit) => pb::edge::Target::TargetExitId(exit.to_string()),
+        }),
+        override_ip: edge.override_ip.clone().unwrap_or_default(),
+        override_port: edge.override_port.map(u32::from).unwrap_or_default(),
     }
+}
+
+fn edge_from_proto(edge: pb::Edge) -> Result<EdgeEntity, Status> {
+    let target = match edge.target {
+        Some(pb::edge::Target::TargetPodId(pod)) => {
+            EdgeTarget::Pod(ids::pod_id(&required("target_pod_id", pod)?))
+        }
+        Some(pb::edge::Target::TargetExitId(exit)) => {
+            EdgeTarget::Exit(ids::exit_id(&required("target_exit_id", exit)?))
+        }
+        None => return Err(Status::invalid_argument("an edge needs a target")),
+    };
+    Ok(EdgeEntity {
+        id: ids::edge_id(&required("edge id", edge.id)?),
+        source: ids::pod_id(&required("source_pod_id", edge.source_pod_id)?),
+        target,
+        override_ip: optional_address(edge.override_ip),
+        override_port: match edge.override_port {
+            0 => None,
+            port => Some(u16::try_from(port).map_err(|_| {
+                Status::invalid_argument(format!("override_port {port} out of range"))
+            })?),
+        },
+    })
+}
+
+fn group_to_proto(group: &GroupEntity) -> pb::Group {
+    pb::Group {
+        id: group.id.to_string(),
+        canvas_id: group.canvas.to_string(),
+        kind: group.kind.clone(),
+        name: group.name.clone(),
+        props_json: group.props.to_string(),
+        members: group
+            .members
+            .iter()
+            .map(|member| pb::GroupMember {
+                member: Some(match member {
+                    GroupMember::Pod(id) => pb::group_member::Member::PodId(id.to_string()),
+                    GroupMember::Edge(id) => pb::group_member::Member::EdgeId(id.to_string()),
+                    GroupMember::Exit(id) => pb::group_member::Member::ExitId(id.to_string()),
+                    GroupMember::Server(id) => pb::group_member::Member::ServerId(id.to_string()),
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn group_from_proto(group: pb::Group) -> Result<GroupEntity, Status> {
+    let props = match group.props_json.trim() {
+        "" => serde_json::Value::Object(serde_json::Map::new()),
+        json => serde_json::from_str(json).map_err(|error| {
+            Status::invalid_argument(format!("group {}: props_json: {error}", group.id))
+        })?,
+    };
+    let members = group
+        .members
+        .into_iter()
+        .map(|member| match member.member {
+            Some(pb::group_member::Member::PodId(id)) => Ok(GroupMember::Pod(ids::pod_id(&id))),
+            Some(pb::group_member::Member::EdgeId(id)) => Ok(GroupMember::Edge(ids::edge_id(&id))),
+            Some(pb::group_member::Member::ExitId(id)) => Ok(GroupMember::Exit(ids::exit_id(&id))),
+            Some(pb::group_member::Member::ServerId(id)) => {
+                Ok(GroupMember::Server(ids::server_id(&id)))
+            }
+            None => Err(Status::invalid_argument("a group member names nothing")),
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(GroupEntity {
+        id: ids::group_id(&required("group id", group.id)?),
+        canvas: ids::canvas_id(&required("canvas_id", group.canvas_id)?),
+        kind: required("kind", group.kind)?,
+        name: group.name.trim().to_string(),
+        props,
+        members,
+    })
+}
+
+fn diagnostic_to_proto(diagnostic: &GraphDiagnostic) -> pb::Diagnostic {
+    use pb::graph_subject::Subject;
+    pb::Diagnostic {
+        problem: diagnostic.problem.clone(),
+        error: diagnostic.error,
+        subjects: diagnostic
+            .subjects
+            .iter()
+            .map(|subject| pb::GraphSubject {
+                subject: Some(match subject {
+                    GraphSubject::Server(id) => Subject::ServerId(id.to_string()),
+                    GraphSubject::Pod(id) => Subject::PodId(id.to_string()),
+                    GraphSubject::Exit(id) => Subject::ExitId(id.to_string()),
+                    GraphSubject::Edge(id) => Subject::EdgeId(id.to_string()),
+                    GraphSubject::Group(id) => Subject::GroupId(id.to_string()),
+                    GraphSubject::Canvas(id) => Subject::CanvasId(id.to_string()),
+                }),
+            })
+            .collect(),
+        message: diagnostic.message.clone(),
+    }
+}
+
+fn change_from_proto(change: Option<pb::GraphChange>) -> Result<graph::GraphChange, Status> {
+    let change = change.unwrap_or_default();
+    Ok(graph::GraphChange {
+        put_pods: change
+            .put_pods
+            .into_iter()
+            .map(pod_from_proto)
+            .collect::<Result<_, _>>()?,
+        put_exits: change
+            .put_exits
+            .into_iter()
+            .map(exit_from_proto)
+            .collect::<Result<_, _>>()?,
+        put_edges: change
+            .put_edges
+            .into_iter()
+            .map(edge_from_proto)
+            .collect::<Result<_, _>>()?,
+        put_groups: change
+            .put_groups
+            .into_iter()
+            .map(group_from_proto)
+            .collect::<Result<_, _>>()?,
+        delete_pods: change.delete_pod_ids.iter().map(|id| ids::pod_id(id)).collect(),
+        delete_exits: change.delete_exit_ids.iter().map(|id| ids::exit_id(id)).collect(),
+        delete_edges: change.delete_edge_ids.iter().map(|id| ids::edge_id(id)).collect(),
+        delete_groups: change
+            .delete_group_ids
+            .iter()
+            .map(|id| ids::group_id(id))
+            .collect(),
+    })
+}
+
+fn positions_from_proto<T>(
+    items: Vec<pb::ItemPosition>,
+    id: impl Fn(&str) -> T,
+) -> Vec<(T, CanvasUiPosition)> {
+    items
+        .into_iter()
+        .map(|item| (id(&item.id), position_or_origin(item.position)))
+        .collect()
 }
 
 fn listener_cap_to_proto(cap: &ListenerCap) -> pb::ListenerCap {
@@ -1019,48 +868,6 @@ fn snapshot_to_proto(snapshot: &ConfigSnapshot) -> pb::ConfigSnapshot {
     }
 }
 
-fn problem_to_proto(problem: &TopologyProblem) -> pb::Problem {
-    pb::Problem {
-        severity: match problem.severity {
-            ProblemSeverity::Error => pb::ProblemSeverity::ProblemError,
-            ProblemSeverity::Warning => pb::ProblemSeverity::ProblemWarning,
-        }
-        .into(),
-        kind: match problem.kind {
-            ProblemKind::PortKindMismatch => pb::ProblemKind::PortKindMismatch,
-            ProblemKind::EdgeDirectionInvalid => pb::ProblemKind::EdgeDirectionInvalid,
-            ProblemKind::EdgeSelfNode => pb::ProblemKind::EdgeSelfNode,
-            ProblemKind::EdgeCrossCanvas => pb::ProblemKind::EdgeCrossCanvas,
-            ProblemKind::PortOversubscribed => pb::ProblemKind::PortOversubscribed,
-            ProblemKind::PortShapeInvalid => pb::ProblemKind::PortShapeInvalid,
-            ProblemKind::Cycle => pb::ProblemKind::Cycle,
-            ProblemKind::DuplicateListen => pb::ProblemKind::DuplicateListen,
-            ProblemKind::PodServerForeign => pb::ProblemKind::PodServerForeign,
-            ProblemKind::ServerNoAddress => pb::ProblemKind::ServerNoAddress,
-            ProblemKind::ExitDestinationInvalid => pb::ProblemKind::ExitDestinationInvalid,
-            ProblemKind::IpHashWithoutClientIp => pb::ProblemKind::IpHashWithoutClientIp,
-            ProblemKind::CanvasImportSelf => pb::ProblemKind::CanvasImportSelf,
-            ProblemKind::CanvasImportAncestor => pb::ProblemKind::CanvasImportAncestor,
-            ProblemKind::CanvasImportDuplicate => pb::ProblemKind::CanvasImportDuplicate,
-            ProblemKind::CanvasImportUnresolved => pb::ProblemKind::CanvasImportUnresolved,
-            ProblemKind::PodPortUnconnected => pb::ProblemKind::PodPortUnconnected,
-            ProblemKind::RelaySameServer => pb::ProblemKind::RelaySameServer,
-            ProblemKind::DistributeSingleMember => pb::ProblemKind::DistributeSingleMember,
-            ProblemKind::ChannelTargetNotPod => pb::ProblemKind::ChannelTargetNotPod,
-            ProblemKind::BundleEdgeInvalid => pb::ProblemKind::BundleEdgeInvalid,
-            ProblemKind::BundleCycle => pb::ProblemKind::BundleCycle,
-            ProblemKind::ChannelNoExit => pb::ProblemKind::ChannelNoExit,
-            ProblemKind::ChannelNoTransit => pb::ProblemKind::ChannelNoTransit,
-            ProblemKind::LanesStale => pb::ProblemKind::LanesStale,
-        }
-        .into(),
-        message: problem.message.clone(),
-        node_ids: problem.nodes.iter().map(|n| n.to_string()).collect(),
-        edge_ids: problem.edges.iter().map(|e| e.to_string()).collect(),
-        port_ids: problem.ports.iter().map(|p| p.to_string()).collect(),
-    }
-}
-
 // --- handlers ---------------------------------------------------------------
 
 #[tonic::async_trait]
@@ -1077,6 +884,8 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 actor,
                 name: input.name,
                 description: input.description,
+                parent: (!input.parent_id.is_empty()).then(|| ids::canvas_id(&input.parent_id)),
+                position: position_or_origin(input.position),
             })
             .await?;
         Ok(Response::new(pb::CreateCanvasReply {
@@ -1100,22 +909,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         Ok(Response::new(pb::ListCanvasesReply {
             canvases: canvases.iter().map(canvas_to_proto).collect(),
         }))
-    }
-
-    async fn get_canvas(
-        &self,
-        request: Request<pb::GetCanvasRequest>,
-    ) -> Result<Response<pb::GetCanvasReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let contents = self
-            .canvases
-            .process(canvas::GetCanvas {
-                actor,
-                canvas: ids::canvas_id(&input.canvas_id),
-            })
-            .await?;
-        Ok(Response::new(contents_to_proto(&contents)))
     }
 
     async fn get_canvas_tree(
@@ -1149,6 +942,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 canvas: ids::canvas_id(&input.canvas_id),
                 name: input.name,
                 description: input.description,
+                position: position_from_proto(input.position),
             })
             .await?;
         Ok(Response::new(pb::UpdateCanvasReply {
@@ -1171,22 +965,77 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         Ok(Response::new(pb::DeleteCanvasReply {}))
     }
 
-    async fn validate_canvas(
+    async fn get_graph(
         &self,
-        request: Request<pb::ValidateCanvasRequest>,
-    ) -> Result<Response<pb::ValidateCanvasReply>, Status> {
+        request: Request<pb::GetGraphRequest>,
+    ) -> Result<Response<pb::GetGraphReply>, Status> {
         let actor = auth::rpc::middleware::from_request(&request)?;
         let input = request.into_inner();
-        let problems = self
-            .canvases
-            .process(canvas::ValidateCanvas {
+        let view = self
+            .graph
+            .process(graph::GetGraph {
                 actor,
                 canvas: ids::canvas_id(&input.canvas_id),
             })
             .await?;
-        Ok(Response::new(pb::ValidateCanvasReply {
-            problems: problems.iter().map(problem_to_proto).collect(),
+        let rows = &view.rows;
+        Ok(Response::new(pb::GetGraphReply {
+            canvases: rows.canvases.iter().map(canvas_to_proto).collect(),
+            servers: rows.servers.iter().map(server_to_proto).collect(),
+            pods: rows.pods.iter().map(pod_to_proto).collect(),
+            exits: rows.exits.iter().map(exit_to_proto).collect(),
+            edges: rows.edges.iter().map(edge_to_proto).collect(),
+            groups: rows.groups.iter().map(group_to_proto).collect(),
+            diagnostics: view.diagnostics.iter().map(diagnostic_to_proto).collect(),
+            generation: rows.generation(),
         }))
+    }
+
+    async fn apply_graph(
+        &self,
+        request: Request<pb::ApplyGraphRequest>,
+    ) -> Result<Response<pb::ApplyGraphReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let outcome = self
+            .graph
+            .process(graph::ApplyGraph {
+                actor,
+                canvas: ids::canvas_id(&input.canvas_id),
+                change: change_from_proto(input.change)?,
+                dry_run: input.dry_run,
+                expected_generation: (input.expected_generation != 0)
+                    .then_some(input.expected_generation),
+            })
+            .await?;
+        Ok(Response::new(pb::ApplyGraphReply {
+            applied: outcome.applied,
+            generation: outcome.generation,
+            diagnostics: outcome
+                .diagnostics
+                .iter()
+                .map(diagnostic_to_proto)
+                .collect(),
+            pods: outcome.pods.iter().map(pod_to_proto).collect(),
+        }))
+    }
+
+    async fn move_items(
+        &self,
+        request: Request<pb::MoveItemsRequest>,
+    ) -> Result<Response<pb::MoveItemsReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        self.graph
+            .process(graph::MoveItems {
+                actor,
+                canvas: ids::canvas_id(&input.canvas_id),
+                servers: positions_from_proto(input.servers, ids::server_id),
+                exits: positions_from_proto(input.exits, ids::exit_id),
+                canvases: positions_from_proto(input.canvases, ids::canvas_id),
+            })
+            .await?;
+        Ok(Response::new(pb::MoveItemsReply {}))
     }
 
     async fn create_server(
@@ -1347,190 +1196,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         Ok(Response::new(pb::MoveServerReply {}))
     }
 
-    async fn create_node(
-        &self,
-        request: Request<pb::CreateNodeRequest>,
-    ) -> Result<Response<pb::CreateNodeReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let node = self
-            .nodes
-            .process(node::CreateNode {
-                actor: actor.clone(),
-                canvas: ids::canvas_id(&input.canvas_id),
-                name: input.name,
-                comment: input.comment,
-                spec: spec_from_proto(input.spec)?,
-                position: position_or_origin(input.position),
-                item_count: input.item_count,
-            })
-            .await?;
-        let targets = self.import_target_of(&actor, &node.node).await?;
-        Ok(Response::new(pb::CreateNodeReply {
-            node: Some(node_to_proto(&node, &targets)),
-        }))
-    }
-
-    async fn replace_node_spec(
-        &self,
-        request: Request<pb::ReplaceNodeSpecRequest>,
-    ) -> Result<Response<pb::ReplaceNodeSpecReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let node = self
-            .nodes
-            .process(node::ReplaceNodeSpec {
-                actor,
-                node: ids::node_id(&input.node_id),
-                spec: spec_from_proto(input.spec)?,
-                item_count: input.item_count,
-            })
-            .await?;
-        // An import node is never replaced (the service rejects it), so the
-        // reply can only be a non-import node.
-        Ok(Response::new(pb::ReplaceNodeSpecReply {
-            node: Some(node_to_proto(&node, &[])),
-        }))
-    }
-
-    async fn update_node_meta(
-        &self,
-        request: Request<pb::UpdateNodeMetaRequest>,
-    ) -> Result<Response<pb::UpdateNodeMetaReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let node = self
-            .nodes
-            .process(node::UpdateNodeMeta {
-                actor: actor.clone(),
-                node: ids::node_id(&input.node_id),
-                name: input.name,
-                comment: input.comment,
-                position: position_from_proto(input.position),
-            })
-            .await?;
-        let targets = self.import_target_of(&actor, &node.node).await?;
-        Ok(Response::new(pb::UpdateNodeMetaReply {
-            node: Some(node_to_proto(&node, &targets)),
-        }))
-    }
-
-    async fn retire_node(
-        &self,
-        request: Request<pb::RetireNodeRequest>,
-    ) -> Result<Response<pb::RetireNodeReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        self.nodes
-            .process(node::RetireNode {
-                actor,
-                node: ids::node_id(&input.node_id),
-            })
-            .await?;
-        Ok(Response::new(pb::RetireNodeReply {}))
-    }
-
-    async fn force_delete_node(
-        &self,
-        request: Request<pb::ForceDeleteNodeRequest>,
-    ) -> Result<Response<pb::ForceDeleteNodeReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        self.nodes
-            .process(node::ForceDeleteNode {
-                actor,
-                node: ids::node_id(&input.node_id),
-            })
-            .await?;
-        Ok(Response::new(pb::ForceDeleteNodeReply {}))
-    }
-
-    async fn connect_ports(
-        &self,
-        request: Request<pb::ConnectRequest>,
-    ) -> Result<Response<pb::ConnectReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        let end =
-            |port: &str, handle: Option<pb::UniversalHandle>| -> Result<edge::ConnectEnd, Status> {
-                if !port.is_empty() {
-                    return Ok(edge::ConnectEnd::Port(ids::port_id(port)));
-                }
-                let handle = handle.ok_or_else(|| {
-                    Status::invalid_argument("each end needs a port id or a universal handle")
-                })?;
-                if handle.node_id.is_empty() {
-                    return Err(Status::invalid_argument("handle: node_id is required"));
-                }
-                let group = match pb::UniversalGroup::try_from(handle.group) {
-                    Ok(pb::UniversalGroup::ChannelOut) => edge::UniversalGroup::ChannelOut,
-                    Ok(pb::UniversalGroup::BundleIn) => edge::UniversalGroup::BundleIn,
-                    Ok(pb::UniversalGroup::Unspecified) | Err(_) => {
-                        return Err(Status::invalid_argument("handle: group is required"));
-                    }
-                };
-                Ok(edge::ConnectEnd::Handle {
-                    node: ids::node_id(&handle.node_id),
-                    group,
-                })
-            };
-        let output = end(&input.output_port_id, input.output_handle)?;
-        let input_end = end(&input.input_port_id, input.input_handle)?;
-        let edge = match (output, input_end) {
-            (edge::ConnectEnd::Port(output_port), edge::ConnectEnd::Port(input_port)) => {
-                self.edges
-                    .process(edge::Connect {
-                        actor,
-                        output_port,
-                        input_port,
-                    })
-                    .await?
-            }
-            (output, input) => {
-                self.edges
-                    .process(edge::ConnectUniversal {
-                        actor,
-                        output,
-                        input,
-                    })
-                    .await?
-            }
-        };
-        Ok(Response::new(pb::ConnectReply {
-            edge: Some(edge_to_proto(&edge)),
-        }))
-    }
-
-    async fn disconnect(
-        &self,
-        request: Request<pb::DisconnectRequest>,
-    ) -> Result<Response<pb::DisconnectReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        self.edges
-            .process(edge::Disconnect {
-                actor,
-                edge: ids::edge_id(&input.edge_id),
-            })
-            .await?;
-        Ok(Response::new(pb::DisconnectReply {}))
-    }
-
-    async fn force_disconnect(
-        &self,
-        request: Request<pb::ForceDisconnectRequest>,
-    ) -> Result<Response<pb::ForceDisconnectReply>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let input = request.into_inner();
-        self.edges
-            .process(edge::ForceDisconnect {
-                actor,
-                edge: ids::edge_id(&input.edge_id),
-            })
-            .await?;
-        Ok(Response::new(pb::ForceDisconnectReply {}))
-    }
-
     async fn get_server_config(
         &self,
         request: Request<pb::GetServerConfigRequest>,
@@ -1599,30 +1264,30 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         }))
     }
 
-    async fn list_node_health_history(
+    async fn list_pod_health_history(
         &self,
-        request: Request<pb::ListNodeHealthHistoryRequest>,
-    ) -> Result<Response<pb::ListNodeHealthHistoryReply>, Status> {
+        request: Request<pb::ListPodHealthHistoryRequest>,
+    ) -> Result<Response<pb::ListPodHealthHistoryReply>, Status> {
         let actor = auth::rpc::middleware::from_request(&request)?;
         let input = request.into_inner();
         let (start, end) = history_window(&input.start, &input.end)?;
         let limit = if input.limit == 0 {
-            health::DEFAULT_NODE_HISTORY_LIMIT
+            health::DEFAULT_POD_HISTORY_LIMIT
         } else {
             i64::from(input.limit)
         };
         let records = self
             .health
-            .process(health::ListNodeHealthHistory {
+            .process(health::ListPodHealthHistory {
                 actor,
-                node: ids::node_id(&input.node_id),
+                pod: ids::pod_id(&input.pod_id),
                 start,
                 end,
                 limit,
             })
             .await?;
-        Ok(Response::new(pb::ListNodeHealthHistoryReply {
-            records: records.iter().map(node_health_record_to_proto).collect(),
+        Ok(Response::new(pb::ListPodHealthHistoryReply {
+            records: records.iter().map(pod_health_record_to_proto).collect(),
         }))
     }
 
@@ -1774,93 +1439,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         }))
     }
 
-    type WatchCanvasStream = ReceiverStream<Result<pb::CanvasEvent, Status>>;
-
-    /// A full refreshed snapshot per change, coalesced.
-    ///
-    /// The view behind this is shared by every watcher of the canvas, so N open
-    /// dashboards cost one reload per change. A client that stops reading gets
-    /// fewer, newer snapshots rather than a backlog — which is why there is
-    /// nothing for it to re-request.
-    async fn watch_canvas(
-        &self,
-        request: Request<pb::WatchCanvasRequest>,
-    ) -> Result<Response<Self::WatchCanvasStream>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let session = session_id(&request)?;
-        let input = request.into_inner();
-        let handle = self
-            .live
-            .process(live::WatchCanvas {
-                actor,
-                canvas: ids::canvas_id(&input.canvas_id),
-            })
-            .await?;
-        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
-        let mut ticker = StreamTicker::new(
-            self.sessions.clone(),
-            session,
-            self.live.config.stream_keepalive(),
-        );
-        tokio::spawn(async move {
-            let mut handle = handle;
-            let ended: Result<(), Status> = async {
-                loop {
-                    tokio::select! {
-                        _ = tx.closed() => return Ok(()),
-                        result = ticker.tick() => {
-                            result?;
-                            let event = pb::CanvasEvent {
-                                event: Some(pb::canvas_event::Event::KeepAlive(pb::KeepAlive {})),
-                            };
-                            if tx.send(Ok(event)).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                        changed = handle.rx.changed() => {
-                            if changed.is_err() {
-                                return Ok(());
-                            }
-                            let value = handle.rx.borrow_and_update().clone();
-                            match value {
-                                ViewValue::Loading => {}
-                                ViewValue::Missing => {
-                                    return Err(Status::not_found("canvas not found"));
-                                }
-                                ViewValue::Ready { state, cause } => {
-                                    let (kind, affected_ids) = cause_to_proto(cause.as_deref());
-                                    let event = pb::CanvasEvent {
-                                        event: Some(pb::canvas_event::Event::Snapshot(
-                                            pb::CanvasSnapshot {
-                                                generation: state
-                                                    .contents
-                                                    .ancestors
-                                                    .first()
-                                                    .unwrap_or(&state.contents.canvas)
-                                                    .generation,
-                                                cause: kind,
-                                                affected_ids,
-                                                contents: Some(contents_to_proto(&state.contents)),
-                                            },
-                                        )),
-                                    };
-                                    if tx.send(Ok(event)).await.is_err() {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .await;
-            if let Err(status) = ended {
-                let _ = tx.send(Err(status)).await;
-            }
-        });
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
-
     type WatchRolloutsStream = ReceiverStream<Result<pb::RolloutEvent, Status>>;
 
     async fn watch_rollouts(
@@ -1949,11 +1527,10 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
     ///
     /// `last` is the watermark that makes that true across both paths — a
     /// duplicate bus message and a post-reconnect refetch are both filtered by
-    /// it. It is a timestamp alone, unlike the node stream's `(time, id)` pair,
-    /// because a server writes at most one `server_health_record` per event: two
-    /// rows for one server can only share a `report_time` if two writes landed in
-    /// the same microsecond, which nothing in the fleet does. The node stream
-    /// needs the pair because one event writes a whole batch at one timestamp.
+    /// it. A timestamp alone is enough because a server writes at most one
+    /// `server_health_record` per event: two rows for one server can only share
+    /// a `report_time` if two writes landed in the same microsecond, which
+    /// nothing in the fleet does.
     async fn watch_server_health(
         &self,
         request: Request<pb::WatchServerHealthRequest>,
@@ -2080,177 +1657,6 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                     };
                                     if tx.send(Ok(event)).await.is_err() {
                                         return Ok(());
-                                    }
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                return Ok(());
-                            }
-                        },
-                    }
-                }
-            }
-            .await;
-            if let Err(status) = ended {
-                let _ = tx.send(Err(status)).await;
-            }
-        });
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
-
-    type WatchNodeHealthStream = ReceiverStream<Result<pb::NodeHealthEvent, Status>>;
-
-    /// Node records, newest-first in the snapshot and ascending afterwards.
-    async fn watch_node_health(
-        &self,
-        request: Request<pb::WatchNodeHealthRequest>,
-    ) -> Result<Response<Self::WatchNodeHealthStream>, Status> {
-        let actor = auth::rpc::middleware::from_request(&request)?;
-        let session = session_id(&request)?;
-        let input = request.into_inner();
-        let node = ids::node_id(&input.node_id);
-        let node_key = node.to_string();
-        let watch = self
-            .live
-            .process(live::WatchNodeHealth {
-                actor,
-                node: node.clone(),
-                limit: if input.limit == 0 {
-                    DEFAULT_WATCH_NODE_HISTORY
-                } else {
-                    i64::from(input.limit)
-                },
-            })
-            .await?;
-        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
-        let mut ticker = StreamTicker::new(
-            self.sessions.clone(),
-            session,
-            self.live.config.stream_keepalive(),
-        );
-        let db = self.live.db.clone();
-        tokio::spawn(async move {
-            let mut events = watch.events;
-            // The history comes back newest first, so the cursor is its head.
-            // `(report_time, id)` rather than the timestamp alone: one event
-            // writes a batch of rows that share a timestamp, and the recovery
-            // read pages on this exact tuple.
-            let mut cursor: (DateTime<Utc>, Option<String>) = watch
-                .records
-                .first()
-                .map(|record| (record.report_time, Some(record.id.to_string())))
-                .unwrap_or((DateTime::UNIX_EPOCH, None));
-            let snapshot = pb::NodeHealthEvent {
-                event: Some(pb::node_health_event::Event::Snapshot(
-                    pb::NodeHealthSnapshot {
-                        status: watch
-                            .records
-                            .first()
-                            .map(|record| node_health_to_proto(record.status))
-                            .unwrap_or_else(|| pb::NodeHealthStatus::Unspecified.into()),
-                        records: watch
-                            .records
-                            .iter()
-                            .map(node_health_record_to_proto)
-                            .collect(),
-                    },
-                )),
-            };
-            let ended: Result<(), Status> = async {
-                if tx.send(Ok(snapshot)).await.is_err() {
-                    return Ok(());
-                }
-                loop {
-                    tokio::select! {
-                        _ = tx.closed() => return Ok(()),
-                        result = ticker.tick() => {
-                            result?;
-                            let event = pb::NodeHealthEvent {
-                                event: Some(pb::node_health_event::Event::KeepAlive(
-                                    pb::KeepAlive {},
-                                )),
-                            };
-                            if tx.send(Ok(event)).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                        received = events.recv() => match received {
-                            Ok(LiveEvent::Message(message)) => {
-                                let LiveMessage::NodeHealth { records } = &*message else {
-                                    continue;
-                                };
-                                // Ascending by the same total order the
-                                // recovery read pages on, so a batch that
-                                // arrives in any order cannot advance the
-                                // cursor past one of its own records.
-                                let mut batch: Vec<&NodeHealthLive> =
-                                    records.iter().filter(|r| r.node == node_key).collect();
-                                batch.sort_by(|a, b| {
-                                    (a.report_time_unix_micros, &a.id)
-                                        .cmp(&(b.report_time_unix_micros, &b.id))
-                                });
-                                for record in batch {
-                                    let time = live_time(record.report_time_unix_micros);
-                                    // The whole tuple: one event writes a batch
-                                    // sharing a timestamp, and comparing the
-                                    // time alone would drop all but the first.
-                                    if (time, Some(&record.id)) <= (cursor.0, cursor.1.as_ref()) {
-                                        continue;
-                                    }
-                                    cursor = (time, Some(record.id.clone()));
-                                    let event = pb::NodeHealthEvent {
-                                        event: Some(pb::node_health_event::Event::Record(
-                                            node_health_live_to_proto(record),
-                                        )),
-                                    };
-                                    if tx.send(Ok(event)).await.is_err() {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                            // The bus may have skipped records. Page forward
-                            // from the cursor until a short page proves there is
-                            // nothing left: a gap wider than one page must not
-                            // leave the older rows behind, which is exactly what
-                            // a newest-first capped read would do.
-                            Ok(LiveEvent::Resync)
-                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                loop {
-                                    let rows = match refetch_node_health(
-                                        &db,
-                                        &node,
-                                        cursor.0,
-                                        cursor.1.as_deref(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(rows) => rows,
-                                        // Retried already; the signal that got
-                                        // us here is consumed, so carrying on
-                                        // would leave the gap open until the
-                                        // next reconnect. End the stream and let
-                                        // the client come back instead.
-                                        Err(error) => {
-                                            return Err(Status::internal(format!(
-                                                "refetching node health failed: {error}"
-                                            )));
-                                        }
-                                    };
-                                    let short = rows.len() < NODE_RECOVERY_PAGE as usize;
-                                    for record in &rows {
-                                        cursor =
-                                            (record.report_time, Some(record.id.to_string()));
-                                        let event = pb::NodeHealthEvent {
-                                            event: Some(pb::node_health_event::Event::Record(
-                                                node_health_record_to_proto(record),
-                                            )),
-                                        };
-                                        if tx.send(Ok(event)).await.is_err() {
-                                            return Ok(());
-                                        }
-                                    }
-                                    if short {
-                                        break;
                                     }
                                 }
                             }

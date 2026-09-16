@@ -6,7 +6,7 @@
 //! pipeline decrypts it.
 
 use crate::entities::db::dns::{
-    CountNodesUsingDnsProvider, CreateDnsProvider as CreateDnsProviderRow, DeleteDnsProviderRow,
+    CountPodsUsingDnsProvider, CreateDnsProvider as CreateDnsProviderRow, DeleteDnsProviderRow,
     DnsProvider, DnsProviderEntity, DnsProviderId, FindDnsProviderById,
     ListDnsProviders as ListDnsProvidersRow, UpdateDnsProvider as UpdateDnsProviderRow,
 };
@@ -161,8 +161,8 @@ impl Processor<UpdateDnsProvider> for DnsProviderService {
     }
 }
 
-/// Refused ([`OrchestrationError::Conflict`]) while an Entry still names the
-/// provider in its `TlsConfig`: the certificate that Entry asked for could never
+/// Refused ([`OrchestrationError::Conflict`]) while a TLS client pod still names the
+/// provider in its `TlsConfig`: the certificate that pod asked for could never
 /// be renewed again.
 pub struct DeleteDnsProvider {
     pub actor: Identity,
@@ -183,16 +183,16 @@ impl Processor<DeleteDnsProvider> for DnsProviderService {
             .ok_or(OrchestrationError::NotFound)?;
         let used = self
             .db
-            .process(CountNodesUsingDnsProvider {
+            .process(CountPodsUsingDnsProvider {
                 id: input.id.clone(),
             })
             .await?;
         if used > 0 {
             return Err(OrchestrationError::Conflict(format!(
-                "dns provider is still used by {used} entry node(s)"
+                "dns provider is still used by {used} pod(s)"
             )));
         }
-        // The row query re-checks inside its transaction: an Entry created between
+        // The row query re-checks inside its transaction: a pod created between
         // the count and the delete still refuses it.
         if !self
             .db
@@ -200,7 +200,7 @@ impl Processor<DeleteDnsProvider> for DnsProviderService {
             .await?
         {
             return Err(OrchestrationError::Conflict(
-                "dns provider is still used by an entry node".into(),
+                "dns provider is still used by a pod".into(),
             ));
         }
         Ok(())

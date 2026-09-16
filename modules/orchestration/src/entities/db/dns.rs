@@ -18,7 +18,7 @@ pub struct DnsProviderEntity {
     pub id: DnsProviderId,
     pub name: String,
     pub provider: DnsProvider,
-    /// Provider specific: unused for Cloudflare (the zone id lives on the Entry's
+    /// Provider specific: unused for Cloudflare (the zone id lives on the pod's
     /// `TlsConfig.domain_id`), the team id for Vercel (empty for a personal
     /// account).
     pub account_id: String,
@@ -130,7 +130,7 @@ impl Processor<UpdateDnsProvider> for Db {
     }
 }
 
-/// Fails (returns `false`) while an Entry or a certificate still references the
+/// Fails (returns `false`) while a pod or a certificate still references the
 /// provider: both are foreign keys, so the database refuses the delete.
 #[derive(Debug)]
 pub struct DeleteDnsProviderRow {
@@ -156,22 +156,22 @@ impl Processor<DeleteDnsProviderRow> for Db {
     }
 }
 
-/// How many Entry nodes reference the provider through `spec.config.tls`.
+/// How many TLS client pods answer their ACME challenge through the provider.
 #[derive(Debug)]
-pub struct CountNodesUsingDnsProvider {
+pub struct CountPodsUsingDnsProvider {
     pub id: DnsProviderId,
 }
 
-impl Processor<CountNodesUsingDnsProvider> for Db {
+impl Processor<CountPodsUsingDnsProvider> for Db {
     type Output = i64;
     type Error = Error;
-    #[tracing::instrument(name = "Query:CountNodesUsingDnsProvider", skip_all, err)]
+    #[tracing::instrument(name = "Query:CountPodsUsingDnsProvider", skip_all, err)]
     async fn process(
         &self,
-        input: CountNodesUsingDnsProvider,
+        input: CountPodsUsingDnsProvider,
     ) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar(
-            "SELECT count(*) FROM orchestration_node WHERE tls_dns_provider = $1",
+            "SELECT count(*) FROM orchestration_pod WHERE tls_dns_provider = $1",
         )
         .bind(input.id)
         .fetch_one(self.db())

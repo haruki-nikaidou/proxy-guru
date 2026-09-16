@@ -2,7 +2,7 @@
 
 use crate::entities::db::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
 use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
-use crate::entities::db::topology::FindCanvasOfServer;
+use crate::entities::db::server::FindCanvasOfServer;
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, InvalidPod,
     ServerConfigViewEntity,
@@ -134,7 +134,7 @@ pub(crate) fn rollout_status(
 /// never acks. Clearing its slots is an operator asserting "this one is not coming
 /// back".
 ///
-/// Admin only, for the same reason as `ForceDeleteNode` and `ForceDisconnect`: the
+/// Admin only: the
 /// assertion is unverifiable, and if it is wrong about a server that is merely
 /// unreachable, convergence will switch its dependants off listeners that are
 /// still carrying traffic. This is the one operation that can break a live path

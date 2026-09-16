@@ -9,10 +9,9 @@ use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas};
-use orchestration::entities::db::node::{
-    CreateNodeRow, NewPort, NodeSpec, NodeWithPorts, PodConfig,
-};
-use orchestration::entities::db::port::{PortDirection, PortKind};
+use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
+use orchestration::entities::db::exit::{ExitEntity, ExitId};
+use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{
     CreateServer, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -24,10 +23,9 @@ use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
 use orchestration::services::canvas::CanvasService;
 use orchestration::services::dns::DnsProviderService;
-use orchestration::services::edge::EdgeService;
+use orchestration::services::graph::{ApplyGraph, ApplyOutcome, GraphChange, GraphService};
 use orchestration::services::health::HealthService;
 use orchestration::services::live::LiveService;
-use orchestration::services::node::NodeService;
 use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
@@ -50,6 +48,22 @@ pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, base::db::Error
     sp.process(CreateCanvas {
         name: name.to_string(),
         description: String::new(),
+        parent: None,
+        position: pos(0, 0),
+    })
+    .await
+}
+
+pub async fn subcanvas(
+    sp: &Db,
+    parent: &CanvasEntity,
+    name: &str,
+) -> Result<CanvasEntity, base::db::Error> {
+    sp.process(CreateCanvas {
+        name: name.to_string(),
+        description: String::new(),
+        parent: Some(parent.id.clone()),
+        position: pos(0, 0),
     })
     .await
 }
@@ -85,78 +99,187 @@ pub async fn server_at(
     .await
 }
 
-pub fn pod_ports() -> Vec<NewPort> {
-    vec![
-        NewPort {
-            kind: PortKind::DeriveListen,
-            direction: PortDirection::Output,
-            key: "listen".to_string(),
-            position: 0,
-        },
-        NewPort {
-            kind: PortKind::DeriveDestination,
-            direction: PortDirection::Input,
-            key: "destination".to_string(),
-            position: 1,
-        },
-    ]
+// --- graph rows -----------------------------------------------------------------
+
+/// A record key made from a readable name: lower-cased, anything but `[a-z0-9]`
+/// turned into `0`, padded with `x` or cut to 20 characters.
+pub fn key(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '0' })
+        .take(20)
+        .collect();
+    while out.len() < 20 {
+        out.push('x');
+    }
+    out
 }
 
-pub fn exit_ports() -> Vec<NewPort> {
-    vec![NewPort {
-        kind: PortKind::DeriveDestination,
-        direction: PortDirection::Output,
-        key: "destination".to_string(),
-        position: 0,
-    }]
+pub fn pod_id(name: &str) -> PodId {
+    PodId::from_key(key(name))
 }
 
-pub fn entry_ports() -> Vec<NewPort> {
-    vec![NewPort {
-        kind: PortKind::DeriveListen,
-        direction: PortDirection::Input,
-        key: "listen".to_string(),
-        position: 0,
-    }]
+pub fn exit_id(name: &str) -> ExitId {
+    ExitId::from_key(key(name))
 }
 
-pub async fn node(
-    sp: &Db,
-    canvas: &CanvasEntity,
-    name: &str,
-    spec: NodeSpec,
-    ports: Vec<NewPort>,
-) -> Result<NodeWithPorts, base::db::Error> {
-    sp.process(CreateNodeRow {
+pub fn edge_id(name: &str) -> EdgeId {
+    EdgeId::from_key(key(name))
+}
+
+/// A pod named `name` (its id is [`key`] of it) with no route.
+pub fn pod(canvas: &CanvasEntity, server: &ServerEntity, name: &str, port: u16, ingress: PodIngress) -> PodEntity {
+    PodEntity {
+        id: pod_id(name),
         canvas: canvas.id.clone(),
+        server: server.id.clone(),
         name: name.to_string(),
         comment: String::new(),
-        spec,
-        position: pos(0, 0),
-        ports,
-        import_sync: None,
-        fence: None,
-        target_fence: None,
-    })
-    .await
-}
-
-pub fn pod_spec(server: &ServerEntity, port: u16) -> NodeSpec {
-    NodeSpec::Pod(PodConfig {
-        server: server.id.clone(),
         port,
         bind_ip: None,
         advertise_ip: None,
-    })
+        ingress,
+        route: None,
+    }
 }
 
-/// The id of the port with the given key.
-pub fn port_of(node: &NodeWithPorts, key: &str) -> orchestration::entities::db::port::PortId {
-    node.ports
-        .iter()
-        .find(|p| p.key == key)
-        .map(|p| p.id.clone())
-        .unwrap_or_else(|| panic!("node has no port {key}"))
+/// A raw client pod, reading PROXY headers when `proxy` is set.
+pub fn client(canvas: &CanvasEntity, server: &ServerEntity, name: &str, port: u16, proxy: Option<ProxyProtocolVersion>) -> PodEntity {
+    pod(
+        canvas,
+        server,
+        name,
+        port,
+        PodIngress::ClientRaw {
+            receive_proxy_protocol: proxy,
+        },
+    )
+}
+
+pub fn exit(canvas: &CanvasEntity, name: &str, destination: &str) -> ExitEntity {
+    ExitEntity {
+        id: exit_id(name),
+        canvas: canvas.id.clone(),
+        name: name.to_string(),
+        comment: String::new(),
+        destination: destination.to_string(),
+        send_proxy_protocol: None,
+        position: pos(0, 0),
+    }
+}
+
+/// An edge named `name` from a pod to a pod.
+pub fn edge_to_pod(name: &str, source: &PodEntity, target: &PodEntity) -> EdgeEntity {
+    EdgeEntity {
+        id: edge_id(name),
+        source: source.id.clone(),
+        target: EdgeTarget::Pod(target.id.clone()),
+        override_ip: None,
+        override_port: None,
+    }
+}
+
+/// An edge named `name` from a pod to an exit.
+pub fn edge_to_exit(name: &str, source: &PodEntity, target: &ExitEntity) -> EdgeEntity {
+    EdgeEntity {
+        id: edge_id(name),
+        source: source.id.clone(),
+        target: EdgeTarget::Exit(target.id.clone()),
+        override_ip: None,
+        override_port: None,
+    }
+}
+
+/// The route that is just this edge.
+pub fn via(edge: &EdgeEntity) -> guru_topology::Route {
+    guru_topology::Route::Edge(guru_topology::EdgeId::new(edge.id.as_str()))
+}
+
+/// A balance over the given edges, each weighing one.
+pub fn balance(edges: &[&EdgeEntity]) -> guru_topology::Route {
+    guru_topology::Route::Balance {
+        members: edges
+            .iter()
+            .map(|edge| guru_topology::Weighted {
+                weight: 1,
+                to: via(edge),
+            })
+            .collect(),
+        sticky: None,
+    }
+}
+
+/// The pod with its route set to `route`.
+pub fn routed(mut pod: PodEntity, route: guru_topology::Route) -> PodEntity {
+    pod.route = Some(route);
+    pod
+}
+
+/// Writes rows straight through the entity layer, unchecked: for tests of what
+/// sits behind the graph, not of the graph service.
+pub async fn insert_rows(
+    sp: &Db,
+    canvas: &CanvasEntity,
+    pods: Vec<PodEntity>,
+    exits: Vec<ExitEntity>,
+    edges: Vec<EdgeEntity>,
+) -> Result<(), base::db::Error> {
+    sp.process(orchestration::entities::db::graph::ApplyGraphBatch {
+        canvas: Some(canvas.id.clone()),
+        derives: true,
+        insert_pods: pods,
+        insert_exits: exits,
+        insert_edges: edges,
+        ..Default::default()
+    })
+    .await?;
+    Ok(())
+}
+
+/// Deletes pods (and first the given edges) straight through the entity layer.
+pub async fn delete_rows(
+    sp: &Db,
+    canvas: &CanvasEntity,
+    pods: Vec<PodId>,
+    edges: Vec<EdgeId>,
+) -> Result<(), base::db::Error> {
+    sp.process(orchestration::entities::db::graph::ApplyGraphBatch {
+        canvas: Some(canvas.id.clone()),
+        derives: true,
+        delete_pods: pods,
+        delete_edges: edges,
+        ..Default::default()
+    })
+    .await?;
+    Ok(())
+}
+
+/// A TLS client pod asking for `sni` through `provider`.
+pub fn tls_client(
+    canvas: &CanvasEntity,
+    server: &ServerEntity,
+    name: &str,
+    port: u16,
+    provider: &orchestration::entities::db::dns::DnsProviderId,
+    sni: &str,
+    directory: &str,
+) -> PodEntity {
+    pod(
+        canvas,
+        server,
+        name,
+        port,
+        PodIngress::ClientTls {
+            receive_proxy_protocol: None,
+            tls: orchestration::entities::db::pod::TlsConfig {
+                sni: sni.to_string(),
+                dns_provider: provider.clone(),
+                domain_id: "zone".to_string(),
+                acme_directory: directory.to_string(),
+            },
+        },
+    )
 }
 
 // --- service-level harness ---------------------------------------------------
@@ -201,8 +324,7 @@ pub struct World {
     pub notifier: Notifier,
     pub canvases: CanvasService,
     pub servers: ServerService,
-    pub nodes: NodeService,
-    pub edges: EdgeService,
+    pub graph: GraphService,
     pub agents: AgentService,
     pub rollout: RolloutService,
     pub health: HealthService,
@@ -244,12 +366,7 @@ pub async fn world_with(
             notifier: notifier.clone(),
             config: config.clone(),
         },
-        nodes: NodeService {
-            db: db.clone(),
-            notifier: notifier.clone(),
-            config: config.clone(),
-        },
-        edges: EdgeService {
+        graph: GraphService {
             db: db.clone(),
             notifier: notifier.clone(),
             config: config.clone(),
@@ -316,6 +433,38 @@ impl World {
             })
             .await?;
         Ok(())
+    }
+
+    /// Applies a graph change as an Admin and fails on any error diagnostic.
+    pub async fn apply(
+        &self,
+        canvas: &CanvasEntity,
+        change: GraphChange,
+    ) -> Result<ApplyOutcome, Box<dyn std::error::Error>> {
+        let outcome = self.try_apply(canvas, change).await?;
+        if !outcome.applied {
+            return Err(format!("change refused: {:#?}", outcome.diagnostics).into());
+        }
+        Ok(outcome)
+    }
+
+    /// Applies a graph change as an Admin and hands back the outcome, refused
+    /// or not.
+    pub async fn try_apply(
+        &self,
+        canvas: &CanvasEntity,
+        change: GraphChange,
+    ) -> Result<ApplyOutcome, Box<dyn std::error::Error>> {
+        Ok(self
+            .graph
+            .process(ApplyGraph {
+                actor: operator(),
+                canvas: canvas.id.clone(),
+                change,
+                dry_run: false,
+                expected_generation: None,
+            })
+            .await?)
     }
 
     pub async fn view(

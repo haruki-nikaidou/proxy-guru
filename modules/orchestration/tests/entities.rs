@@ -9,35 +9,37 @@ use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::{FindAgentRelease, PublishAgentRelease};
 use orchestration::entities::db::canvas::{
-    DeleteCanvasRow, FindCanvasById, ListCanvases, UpdateCanvasMeta,
+    DeleteCanvasRow, FindCanvasById, ListCanvases, LoadCanvasTree, UpdateCanvasMeta,
 };
-use orchestration::entities::db::connection::{
-    ConnectPorts, DeleteEdgeRow, EdgeConnectionId, FindEdgeById,
-};
-use orchestration::entities::db::node::{
-    CanvasImportConfig, CreateNodeRow, DeleteNodeRow, ExitConfig, FindNodeById, FindNodeWithPorts,
-    NodeSpec, PodConfig, UpdateNodeMetaRow, UpdateNodeSpecRow,
-};
-use orchestration::entities::db::port::PortId;
+use orchestration::entities::db::graph::{ApplyGraphBatch, LoadCanvasGraph};
+use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
+use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion, TlsConfig};
 use orchestration::entities::db::server::{
-    ClaimServerWatchSession, DeleteServerRow, FindServerById, FindServerByRefreshKeyDigest,
-    ListServersByCanvas, MoveServerPosition, QuicCongestion, RegisterWorkerSession,
-    ReleaseServerWatchSession, RenewServerWatchSession, ServerIpv6Resolve, ServerLogLevel,
-    ServerQuic, UpdateServerSettings,
-};
-use orchestration::entities::db::topology::{
-    FindCanvasOfServer, LoadCanvasContents, LoadCanvasTopology,
+    ClaimServerWatchSession, DeleteServerRow, FindCanvasOfServer, FindServerById,
+    FindServerByRefreshKeyDigest, ListServersByCanvas, MoveServerPosition, QuicCongestion,
+    RegisterWorkerSession, ReleaseServerWatchSession, RenewServerWatchSession,
+    ServerIpv6Resolve, ServerLogLevel, ServerQuic, UpdateServerSettings,
 };
 use orchestration::entities::db::view::{
     AckServerConfig, FindServerConfigView, ListServerWatchState, TakeInFlight,
 };
 use orchestration::services::OrchestrationError;
 
-fn exit_spec(dest: &str) -> NodeSpec {
-    NodeSpec::Exit(ExitConfig {
-        destination: dest.to_string(),
-        pass_proxy_protocol: None,
-    })
+/// A batch that inserts the given pods, exits and edges into `canvas`'s tree.
+fn inserting(
+    canvas: &orchestration::entities::db::canvas::CanvasEntity,
+    pods: Vec<orchestration::entities::db::pod::PodEntity>,
+    exits: Vec<orchestration::entities::db::exit::ExitEntity>,
+    edges: Vec<orchestration::entities::db::edge::EdgeEntity>,
+) -> ApplyGraphBatch {
+    ApplyGraphBatch {
+        canvas: Some(canvas.id.clone()),
+        derives: true,
+        insert_pods: pods,
+        insert_exits: exits,
+        insert_edges: edges,
+        ..ApplyGraphBatch::default()
+    }
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
@@ -58,6 +60,7 @@ async fn canvas_crud_round_trip(pool: sqlx::PgPool) -> TestResult {
             id: c.id.clone(),
             name: "prod2".to_string(),
             description: "desc".to_string(),
+            position: None,
         })
         .await?;
     assert_eq!(updated.name, "prod2");
@@ -183,6 +186,7 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
         reported: None,
         agent_version: None,
         agent_arch: None,
+        capabilities: Vec::new(),
     };
 
     let row = sp
@@ -518,6 +522,7 @@ async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> Te
         reported: None,
         agent_version: None,
         agent_arch: None,
+        capabilities: Vec::new(),
     })
     .await?
     .expect("the free session is taken");
@@ -573,6 +578,7 @@ async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> 
         reported: None,
         agent_version: None,
         agent_arch: None,
+        capabilities: Vec::new(),
     })
     .await?
     .expect("the free session is taken");
@@ -623,6 +629,7 @@ async fn register_rejects_an_unknown_running_revision(pool: sqlx::PgPool) -> Tes
         reported: None,
         agent_version: None,
         agent_arch: None,
+        capabilities: Vec::new(),
     })
     .await?
     .expect("the free session is taken");
@@ -658,7 +665,9 @@ async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> Tes
     let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
+    let pod = client(&c, &s, "pod", 443, None);
+    sp.process(inserting(&c, vec![pod.clone()], Vec::new(), Vec::new()))
+        .await?;
 
     sp.process(DeleteServerRow {
         id: s.id.clone(),
@@ -675,12 +684,11 @@ async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> Tes
     );
 
     // Once the pod is gone the delete succeeds.
-    sp.process(DeleteNodeRow {
-        id: pod.node.id.clone(),
-        canvas: c.id.clone(),
-        import_sync: None,
-        frees_canvas: None,
-        fence: None,
+    sp.process(ApplyGraphBatch {
+        canvas: Some(c.id.clone()),
+        derives: true,
+        delete_pods: vec![pod.id.clone()],
+        ..ApplyGraphBatch::default()
     })
     .await?;
     sp.process(DeleteServerRow {
@@ -693,320 +701,191 @@ async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> Tes
     Ok(())
 }
 
-/// The pod -> server link is what lets derivation attribute a per-pod failure to
-/// a server, so the schema refuses a dangling one: `CreateNodeRow` lifts the
-/// server out of the spec into the `pod_server` foreign key. Written through the
-/// real `CreateNodeRow` path on purpose: only the actual `NodeSpec` encoding
-/// proves the lifted column guards where the rows really land.
+/// A pod's server is a foreign key: a batch naming a server no row carries
+/// fails inside its transaction, and nothing of the batch is written.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_pod_cannot_reference_a_server_that_does_not_exist(pool: sqlx::PgPool) -> TestResult {
     let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
-    let other = canvas(&sp, "staging").await?;
     let s = server(&sp, &c, "tokyo").await?;
+    sp.process(inserting(
+        &c,
+        vec![client(&c, &s, "pod", 443, None)],
+        Vec::new(),
+        Vec::new(),
+    ))
+    .await?;
 
-    // A sound reference is accepted...
-    node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-
-    // Placing a pod in another canvas on this server is the topology checker's
-    // to refuse (`ProblemKind::PodServerForeign`, covered in `topology.rs`):
-    // derivation loads one tree at a time, so a cross-tree link reads exactly
-    // like a missing one, but the row itself is well-formed. What the database
-    // refuses is a link to a server that does not exist...
-    let _ = other;
-
-    // ...so a pod pointing at a server id no row carries fails inside
-    // `CreateNodeRow`'s transaction, and nothing is written.
-    let ghost = orchestration::utils::ids::server_id("ghost");
-    let spec = NodeSpec::Pod(PodConfig {
-        server: ghost,
-        port: 443,
-        bind_ip: None,
-        advertise_ip: None,
-    });
-    node(&sp, &c, "ghost-pod", spec, pod_ports())
+    let mut ghost = client(&c, &s, "ghost pod", 443, None);
+    ghost.server = orchestration::utils::ids::server_id("ghost");
+    let sound = client(&c, &s, "sound pod", 444, None);
+    sp.process(inserting(&c, vec![sound, ghost], Vec::new(), Vec::new()))
         .await
         .expect_err("a dangling server link must not be storable");
-    let topology = sp
-        .process(LoadCanvasTopology {
+    let graph = sp
+        .process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
-    let names: Vec<&str> = topology
-        .nodes
-        .iter()
-        .map(|n| n.node.name.as_str())
-        .collect();
+    let names: Vec<&str> = graph.pods.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         names,
         ["pod"],
-        "the rejected pods left no row behind, and the sound one is untouched"
+        "the rejected batch left no row behind, and the earlier pod is untouched"
     );
     Ok(())
 }
 
+/// Every column of the graph survives a round trip: a TLS client pod with its
+/// route document, a relay pod, an exit, edges with and without overrides, and
+/// a group whose members keep their order.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn create_node_writes_node_and_ports_together(pool: sqlx::PgPool) -> TestResult {
+async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
+    let c = canvas(&sp, "prod").await?;
+    let tokyo = server(&sp, &c, "tokyo").await?;
+    let osaka = server_at(&sp, &c, "osaka", "198.51.100.10").await?;
+    let provider = orchestration::utils::ids::dns_provider_id("cf");
+    sqlx::query(
+        "INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)
+         VALUES ($1, 'cf', 'cloudflare', '', 'enc1:secret', now())",
+    )
+    .bind(&provider)
+    .execute(sp.db())
+    .await?;
+
+    let mut entry = pod(
+        &c,
+        &tokyo,
+        "entry",
+        443,
+        PodIngress::ClientTls {
+            receive_proxy_protocol: Some(ProxyProtocolVersion::V2),
+            tls: TlsConfig {
+                sni: "example.com".to_string(),
+                dns_provider: provider.clone(),
+                domain_id: "zone".to_string(),
+                acme_directory: String::new(),
+            },
+        },
+    );
+    entry.bind_ip = Some("0.0.0.0".to_string());
+    let mut hop = pod(&c, &osaka, "hop", 9443, PodIngress::RelayQuic);
+    hop.advertise_ip = Some("2001:db8::10".to_string());
+    let origin = exit(&c, "origin", "10.0.0.5:8080");
+    let mut near = edge_to_pod("near", &entry, &hop);
+    near.override_ip = Some("hop.example.net".to_string());
+    near.override_port = Some(19443);
+    let far = edge_to_pod("far", &entry, &hop);
+    let out = edge_to_exit("out", &hop, &origin);
+    let entry = routed(
+        entry,
+        guru_topology::Route::Failover(vec![via(&near), via(&far)]),
+    );
+    let hop = routed(hop, via(&out));
+    let group = GroupEntity {
+        id: GroupId::from_key(key("splitter")),
+        canvas: c.id.clone(),
+        kind: "splitter".to_string(),
+        name: "fan-out".to_string(),
+        props: serde_json::json!({"x": 10, "y": -4}),
+        members: vec![
+            GroupMember::Edge(near.id.clone()),
+            GroupMember::Pod(entry.id.clone()),
+            GroupMember::Server(osaka.id.clone()),
+            GroupMember::Exit(origin.id.clone()),
+        ],
+    };
+    let mut batch = inserting(
+        &c,
+        vec![entry.clone(), hop.clone()],
+        vec![origin.clone()],
+        vec![near.clone(), far.clone(), out.clone()],
+    );
+    batch.insert_groups = vec![group.clone()];
+    sp.process(batch).await?;
+
+    let graph = sp
+        .process(LoadCanvasGraph {
+            canvas: c.id.clone(),
+        })
+        .await?;
+    assert_eq!(graph.root, c.id);
+    assert_eq!(graph.servers.len(), 2);
+    let mut pods = graph.pods.clone();
+    pods.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(pods, vec![entry, hop]);
+    assert_eq!(graph.exits, vec![origin]);
+    let mut edges = graph.edges.clone();
+    edges.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut expected = vec![near, far, out];
+    expected.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(edges, expected);
+    assert_eq!(graph.groups, vec![group]);
+    Ok(())
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_graph_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestResult {
     let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-
-    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-    assert_eq!(pod.ports.len(), 2);
-
-    let loaded = sp
-        .process(FindNodeWithPorts {
-            id: pod.node.id.clone(),
-        })
-        .await?
-        .unwrap();
-    assert_eq!(loaded.ports.len(), 2);
-    match loaded.node.spec {
-        NodeSpec::Pod(cfg) => {
-            assert_eq!(cfg.port, 443);
-            assert_eq!(cfg.server.0, s.id.0);
-        }
-        other => panic!("expected pod spec, got {other:?}"),
-    }
-
     let before = sp
         .process(FindCanvasById { id: c.id.clone() })
         .await?
         .unwrap()
         .generation;
-    let meta = sp
-        .process(UpdateNodeMetaRow {
-            id: pod.node.id.clone(),
-            canvas: c.id.clone(),
-            name: "edge".to_string(),
-            comment: "renamed".to_string(),
-            position: Some(pos(3, 4)),
-            import_sync: None,
-            fence: None,
-        })
+    let entry = client(&c, &s, "pod", 443, None);
+    let origin = exit(&c, "exit", "10.0.0.5:8080");
+    let out = edge_to_exit("out", &entry, &origin);
+    let entry = routed(entry, via(&out));
+    let generation = sp
+        .process(inserting(&c, vec![entry.clone()], vec![origin], vec![out.clone()]))
         .await?;
-    assert_eq!(meta.node.name, "edge");
-    assert_eq!(meta.node.position, pos(3, 4));
-    // The name is the forwarding tag in the derived config, so the rename has to
-    // schedule a derivation, and the query itself has to be what decides that.
-    assert!(meta.renamed, "the rename must be reported by the query");
-    let after_rename = sp
+    assert_eq!(generation, before + 1);
+    let after = sp
         .process(FindCanvasById { id: c.id.clone() })
         .await?
-        .unwrap()
-        .generation;
+        .unwrap();
+    assert_eq!(after.generation, before + 1);
     assert!(
-        after_rename > before,
-        "a rename must bump the canvas generation: {before} -> {after_rename}"
+        after.generation > after.derived_generation,
+        "an edit leaves the canvas visibly underived until a pass catches up"
     );
 
-    // A move that carries the same name is invisible to workers: no rename, no
-    // generation bump, so it does not schedule a pointless derivation.
-    let moved = sp
-        .process(UpdateNodeMetaRow {
-            id: pod.node.id.clone(),
-            canvas: c.id.clone(),
-            name: "edge".to_string(),
-            comment: "moved".to_string(),
-            position: Some(pos(9, 9)),
-            import_sync: None,
-            fence: None,
-        })
-        .await?;
-    assert!(!moved.renamed);
-    assert_eq!(moved.node.position, pos(9, 9));
+    let mut unrouted = entry.clone();
+    unrouted.route = None;
+    sp.process(ApplyGraphBatch {
+        canvas: Some(c.id.clone()),
+        derives: true,
+        delete_edges: vec![out.id.clone()],
+        update_pods: vec![unrouted],
+        ..ApplyGraphBatch::default()
+    })
+    .await?;
     assert_eq!(
         sp.process(FindCanvasById { id: c.id.clone() })
             .await?
             .unwrap()
             .generation,
-        after_rename,
-        "a move must not bump the canvas generation"
+        before + 2
     );
-    Ok(())
-}
 
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn deleting_a_node_removes_its_ports_and_edges(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
-    let c = canvas(&sp, "prod").await?;
-    let s = server(&sp, &c, "tokyo").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-    let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
-    let edge = sp
-        .process(ConnectPorts {
-            source: port_of(&exit, "destination"),
-            target: port_of(&pod, "destination"),
+    // A batch of groups alone is drawing, not topology: no bump.
+    sp.process(ApplyGraphBatch {
+        canvas: Some(c.id.clone()),
+        derives: false,
+        insert_groups: vec![GroupEntity {
+            id: GroupId::from_key(key("rule")),
             canvas: c.id.clone(),
-            fence: None,
-        })
-        .await?;
-    let before = sp
-        .process(FindCanvasById { id: c.id.clone() })
-        .await?
-        .unwrap()
-        .generation;
-
-    sp.process(DeleteNodeRow {
-        id: pod.node.id.clone(),
-        canvas: c.id.clone(),
-        import_sync: None,
-        frees_canvas: None,
-        fence: None,
+            kind: "rule".to_string(),
+            name: String::new(),
+            props: serde_json::json!({}),
+            members: vec![GroupMember::Pod(entry.id.clone())],
+        }],
+        ..ApplyGraphBatch::default()
     })
     .await?;
-    assert!(
-        sp.process(FindNodeById { id: pod.node.id })
-            .await?
-            .is_none()
-    );
-    assert!(sp.process(FindEdgeById { id: edge.id }).await?.is_none());
-    // Unfiltered on purpose: every canvas-scoped port or edge query reaches the
-    // canvas through a join on the node row, so a row the delete left behind
-    // would be invisible to them.
-    let ports_left: Vec<PortId> = sqlx::query_scalar("SELECT id FROM orchestration_port")
-        .fetch_all(sp.db())
-        .await?;
-    assert_eq!(
-        ports_left.len(),
-        1,
-        "the deleted node's ports are gone from the table, not just from its canvas"
-    );
-    assert_eq!(
-        ports_left[0].0,
-        port_of(&exit, "destination").0,
-        "and the port that survives is the untouched node's"
-    );
-    let edges_left: Vec<EdgeConnectionId> =
-        sqlx::query_scalar("SELECT id FROM orchestration_edge_connection")
-            .fetch_all(sp.db())
-            .await?;
-    assert!(
-        edges_left.is_empty(),
-        "the edge that hung off those ports is gone from the table too"
-    );
-    let topology = sp
-        .process(LoadCanvasTopology {
-            canvas: c.id.clone(),
-        })
-        .await?;
-    assert_eq!(topology.nodes.len(), 1);
-    assert_eq!(
-        sp.process(FindCanvasById { id: c.id })
-            .await?
-            .unwrap()
-            .generation,
-        before + 1,
-        "the write and the generation bump are one transaction"
-    );
-    Ok(())
-}
-
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn updating_a_spec_keeps_edges_on_surviving_ports(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
-    let c = canvas(&sp, "prod").await?;
-    let s = server(&sp, &c, "tokyo").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-    let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
-    let edge = sp
-        .process(ConnectPorts {
-            source: port_of(&exit, "destination"),
-            target: port_of(&pod, "destination"),
-            canvas: c.id.clone(),
-            fence: None,
-        })
-        .await?;
-
-    // Same port keys: the rows survive, so the edge is never touched.
-    let updated = sp
-        .process(UpdateNodeSpecRow {
-            id: pod.node.id.clone(),
-            canvas: c.id.clone(),
-            spec: pod_spec(&s, 8443),
-            ports: pod_ports(),
-            import_sync: None,
-            fence: None,
-        })
-        .await?;
-    assert_eq!(updated.node.id.0, pod.node.id.0);
-    match &updated.node.spec {
-        NodeSpec::Pod(cfg) => assert_eq!(cfg.port, 8443),
-        other => panic!("expected pod spec, got {other:?}"),
-    }
-    assert_eq!(
-        port_of(&updated, "destination").0,
-        port_of(&pod, "destination").0,
-        "a surviving port keeps its identity"
-    );
-    assert!(
-        sp.process(FindEdgeById {
-            id: edge.id.clone()
-        })
-        .await?
-        .is_some(),
-        "and with it the edge attached to it"
-    );
-
-    // A layout that drops the key takes that port and its edge with it.
-    let narrowed: Vec<_> = pod_ports()
-        .into_iter()
-        .filter(|p| p.key != "destination")
-        .collect();
-    let updated = sp
-        .process(UpdateNodeSpecRow {
-            id: pod.node.id.clone(),
-            canvas: c.id.clone(),
-            spec: pod_spec(&s, 8443),
-            ports: narrowed,
-            import_sync: None,
-            fence: None,
-        })
-        .await?;
-    assert_eq!(updated.ports.len(), 1);
-    assert!(updated.ports.iter().all(|p| p.key != "destination"));
-    assert!(sp.process(FindEdgeById { id: edge.id }).await?.is_none());
-    Ok(())
-}
-
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn an_edge_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
-    let c = canvas(&sp, "prod").await?;
-    let s = server(&sp, &c, "tokyo").await?;
-    let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-    let exit = node(&sp, &c, "exit", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
-    let before = sp
-        .process(FindCanvasById { id: c.id.clone() })
-        .await?
-        .unwrap()
-        .generation;
-
-    let edge = sp
-        .process(ConnectPorts {
-            source: port_of(&exit, "destination"),
-            target: port_of(&pod, "destination"),
-            canvas: c.id.clone(),
-            fence: None,
-        })
-        .await?;
-    let after_connect = sp
-        .process(FindCanvasById { id: c.id.clone() })
-        .await?
-        .unwrap();
-    assert_eq!(after_connect.generation, before + 1);
-    assert!(
-        after_connect.generation > after_connect.derived_generation,
-        "an edit leaves the canvas visibly underived until a pass catches up"
-    );
-
-    sp.process(DeleteEdgeRow {
-        id: edge.id.clone(),
-        canvas: c.id.clone(),
-        fence: None,
-    })
-    .await?;
-    assert!(sp.process(FindEdgeById { id: edge.id }).await?.is_none());
     assert_eq!(
         sp.process(FindCanvasById { id: c.id })
             .await?
@@ -1017,14 +896,12 @@ async fn an_edge_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestRe
     Ok(())
 }
 
-/// Issue #6, the fence primitive: a write validated against a snapshot must not
-/// commit once another edit has advanced the canvas past that snapshot's
-/// generation. Two writes are fenced against the *same* generation — as two
-/// concurrent requests that each read the pre-state would be — deterministically
-/// here, so the loser is always the second. It rolls back whole, edge and
-/// generation bump alike, and surfaces as a `Conflict`. The end-to-end case
-/// where the pair also jointly breaks a topology invariant lives in
-/// `tests/consistency.rs`.
+/// The fence primitive: a write checked against a snapshot must not commit once
+/// another edit has advanced the canvas past that snapshot's generation. Two
+/// writes are fenced against the *same* generation — as two concurrent requests
+/// that each read the pre-state would be — deterministically here, so the loser
+/// is always the second. It rolls back whole, rows and generation bump alike,
+/// and surfaces as a `Conflict`.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
     pool: sqlx::PgPool,
@@ -1032,51 +909,28 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
     let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    let pod1 = node(&sp, &c, "pod1", pod_spec(&s, 443), pod_ports()).await?;
-    let pod2 = node(&sp, &c, "pod2", pod_spec(&s, 444), pod_ports()).await?;
-    let exit1 = node(&sp, &c, "exit1", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
-    let exit2 = node(&sp, &c, "exit2", exit_spec("10.0.0.6:8080"), exit_ports()).await?;
 
-    // The generation two concurrent editors would both validate against.
-    let topology = sp
-        .process(LoadCanvasTopology {
+    // The generation two concurrent editors would both check against.
+    let fence = sp
+        .process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
-        .await?;
-    let fence = topology.fence().expect("a loaded canvas has a root");
-
-    // The first edit, fenced on that generation, lands and bumps it.
-    sp.process(ConnectPorts {
-        source: port_of(&exit1, "destination"),
-        target: port_of(&pod1, "destination"),
-        canvas: c.id.clone(),
-        fence: Some(fence.clone()),
-    })
-    .await?;
-    let bumped = sp
-        .process(FindCanvasById { id: c.id.clone() })
         .await?
-        .unwrap()
-        .generation;
+        .fence()
+        .expect("a loaded canvas has a root");
+
+    let mut first = inserting(&c, vec![client(&c, &s, "pod1", 443, None)], Vec::new(), Vec::new());
+    first.fence = Some(fence.clone());
+    let bumped = sp.process(first).await?;
     assert_eq!(bumped, fence.generation + 1);
 
-    // The second edit is valid in isolation (its own ports, no unique clash) but
-    // was validated against the now-superseded generation: the fence rolls it
-    // back rather than committing against stale validation.
-    let err = sp
-        .process(ConnectPorts {
-            source: port_of(&exit2, "destination"),
-            target: port_of(&pod2, "destination"),
-            canvas: c.id.clone(),
-            fence: Some(fence),
-        })
-        .await
-        .expect_err("the loser is rejected");
+    let mut second = inserting(&c, vec![client(&c, &s, "pod2", 444, None)], Vec::new(), Vec::new());
+    second.fence = Some(fence);
+    let err = sp.process(second).await.expect_err("the loser is rejected");
     assert!(
         err.to_string().contains("orchestration_stale_generation"),
-        "the fence THROWs its sentinel: {err}"
+        "the fence names its sentinel: {err}"
     );
-    // ...and the service layer reads that sentinel as a retryable conflict.
     assert!(
         matches!(
             OrchestrationError::from(err),
@@ -1085,120 +939,91 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         "a stale fence is a conflict, not an opaque database error"
     );
 
-    // The loser left nothing behind: no second edge, no extra bump.
+    // The loser left nothing behind: no second pod, no extra bump.
     let after = sp
-        .process(LoadCanvasContents {
-            canvas: c.id.clone(),
-        })
-        .await?
-        .unwrap();
-    assert_eq!(after.edges.len(), 1, "only the winning edge persists");
-    assert_eq!(
-        sp.process(FindCanvasById { id: c.id })
-            .await?
-            .unwrap()
-            .generation,
-        bumped,
-        "the rejected write did not bump the generation"
-    );
-    Ok(())
-}
-
-/// Issue #6, the second-root fence: creating a canvas-import validates two
-/// independent trees — the importer and the target — but writes into one
-/// transaction. The target is claimed with a compare-and-set of its own, so an
-/// edit that landed in the target tree after it was read makes the import roll
-/// back rather than merging a stale target.
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn importing_a_target_edited_since_it_was_validated_is_rejected(
-    pool: sqlx::PgPool,
-) -> TestResult {
-    let sp = setup(pool);
-    let importer = canvas(&sp, "importer").await?;
-    let target = canvas(&sp, "target").await?;
-
-    // Both trees as the importing operator would read them.
-    let importer_fence = sp
-        .process(LoadCanvasTopology {
-            canvas: importer.id.clone(),
-        })
-        .await?
-        .fence()
-        .expect("a loaded canvas has a root");
-    let target_fence = sp
-        .process(LoadCanvasTopology {
-            canvas: target.id.clone(),
-        })
-        .await?
-        .fence()
-        .expect("a loaded canvas has a root");
-
-    // A concurrent edit lands in the *target* tree after it was read.
-    server(&sp, &target, "tokyo").await?;
-
-    // Importing it now, validated against the stale target snapshot, is rejected:
-    // the target's generation moved, so its claim compare-and-set misses.
-    let err = sp
-        .process(CreateNodeRow {
-            canvas: importer.id.clone(),
-            name: "import".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::CanvasImport(CanvasImportConfig {
-                canvas: target.id.clone(),
-            }),
-            position: pos(0, 0),
-            ports: Vec::new(),
-            import_sync: None,
-            fence: Some(importer_fence),
-            target_fence: Some(target_fence),
-        })
-        .await
-        .expect_err("a stale target import is rejected");
-    assert!(
-        err.to_string().contains("orchestration_stale_generation"),
-        "the target claim THROWs its sentinel: {err}"
-    );
-
-    // Nothing was written: the rejected import left no node on the importer.
-    let after = sp
-        .process(LoadCanvasContents {
-            canvas: importer.id.clone(),
-        })
-        .await?
-        .unwrap();
-    assert!(
-        after.nodes.is_empty(),
-        "the rejected import left no node behind"
-    );
-    Ok(())
-}
-
-#[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn canvas_contents_render_the_whole_canvas(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
-    let c = canvas(&sp, "prod").await?;
-    let s = server(&sp, &c, "tokyo").await?;
-    node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
-
-    let contents = sp
-        .process(LoadCanvasContents {
-            canvas: c.id.clone(),
-        })
-        .await?
-        .unwrap();
-    assert_eq!(contents.canvas.name, "prod");
-    assert_eq!(contents.servers.len(), 1);
-    assert_eq!(contents.nodes.len(), 1);
-
-    let topology = sp
-        .process(LoadCanvasTopology {
+        .process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
-    assert_eq!(topology.root.0, c.id.0);
-    assert_eq!(topology.canvases.len(), 1);
-    assert_eq!(topology.nodes.len(), 1);
-    assert_eq!(topology.servers.len(), 1);
+    assert_eq!(after.pods.len(), 1, "only the winning pod persists");
+    assert_eq!(after.generation(), bumped);
+    Ok(())
+}
+
+/// Canvases nest by parent: the tree is read from any of its canvases, only
+/// roots are listed, a subcanvas edit bumps the root, and deleting a canvas
+/// takes its subtree with the edges leaving the subtree's pods.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
+    let root = canvas(&sp, "root").await?;
+    let sub = subcanvas(&sp, &root, "sub").await?;
+    let subsub = subcanvas(&sp, &sub, "subsub").await?;
+    assert_eq!(sub.parent.as_ref(), Some(&root.id));
+
+    let roots = sp
+        .process(ListCanvases {
+            include_subcanvases: false,
+        })
+        .await?;
+    assert_eq!(roots.len(), 1);
+    assert_eq!(
+        sp.process(ListCanvases {
+            include_subcanvases: true,
+        })
+        .await?
+        .len(),
+        3
+    );
+    let tree = sp
+        .process(LoadCanvasTree {
+            canvas: subsub.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert_eq!(tree.canvas.id, root.id);
+    assert_eq!(tree.children[0].canvas.id, sub.id);
+    assert_eq!(tree.children[0].children[0].canvas.id, subsub.id);
+
+    // A pod drawn two levels down on a server of the root, dialing an exit on
+    // the root.
+    let s = server(&sp, &root, "tokyo").await?;
+    let deep = client(&subsub, &s, "deep", 443, None);
+    let origin = exit(&root, "origin", "10.0.0.5:8080");
+    let out = edge_to_exit("out", &deep, &origin);
+    let deep = routed(deep, via(&out));
+    let before = sp
+        .process(LoadCanvasGraph {
+            canvas: root.id.clone(),
+        })
+        .await?
+        .generation();
+    sp.process(inserting(&subsub, vec![deep], vec![origin], vec![out]))
+        .await?;
+    let graph = sp
+        .process(LoadCanvasGraph {
+            canvas: sub.id.clone(),
+        })
+        .await?;
+    assert_eq!(graph.root, root.id, "any canvas of the tree reads the whole tree");
+    assert_eq!(graph.canvases.len(), 3);
+    assert_eq!((graph.pods.len(), graph.exits.len(), graph.edges.len()), (1, 1, 1));
+    assert_eq!(graph.generation(), before + 1, "the root is what an edit bumps");
+
+    sp.process(DeleteCanvasRow { id: sub.id.clone() }).await?;
+    let graph = sp
+        .process(LoadCanvasGraph {
+            canvas: root.id.clone(),
+        })
+        .await?;
+    assert_eq!(graph.canvases.len(), 1);
+    assert!(graph.pods.is_empty() && graph.edges.is_empty());
+    assert_eq!(graph.exits.len(), 1, "the root's exit stays");
+    assert!(
+        sp.process(FindCanvasById { id: subsub.id })
+            .await?
+            .is_none()
+    );
     Ok(())
 }
 
@@ -1221,6 +1046,7 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
             reported: None,
             agent_version: None,
             agent_arch: None,
+            capabilities: Vec::new(),
         };
 
     // The first worker ran revision 3: registering as such records it as applied,
@@ -1299,6 +1125,7 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
             reported: None,
             agent_version: build.map(str::to_owned),
             agent_arch: build.map(|_| "x86_64".to_string()),
+            capabilities: Vec::new(),
         }
     };
 

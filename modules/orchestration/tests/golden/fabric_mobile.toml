@@ -1,0 +1,78 @@
+ipv6_resolve = "tolerated"
+
+[log]
+level = "info"
+
+[quic]
+congestion = "brutal"
+send_mbps = 100
+receive_mbps = 500
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0
+
+[[forwarding]]
+tag = "entryxxxxxxxxxxxxxxx"
+listen = "[::]:443"
+receive_proxy_protocol = "v2"
+listen_as = "raw"
+to = "g"
+
+[[forwarding.group]]
+id = "g"
+failover = ["g.0", "u:to0aws01xxxxxxxxxxxx"]
+
+[[forwarding.group]]
+id = "g.0"
+sticky = "client_ip"
+
+[[forwarding.group.balance]]
+to = "u:to0gcore01xxxxxxxxxx"
+weight = 2
+
+[[forwarding.group.balance]]
+to = "u:to0gcore02xxxxxxxxxx"
+
+[[forwarding.upstream]]
+id = "u:to0aws01xxxxxxxxxxxx"
+
+[forwarding.upstream.relay]
+protocol = "tcp"
+destination = "192.0.2.30:8443"
+
+[[forwarding.upstream]]
+id = "u:to0gcore01xxxxxxxxxx"
+
+[forwarding.upstream.relay]
+protocol = "quic"
+destination = "198.51.100.20:7443"
+sni = "gcore01xxxxxxxxxxxxx.relay.guru.internal"
+confirm = true
+
+[forwarding.upstream.relay.quic]
+congestion = "brutal"
+send_mbps = 50
+receive_mbps = 500
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0
+
+[[forwarding.upstream]]
+id = "u:to0gcore02xxxxxxxxxx"
+
+[forwarding.upstream.relay]
+protocol = "quic"
+destination = "[2001:db8::20]:7444"
+sni = "gcore02xxxxxxxxxxxxx.relay.guru.internal"
+confirm = true
+
+[forwarding.upstream.relay.quic]
+congestion = "brutal"
+send_mbps = 50
+receive_mbps = 500
+max_streams = 0
+stream_receive_window = 0
+receive_window = 0
+send_window = 0

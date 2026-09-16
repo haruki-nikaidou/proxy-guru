@@ -117,6 +117,25 @@ pub(crate) async fn insert_group(
     insert_members(conn, group).await
 }
 
+/// Rewrites an existing group, members included.
+pub(crate) async fn update_group(
+    conn: &mut PgConnection,
+    group: &GroupEntity,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE orchestration_group SET kind = $2, name = $3, props = $4 WHERE id = $1")
+        .bind(&group.id)
+        .bind(&group.kind)
+        .bind(&group.name)
+        .bind(Json(&group.props))
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM orchestration_group_member WHERE group_id = $1")
+        .bind(&group.id)
+        .execute(&mut *conn)
+        .await?;
+    insert_members(conn, group).await
+}
+
 async fn insert_members(conn: &mut PgConnection, group: &GroupEntity) -> Result<(), Error> {
     for (position, member) in group.members.iter().enumerate() {
         let (pod, edge, exit, server) = match member {

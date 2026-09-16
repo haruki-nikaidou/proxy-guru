@@ -6,27 +6,20 @@
 //! the learned value is wrong for the fleet (NAT, an overlay network). What other
 //! servers dial is computed from these by [`ServerEntity::effective_address`].
 //!
-//! Every server comes with its universal pod (see `services::universal`): the
-//! one node other universal nodes bundle to, which lands every channel it
-//! receives on a generated pod of this server.
+//! A server is a machine running a worker; the pods on it are the graph's
+//! vertices ([`crate::services::graph`]).
 
 use crate::config::OrchestrationConfig;
 use crate::entities::db::agent_release::{AgentReleaseEntity, FindAgentRelease};
 use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
-use crate::entities::db::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
+use crate::entities::db::graph::LoadCanvasGraph;
 use crate::entities::db::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
     ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
-    SetAgentUpdateRequested,
-    SetServerAgentKey, UpdateServerSettings,
+    SetAgentUpdateRequested, SetServerAgentKey, UpdateServerSettings,
 };
-use crate::entities::db::topology::LoadCanvasTopology;
-use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::CanvasChangeKind;
-use crate::services::converge::ensure_switch_safe;
-use crate::services::node::port_layout;
 use crate::services::notify::Notifier;
-use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::{OrchestrationError, rollout};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -35,11 +28,6 @@ use base::db::Db;
 use chrono::Utc;
 use kanau::processor::Processor;
 use std::net::IpAddr;
-use std::ops::RangeInclusive;
-
-/// Where generated landing pods and the dashboard's suggestions draw their
-/// ports from: high enough to stay clear of anything an operator types by hand.
-pub const DEFAULT_POD_PORTS: RangeInclusive<u16> = 40000..=59999;
 
 #[derive(Clone)]
 pub struct ServerService {
@@ -151,25 +139,6 @@ impl Processor<CreateServer> for ServerService {
                 extra_addresses: input.addresses.extra_addresses,
             })
             .await?;
-        // The universal pod. Unwired it derives nothing and clashes with
-        // nothing, so no projection is needed.
-        let spec = NodeSpec::UniversalPod(UniversalPodConfig {
-            server: server.id.clone(),
-        });
-        let ports = port_layout(&spec, 0)?;
-        self.db
-            .process(CreateNodeRow {
-                canvas: input.canvas.clone(),
-                name: server.name.clone(),
-                comment: String::new(),
-                spec,
-                position: server.position,
-                ports,
-                import_sync: None,
-                fence: None,
-                target_fence: None,
-            })
-            .await?;
         self.notifier.notify(&input.canvas).await;
         self.notifier
             .canvas_changed(
@@ -204,30 +173,8 @@ impl Processor<UpdateServer> for ServerService {
         input.actor.ensure(Permission::EditWorkspace)?;
         input.quic.validate().map_err(OrchestrationError::Invalid)?;
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
-        let topology = self
-            .db
-            .process(LoadCanvasTopology {
-                canvas: canvas.clone(),
-            })
-            .await?;
-        let projected = topology.project(&[TopologyEdit::SetServerSettings {
-            server: input.server.clone(),
-            ipv6_resolve: input.ipv6_resolve,
-            log_level: input.log_level,
-            quic: input.quic,
-            override_v4: input.addresses.override_v4.clone(),
-            override_v6: input.addresses.override_v6.clone(),
-            extra_addresses: input.addresses.extra_addresses.clone(),
-        }]);
-        ensure_valid(&projected)?;
-        let views = self
-            .db
-            .process(ListServerConfigViewsByCanvases {
-                canvases: projected.canvas_ids(),
-            })
-            .await?;
-        ensure_switch_safe(&projected, &views, &self.config)?;
-
+        // A server's settings change what its pods and their dialers compile to
+        // (addresses, QUIC rates, log level), never whether the graph checks.
         let server = self
             .db
             .process(UpdateServerSettings {
@@ -243,7 +190,7 @@ impl Processor<UpdateServer> for ServerService {
                 override_v6: input.addresses.override_v6,
                 extra_addresses: input.addresses.extra_addresses,
                 agent_unit: input.agent_unit,
-                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
+                fence: None,
             })
             .await?;
         self.notifier.notify(&canvas).await;
@@ -577,70 +524,28 @@ impl Processor<DeleteServer> for ServerService {
     async fn process(&self, input: DeleteServer) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
-        let topology = self
+        let graph = self
             .db
-            .process(LoadCanvasTopology {
+            .process(LoadCanvasGraph {
                 canvas: canvas.clone(),
             })
             .await?;
-        let server_key = input.server.to_string();
-        let mine: Vec<&crate::entities::db::node::NodeWithPorts> = topology
-            .nodes
+        let pods = graph
+            .pods
             .iter()
-            .filter(|node| match &node.node.spec {
-                NodeSpec::Pod(cfg) => cfg.server.to_string() == server_key,
-                _ => false,
-            })
-            .collect();
-        // A landing pod is not the operator's to delete: name the channels it
-        // serves, so they know which bundle to cut.
-        let mut channels: Vec<String> = mine
-            .iter()
-            .filter_map(|node| node.node.lane.as_ref())
-            .map(|lane| {
-                let key = lane.channel.to_string();
-                topology
-                    .nodes
-                    .iter()
-                    .find(|n| n.node.id.to_string() == key)
-                    .map(|n| n.node.name.clone())
-                    .unwrap_or(key)
-            })
-            .collect();
-        channels.sort();
-        channels.dedup();
-        if !channels.is_empty() {
+            .filter(|pod| pod.server == input.server)
+            .count();
+        if pods > 0 {
             return Err(OrchestrationError::Conflict(format!(
-                "server still lands channel(s) {}; disconnect the bundles into it first",
-                channels.join(", ")
+                "server still has {pods} pod(s); delete them first"
             )));
-        }
-        let live_pods = mine.len();
-        if live_pods > 0 {
-            return Err(OrchestrationError::Conflict(format!(
-                "server still has {live_pods} pod(s); delete them first"
-            )));
-        }
-        let universal_ports: std::collections::HashSet<String> = topology
-            .nodes
-            .iter()
-            .filter(|node| matches!(&node.node.spec, NodeSpec::UniversalPod(cfg) if cfg.server.to_string() == server_key))
-            .flat_map(|node| node.ports.iter().map(|p| p.id.to_string()))
-            .collect();
-        if topology.edges.iter().any(|e| {
-            universal_ports.contains(&e.source.to_string())
-                || universal_ports.contains(&e.target.to_string())
-        }) {
-            return Err(OrchestrationError::Conflict(
-                "server's universal pod is still bundled; disconnect its bundles first".into(),
-            ));
         }
 
         self.db
             .process(DeleteServerRow {
                 id: input.server.clone(),
                 canvas: canvas.clone(),
-                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
+                fence: Some(graph.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&canvas).await;

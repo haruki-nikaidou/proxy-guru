@@ -8,9 +8,11 @@
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::server::ServerId;
-use base::db::Error;
+use crate::entities::db::tree;
+use base::db::{Db, Error};
 use db_types::{table_record, text_enum};
 use guru_topology::Route;
+use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgRow;
 use sqlx::types::Json;
@@ -264,6 +266,87 @@ pub(crate) async fn insert_pod(conn: &mut PgConnection, pod: &PodEntity) -> Resu
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Rewrites every column of an existing pod but its id and canvas.
+pub(crate) async fn update_pod(conn: &mut PgConnection, pod: &PodEntity) -> Result<(), Error> {
+    let tls = pod.ingress.tls();
+    sqlx::query(
+        "UPDATE orchestration_pod
+         SET server = $2, name = $3, comment = $4, port = $5, bind_ip = $6, advertise_ip = $7,
+             ingress = $8, receive_proxy_protocol = $9, tls_sni = $10, tls_dns_provider = $11,
+             tls_domain_id = $12, tls_acme_directory = $13, route = $14
+         WHERE id = $1",
+    )
+    .bind(&pod.id)
+    .bind(&pod.server)
+    .bind(&pod.name)
+    .bind(&pod.comment)
+    .bind(i32::from(pod.port))
+    .bind(&pod.bind_ip)
+    .bind(&pod.advertise_ip)
+    .bind(pod.ingress.kind())
+    .bind(pod.ingress.receive_proxy_protocol())
+    .bind(tls.map(|t| t.sni.as_str()))
+    .bind(tls.map(|t| &t.dns_provider))
+    .bind(tls.map(|t| t.domain_id.as_str()))
+    .bind(tls.map(|t| t.acme_directory.as_str()))
+    .bind(pod.route.as_ref().map(Json))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The distinct canvases the given pods are drawn on; the relay leaf rotation
+/// cron re-derives these after re-issuing.
+#[derive(Debug)]
+pub struct ListCanvasesOfPods {
+    pub pods: Vec<PodId>,
+}
+
+impl Processor<ListCanvasesOfPods> for Db {
+    type Output = Vec<CanvasId>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:ListCanvasesOfPods", skip_all, err)]
+    async fn process(&self, input: ListCanvasesOfPods) -> Result<Self::Output, Self::Error> {
+        if input.pods.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT canvas FROM orchestration_pod WHERE id = ANY($1) ORDER BY canvas",
+        )
+        .bind(&input.pods)
+        .fetch_all(self.db())
+        .await?)
+    }
+}
+
+/// The root canvases of every tree holding a TLS or QUIC relay pod: the trees
+/// whose derivation depends on the internal CA. `InitInternalCa` touches them
+/// so pods reported invalid for lack of a CA get their first leaves.
+#[derive(Debug)]
+pub struct ListCanvasesWithRelayTls;
+
+impl Processor<ListCanvasesWithRelayTls> for Db {
+    type Output = Vec<CanvasId>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:ListCanvasesWithRelayTls", skip_all, err)]
+    async fn process(&self, _: ListCanvasesWithRelayTls) -> Result<Self::Output, Self::Error> {
+        let mut conn = self.db().acquire().await?;
+        let canvases: Vec<CanvasId> = sqlx::query_scalar(
+            "SELECT DISTINCT canvas FROM orchestration_pod
+             WHERE ingress IN ('relay_tls', 'relay_quic')",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut roots = Vec::with_capacity(canvases.len());
+        for canvas in &canvases {
+            roots.push(tree::root_of(&mut conn, canvas).await?);
+        }
+        roots.sort();
+        roots.dedup();
+        Ok(roots)
+    }
 }
 
 #[cfg(test)]

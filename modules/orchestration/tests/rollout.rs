@@ -8,10 +8,8 @@ mod common;
 use common::*;
 use guru_worker_config::Config;
 use kanau::processor::Processor;
-use orchestration::entities::db::canvas::{CanvasId, FindCanvasById};
-use orchestration::entities::db::node::{
-    EntryConfig, ExitConfig, NodeSpec, NodeWithPorts, PodConfig, RelayConfig, RelayProtocol,
-};
+use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, FindCanvasById};
+use orchestration::entities::db::pod::{PodEntity, PodIngress};
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -22,8 +20,7 @@ use orchestration::entities::db::view::{
 use orchestration::services::agent::{
     AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
 };
-use orchestration::services::edge::{Connect, Disconnect};
-use orchestration::services::node::{CreateNode, ReplaceNodeSpec};
+use orchestration::services::graph::GraphChange;
 use orchestration::services::rollout::ForgetServerApplied;
 use orchestration::services::server::{AddressOverrides, CreateServer};
 use orchestration::services::{OrchestrationError, canvas as canvas_service};
@@ -48,6 +45,7 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
                 reported: None,
                 agent_version: None,
                 agent_arch: None,
+                capabilities: Vec::new(),
                 last_update_error: None,
             })
             .await?;
@@ -133,11 +131,10 @@ fn points_at(slot: &Option<orchestration::entities::db::view::ConfigSnapshot>) -
 /// pod listens on `9443` and exits to a backend.
 struct Fixture {
     canvas: CanvasId,
+    canvas_row: CanvasEntity,
     tokyo: ServerId,
     osaka: ServerId,
-    osaka_hop: NodeWithPorts,
-    osaka_hop_listen: orchestration::entities::db::port::PortId,
-    to_osaka_listen: orchestration::entities::db::port::PortId,
+    osaka_hop: PodEntity,
 }
 
 async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
@@ -147,6 +144,8 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
 
@@ -170,100 +169,29 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
                 },
             })
             .await?;
-        servers.push((server.id.clone(), server.id));
+        servers.push(server);
     }
-    let (tokyo, tokyo_ip) = servers[0].clone();
-    let (osaka, osaka_ip) = servers[1].clone();
-
-    let create = async |name: &str, spec: NodeSpec| {
-        w.nodes
-            .process(CreateNode {
-                actor: operator(),
-                canvas: canvas.id.clone(),
-                name: name.to_string(),
-                comment: String::new(),
-                spec,
-                position: pos0(),
-                item_count: 0,
-            })
-            .await
-    };
-
-    let ingress = create(
-        "ingress",
-        NodeSpec::Pod(PodConfig {
-            server: tokyo_ip,
-            port: 443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
+    let ingress = client(&canvas, &servers[0], "ingress", 443, None);
+    let osaka_hop = pod(&canvas, &servers[1], "osaka-hop", 9443, PodIngress::RelayTcp);
+    let origin = exit(&canvas, "exit", "10.0.0.5:8080");
+    let to_osaka = edge_to_pod("to-osaka", &ingress, &osaka_hop);
+    let out = edge_to_exit("out", &osaka_hop, &origin);
+    let osaka_hop = routed(osaka_hop, via(&out));
+    w.apply(
+        &canvas,
+        GraphChange {
+            put_pods: vec![routed(ingress, via(&to_osaka)), osaka_hop.clone()],
+            put_exits: vec![origin],
+            put_edges: vec![to_osaka, out],
+            ..GraphChange::default()
+        },
     )
     .await?;
-    let entry = create(
-        "entry",
-        NodeSpec::Entry(EntryConfig {
-            receive_proxy_protocol: None,
-            tls: None,
-        }),
-    )
-    .await?;
-    let to_osaka = create(
-        "to-osaka",
-        NodeSpec::Relay(RelayConfig {
-            protocol: RelayProtocol::TcpRaw,
-            override_ip_address: None,
-            override_port: None,
-        }),
-    )
-    .await?;
-    let osaka_hop = create(
-        "osaka-hop",
-        NodeSpec::Pod(PodConfig {
-            server: osaka_ip,
-            port: 9443,
-            bind_ip: None,
-            advertise_ip: None,
-        }),
-    )
-    .await?;
-    let exit = create(
-        "exit",
-        NodeSpec::Exit(ExitConfig {
-            destination: "10.0.0.5:8080".to_string(),
-            pass_proxy_protocol: None,
-        }),
-    )
-    .await?;
-
-    let connect = async |output, input| {
-        w.edges
-            .process(Connect {
-                actor: operator(),
-                output_port: output,
-                input_port: input,
-            })
-            .await
-    };
-    connect(port_of(&ingress, "listen"), port_of(&entry, "listen")).await?;
-    connect(
-        port_of(&to_osaka, "destination"),
-        port_of(&ingress, "destination"),
-    )
-    .await?;
-    // The relay is the listening side: the pod on the receiving server feeds it.
-    connect(port_of(&osaka_hop, "listen"), port_of(&to_osaka, "listen")).await?;
-    connect(
-        port_of(&exit, "destination"),
-        port_of(&osaka_hop, "destination"),
-    )
-    .await?;
-
     Ok(Fixture {
-        canvas: canvas.id,
-        tokyo,
-        osaka,
-        osaka_hop_listen: port_of(&osaka_hop, "listen"),
-        to_osaka_listen: port_of(&to_osaka, "listen"),
+        canvas: canvas.id.clone(),
+        canvas_row: canvas,
+        tokyo: servers[0].id.clone(),
+        osaka: servers[1].id.clone(),
         osaka_hop,
     })
 }
@@ -289,22 +217,7 @@ async fn a_relay_switches_only_after_its_target_serves_the_new_listener(
 
     // 2. Move osaka's pod to a new port. Osaka must serve both listeners, and tokyo
     //    must keep pointing at the old one.
-    w.nodes
-        .process(ReplaceNodeSpec {
-            actor: operator(),
-            node: f.osaka_hop.node.id.clone(),
-            spec: NodeSpec::Pod(PodConfig {
-                server: match &f.osaka_hop.node.spec {
-                    NodeSpec::Pod(cfg) => cfg.server.clone(),
-                    other => panic!("expected a pod, got {other:?}"),
-                },
-                port: 9444,
-                bind_ip: None,
-                advertise_ip: None,
-            }),
-            item_count: 0,
-        })
-        .await?;
+    move_osaka_hop(&w, &f, 9444).await?;
     w.derive(&f.canvas).await?;
 
     let osaka_view = w.view(&f.osaka).await?;
@@ -397,22 +310,17 @@ async fn move_osaka_hop(
     f: &Fixture,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    w.nodes
-        .process(ReplaceNodeSpec {
-            actor: operator(),
-            node: f.osaka_hop.node.id.clone(),
-            spec: NodeSpec::Pod(PodConfig {
-                server: match &f.osaka_hop.node.spec {
-                    NodeSpec::Pod(cfg) => cfg.server.clone(),
-                    other => panic!("expected a pod, got {other:?}"),
-                },
+    w.apply(
+        &f.canvas_row,
+        GraphChange {
+            put_pods: vec![PodEntity {
                 port,
-                bind_ip: None,
-                advertise_ip: None,
-            }),
-            item_count: 0,
-        })
-        .await?;
+                ..f.osaka_hop.clone()
+            }],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -447,8 +355,8 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     assert_eq!(
         tags_by_port(&config),
         vec![
-            ("osaka-hop (9443/relay_tcp)".to_string(), 9443),
-            ("osaka-hop".to_string(), 9444),
+            (format!("{} (9443/relay_tcp)", key("osaka-hop")), 9443),
+            (key("osaka-hop"), 9444),
         ],
         "the listener tokyo still dials is held under a tag of its own"
     );
@@ -504,7 +412,7 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     let settled = Config::from_toml_str(&w.view(&f.osaka).await?.desired.unwrap().toml)?;
     assert_eq!(
         tags_by_port(&settled),
-        vec![("osaka-hop".to_string(), 9444)]
+        vec![(key("osaka-hop"), 9444)]
     );
     Ok(())
 }
@@ -515,57 +423,32 @@ async fn a_protocol_change_on_a_referenced_listener_is_rejected(pool: sqlx::PgPo
     let f = relay_chain(&w).await?;
     settle(&w, &f).await?;
 
-    // Feed osaka's pod from an Entry instead of the relay: same ip:port, but it
-    // would become a raw listener while tokyo's running config still dials it as a
-    // relay. The two cannot coexist on one worker, so there is no seamless path.
-    let edge = sqlx::query_as::<_, orchestration::entities::db::connection::EdgeConnectionEntity>(
-        "SELECT * FROM orchestration_edge_connection",
-    )
-    .fetch_all(w.db.db())
-    .await?
-    .into_iter()
-    .find(|e| e.source.0 == f.osaka_hop_listen.0 && e.target.0 == f.to_osaka_listen.0)
-    .expect("the relay feeds the osaka pod");
-    w.edges
-        .process(Disconnect {
-            actor: operator(),
-            edge: edge.id,
-        })
+    // Make osaka's pod listen over TLS instead of plain TCP: same port and
+    // transport, but tokyo's running config still dials it as plain TCP. The two
+    // cannot coexist on one worker, so there is no seamless path.
+    let outcome = w
+        .try_apply(
+            &f.canvas_row,
+            GraphChange {
+                put_pods: vec![PodEntity {
+                    ingress: PodIngress::RelayTls,
+                    ..f.osaka_hop.clone()
+                }],
+                ..GraphChange::default()
+            },
+        )
         .await?;
-    let entry = w
-        .nodes
-        .process(CreateNode {
-            actor: operator(),
-            canvas: f.canvas.clone(),
-            name: "osaka-entry".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::Entry(EntryConfig {
-                receive_proxy_protocol: None,
-                tls: None,
-            }),
-            position: pos0(),
-            item_count: 0,
-        })
-        .await?;
-
-    let err = w
-        .edges
-        .process(Connect {
-            actor: operator(),
-            output_port: f.osaka_hop_listen.clone(),
-            input_port: port_of(&entry, "listen"),
-        })
-        .await
-        .expect_err("a protocol switch under a live dependant must be refused");
-    match err {
-        OrchestrationError::Conflict(message) => {
-            assert!(
-                message.contains("osaka:9443"),
-                "the error names the listener by server and port: {message}"
-            );
-        }
-        other => panic!("expected a conflict, got {other:?}"),
-    }
+    assert!(!outcome.applied, "a protocol switch under a live dependant must be refused");
+    let refusal = outcome
+        .diagnostics
+        .iter()
+        .find(|d| d.error && d.problem == "listener_in_use")
+        .unwrap_or_else(|| panic!("{:?}", outcome.diagnostics));
+    assert!(
+        refusal.message.contains("osaka-hop") && refusal.message.contains("9443"),
+        "the refusal names the pod and its port: {}",
+        refusal.message
+    );
     Ok(())
 }
 
@@ -616,6 +499,8 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
             actor: machine(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await
         .expect_err("api keys may not edit the workspace");
@@ -628,6 +513,8 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos0(),
         })
         .await?;
     let server = w
@@ -658,6 +545,7 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
             reported: None,
             agent_version: None,
             agent_arch: None,
+            capabilities: Vec::new(),
             last_update_error: None,
         })
         .await
@@ -666,7 +554,7 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
     Ok(())
 }
 
-/// A pod that stops deriving keeps carrying what it already serves: the listener
+/// A pod that stops compiling keeps carrying what it already serves: the listener
 /// stays in `desired`, the reason lands in `invalid_pods`, and the server is not
 /// failed as a whole.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
@@ -684,24 +572,27 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener(pool: sqlx::PgPool
     );
     assert!(before.invalid_pods.is_empty(), "{:?}", before.invalid_pods);
 
-    // Cut the relay off from the pod feeding its listen side. Tokyo's ingress pod
-    // dials that relay, so the pod alone stops deriving.
-    let edge = sqlx::query_as::<_, orchestration::entities::db::connection::EdgeConnectionEntity>(
-        "SELECT * FROM orchestration_edge_connection",
-    )
-    .fetch_all(w.db.db())
-    .await?
-    .into_iter()
-    .find(|e| {
-        [&e.source, &e.target]
-            .iter()
-            .any(|p| p.to_string() == f.to_osaka_listen.to_string())
-    })
-    .ok_or("the relay listen edge must exist")?;
-    w.edges
-        .process(Disconnect {
+    // Osaka loses the only address tokyo could dial it on, so tokyo's ingress
+    // pod alone stops compiling.
+    let osaka = w
+        .db
+        .process(FindServerById {
+            id: f.osaka.clone(),
+        })
+        .await?
+        .unwrap();
+    w.servers
+        .process(orchestration::services::server::UpdateServer {
             actor: operator(),
-            edge: edge.id,
+            server: f.osaka.clone(),
+            name: osaka.name,
+            icon: osaka.icon,
+            comment: osaka.comment,
+            ipv6_resolve: osaka.ipv6_resolve,
+            log_level: osaka.log_level,
+            quic: osaka.quic,
+            addresses: AddressOverrides::default(),
+            agent_unit: osaka.agent_unit,
         })
         .await?;
     w.derive(&f.canvas).await?;
@@ -718,7 +609,8 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener(pool: sqlx::PgPool
             after.invalid_pods
         );
     };
-    assert_eq!(invalid.pod, "ingress");
+    assert_eq!(invalid.pod, pod_id("ingress"));
+    assert_eq!(invalid.name, "ingress");
     assert_eq!(invalid.listen, "[::]:443");
     assert_eq!(
         serves(&after, &after.desired),

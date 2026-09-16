@@ -2,12 +2,12 @@
 //!
 //! One [`ServerHealthRecordEntity`] per `HealthReport` a worker sends (the
 //! counters are deltas since the previous report) and one
-//! [`NodeHealthRecordEntity`] per node per report. Both are raw and trimmed by
+//! [`PodHealthRecordEntity`] per pod per report. Both are raw and trimmed by
 //! the retention cron; the current server status is denormalised on
 //! `orchestration_server.health_status`.
 
 use crate::entities::db::canvas::CanvasId;
-use crate::entities::db::node::NodeId;
+use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
 use base::db::{Db, Error};
 use chrono::{DateTime, Utc};
@@ -92,8 +92,8 @@ pub struct HealthWrite {
     pub record: ServerHealthRecordEntity,
     pub canvas: CanvasId,
     pub previous_status: ServerHealthStatus,
-    /// The node rows written alongside the report; empty for a status flip.
-    pub nodes: Vec<NodeHealthRecordEntity>,
+    /// The pod rows written alongside the report; empty for a status flip.
+    pub pods: Vec<PodHealthRecordEntity>,
 }
 
 /// The server row's health fields, locked for the transaction that reads them.
@@ -152,7 +152,7 @@ async fn insert_server_record(
 /// One accepted report, in one conditional transaction: the server's liveness
 /// (`last_health_report_at`, and `last_seen_at` alongside the watch heartbeat)
 /// is advanced only while it still belongs to the reporting session
-/// (`refresh_key_generation`), and the server and node records are written only
+/// (`refresh_key_generation`), and the server and pod records are written only
 /// if it did — a stream that lost its server to a re-registration writes nothing.
 #[derive(Debug)]
 pub struct InsertServerHealthRecord {
@@ -164,7 +164,7 @@ pub struct InsertServerHealthRecord {
     pub download_bytes: i64,
     pub current_connections: i64,
     pub max_connections: i64,
-    pub nodes: Vec<NewNodeHealthRecord>,
+    pub pods: Vec<NewPodHealthRecord>,
 }
 
 impl Processor<InsertServerHealthRecord> for Db {
@@ -203,13 +203,13 @@ impl Processor<InsertServerHealthRecord> for Db {
             ],
         )
         .await?;
-        let nodes = insert_node_records(&mut tx, &input.nodes).await?;
+        let pods = insert_pod_records(&mut tx, &input.pods).await?;
         tx.commit().await?;
         Ok(Some(HealthWrite {
             record,
             canvas: before.canvas,
             previous_status: before.health_status,
-            nodes,
+            pods,
         }))
     }
 }
@@ -273,7 +273,7 @@ impl Processor<SetServerHealthStatus> for Db {
             record,
             canvas: before.canvas,
             previous_status: before.health_status,
-            nodes: Vec::new(),
+            pods: Vec::new(),
         }))
     }
 }
@@ -304,58 +304,58 @@ impl Processor<ListServersForLivenessSweep> for Db {
     }
 }
 
-table_record!(NodeHealthRecordId, "node_health_record");
+table_record!(PodHealthRecordId, "pod_health_record");
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct NodeHealthRecordEntity {
-    pub id: NodeHealthRecordId,
-    pub node: NodeId,
-    pub status: NodeHealthStatus,
+pub struct PodHealthRecordEntity {
+    pub id: PodHealthRecordId,
+    pub pod: PodId,
+    pub status: PodHealthStatus,
     pub message: String,
     pub report_time: DateTime<Utc>,
 }
 
 /// The `rkyv` derives put this enum on the live bus unchanged
-/// ([`crate::events::live::NodeHealthLive`]).
+/// ([`crate::events::live::PodHealthLive`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum NodeHealthStatus {
-    /// The node's config is applied on its server and the pod is healthy.
+pub enum PodHealthStatus {
+    /// The pod's forwarding is applied on its server and runs.
     Ready,
-    /// A newer revision involving this node is derived but not yet applied.
+    /// A newer revision changing the pod is derived but not yet applied.
     Deploying,
-    /// The pod carrying this node failed to apply or to run.
+    /// The pod failed to apply or to run.
     Failed,
 }
-text_enum!(NodeHealthStatus {
+text_enum!(PodHealthStatus {
     Ready => "ready",
     Deploying => "deploying",
     Failed => "failed",
 });
 
-/// Node records in `[start, end]`, newest first, at most `limit`.
+/// Pod records in `[start, end]`, newest first, at most `limit`.
 ///
 /// `id` breaks the tie: one event writes a whole batch of rows with the same
 /// `report_time`, so `report_time` alone is not a total order and a paging
 /// reader could see the same row twice or miss one.
 #[derive(Debug)]
-pub struct ListNodeHealthHistory {
-    pub node: NodeId,
+pub struct ListPodHealthHistory {
+    pub pod: PodId,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub limit: i64,
 }
 
-impl Processor<ListNodeHealthHistory> for Db {
-    type Output = Vec<NodeHealthRecordEntity>;
+impl Processor<ListPodHealthHistory> for Db {
+    type Output = Vec<PodHealthRecordEntity>;
     type Error = Error;
-    #[tracing::instrument(name = "Query:ListNodeHealthHistory", skip_all, err)]
-    async fn process(&self, input: ListNodeHealthHistory) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:ListPodHealthHistory", skip_all, err)]
+    async fn process(&self, input: ListPodHealthHistory) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as(
-            "SELECT * FROM node_health_record
-             WHERE node = $1 AND report_time >= $2 AND report_time <= $3
+            "SELECT * FROM pod_health_record
+             WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
              ORDER BY report_time DESC, id DESC LIMIT $4",
         )
-        .bind(input.node)
+        .bind(input.pod)
         .bind(input.start)
         .bind(input.end)
         .bind(input.limit)
@@ -364,76 +364,35 @@ impl Processor<ListNodeHealthHistory> for Db {
     }
 }
 
-/// Node records strictly after the `(report_time, id)` cursor, **oldest first**,
-/// at most `limit`.
-///
-/// The recovery read of a live node-health stream, and deliberately not
-/// [`ListNodeHealthHistory`]: that one is newest-first with a cap, so a gap
-/// wider than the cap would hand back only the newest rows and the stream would
-/// skip the rest for good. Ascending, from a total-order cursor, makes the last
-/// row returned the next cursor — the caller pages until it is caught up, and a
-/// batch of rows sharing one `report_time` cannot straddle a page boundary
-/// unnoticed.
-#[derive(Debug)]
-pub struct ListNodeHealthAfter {
-    pub node: NodeId,
-    pub after: DateTime<Utc>,
-    /// The last row already delivered at `after`, if any. `None` means "every
-    /// row at `after` too", which is what a stream that has sent nothing wants.
-    pub after_id: Option<NodeHealthRecordId>,
-    pub limit: i64,
-}
-
-impl Processor<ListNodeHealthAfter> for Db {
-    type Output = Vec<NodeHealthRecordEntity>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query:ListNodeHealthAfter", skip_all, err)]
-    async fn process(&self, input: ListNodeHealthAfter) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM node_health_record
-             WHERE node = $1
-               AND (report_time > $2
-                    OR (report_time = $2 AND ($3::text IS NULL OR id > $3)))
-             ORDER BY report_time ASC, id ASC LIMIT $4",
-        )
-        .bind(input.node)
-        .bind(input.after)
-        .bind(input.after_id)
-        .bind(input.limit)
-        .fetch_all(self.db())
-        .await?)
-    }
-}
-
-/// A node record to insert; the row id is generated.
+/// A pod record to insert; the row id is generated.
 #[derive(Debug, Clone)]
-pub struct NewNodeHealthRecord {
-    pub node: NodeId,
-    pub status: NodeHealthStatus,
+pub struct NewPodHealthRecord {
+    pub pod: PodId,
+    pub status: PodHealthStatus,
     pub message: String,
     pub report_time: DateTime<Utc>,
 }
 
-/// Inserts node records in one statement and returns the rows written.
-async fn insert_node_records(
+/// Inserts pod records in one statement and returns the rows written.
+async fn insert_pod_records(
     conn: &mut PgConnection,
-    records: &[NewNodeHealthRecord],
-) -> Result<Vec<NodeHealthRecordEntity>, Error> {
+    records: &[NewPodHealthRecord],
+) -> Result<Vec<PodHealthRecordEntity>, Error> {
     if records.is_empty() {
         return Ok(Vec::new());
     }
-    let ids: Vec<NodeHealthRecordId> = records.iter().map(|_| NodeHealthRecordId::new()).collect();
-    let nodes: Vec<&NodeId> = records.iter().map(|r| &r.node).collect();
-    let statuses: Vec<NodeHealthStatus> = records.iter().map(|r| r.status).collect();
+    let ids: Vec<PodHealthRecordId> = records.iter().map(|_| PodHealthRecordId::new()).collect();
+    let pods: Vec<&PodId> = records.iter().map(|r| &r.pod).collect();
+    let statuses: Vec<PodHealthStatus> = records.iter().map(|r| r.status).collect();
     let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
     let times: Vec<DateTime<Utc>> = records.iter().map(|r| r.report_time).collect();
     Ok(sqlx::query_as(
-        "INSERT INTO node_health_record (id, node, status, message, report_time)
+        "INSERT INTO pod_health_record (id, pod, status, message, report_time)
          SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])
          RETURNING *",
     )
     .bind(&ids)
-    .bind(&nodes)
+    .bind(&pods)
     .bind(&statuses)
     .bind(&messages)
     .bind(&times)
@@ -441,22 +400,22 @@ async fn insert_node_records(
     .await?)
 }
 
-/// Inserts a batch of node records in one statement. The derivation hook's
-/// query (`Deploying` the moment a new revision is published); a report's node
+/// Inserts a batch of pod records in one statement. The derivation hook's
+/// query (`Deploying` the moment a new revision is published); a report's pod
 /// records travel inside [`InsertServerHealthRecord`] instead.
 #[derive(Debug)]
-pub struct InsertNodeHealthRecords {
-    pub records: Vec<NewNodeHealthRecord>,
+pub struct InsertPodHealthRecords {
+    pub records: Vec<NewPodHealthRecord>,
 }
 
-impl Processor<InsertNodeHealthRecords> for Db {
+impl Processor<InsertPodHealthRecords> for Db {
     /// The rows written, so the caller can put them on the live bus.
-    type Output = Vec<NodeHealthRecordEntity>;
+    type Output = Vec<PodHealthRecordEntity>;
     type Error = Error;
-    #[tracing::instrument(name = "Query:InsertNodeHealthRecords", skip_all, err)]
-    async fn process(&self, input: InsertNodeHealthRecords) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:InsertPodHealthRecords", skip_all, err)]
+    async fn process(&self, input: InsertPodHealthRecords) -> Result<Self::Output, Self::Error> {
         let mut conn = self.db().acquire().await?;
-        insert_node_records(&mut conn, &input.records).await
+        insert_pod_records(&mut conn, &input.records).await
     }
 }
 
@@ -464,7 +423,7 @@ impl Processor<InsertNodeHealthRecords> for Db {
 #[derive(Debug)]
 pub struct DeleteHealthRecordsBefore {
     pub server_records_before: DateTime<Utc>,
-    pub node_records_before: DateTime<Utc>,
+    pub pod_records_before: DateTime<Utc>,
 }
 
 impl Processor<DeleteHealthRecordsBefore> for Db {
@@ -476,8 +435,8 @@ impl Processor<DeleteHealthRecordsBefore> for Db {
             .bind(input.server_records_before)
             .execute(self.db())
             .await?;
-        sqlx::query("DELETE FROM node_health_record WHERE report_time < $1")
-            .bind(input.node_records_before)
+        sqlx::query("DELETE FROM pod_health_record WHERE report_time < $1")
+            .bind(input.pod_records_before)
             .execute(self.db())
             .await?;
         Ok(())

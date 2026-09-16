@@ -14,7 +14,6 @@ use orchestration::entities::db::certificate::{
     FindCertificateById, ListCertificatesDue, MarkCertificateAttemptFailed, StoreIssuedCertificate,
 };
 use orchestration::entities::db::dns::{DnsProvider, FindDnsProviderById};
-use orchestration::entities::db::node::{DeleteNodeRow, EntryConfig, NodeSpec, TlsConfig};
 use orchestration::hooks::acme::renew_due;
 use orchestration::services::OrchestrationError;
 use orchestration::services::acme::{
@@ -43,16 +42,22 @@ async fn create_provider(w: &World, name: &str, secret: &str) -> DnsProviderSumm
         .unwrap()
 }
 
-fn entry_spec(provider: &DnsProviderSummary, sni: &str, directory: &str) -> NodeSpec {
-    NodeSpec::Entry(EntryConfig {
-        receive_proxy_protocol: None,
-        tls: Some(TlsConfig {
-            sni: sni.to_string(),
-            dns_provider: provider.id.clone(),
-            domain_id: "zone1".to_string(),
-            acme_directory: directory.to_string(),
-        }),
-    })
+/// A TLS client pod asking for `sni` through `provider`, on a fresh server of
+/// `canvas`.
+async fn tls_pod(
+    w: &World,
+    canvas: &CanvasEntity,
+    provider: &DnsProviderSummary,
+    sni: &str,
+    directory: &str,
+) -> Result<orchestration::entities::db::pod::PodEntity, Box<dyn std::error::Error>> {
+    let host = server(&w.db, canvas, "tokyo").await?;
+    let mut pod = tls_client(canvas, &host, "edge", 443, &provider.id, sni, directory);
+    if let orchestration::entities::db::pod::PodIngress::ClientTls { tls, .. } = &mut pod.ingress {
+        tls.domain_id = "zone1".to_string();
+    }
+    insert_rows(&w.db, canvas, vec![pod.clone()], Vec::new(), Vec::new()).await?;
+    Ok(pod)
 }
 
 async fn ensure(
@@ -251,14 +256,7 @@ async fn dns_provider_delete_is_refused_while_an_entry_uses_it(pool: sqlx::PgPoo
     let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let c = canvas(&w.db, "prod").await?;
-    let entry = node(
-        &w.db,
-        &c,
-        "edge",
-        entry_spec(&provider, "a.example.com", DIRECTORY),
-        entry_ports(),
-    )
-    .await?;
+    let entry = tls_pod(&w, &c, &provider, "a.example.com", DIRECTORY).await?;
 
     let denied = w
         .dns
@@ -283,7 +281,7 @@ async fn dns_provider_delete_is_refused_while_an_entry_uses_it(pool: sqlx::PgPoo
         .unwrap_err();
     match refused {
         OrchestrationError::Conflict(message) => {
-            assert!(message.contains("1 entry node"), "{message}")
+            assert!(message.contains("1 pod"), "{message}")
         }
         other => panic!("{other:?}"),
     }
@@ -295,14 +293,7 @@ async fn dns_provider_delete_is_refused_while_an_entry_uses_it(pool: sqlx::PgPoo
         .is_some()
     );
 
-    w.db.process(DeleteNodeRow {
-        id: entry.node.id.clone(),
-        canvas: c.id.clone(),
-        import_sync: None,
-        frees_canvas: None,
-        fence: None,
-    })
-    .await?;
+    delete_rows(&w.db, &c, vec![entry.id.clone()], Vec::new()).await?;
     w.dns
         .process(DeleteDnsProvider {
             actor: operator(),
@@ -496,14 +487,7 @@ async fn retry_and_delete_are_admin_only_and_delete_respects_entries(
     let c = canvas(&w.db, "prod").await?;
     // The Entry leaves the directory empty: it resolves to the default, which is
     // the directory the cron keys the row by.
-    let entry = node(
-        &w.db,
-        &c,
-        "edge",
-        entry_spec(&provider, "a.example.com", ""),
-        entry_ports(),
-    )
-    .await?;
+    let entry = tls_pod(&w, &c, &provider, "a.example.com", "").await?;
     let default_directory = w.config.acme_directory("").to_string();
     let cert = ensure(&w, &provider, "a.example.com", &default_directory).await;
     mark_failed(&w, &cert, "boom").await;
@@ -556,14 +540,7 @@ async fn retry_and_delete_are_admin_only_and_delete_respects_entries(
         "{refused:?}"
     );
 
-    w.db.process(DeleteNodeRow {
-        id: entry.node.id.clone(),
-        canvas: c.id.clone(),
-        import_sync: None,
-        frees_canvas: None,
-        fence: None,
-    })
-    .await?;
+    delete_rows(&w.db, &c, vec![entry.id.clone()], Vec::new()).await?;
     w.certificates
         .process(DeleteCertificate {
             actor: operator(),
@@ -651,14 +628,7 @@ async fn issue_certificate_stores_encrypted_material_and_touches_canvases(
     let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
-    node(
-        &w.db,
-        &c,
-        "edge",
-        entry_spec(&provider, "A.Example.com", ""),
-        entry_ports(),
-    )
-    .await?;
+    tls_pod(&w, &c, &provider, "A.Example.com", "").await?;
     let quiet = canvas(&w.db, "quiet").await?;
     let prod_before = generation(&w, &c).await;
     let quiet_before = generation(&w, &quiet).await;
@@ -760,14 +730,7 @@ async fn issue_certificate_records_a_failure_without_touching_anything(
     let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
-    node(
-        &w.db,
-        &c,
-        "edge",
-        entry_spec(&provider, "a.example.com", ""),
-        entry_ports(),
-    )
-    .await?;
+    tls_pod(&w, &c, &provider, "a.example.com", "").await?;
     let before =
         w.db.process(FindCanvasById { id: c.id.clone() })
             .await?
@@ -880,14 +843,7 @@ async fn two_overlapping_renewal_passes_order_one_certificate_per_row(
     let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
-    node(
-        &w.db,
-        &c,
-        "edge",
-        entry_spec(&provider, "a.example.com", DIRECTORY),
-        entry_ports(),
-    )
-    .await?;
+    tls_pod(&w, &c, &provider, "a.example.com", DIRECTORY).await?;
     let issuer = Arc::new(GatedIssuer {
         ordered: Mutex::new(Vec::new()),
         entered: tokio::sync::Semaphore::new(0),

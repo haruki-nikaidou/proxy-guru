@@ -1,13 +1,13 @@
-//! Business logic: canvas CRUD, topology rules, config derivation and rollout.
+//! Business logic: canvas CRUD, the pod graph, config derivation and rollout.
 //!
 //! Every config-affecting operation follows the same pipeline:
 //!
 //! 1. authorize the actor,
 //! 2. resolve the canvas it targets,
-//! 3. load the current [`CanvasTopology`](crate::entities::db::topology::CanvasTopology),
-//! 4. validate the topology the change *would* produce and reject it before writing,
+//! 3. load the current [`GraphRows`](crate::entities::db::graph::GraphRows) of its tree,
+//! 4. check the graph the change *would* produce and reject it before writing,
 //! 5. reject it as well if it would break a listener the fabric still depends on
-//!    ([`converge::ensure_switch_safe`]),
+//!    ([`converge::switch_conflicts`]),
 //! 6. write the rows and bump the canvas generation in one transaction,
 //! 7. publish [`CanvasDirty`](crate::events::CanvasDirty) so the derivation hook
 //!    picks the canvas up ([`notify::Notifier`]), together with the live
@@ -22,22 +22,16 @@ pub mod converge;
 pub mod country;
 pub mod derive;
 pub mod dns;
-pub mod convert;
-pub mod edge;
 pub mod graph;
 pub mod health;
 pub mod live;
-pub mod node;
 pub mod notify;
 pub mod rollout;
 pub mod server;
-pub mod topology;
-pub mod universal;
 pub mod watch;
 
 use crate::services::converge::ConvergeError;
 use crate::services::derive::DeriveError;
-use crate::services::topology::TopologyError;
 use crate::utils::secret::SecretError;
 
 #[derive(Debug, thiserror::Error)]
@@ -46,8 +40,6 @@ pub enum OrchestrationError {
     Core(#[from] wakuwaku::Error),
     #[error(transparent)]
     Db(base::db::Error),
-    #[error("topology: {0}")]
-    Topology(#[from] Box<TopologyError>),
     #[error("derive: {0}")]
     Derive(#[from] DeriveError),
     #[error("converge: {0}")]
@@ -101,7 +93,6 @@ impl From<OrchestrationError> for tonic::Status {
                 tracing::error!(error = %e, "database error");
                 tonic::Status::internal("Database error")
             }
-            OrchestrationError::Topology(e) => tonic::Status::failed_precondition(e.to_string()),
             OrchestrationError::Derive(e) => tonic::Status::failed_precondition(e.to_string()),
             OrchestrationError::Converge(e) => tonic::Status::failed_precondition(e.to_string()),
             OrchestrationError::Secret(e) => {

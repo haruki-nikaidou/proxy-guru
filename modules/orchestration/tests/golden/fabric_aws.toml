@@ -4,13 +4,12 @@ ipv6_resolve = "tolerated"
 level = "info"
 
 [[forwarding]]
-tag = "osaka-hop"
-listen = "[::]:9443"
+tag = "aws01xxxxxxxxxxxxxxx"
+listen = "[::]:8443"
 
 [forwarding.listen_as.relay]
 relay_type = "tcp"
 
 [forwarding.to]
-type = "relay"
-protocol = "tcp"
-destination = "192.0.2.10:9443"
+type = "exit"
+destination = "origin.example.com:443"

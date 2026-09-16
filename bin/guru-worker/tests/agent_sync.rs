@@ -25,7 +25,9 @@ use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::CanvasUiPosition;
 use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
-use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
+use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
+use orchestration::entities::db::exit::{ExitEntity, ExitId};
+use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress};
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -36,9 +38,8 @@ use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
 use orchestration::services::canvas::{CanvasService, CreateCanvas};
-use orchestration::services::edge::{Connect, EdgeService};
+use orchestration::services::graph::{ApplyGraph, GraphChange, GraphService};
 use orchestration::services::health::HealthService;
-use orchestration::services::node::{CreateNode, NodeService, ReplaceNodeSpec};
 use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
@@ -241,12 +242,21 @@ async fn serve(
 }
 
 struct Canvas {
+    canvas: orchestration::entities::db::canvas::CanvasId,
     server: ServerId,
-    pod: orchestration::entities::db::node::NodeId,
+    pod: PodEntity,
     listen: SocketAddr,
 }
 
-/// One server with a single `pod -> entry` / `exit -> pod` chain on loopback.
+fn graph_service(db: &Db) -> GraphService {
+    GraphService {
+        db: db.clone(),
+        notifier: Notifier::default(),
+        config: OrchestrationConfig::default(),
+    }
+}
+
+/// One server with a single client pod exiting to a closed port on loopback.
 async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
     let canvases = CanvasService {
         db: db.clone(),
@@ -257,22 +267,14 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
         notifier: Notifier::default(),
         config: OrchestrationConfig::default(),
     };
-    let nodes = NodeService {
-        db: db.clone(),
-        notifier: Notifier::default(),
-        config: OrchestrationConfig::default(),
-    };
-    let edges = EdgeService {
-        db: db.clone(),
-        notifier: Notifier::default(),
-        config: OrchestrationConfig::default(),
-    };
 
     let canvas = canvases
         .process(CreateCanvas {
             actor: operator(),
             name: "prod".to_string(),
             description: String::new(),
+            parent: None,
+            position: pos(),
         })
         .await?;
     let server = servers
@@ -293,75 +295,59 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
         })
         .await?;
     let port = free_port();
-    let pod = nodes
-        .process(CreateNode {
-            actor: operator(),
-            canvas: canvas.id.clone(),
-            name: "edge".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::Pod(PodConfig {
-                server: server.id.clone(),
-                port,
-                bind_ip: Some("127.0.0.1".to_string()),
-                advertise_ip: None,
-            }),
-            position: pos(),
-            item_count: 0,
-        })
-        .await?;
-    let entry = nodes
-        .process(CreateNode {
-            actor: operator(),
-            canvas: canvas.id.clone(),
-            name: "entry".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::Entry(EntryConfig {
-                receive_proxy_protocol: None,
-                tls: None,
-            }),
-            position: pos(),
-            item_count: 0,
-        })
-        .await?;
-    let exit = nodes
-        .process(CreateNode {
-            actor: operator(),
-            canvas: canvas.id.clone(),
-            name: "exit".to_string(),
-            comment: String::new(),
-            spec: NodeSpec::Exit(ExitConfig {
-                destination: "127.0.0.1:9".to_string(),
-                pass_proxy_protocol: None,
-            }),
-            position: pos(),
-            item_count: 0,
-        })
-        .await?;
-    let port_of = |node: &orchestration::entities::db::node::NodeWithPorts, key: &str| {
-        node.ports
-            .iter()
-            .find(|p| p.key == key)
-            .map(|p| p.id.clone())
-            .unwrap()
+    let exit = ExitEntity {
+        id: ExitId::new(),
+        canvas: canvas.id.clone(),
+        name: "exit".to_string(),
+        comment: String::new(),
+        destination: "127.0.0.1:9".to_string(),
+        send_proxy_protocol: None,
+        position: pos(),
     };
-    edges
-        .process(Connect {
+    let pod_id = PodId::new();
+    let edge = EdgeEntity {
+        id: EdgeId::new(),
+        source: pod_id.clone(),
+        target: EdgeTarget::Exit(exit.id.clone()),
+        override_ip: None,
+        override_port: None,
+    };
+    let pod = PodEntity {
+        id: pod_id,
+        canvas: canvas.id.clone(),
+        server: server.id.clone(),
+        name: "edge".to_string(),
+        comment: String::new(),
+        port,
+        bind_ip: Some("127.0.0.1".to_string()),
+        advertise_ip: None,
+        ingress: PodIngress::ClientRaw {
+            receive_proxy_protocol: None,
+        },
+        route: Some(guru_topology::Route::Edge(guru_topology::EdgeId::new(
+            edge.id.as_str(),
+        ))),
+    };
+    let outcome = graph_service(db)
+        .process(ApplyGraph {
             actor: operator(),
-            output_port: port_of(&pod, "listen"),
-            input_port: port_of(&entry, "listen"),
+            canvas: canvas.id.clone(),
+            change: GraphChange {
+                put_pods: vec![pod.clone()],
+                put_exits: vec![exit],
+                put_edges: vec![edge],
+                ..GraphChange::default()
+            },
+            dry_run: false,
+            expected_generation: None,
         })
         .await?;
-    edges
-        .process(Connect {
-            actor: operator(),
-            output_port: port_of(&exit, "destination"),
-            input_port: port_of(&pod, "destination"),
-        })
-        .await?;
+    assert!(outcome.applied, "{:?}", outcome.diagnostics);
 
     Ok(Canvas {
+        canvas: canvas.id,
         server: server.id,
-        pod: pod.node.id,
+        pod,
         listen: format!("127.0.0.1:{port}").parse()?,
     })
 }
@@ -483,24 +469,22 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
     // the pod keeps its previous listener and the master records the mix.
     let taken = std::net::TcpListener::bind("127.0.0.1:0")?;
     let taken_port = taken.local_addr()?.port();
-    let nodes = NodeService {
-        db: master.db.clone(),
-        notifier: Notifier::default(),
-        config: OrchestrationConfig::default(),
-    };
-    nodes
-        .process(ReplaceNodeSpec {
+    let moved = graph_service(&master.db)
+        .process(ApplyGraph {
             actor: operator(),
-            node: canvas.pod.clone(),
-            spec: NodeSpec::Pod(PodConfig {
-                server: canvas.server.clone(),
-                port: taken_port,
-                bind_ip: Some("127.0.0.1".to_string()),
-                advertise_ip: None,
-            }),
-            item_count: 0,
+            canvas: canvas.canvas.clone(),
+            change: GraphChange {
+                put_pods: vec![PodEntity {
+                    port: taken_port,
+                    ..canvas.pod.clone()
+                }],
+                ..GraphChange::default()
+            },
+            dry_run: false,
+            expected_generation: None,
         })
         .await?;
+    assert!(moved.applied, "{:?}", moved.diagnostics);
     wait_for(&master.db, &canvas.server, "the failed pod", |view| {
         !view.failed_pods.is_empty()
     })
@@ -531,8 +515,8 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
         view.apply_error
     );
     let failed = &view.failed_pods[0];
-    assert_eq!(failed.tag, "edge");
-    assert_eq!(failed.pod.0, canvas.pod.0);
+    assert_eq!(failed.tag, canvas.pod.id.to_string(), "a pod's tag is its id");
+    assert_eq!(failed.pod, canvas.pod.id);
     assert!(
         view.applied
             .as_ref()

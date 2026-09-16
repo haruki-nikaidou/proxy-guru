@@ -31,11 +31,11 @@ use crate::entities::db::ca::{
 };
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::certificate::{ListCertificatesBySnis, TouchCanvases};
-use crate::entities::db::health::{InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus};
+use crate::entities::db::graph::GraphRows;
+use crate::entities::db::health::{InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus};
 use crate::entities::db::job_run::ClaimJobRun;
-use crate::entities::db::node::{ListCanvasesOfNodes, NodeId};
+use crate::entities::db::pod::{ListCanvasesOfPods, PodId};
 use crate::entities::db::server::ServerId;
-use crate::entities::db::topology::CanvasTopology;
 use crate::entities::db::view::{
     CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
@@ -45,7 +45,7 @@ use crate::events::{CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertifica
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
-    DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
+    DerivationCertificates, DeriveError, DerivedConfig, derive_tree, relay_tls_pods, tls_snis,
 };
 use crate::services::notify::Notifier;
 use crate::utils::ids;
@@ -67,8 +67,8 @@ pub struct CanvasDeriver {
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
     /// A derivation pass publishes no AMQP event, but it does move every
-    /// server's rollout state, which is what the dashboard's rollout views and
-    /// the node-health streams follow.
+    /// server's rollout state, which is what the dashboard's rollout views
+    /// follow.
     pub notifier: Notifier,
 }
 
@@ -168,7 +168,7 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
             {
                 return Ok(());
             }
-            let certificates = self.certificates(&state.topology).await?;
+            let certificates = self.certificates(&state.graph).await?;
 
             let views_by_server: HashMap<&ServerId, &ServerConfigViewEntity> = state
                 .views
@@ -176,10 +176,11 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 .map(|view| (&view.server, view))
                 .collect();
 
+            let mut derived = derive_tree(&state.graph, &certificates, &self.config);
             let now = Utc::now();
-            let mut updates = Vec::with_capacity(state.topology.servers.len());
+            let mut updates = Vec::with_capacity(state.graph.servers.len());
             let mut deploying = Vec::new();
-            for server in &state.topology.servers {
+            for server in &state.graph.servers {
                 let Some(view) = views_by_server.get(&server.id) else {
                     tracing::error!(
                         server = %server.name,
@@ -187,15 +188,19 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                     );
                     continue;
                 };
-                let update = derive_one(
-                    server.id.clone(),
-                    view,
-                    &state.topology,
-                    &state.views,
-                    &certificates,
-                    &self.config,
-                    now,
-                );
+                // A graph that does not check fails every server of the tree alike.
+                let ideal = match &mut derived {
+                    Ok(servers) => servers
+                        .remove(&server.id)
+                        .unwrap_or_else(|| {
+                            Err(DeriveError::UnknownServer {
+                                server: server.id.to_string(),
+                            })
+                        })
+                        .map_err(|e| e.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                let update = derive_one(server.id.clone(), view, ideal, &state.views, now);
                 if let Some(desired) = &update.desired {
                     deploying_records(view.desired.as_ref(), desired, now, &mut deploying);
                 }
@@ -216,14 +221,14 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 // worker's next report happens to mention it.
                 let rows = self
                     .db
-                    .process(InsertNodeHealthRecords { records: deploying })
+                    .process(InsertPodHealthRecords { records: deploying })
                     .await?;
                 self.notifier
                     .rollout_changed(RolloutScope::Canvas(state.root.to_string()))
                     .await;
                 if !rows.is_empty() {
                     self.notifier
-                        .live(LiveMessage::NodeHealth {
+                        .live(LiveMessage::PodHealth {
                             records: rows.iter().map(Into::into).collect(),
                         })
                         .await;
@@ -253,10 +258,10 @@ impl CanvasDeriver {
     /// next pass.
     async fn certificates(
         &self,
-        topology: &CanvasTopology,
+        graph: &GraphRows,
     ) -> Result<DerivationCertificates, wakuwaku::Error> {
         let ca_present = self.db.process(FindInternalCa).await?.is_some();
-        let relay_pods = relay_tls_pods(topology);
+        let relay_pods = relay_tls_pods(graph);
         if ca_present
             && !relay_pods.is_empty()
             && let Err(e) = self
@@ -271,7 +276,7 @@ impl CanvasDeriver {
         let acme = self
             .db
             .process(ListCertificatesBySnis {
-                snis: tls_snis(topology),
+                snis: tls_snis(graph),
             })
             .await?;
         let relay = self
@@ -289,18 +294,14 @@ impl CanvasDeriver {
 
 /// One server's slot in a derivation pass.
 ///
-/// A pod that cannot be derived is reported in `invalid_pods` and costs only its
-/// own forwarding; `derive_error` is reserved for a failure of the whole server,
-/// which now means only a cross-pod one (two pods claiming a socket) or a broken
-/// stored snapshot.
-#[allow(clippy::too_many_arguments)]
+/// A pod that cannot be compiled is reported in `invalid_pods` and costs only its
+/// own forwarding; `derive_error` is reserved for a failure of the whole server:
+/// a graph that does not check, or a broken stored snapshot.
 fn derive_one(
     server: ServerId,
     view: &ServerConfigViewEntity,
-    topology: &CanvasTopology,
+    ideal: Result<DerivedConfig, String>,
     views: &[ServerConfigViewEntity],
-    certificates: &DerivationCertificates,
-    config: &OrchestrationConfig,
     now: DateTime<Utc>,
 ) -> ViewUpdate {
     let failed = |error: String| ViewUpdate {
@@ -312,9 +313,9 @@ fn derive_one(
         clear_failure: false,
     };
 
-    let ideal = match derive_server_config(topology, &server, certificates, config) {
+    let ideal = match ideal {
         Ok(ideal) => ideal,
-        Err(e) => return failed(e.to_string()),
+        Err(error) => return failed(error),
     };
     let converged = match converge(ideal, view, views) {
         Ok(converged) => converged,
@@ -370,19 +371,19 @@ fn derive_one(
 }
 
 /// `Deploying` records for every pod whose `[[forwarding]]` entry in `next`
-/// differs from (or is absent in) `previous`, and for every node that entry was
-/// derived through. A renewal of pinned material counts too: the entry's bytes
-/// are the same, but the worker still has to swap the files.
+/// differs from (or is absent in) `previous`. A renewal of pinned material
+/// counts too: the entry's bytes are the same, but the worker still has to swap
+/// the files.
 fn deploying_records(
     previous: Option<&ConfigSnapshot>,
     next: &ConfigSnapshot,
     now: DateTime<Utc>,
-    out: &mut Vec<NewNodeHealthRecord>,
+    out: &mut Vec<NewPodHealthRecord>,
 ) {
     let Ok(next_config) = Config::from_toml_str(&next.toml) else {
         return;
     };
-    let old_entries: HashMap<&NodeId, (Forwarding, &[CertificateRef])> = previous
+    let old_entries: HashMap<&PodId, (Forwarding, &[CertificateRef])> = previous
         .and_then(|snapshot| {
             let config = Config::from_toml_str(&snapshot.toml).ok()?;
             Some(
@@ -402,15 +403,15 @@ fn deploying_records(
         if same {
             continue;
         }
-        let message = format!("revision {} published", next.revision);
-        for node in std::iter::once(&deps.pod).chain(&deps.nodes) {
-            out.push(NewNodeHealthRecord {
-                node: node.clone(),
-                status: NodeHealthStatus::Deploying,
-                message: message.clone(),
-                report_time: now,
-            });
+        if out.iter().any(|record| record.pod == deps.pod) {
+            continue;
         }
+        out.push(NewPodHealthRecord {
+            pod: deps.pod.clone(),
+            status: PodHealthStatus::Deploying,
+            message: format!("revision {} published", next.revision),
+            report_time: now,
+        });
     }
 }
 
@@ -454,7 +455,7 @@ pub async fn rotate_expiring_relay_certificates(
         return Ok(());
     }
     let ca = deriver.ca();
-    let mut rotated: Vec<NodeId> = Vec::with_capacity(expiring.len());
+    let mut rotated: Vec<PodId> = Vec::with_capacity(expiring.len());
     for leaf in expiring {
         match ca
             .process(RotateRelayCertificate {
@@ -474,7 +475,7 @@ pub async fn rotate_expiring_relay_certificates(
     }
     let canvases = deriver
         .db
-        .process(ListCanvasesOfNodes { nodes: rotated })
+        .process(ListCanvasesOfPods { pods: rotated })
         .await?;
     deriver
         .db
