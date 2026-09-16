@@ -5,6 +5,7 @@ pub mod canvas;
 pub mod certificate;
 pub mod connection;
 pub mod dns;
+pub mod fence;
 pub mod health;
 pub mod job_run;
 pub mod node;

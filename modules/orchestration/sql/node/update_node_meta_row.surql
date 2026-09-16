@@ -18,7 +18,11 @@ IF $position != NONE {
 IF $import_sync != NONE {
     fn::orchestration_reshape_ports($import_sync.node, $import_sync.ports);
 };
-IF $renamed {
+IF $import_sync != NONE {
+    -- The reshape above was computed from a snapshot; fence it so a concurrent
+    -- export edit that added a mirrored port cannot be erased by this stale list.
+    fn::orchestration_touch_checked($canvas, $expected_root, $expected);
+} ELSE IF $renamed {
     fn::orchestration_touch($canvas);
 };
 RETURN {

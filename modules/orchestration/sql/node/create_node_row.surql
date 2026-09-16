@@ -23,7 +23,11 @@ LET $ports = (INSERT INTO orchestration_port
 -- assertion on `spec.config.canvas` reads the target row, and older engines do
 -- not see a row modified earlier in the same transaction.
 IF $spec.type == "canvas_import" {
-    UPDATE $spec.config.canvas SET derived_generation = generation;
+    IF $target_expected == NONE {
+        UPDATE $spec.config.canvas SET derived_generation = generation;
+    } ELSE {
+        fn::orchestration_claim_root($spec.config.canvas, $target_expected);
+    };
 };
 -- An export node's mirrored port on the importer is keyed by the export's
 -- record key, which only exists now: swap the placeholder for it.
@@ -34,6 +38,6 @@ IF $import_sync != NONE {
         } ELSE { $p });
     fn::orchestration_reshape_ports($import_sync.node, $synced);
 };
-fn::orchestration_touch($canvas);
+fn::orchestration_touch_checked($canvas, $expected_root, $expected);
 RETURN { node: $node, ports: $ports };
 COMMIT TRANSACTION;

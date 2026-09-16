@@ -301,6 +301,7 @@ async fn dns_provider_delete_is_refused_while_an_entry_uses_it() -> TestResult {
         canvas: c.id.clone(),
         import_sync: None,
         frees_canvas: None,
+        fence: None,
     })
     .await?;
     w.dns
@@ -559,6 +560,7 @@ async fn retry_and_delete_are_admin_only_and_delete_respects_entries() -> TestRe
         canvas: c.id.clone(),
         import_sync: None,
         frees_canvas: None,
+        fence: None,
     })
     .await?;
     w.certificates

@@ -8,7 +8,7 @@
 //! transaction.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
+use crate::entities::surreal::canvas::{CanvasFence, CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::surreal::certificate::ListCertificatesBySnis;
 use crate::entities::surreal::dns::FindDnsProviderById;
 use crate::entities::surreal::node::{
@@ -517,6 +517,9 @@ impl Processor<CreateNode> for NodeService {
             })
             .await?;
 
+        // For an import, the target is a separate tree read here and validated
+        // together with the importer; its own fence is claimed in the write.
+        let mut target_fence: Option<CanvasFence> = None;
         let ports = match &input.spec {
             NodeSpec::CanvasImport(cfg) => {
                 let target_key = record_key(&cfg.canvas.0);
@@ -534,6 +537,7 @@ impl Processor<CreateNode> for NodeService {
                     if target.canvases.is_empty() {
                         return Err(OrchestrationError::NotFound);
                     }
+                    target_fence = target.fence();
                     // A target that is not its own root brings its importer along,
                     // which the checker reports as a duplicate import.
                     topology.canvases.extend(target.canvases);
@@ -594,6 +598,8 @@ impl Processor<CreateNode> for NodeService {
                 position: input.position,
                 ports,
                 import_sync,
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
+                target_fence,
             })
             .await?;
         self.notifier.notify(&topology.root).await;
@@ -793,6 +799,7 @@ impl Processor<ReplaceNodeSpec> for NodeService {
                 spec: input.spec,
                 ports,
                 import_sync,
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&topology.root).await;
@@ -857,6 +864,8 @@ impl Processor<UpdateNodeMeta> for NodeService {
         let canvas = old.canvas.clone();
         // An export node moving on the y axis renumbers the mirrored ports on the
         // node importing its canvas; nothing else about a move concerns the tree.
+        // That reshape is computed from a snapshot, so it must be fenced.
+        let mut fence = None;
         let import_sync = match (&old.spec, input.position) {
             (NodeSpec::CanvasExport(_), Some(position)) if position.y != old.position.y => {
                 let topology = self
@@ -875,6 +884,7 @@ impl Processor<UpdateNodeMeta> for NodeService {
                     .filter(|n| record_key(&n.id.0) != own)
                     .collect();
                 exports.push(&moved);
+                fence = topology.fence();
                 import_sync_for(&topology, &canvas, &exports)
             }
             _ => None,
@@ -892,6 +902,7 @@ impl Processor<UpdateNodeMeta> for NodeService {
                 comment: input.comment,
                 position: input.position,
                 import_sync,
+                fence,
             })
             .await?;
         // Only a rename changes a config, so only a rename schedules a
@@ -969,6 +980,7 @@ impl NodeService {
         node: NodeEntity,
         retirement: Retirement,
         kind: CanvasChangeKind,
+        fence: Option<CanvasFence>,
     ) -> Result<(), OrchestrationError> {
         let frees = retirement.frees_canvas.clone();
         let ids = vec![record_key(&node.id.0)];
@@ -978,6 +990,7 @@ impl NodeService {
                 canvas: node.canvas,
                 import_sync: retirement.import_sync,
                 frees_canvas: retirement.frees_canvas,
+                fence,
             })
             .await?;
         self.notifier.notify(&topology.root).await;
@@ -1061,8 +1074,15 @@ impl Processor<RetireNode> for NodeService {
             ensure_switch_safe(&projected, &views, &self.config)?;
         }
 
-        self.delete_node(&topology, node, retirement, CanvasChangeKind::NodeRetired)
-            .await
+        let fence = Some(topology.fence().ok_or(OrchestrationError::NotFound)?);
+        self.delete_node(
+            &topology,
+            node,
+            retirement,
+            CanvasChangeKind::NodeRetired,
+            fence,
+        )
+        .await
     }
 }
 
@@ -1135,7 +1155,21 @@ impl Processor<ForceDeleteNode> for NodeService {
             })
             .await?;
         let retirement = retirement(&topology, &node);
-        self.delete_node(&topology, node, retirement, CanvasChangeKind::NodeDeleted)
-            .await
+        // Force bypasses topology *rules*, not snapshot *sequencing*: retiring an
+        // export computes a mirrored-port reshape from this snapshot, so fence it
+        // when present or a concurrent export edit could be erased.
+        let fence = if retirement.import_sync.is_some() {
+            topology.fence()
+        } else {
+            None
+        };
+        self.delete_node(
+            &topology,
+            node,
+            retirement,
+            CanvasChangeKind::NodeDeleted,
+            fence,
+        )
+        .await
     }
 }

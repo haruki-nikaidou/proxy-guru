@@ -38,5 +38,5 @@ FOR $e IN $add_edges {
     };
     RELATE $source->orchestration_edge_connection->$target;
 };
-fn::orchestration_touch($canvas);
+fn::orchestration_touch_checked($canvas, $expected_root, $expected);
 COMMIT TRANSACTION;

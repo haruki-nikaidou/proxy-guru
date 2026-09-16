@@ -1,5 +1,6 @@
-use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
+use crate::entities::surreal::canvas::{CanvasFence, CanvasId, CanvasUiPosition};
 use crate::entities::surreal::dns::DnsProviderId;
+use crate::entities::surreal::fence::take_fence_error;
 use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
 use crate::entities::surreal::server::ServerId;
 use crate::utils::ids::record_key;
@@ -396,6 +397,15 @@ pub struct CreateNodeRow {
     pub position: CanvasUiPosition,
     pub ports: Vec<NewPort>,
     pub import_sync: Option<ImportSync>,
+    /// The importer tree the create was validated against, fencing the write;
+    /// `None` bumps unconditionally (a snapshotless create, e.g. a server's
+    /// universal pod).
+    pub fence: Option<CanvasFence>,
+    /// For an import node, the target tree — a second, independent root loaded
+    /// and validated alongside the importer — claimed in the same transaction so
+    /// a concurrent edit to the target rolls the import back. Only its generation
+    /// is used; the target root is the import's `spec.config.canvas`.
+    pub target_fence: Option<CanvasFence>,
 }
 
 impl Processor<CreateNodeRow> for SurrealProcessor {
@@ -413,7 +423,7 @@ impl Processor<CreateNodeRow> for SurrealProcessor {
     async fn process(&self, input: CreateNodeRow) -> Result<Self::Output, Self::Error> {
         // Statement 0 is BEGIN, 1 the import guard, 2 the CREATE, 3 the port
         // insert, 4 the import target write, 5 the import sync, 6 the touch; the
-        // RETURN is statement 7.
+        // RETURN is statement 7. `check` first so the fence's THROW surfaces.
         let mut resp = self
             .db()
             .query(include_str!("../../../sql/node/create_node_row.surql"))
@@ -424,7 +434,19 @@ impl Processor<CreateNodeRow> for SurrealProcessor {
             .bind(("position", input.position))
             .bind(("new_ports", input.ports))
             .bind(("import_sync", input.import_sync))
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
+            .bind((
+                "target_expected",
+                input.target_fence.as_ref().map(|f| f.generation),
+            ))
             .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         resp.take::<Option<NodeWithPorts>>(7)?
             .ok_or_else(|| surrealdb::Error::internal("create node returned no row".to_string()))
     }
@@ -507,6 +529,10 @@ pub struct UpdateNodeMetaRow {
     pub comment: String,
     pub position: Option<CanvasUiPosition>,
     pub import_sync: Option<ImportSync>,
+    /// The snapshot an export Y-move's `import_sync` was computed from; fences
+    /// the mirrored-port reshape so a concurrent export edit is not erased by a
+    /// stale list. `None` for renames/moves that carry no reshape.
+    pub fence: Option<CanvasFence>,
 }
 
 /// A node after a metadata update, plus whether the name actually changed.
@@ -532,7 +558,15 @@ impl Processor<UpdateNodeMetaRow> for SurrealProcessor {
             .bind(("comment", input.comment))
             .bind(("position", input.position))
             .bind(("import_sync", input.import_sync))
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
             .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         resp.take::<Option<NodeMetaUpdated>>(6)?
             .ok_or_else(|| surrealdb::Error::internal("node not found".to_string()))
     }
@@ -549,6 +583,8 @@ pub struct UpdateNodeSpecRow {
     pub spec: NodeSpec,
     pub ports: Vec<NewPort>,
     pub import_sync: Option<ImportSync>,
+    /// The snapshot the edit was validated against, fencing the write.
+    pub fence: Option<CanvasFence>,
 }
 
 impl Processor<UpdateNodeSpecRow> for SurrealProcessor {
@@ -566,7 +602,15 @@ impl Processor<UpdateNodeSpecRow> for SurrealProcessor {
             .bind(("spec", input.spec))
             .bind(("new_ports", input.ports))
             .bind(("import_sync", input.import_sync))
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
             .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         resp.take::<Option<NodeWithPorts>>(5)?
             .ok_or_else(|| surrealdb::Error::internal("update node returned no row".to_string()))
     }
@@ -580,6 +624,9 @@ pub struct DeleteNodeRow {
     /// The canvas this node stops importing (set when it is an import node): it
     /// becomes a root again and gets its own generation bump.
     pub frees_canvas: Option<CanvasId>,
+    /// The snapshot the delete was validated against; `None` bumps
+    /// unconditionally (an Admin force delete).
+    pub fence: Option<CanvasFence>,
 }
 
 impl Processor<DeleteNodeRow> for SurrealProcessor {
@@ -587,14 +634,22 @@ impl Processor<DeleteNodeRow> for SurrealProcessor {
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:DeleteNodeRow", skip_all, err)]
     async fn process(&self, input: DeleteNodeRow) -> Result<Self::Output, Self::Error> {
-        self.db()
+        let mut resp = self
+            .db()
             .query(include_str!("../../../sql/node/delete_node_row.surql"))
             .bind(("id", input.id))
             .bind(("canvas", input.canvas))
             .bind(("import_sync", input.import_sync))
             .bind(("frees", input.frees_canvas))
-            .await?
-            .check()?;
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
+            .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         Ok(())
     }
 }

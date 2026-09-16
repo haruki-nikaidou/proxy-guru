@@ -1,6 +1,6 @@
 //! Topology-related query processors spanning several entity kinds.
 
-use crate::entities::surreal::canvas::{CanvasContents, CanvasEntity, CanvasId};
+use crate::entities::surreal::canvas::{CanvasContents, CanvasEntity, CanvasFence, CanvasId};
 use crate::entities::surreal::connection::EdgeConnectionEntity;
 use crate::entities::surreal::node::{NodeEntity, NodeWithPorts};
 use crate::entities::surreal::port::PortEntity;
@@ -24,6 +24,22 @@ pub struct CanvasTopology {
 impl CanvasTopology {
     pub fn canvas_ids(&self) -> Vec<CanvasId> {
         self.canvases.iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// The fence a write validated against this snapshot must pass: the tree's
+    /// root id and the generation it was read at (see [`CanvasFence`]). `None`
+    /// when the snapshot carries no root row — an absent or empty canvas, which
+    /// is not a writable state — so a validated caller fails closed rather than
+    /// bumping unconditionally.
+    pub fn fence(&self) -> Option<CanvasFence> {
+        let root_key = crate::utils::ids::record_key(&self.root.0);
+        self.canvases
+            .iter()
+            .find(|c| crate::utils::ids::record_key(&c.id.0) == root_key)
+            .map(|c| CanvasFence {
+                root: self.root.clone(),
+                generation: c.generation,
+            })
     }
 }
 

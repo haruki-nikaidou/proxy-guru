@@ -1376,6 +1376,9 @@ pub async fn prepare(
     if batch.canvas.is_none() {
         batch.canvas = Some(topology.root.clone());
     }
+    // The whole reconciling write fences against the snapshot it was validated
+    // against: a concurrent edit that moved the tree rolls it back.
+    batch.fence = Some(topology.fence().ok_or(OrchestrationError::NotFound)?);
     Ok(Prepared {
         batch,
         reconciled,

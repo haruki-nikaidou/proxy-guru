@@ -152,6 +152,8 @@ pub async fn node(
         position: pos(0, 0),
         ports,
         import_sync: None,
+        fence: None,
+        target_fence: None,
     })
     .await
 }

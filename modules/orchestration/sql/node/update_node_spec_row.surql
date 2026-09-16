@@ -6,7 +6,7 @@ fn::orchestration_reshape_ports($id, $new_ports);
 IF $import_sync != NONE {
     fn::orchestration_reshape_ports($import_sync.node, $import_sync.ports);
 };
-fn::orchestration_touch($canvas);
+fn::orchestration_touch_checked($canvas, $expected_root, $expected);
 RETURN {
     node: (SELECT * FROM ONLY $id),
     ports: (SELECT * FROM orchestration_port WHERE owner = $id ORDER BY position)

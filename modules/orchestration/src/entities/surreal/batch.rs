@@ -4,6 +4,7 @@
 
 use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
 use crate::entities::surreal::connection::EdgeConnectionId;
+use crate::entities::surreal::fence::take_fence_error;
 use crate::entities::surreal::node::{Lane, NewPort, NodeId, NodeSpec};
 use crate::entities::surreal::port::PortId;
 use kanau::processor::Processor;
@@ -94,6 +95,9 @@ pub struct NewLaneNode {
 #[derive(Debug, Clone, Default)]
 pub struct ApplyTopologyBatch {
     pub canvas: Option<CanvasId>,
+    /// The snapshot the edit was validated against, fencing the whole batch;
+    /// `None` bumps unconditionally (see `fn::orchestration_touch_checked`).
+    pub fence: Option<crate::entities::surreal::canvas::CanvasFence>,
     pub delete_edges: Vec<EdgeConnectionId>,
     pub delete_nodes: Vec<NodeId>,
     pub set_specs: Vec<SpecUpdate>,
@@ -117,6 +121,9 @@ impl ApplyTopologyBatch {
     pub fn extend(&mut self, other: ApplyTopologyBatch) {
         if self.canvas.is_none() {
             self.canvas = other.canvas;
+        }
+        if self.fence.is_none() {
+            self.fence = other.fence;
         }
         self.delete_edges.extend(other.delete_edges);
         self.delete_nodes.extend(other.delete_nodes);
@@ -147,17 +154,25 @@ impl Processor<ApplyTopologyBatch> for SurrealProcessor {
         let canvas = input
             .canvas
             .ok_or_else(|| surrealdb::Error::internal("batch without a canvas".to_string()))?;
-        self.db()
+        let mut resp = self
+            .db()
             .query(include_str!("../../../sql/topology/apply_batch.surql"))
             .bind(("canvas", canvas))
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
             .bind(("delete_edges", input.delete_edges))
             .bind(("delete_nodes", input.delete_nodes))
             .bind(("set_specs", input.set_specs))
             .bind(("reshape", input.reshape))
             .bind(("create_nodes", input.create_nodes))
             .bind(("add_edges", input.add_edges))
-            .await?
-            .check()?;
+            .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         Ok(())
     }
 }

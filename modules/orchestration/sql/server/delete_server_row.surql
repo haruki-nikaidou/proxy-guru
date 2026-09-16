@@ -23,5 +23,5 @@ DELETE orchestration_node WHERE id IN $universal;
 DELETE orchestration_server_config_view WHERE server = $id;
 DELETE server_health_record WHERE server = $id;
 DELETE $id;
-fn::orchestration_touch($canvas);
+fn::orchestration_touch_checked($canvas, $expected_root, $expected);
 COMMIT TRANSACTION;

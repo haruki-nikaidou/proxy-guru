@@ -42,7 +42,7 @@ pub enum OrchestrationError {
     #[error(transparent)]
     Core(#[from] wakuwaku::Error),
     #[error(transparent)]
-    Db(#[from] surrealdb::Error),
+    Db(surrealdb::Error),
     #[error("topology: {0}")]
     Topology(#[from] Box<TopologyError>),
     #[error("derive: {0}")]
@@ -62,6 +62,24 @@ pub enum OrchestrationError {
     NotFound,
     #[error("permission denied")]
     PermissionDenied,
+}
+
+use crate::entities::surreal::fence::STALE_GENERATION;
+
+impl From<surrealdb::Error> for OrchestrationError {
+    fn from(error: surrealdb::Error) -> Self {
+        // A fenced write that lost the race is not a database fault: the edit
+        // was validated against a topology a concurrent edit has since moved, so
+        // the write rolled itself back. Surface it as a retryable conflict, not
+        // an opaque internal error.
+        if error.to_string().contains(STALE_GENERATION) {
+            OrchestrationError::Conflict(
+                "canvas changed since it was validated; reload and retry".into(),
+            )
+        } else {
+            OrchestrationError::Db(error)
+        }
+    }
 }
 
 impl From<OrchestrationError> for tonic::Status {

@@ -10,6 +10,16 @@ use wakuwaku::surreal::SurrealProcessor;
 
 table_record!(CanvasId, "orchestration_canvas");
 
+/// The root identity and generation a validated write fences against: the tree
+/// as the snapshot read it. Passed to `fn::orchestration_touch_checked` so a
+/// concurrent edit that advanced the generation — or re-parented the tree —
+/// makes the write roll back instead of committing against stale validation.
+#[derive(Debug, Clone)]
+pub struct CanvasFence {
+    pub root: CanvasId,
+    pub generation: i64,
+}
+
 #[derive(Debug, Clone, SurrealValue)]
 pub struct CanvasEntity {
     pub id: CanvasId,

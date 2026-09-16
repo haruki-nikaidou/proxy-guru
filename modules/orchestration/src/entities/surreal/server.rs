@@ -1,4 +1,5 @@
-use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition};
+use crate::entities::surreal::canvas::{CanvasFence, CanvasId, CanvasUiPosition};
+use crate::entities::surreal::fence::take_fence_error;
 use crate::entities::surreal::health::ServerHealthStatus;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
@@ -254,6 +255,8 @@ pub struct UpdateServerSettings {
     pub extra_addresses: Vec<String>,
     /// The systemd instance the install command targets; `None` clears it.
     pub agent_unit: Option<String>,
+    /// The snapshot the edit was validated against, fencing the write.
+    pub fence: Option<CanvasFence>,
 }
 
 impl Processor<UpdateServerSettings> for SurrealProcessor {
@@ -278,7 +281,15 @@ impl Processor<UpdateServerSettings> for SurrealProcessor {
             .bind(("override_v6", input.override_v6))
             .bind(("extra_addresses", input.extra_addresses))
             .bind(("agent_unit", input.agent_unit))
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
             .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         resp.take::<Option<ServerEntity>>(1)?
             .ok_or_else(|| surrealdb::Error::internal("server not found".to_string()))
     }
@@ -418,6 +429,8 @@ impl Processor<MoveServerPosition> for SurrealProcessor {
 pub struct DeleteServerRow {
     pub id: ServerId,
     pub canvas: CanvasId,
+    /// The snapshot the delete was validated against, fencing the write.
+    pub fence: Option<CanvasFence>,
 }
 
 impl Processor<DeleteServerRow> for SurrealProcessor {
@@ -425,12 +438,20 @@ impl Processor<DeleteServerRow> for SurrealProcessor {
     type Error = surrealdb::Error;
     #[tracing::instrument(name = "Query-Transaction:DeleteServerRow", skip_all, err)]
     async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
-        self.db()
+        let mut resp = self
+            .db()
             .query(include_str!("../../../sql/server/delete_server_row.surql"))
             .bind(("id", input.id))
             .bind(("canvas", input.canvas))
-            .await?
-            .check()?;
+            .bind((
+                "expected_root",
+                input.fence.as_ref().map(|f| f.root.clone()),
+            ))
+            .bind(("expected", input.fence.as_ref().map(|f| f.generation)))
+            .await?;
+        if let Some(error) = take_fence_error(&mut resp) {
+            return Err(error);
+        }
         Ok(())
     }
 }

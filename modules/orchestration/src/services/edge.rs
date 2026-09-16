@@ -176,6 +176,7 @@ impl Processor<Connect> for EdgeService {
                 source: input.output_port,
                 target: input.input_port,
                 canvas: canvas.clone(),
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&topology.root).await;
@@ -652,6 +653,7 @@ impl Processor<Disconnect> for EdgeService {
             .process(DeleteEdgeRow {
                 id: input.edge,
                 canvas: canvas.clone(),
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&topology.root).await;
@@ -691,6 +693,7 @@ impl Processor<ForceDisconnect> for EdgeService {
             .process(DeleteEdgeRow {
                 id: input.edge,
                 canvas: canvas.clone(),
+                fence: None,
             })
             .await?;
         self.notifier.notify(&canvas).await;

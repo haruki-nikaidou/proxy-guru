@@ -10,7 +10,7 @@ DELETE $id;
 IF $import_sync != NONE {
     fn::orchestration_reshape_ports($import_sync.node, $import_sync.ports);
 };
-fn::orchestration_touch($canvas);
+fn::orchestration_touch_checked($canvas, $expected_root, $expected);
 -- Retiring an import node makes its target a root again, with a derivation
 -- pass of its own to run.
 IF $frees != NONE {

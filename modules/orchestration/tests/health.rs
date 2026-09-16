@@ -468,6 +468,8 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
                 ),
             ],
             import_sync: None,
+            fence: None,
+            target_fence: None,
         })
         .await?;
     let exit = create(&w, &canvas, "shared-out", exit_spec("10.0.0.5:8080")).await?;

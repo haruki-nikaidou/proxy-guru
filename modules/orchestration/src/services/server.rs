@@ -171,6 +171,8 @@ impl Processor<CreateServer> for ServerService {
                 position: server.position,
                 ports,
                 import_sync: None,
+                fence: None,
+                target_fence: None,
             })
             .await?;
         self.notifier.notify(&input.canvas).await;
@@ -247,6 +249,7 @@ impl Processor<UpdateServer> for ServerService {
                 override_v6: input.addresses.override_v6,
                 extra_addresses: input.addresses.extra_addresses,
                 agent_unit: input.agent_unit,
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&canvas).await;
@@ -643,6 +646,7 @@ impl Processor<DeleteServer> for ServerService {
             .process(DeleteServerRow {
                 id: input.server.clone(),
                 canvas: canvas.clone(),
+                fence: Some(topology.fence().ok_or(OrchestrationError::NotFound)?),
             })
             .await?;
         self.notifier.notify(&canvas).await;

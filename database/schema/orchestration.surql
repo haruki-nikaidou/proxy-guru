@@ -150,6 +150,46 @@ DEFINE FUNCTION fn::orchestration_touch($canvas: record<orchestration_canvas>) {
     LET $root = fn::orchestration_root($canvas);
     UPDATE $root SET generation += 1;
 };
+-- Like `orchestration_touch`, but fences the bump so a write validated against
+-- a snapshot only commits while the tree still is that snapshot. `$expected_root`
+-- and `$expected_generation` are the root id and generation the caller read; the
+-- bump is a conditional UPDATE (a write, so a concurrent edit's own bump on the
+-- same root collides and one transaction loses), and it THROWs
+-- `orchestration_stale_generation` to roll the whole transaction back when either
+-- the tree was re-parented under a different root or its generation moved since
+-- the validation read. Both NONE bumps unconditionally (an unvalidated write such
+-- as an Admin force delete).
+DEFINE FUNCTION fn::orchestration_touch_checked($canvas: record<orchestration_canvas>, $expected_root: option<record<orchestration_canvas>>, $expected_generation: option<int>) {
+    LET $root = fn::orchestration_root($canvas);
+    IF $expected_root == NONE AND $expected_generation == NONE {
+        UPDATE $root SET generation += 1;
+        RETURN NONE;
+    };
+    IF $root != $expected_root {
+        THROW "orchestration_stale_generation";
+    };
+    LET $bumped = (UPDATE $root SET generation += 1 WHERE generation = $expected_generation RETURN VALUE id);
+    IF array::len($bumped) == 0 {
+        THROW "orchestration_stale_generation";
+    };
+};
+-- Claims a second root a validated write also read (the target of a canvas
+-- import, validated together with the importer but a separate tree): a
+-- conditional write that levels the soon-to-be subcanvas AND fences it, so a
+-- concurrent edit to the target that moved its generation makes the import roll
+-- back. It is a write, not a read, so it collides with that edit's own bump.
+DEFINE FUNCTION fn::orchestration_claim_root($root: record<orchestration_canvas>, $expected_generation: int) {
+    -- Bumps generation (not just derived_generation) so the claim is a real
+    -- mutation of the record, never a value-idempotent no-op: a competing edit's
+    -- own bump on the same root then contends with it and one transaction loses.
+    -- Both counters move together, keeping the soon-to-be subcanvas levelled.
+    LET $claimed = (UPDATE $root
+        SET generation = $expected_generation + 1, derived_generation = $expected_generation + 1
+        WHERE generation = $expected_generation RETURN VALUE id);
+    IF array::len($claimed) == 0 {
+        THROW "orchestration_stale_generation";
+    };
+};
 -- Reshapes a node's ports in place: a key that survives keeps its row (and its
 -- edges); a key that disappears loses its row and its edges. `$ports` elements
 -- are `{ kind, direction, key, position }` (the `NewPort` shape).

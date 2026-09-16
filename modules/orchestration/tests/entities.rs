@@ -14,8 +14,8 @@ use orchestration::entities::surreal::connection::{
     ConnectPorts, DeleteEdgeRow, EdgeConnectionId, FindEdgeById,
 };
 use orchestration::entities::surreal::node::{
-    DeleteNodeRow, ExitConfig, FindNodeById, FindNodeWithPorts, NodeSpec, PodConfig,
-    UpdateNodeMetaRow, UpdateNodeSpecRow,
+    CanvasImportConfig, CreateNodeRow, DeleteNodeRow, ExitConfig, FindNodeById, FindNodeWithPorts,
+    NodeSpec, PodConfig, UpdateNodeMetaRow, UpdateNodeSpecRow,
 };
 use orchestration::entities::surreal::port::PortId;
 use orchestration::entities::surreal::server::{
@@ -29,6 +29,7 @@ use orchestration::entities::surreal::topology::{
 use orchestration::entities::surreal::view::{
     AckServerConfig, FindServerConfigView, ListServerWatchState, TakeInFlight,
 };
+use orchestration::services::OrchestrationError;
 
 fn exit_spec(dest: &str) -> NodeSpec {
     NodeSpec::Exit(ExitConfig {
@@ -114,6 +115,7 @@ async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
             override_v6: None,
             extra_addresses: Vec::new(),
             agent_unit: None,
+            fence: None,
         })
         .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);
@@ -646,6 +648,7 @@ async fn deleting_a_server_with_a_live_pod_is_refused() -> TestResult {
     sp.process(DeleteServerRow {
         id: s.id.clone(),
         canvas: c.id.clone(),
+        fence: None,
     })
     .await
     .expect_err("the server still has a live pod");
@@ -662,11 +665,13 @@ async fn deleting_a_server_with_a_live_pod_is_refused() -> TestResult {
         canvas: c.id.clone(),
         import_sync: None,
         frees_canvas: None,
+        fence: None,
     })
     .await?;
     sp.process(DeleteServerRow {
         id: s.id.clone(),
         canvas: c.id.clone(),
+        fence: None,
     })
     .await?;
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
@@ -761,6 +766,7 @@ async fn create_node_writes_node_and_ports_together() -> TestResult {
             comment: "renamed".to_string(),
             position: Some(pos(3, 4)),
             import_sync: None,
+            fence: None,
         })
         .await?;
     assert_eq!(meta.node.name, "edge");
@@ -788,6 +794,7 @@ async fn create_node_writes_node_and_ports_together() -> TestResult {
             comment: "moved".to_string(),
             position: Some(pos(9, 9)),
             import_sync: None,
+            fence: None,
         })
         .await?;
     assert!(!moved.renamed);
@@ -815,6 +822,7 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
             source: port_of(&exit, "destination"),
             target: port_of(&pod, "destination"),
             canvas: c.id.clone(),
+            fence: None,
         })
         .await?;
     let before = sp
@@ -828,6 +836,7 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
         canvas: c.id.clone(),
         import_sync: None,
         frees_canvas: None,
+        fence: None,
     })
     .await?;
     assert!(
@@ -891,6 +900,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
             source: port_of(&exit, "destination"),
             target: port_of(&pod, "destination"),
             canvas: c.id.clone(),
+            fence: None,
         })
         .await?;
 
@@ -902,6 +912,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
             spec: pod_spec(&s, 8443),
             ports: pod_ports(),
             import_sync: None,
+            fence: None,
         })
         .await?;
     assert_eq!(updated.node.id.0, pod.node.id.0);
@@ -935,6 +946,7 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
             spec: pod_spec(&s, 8443),
             ports: narrowed,
             import_sync: None,
+            fence: None,
         })
         .await?;
     assert_eq!(updated.ports.len(), 1);
@@ -961,6 +973,7 @@ async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
             source: port_of(&exit, "destination"),
             target: port_of(&pod, "destination"),
             canvas: c.id.clone(),
+            fence: None,
         })
         .await?;
     let after_connect = sp
@@ -976,6 +989,7 @@ async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
     sp.process(DeleteEdgeRow {
         id: edge.id.clone(),
         canvas: c.id.clone(),
+        fence: None,
     })
     .await?;
     assert!(sp.process(FindEdgeById { id: edge.id }).await?.is_none());
@@ -985,6 +999,158 @@ async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
             .unwrap()
             .generation,
         before + 2
+    );
+    Ok(())
+}
+
+/// Issue #6, the fence primitive: a write validated against a snapshot must not
+/// commit once another edit has advanced the canvas past that snapshot's
+/// generation. Two writes are fenced against the *same* generation — as two
+/// concurrent requests that each read the pre-state would be — deterministically
+/// here, so the loser is always the second. It rolls back whole, edge and
+/// generation bump alike, and surfaces as a `Conflict`. The end-to-end case
+/// where the pair also jointly breaks a topology invariant lives in
+/// `tests/consistency.rs`.
+#[tokio::test]
+async fn a_second_write_fenced_on_a_superseded_generation_is_rejected() -> TestResult {
+    let sp = setup().await?;
+    let c = canvas(&sp, "prod").await?;
+    let s = server(&sp, &c, "tokyo").await?;
+    let pod1 = node(&sp, &c, "pod1", pod_spec(&s, 443), pod_ports()).await?;
+    let pod2 = node(&sp, &c, "pod2", pod_spec(&s, 444), pod_ports()).await?;
+    let exit1 = node(&sp, &c, "exit1", exit_spec("10.0.0.5:8080"), exit_ports()).await?;
+    let exit2 = node(&sp, &c, "exit2", exit_spec("10.0.0.6:8080"), exit_ports()).await?;
+
+    // The generation two concurrent editors would both validate against.
+    let topology = sp
+        .process(LoadCanvasTopology {
+            canvas: c.id.clone(),
+        })
+        .await?;
+    let fence = topology.fence().expect("a loaded canvas has a root");
+
+    // The first edit, fenced on that generation, lands and bumps it.
+    sp.process(ConnectPorts {
+        source: port_of(&exit1, "destination"),
+        target: port_of(&pod1, "destination"),
+        canvas: c.id.clone(),
+        fence: Some(fence.clone()),
+    })
+    .await?;
+    let bumped = sp
+        .process(FindCanvasById { id: c.id.clone() })
+        .await?
+        .unwrap()
+        .generation;
+    assert_eq!(bumped, fence.generation + 1);
+
+    // The second edit is valid in isolation (its own ports, no unique clash) but
+    // was validated against the now-superseded generation: the fence rolls it
+    // back rather than committing against stale validation.
+    let err = sp
+        .process(ConnectPorts {
+            source: port_of(&exit2, "destination"),
+            target: port_of(&pod2, "destination"),
+            canvas: c.id.clone(),
+            fence: Some(fence),
+        })
+        .await
+        .expect_err("the loser is rejected");
+    assert!(
+        err.to_string().contains("orchestration_stale_generation"),
+        "the fence THROWs its sentinel: {err}"
+    );
+    // ...and the service layer reads that sentinel as a retryable conflict.
+    assert!(
+        matches!(
+            OrchestrationError::from(err),
+            OrchestrationError::Conflict(_)
+        ),
+        "a stale fence is a conflict, not an opaque database error"
+    );
+
+    // The loser left nothing behind: no second edge, no extra bump.
+    let after = sp
+        .process(LoadCanvasContents {
+            canvas: c.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert_eq!(after.edges.len(), 1, "only the winning edge persists");
+    assert_eq!(
+        sp.process(FindCanvasById { id: c.id })
+            .await?
+            .unwrap()
+            .generation,
+        bumped,
+        "the rejected write did not bump the generation"
+    );
+    Ok(())
+}
+
+/// Issue #6, the second-root fence: creating a canvas-import validates two
+/// independent trees — the importer and the target — but writes into one
+/// transaction. The target is claimed with a compare-and-set of its own, so an
+/// edit that landed in the target tree after it was read makes the import roll
+/// back rather than merging a stale target.
+#[tokio::test]
+async fn importing_a_target_edited_since_it_was_validated_is_rejected() -> TestResult {
+    let sp = setup().await?;
+    let importer = canvas(&sp, "importer").await?;
+    let target = canvas(&sp, "target").await?;
+
+    // Both trees as the importing operator would read them.
+    let importer_fence = sp
+        .process(LoadCanvasTopology {
+            canvas: importer.id.clone(),
+        })
+        .await?
+        .fence()
+        .expect("a loaded canvas has a root");
+    let target_fence = sp
+        .process(LoadCanvasTopology {
+            canvas: target.id.clone(),
+        })
+        .await?
+        .fence()
+        .expect("a loaded canvas has a root");
+
+    // A concurrent edit lands in the *target* tree after it was read.
+    server(&sp, &target, "tokyo").await?;
+
+    // Importing it now, validated against the stale target snapshot, is rejected:
+    // the target's generation moved, so its claim compare-and-set misses.
+    let err = sp
+        .process(CreateNodeRow {
+            canvas: importer.id.clone(),
+            name: "import".to_string(),
+            comment: String::new(),
+            spec: NodeSpec::CanvasImport(CanvasImportConfig {
+                canvas: target.id.clone(),
+            }),
+            position: pos(0, 0),
+            ports: Vec::new(),
+            import_sync: None,
+            fence: Some(importer_fence),
+            target_fence: Some(target_fence),
+        })
+        .await
+        .expect_err("a stale target import is rejected");
+    assert!(
+        err.to_string().contains("orchestration_stale_generation"),
+        "the target claim THROWs its sentinel: {err}"
+    );
+
+    // Nothing was written: the rejected import left no node on the importer.
+    let after = sp
+        .process(LoadCanvasContents {
+            canvas: importer.id.clone(),
+        })
+        .await?
+        .unwrap();
+    assert!(
+        after.nodes.is_empty(),
+        "the rejected import left no node behind"
     );
     Ok(())
 }
