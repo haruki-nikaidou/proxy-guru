@@ -46,10 +46,12 @@ fn forwarding(tag: &str, listen: SocketAddr) -> Forwarding {
         receive_proxy_protocol: None,
         listen_as: ListenAs::Raw,
         quic: None,
-        to: ForwardingTo::Exit {
+        to: guru_worker_config::To::Tree(ForwardingTo::Exit {
             destination: Remote::parse("127.0.0.1:1").unwrap(),
             send_proxy_protocol: None,
-        },
+        }),
+        groups: Vec::new(),
+        upstreams: Vec::new(),
     }
 }
 

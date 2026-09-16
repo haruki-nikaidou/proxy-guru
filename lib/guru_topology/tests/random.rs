@@ -3,8 +3,8 @@
 
 use guru_topology::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Compiled, Edge, EdgeId,
-    EdgeTarget, Exit, ExitId, Forwardings, Graph, Ingress, Pod, PodId, Problem, Route, Server,
-    ServerId, ServerQuic, Sticky, Weighted, check, compile,
+    EdgeTarget, Exit, ExitId, Graph, Ingress, Pod, PodId, Problem, Route, Server, ServerId,
+    ServerQuic, Sticky, Weighted, check, compile,
 };
 use guru_worker_config::{Config, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, TcpProxyProtocol};
 use std::collections::HashSet;
@@ -313,42 +313,43 @@ fn assert_properties(seed: u64, graph: &Graph, certificates: &Certificates) -> b
             config.forwardings.len(),
             "seed {seed}: deps out of step on {server}"
         );
-        for (deps, tag) in config.deps.iter().zip(config.forwardings.tags()) {
+        for (deps, tag) in config.deps.iter().zip(config.tags()) {
             assert_eq!(deps.pod.as_str(), tag, "seed {seed}");
         }
-        match &config.forwardings {
-            Forwardings::Table(list) => {
-                let mut sockets = HashSet::new();
-                for forwarding in list {
-                    forwarding
-                        .validate()
-                        .unwrap_or_else(|e| panic!("seed {seed}: {e}: {forwarding:#?}"));
-                    assert!(
-                        forwarding.lint().is_empty(),
-                        "seed {seed}: unreached table entries in {forwarding:#?}"
-                    );
-                    assert!(
-                        sockets.insert(forwarding.listen_key()),
-                        "seed {seed}: two forwardings on one socket of {server}"
-                    );
-                }
+        if config.route_table {
+            let mut sockets = HashSet::new();
+            for forwarding in &config.forwardings {
+                assert!(
+                    matches!(forwarding.to, guru_worker_config::To::Route(_)),
+                    "seed {seed}: a tree on a route-table server"
+                );
+                forwarding
+                    .validate()
+                    .unwrap_or_else(|e| panic!("seed {seed}: {e}: {forwarding:#?}"));
+                assert!(
+                    forwarding.lint().is_empty(),
+                    "seed {seed}: unreached table entries in {forwarding:#?}"
+                );
+                assert!(
+                    sockets.insert(forwarding.listen_key()),
+                    "seed {seed}: two forwardings on one socket of {server}"
+                );
             }
-            Forwardings::Legacy(list) => {
-                let config = Config {
-                    ipv6_resolve: Ipv6Resolve::default(),
-                    log: LogConfig::default(),
-                    relay_ca: None,
-                    keepalive: KeepAlive::default(),
-                    quic: QuicTuning::default(),
-                    forwardings: list.clone(),
-                };
-                let text = config
-                    .to_toml_string()
-                    .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-                let parsed = Config::from_toml_str(&text)
-                    .unwrap_or_else(|e| panic!("seed {seed}: {e}\n{text}"));
-                assert_eq!(parsed, config, "seed {seed}");
-            }
+        } else {
+            let config = Config {
+                ipv6_resolve: Ipv6Resolve::default(),
+                log: LogConfig::default(),
+                relay_ca: None,
+                keepalive: KeepAlive::default(),
+                quic: QuicTuning::default(),
+                forwardings: config.forwardings.clone(),
+            };
+            let text = config
+                .to_toml_string()
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            let parsed =
+                Config::from_toml_str(&text).unwrap_or_else(|e| panic!("seed {seed}: {e}\n{text}"));
+            assert_eq!(parsed, config, "seed {seed}");
         }
     }
 
@@ -365,7 +366,7 @@ fn assert_properties(seed: u64, graph: &Graph, certificates: &Certificates) -> b
 fn every_pod_is_accounted_for(seed: u64, graph: &Graph, compiled: &Compiled) {
     for pod in &graph.pods {
         let config = &compiled.servers[&pod.server];
-        let compiled_here = config.forwardings.tags().contains(&pod.id.as_str());
+        let compiled_here = config.tags().contains(&pod.id.as_str());
         let invalid_here = config.invalid.iter().any(|i| i.pod == pod.id);
         let warned = compiled.warnings.iter().any(|w| {
             matches!(

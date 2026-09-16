@@ -350,7 +350,7 @@ fn destination_of(config: &Config, tag: &str) -> Remote {
         .iter()
         .find(|f| f.tag == tag)
         .unwrap_or_else(|| panic!("no forwarding tagged {tag}"));
-    match &forwarding.to {
+    match forwarding.to.tree().unwrap() {
         ForwardingTo::Exit { destination, .. } => destination.clone(),
         other => panic!("{tag} is not an exit forwarding: {other:?}"),
     }

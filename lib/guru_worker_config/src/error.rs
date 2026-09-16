@@ -32,6 +32,8 @@ pub enum ConfigError {
     ZeroRouteWeight(String, String),
     #[error("forwarding {0} has a group cycle through {1}")]
     RouteCycle(String, String),
+    #[error("forwarding {0} has groups or upstreams but an inline `to` tree")]
+    RouteEntriesWithTree(String),
     #[error("read {path}: {source}")]
     Io {
         path: PathBuf,

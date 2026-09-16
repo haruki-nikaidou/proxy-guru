@@ -37,7 +37,7 @@ mod legacy;
 pub mod model;
 
 pub use check::check;
-pub use compile::{Compiled, Deps, Forwardings, ListenProtocol, Listener, ServerConfig, compile};
+pub use compile::{Compiled, Deps, ListenProtocol, Listener, ServerConfig, compile};
 pub use diagnostic::{Diagnostic, Invalid, InvalidPod, Problem, Report, Severity, Subject};
 pub use model::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Edge, EdgeId, EdgeTarget, Exit,

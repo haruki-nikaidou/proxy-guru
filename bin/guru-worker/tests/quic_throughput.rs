@@ -119,10 +119,12 @@ async fn measure(name: &str, quic: QuicTuning, payload: usize) -> (Duration, usi
                 receive_proxy_protocol: None,
                 listen_as: ListenAs::Relay(RelayHost::Quic(leaf)),
                 quic: None,
-                to: ForwardingTo::Exit {
+                to: guru_worker_config::To::Tree(ForwardingTo::Exit {
                     destination: Remote::Address(source),
                     send_proxy_protocol: None,
-                },
+                }),
+                groups: Vec::new(),
+                upstreams: Vec::new(),
             },
         ))
         .await;
@@ -140,12 +142,14 @@ async fn measure(name: &str, quic: QuicTuning, payload: usize) -> (Duration, usi
                 receive_proxy_protocol: None,
                 listen_as: ListenAs::Raw,
                 quic: None,
-                to: ForwardingTo::Relay {
+                to: guru_worker_config::To::Tree(ForwardingTo::Relay {
                     protocol: RelayProtocol::Quic,
                     destination: Remote::Address(relay_addr),
                     sni: Some(SNI.to_string()),
                     quic: None,
-                },
+                }),
+                groups: Vec::new(),
+                upstreams: Vec::new(),
             },
         ))
         .await;

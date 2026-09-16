@@ -1074,7 +1074,7 @@ async fn the_picture_derives_the_flat_fabric(pool: sqlx::PgPool) -> TestResult {
     let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
     for forwarding in &config.forwardings {
         assert!(
-            matches!(&forwarding.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
+            matches!(forwarding.to.tree().unwrap(), guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
             "{}",
             applied.toml
         );
@@ -1089,7 +1089,7 @@ async fn the_picture_derives_the_flat_fabric(pool: sqlx::PgPool) -> TestResult {
         let mut exits: Vec<String> = config
             .forwardings
             .iter()
-            .map(|f| match &f.to {
+            .map(|f| match f.to.tree().unwrap() {
                 guru_worker_config::ForwardingTo::Exit { destination, .. } => {
                     format!("{destination:?}")
                 }
@@ -1463,7 +1463,7 @@ async fn a_second_tier_fans_out_per_upstream_server(pool: sqlx::PgPool) -> TestR
         assert_eq!(config.forwardings.len(), 2, "{}", applied.toml);
         for f in &config.forwardings {
             assert!(
-                matches!(&f.to, guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
+                matches!(f.to.tree().unwrap(), guru_worker_config::ForwardingTo::LoadBalance(g) if g.members.len() == 2),
                 "tier 1 landing pods balance over tier 2: {}",
                 applied.toml
             );
@@ -1600,7 +1600,7 @@ async fn nested_distribute_nodes_nest_strategies(pool: sqlx::PgPool) -> TestResu
     let applied = view.applied.as_ref().expect("us converged");
     assert!(view.invalid_pods.is_empty(), "{:?}", view.invalid_pods);
     let config = guru_worker_config::Config::from_toml_str(&applied.toml)?;
-    let guru_worker_config::ForwardingTo::LoadBalance(outer_group) = &config.forwardings[0].to
+    let guru_worker_config::ForwardingTo::LoadBalance(outer_group) = config.forwardings[0].to.tree().unwrap()
     else {
         panic!("outer should balance: {}", applied.toml);
     };

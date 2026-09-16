@@ -1,7 +1,7 @@
 use crate::stats::TagStats;
 use guru_worker_config::{
     Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LoadBalanceStrategy, QuicTuning,
-    RelayHost, RelayProtocol, Remote, TcpProxyProtocol,
+    RelayHost, RelayProtocol, Remote, TcpProxyProtocol, To,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -84,7 +84,10 @@ impl PreparedForwarding {
             )?),
             _ => None,
         };
-        let target = compile_target(&f.to, ipv6_resolve, relay_ca, keepalive, quic);
+        let target = match &f.to {
+            To::Tree(tree) => compile_target(tree, ipv6_resolve, relay_ca, keepalive, quic),
+            To::Route(_) => return Err("this worker does not read route tables".into()),
+        };
         Ok(PreparedForwarding {
             forwarding: Arc::new(f.clone()),
             ingest,

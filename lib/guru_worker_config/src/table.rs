@@ -1,9 +1,9 @@
-//! The route-table form of a forwarding.
+//! The route-table form of a forwarding's destination.
 //!
-//! A [`crate::Forwarding`] carries its destination as one inline tree. A
-//! [`TableForwarding`] names its pieces instead: every next hop is an
-//! [`Upstream`], every choice between next hops is a [`Group`], and `to` is the
-//! id traffic starts at. A group lists members by id, so failover over load
+//! An inline [`crate::ForwardingTo`] tree nests every choice inside its parent.
+//! A route table names its pieces instead: every next hop is an [`Upstream`],
+//! every choice between next hops is a [`Group`], and the forwarding's `to` is
+//! the id traffic starts at. A group lists members by id, so failover over load
 //! balancers, or a load balancer over failovers, is just a group whose members
 //! are groups.
 //!
@@ -28,34 +28,10 @@
 //! relay = { protocol = "quic", destination = "203.0.113.1:40000", sni = "a.relay.guru.internal", confirm = true }
 //! ```
 //!
-//! No worker reads this form yet; the master produces it through
-//! `guru_topology` and still sends [`crate::Forwarding`] until workers do.
+//! Only a worker that reports the `route_table` capability reads this form.
 
-use crate::{
-    ConfigError, ListenAs, QuicTuning, RelayHost, RelayProtocol, Remote, TcpProxyProtocol,
-    Transport,
-};
+use crate::{ConfigError, Forwarding, QuicTuning, RelayProtocol, Remote, TcpProxyProtocol};
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TableForwarding {
-    pub tag: String,
-    pub listen: SocketAddr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receive_proxy_protocol: Option<TcpProxyProtocol>,
-    pub listen_as: ListenAs,
-    /// Transport tuning for a `quic` relay listener, as on [`crate::Forwarding`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quic: Option<QuicTuning>,
-    /// The group or upstream every accepted connection starts at.
-    pub to: String,
-    #[serde(rename = "group", default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<Group>,
-    #[serde(rename = "upstream", default, skip_serializing_if = "Vec::is_empty")]
-    pub upstreams: Vec<Upstream>,
-}
 
 /// A choice between members, each the id of a group or an upstream.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -244,113 +220,94 @@ impl From<Upstream> for RawUpstream {
     }
 }
 
-impl TableForwarding {
-    pub fn transport(&self) -> Transport {
-        match &self.listen_as {
-            ListenAs::Relay(RelayHost::Quic(_)) => Transport::Quic,
-            _ => Transport::Tcp,
+/// The route-table rules for one forwarding whose `to` is `to`: ids are unique
+/// and resolve, groups are non-empty with positive weights and never reach
+/// themselves, and each upstream is well formed.
+pub(crate) fn validate(forwarding: &Forwarding, to: &str) -> Result<(), ConfigError> {
+    let tag = forwarding.tag.as_str();
+    let mut ids = HashSet::new();
+    let ids_of_groups = forwarding.groups.iter().map(|g| g.id.as_str());
+    let ids_of_upstreams = forwarding.upstreams.iter().map(|u| u.id.as_str());
+    for id in ids_of_groups.chain(ids_of_upstreams) {
+        if !ids.insert(id) {
+            return Err(route_error(ConfigError::DuplicateRouteId, tag, id));
         }
     }
-
-    pub fn listen_key(&self) -> (SocketAddr, Transport) {
-        (self.listen, self.transport())
+    if !ids.contains(to) {
+        return Err(route_error(ConfigError::UnknownRouteId, tag, to));
     }
 
-    /// Everything that concerns this entry alone: ids are unique and resolve,
-    /// groups are non-empty with positive weights and never reach themselves,
-    /// and each upstream is well formed.
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        let tag = self.tag.as_str();
-        if let Some(quic) = &self.quic {
-            if self.transport() != Transport::Quic {
-                return Err(ConfigError::QuicTuningWithoutQuic(self.tag.clone()));
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    for group in &forwarding.groups {
+        let members: Vec<&str> = match &group.policy {
+            Policy::Balance { members, .. } => {
+                if let Some(zero) = members.iter().find(|m| m.weight == 0) {
+                    return Err(route_error(ConfigError::ZeroRouteWeight, tag, &zero.to));
+                }
+                members.iter().map(|m| m.to.as_str()).collect()
             }
-            quic.validate(&format!("forwarding {tag}"))?;
+            Policy::Failover { members } => members.iter().map(String::as_str).collect(),
+        };
+        if members.is_empty() {
+            return Err(route_error(ConfigError::EmptyRouteGroup, tag, &group.id));
         }
+        if let Some(unknown) = members.iter().find(|m| !ids.contains(**m)) {
+            return Err(route_error(ConfigError::UnknownRouteId, tag, unknown));
+        }
+        children.insert(group.id.as_str(), members);
+    }
+    if let Some(id) = first_cycle(&children) {
+        return Err(route_error(ConfigError::RouteCycle, tag, id));
+    }
 
-        let mut ids = HashSet::new();
-        let ids_of_groups = self.groups.iter().map(|g| g.id.as_str());
-        let ids_of_upstreams = self.upstreams.iter().map(|u| u.id.as_str());
-        for id in ids_of_groups.chain(ids_of_upstreams) {
-            if !ids.insert(id) {
-                return Err(route_error(ConfigError::DuplicateRouteId, tag, id));
+    for upstream in &forwarding.upstreams {
+        if let Target::Relay(relay) = &upstream.target {
+            let needs_sni = matches!(
+                relay.protocol,
+                RelayProtocol::TlsOverTcp | RelayProtocol::Quic
+            );
+            if needs_sni && relay.sni.is_none() {
+                return Err(ConfigError::MissingSni(tag.to_string()));
+            }
+            if let Some(quic) = &relay.quic {
+                if relay.protocol != RelayProtocol::Quic {
+                    return Err(ConfigError::QuicTuningWithoutQuic(tag.to_string()));
+                }
+                quic.validate(&format!("forwarding {tag} upstream {}", upstream.id))?;
             }
         }
-        if !ids.contains(self.to.as_str()) {
-            return Err(route_error(ConfigError::UnknownRouteId, tag, &self.to));
-        }
+    }
+    Ok(())
+}
 
-        let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
-        for group in &self.groups {
-            let members: Vec<&str> = match &group.policy {
+/// Groups and upstreams nothing reaches from `to`. Harmless, so a warning
+/// rather than an error.
+pub(crate) fn lint(forwarding: &Forwarding) -> Vec<String> {
+    let crate::To::Route(to) = &forwarding.to else {
+        return Vec::new();
+    };
+    let mut reached: HashSet<&str> = HashSet::new();
+    let mut stack = vec![to.as_str()];
+    while let Some(id) = stack.pop() {
+        if !reached.insert(id) {
+            continue;
+        }
+        if let Some(group) = forwarding.groups.iter().find(|g| g.id == id) {
+            match &group.policy {
                 Policy::Balance { members, .. } => {
-                    if let Some(zero) = members.iter().find(|m| m.weight == 0) {
-                        return Err(route_error(ConfigError::ZeroRouteWeight, tag, &zero.to));
-                    }
-                    members.iter().map(|m| m.to.as_str()).collect()
+                    stack.extend(members.iter().map(|m| m.to.as_str()));
                 }
-                Policy::Failover { members } => members.iter().map(String::as_str).collect(),
-            };
-            if members.is_empty() {
-                return Err(route_error(ConfigError::EmptyRouteGroup, tag, &group.id));
-            }
-            if let Some(unknown) = members.iter().find(|m| !ids.contains(**m)) {
-                return Err(route_error(ConfigError::UnknownRouteId, tag, unknown));
-            }
-            children.insert(group.id.as_str(), members);
-        }
-        if let Some(id) = first_cycle(&children) {
-            return Err(route_error(ConfigError::RouteCycle, tag, id));
-        }
-
-        for upstream in &self.upstreams {
-            if let Target::Relay(relay) = &upstream.target {
-                let needs_sni = matches!(
-                    relay.protocol,
-                    RelayProtocol::TlsOverTcp | RelayProtocol::Quic
-                );
-                if needs_sni && relay.sni.is_none() {
-                    return Err(ConfigError::MissingSni(self.tag.clone()));
-                }
-                if let Some(quic) = &relay.quic {
-                    if relay.protocol != RelayProtocol::Quic {
-                        return Err(ConfigError::QuicTuningWithoutQuic(self.tag.clone()));
-                    }
-                    quic.validate(&format!("forwarding {tag} upstream {}", upstream.id))?;
-                }
+                Policy::Failover { members } => stack.extend(members.iter().map(String::as_str)),
             }
         }
-        Ok(())
     }
-
-    /// Groups and upstreams nothing reaches from `to`. Harmless, so a warning
-    /// rather than an error.
-    pub fn lint(&self) -> Vec<String> {
-        let mut reached: HashSet<&str> = HashSet::new();
-        let mut stack = vec![self.to.as_str()];
-        while let Some(id) = stack.pop() {
-            if !reached.insert(id) {
-                continue;
-            }
-            if let Some(group) = self.groups.iter().find(|g| g.id == id) {
-                match &group.policy {
-                    Policy::Balance { members, .. } => {
-                        stack.extend(members.iter().map(|m| m.to.as_str()));
-                    }
-                    Policy::Failover { members } => {
-                        stack.extend(members.iter().map(String::as_str))
-                    }
-                }
-            }
-        }
-        let groups = self.groups.iter().map(|g| g.id.as_str());
-        let upstreams = self.upstreams.iter().map(|u| u.id.as_str());
-        groups
-            .chain(upstreams)
-            .filter(|id| !reached.contains(id))
-            .map(|id| format!("forwarding {} never reaches {id}", self.tag))
-            .collect()
-    }
+    let groups = forwarding.groups.iter().map(|g| g.id.as_str());
+    let upstreams = forwarding.upstreams.iter().map(|u| u.id.as_str());
+    groups
+        .chain(upstreams)
+        .filter(|id| !reached.contains(id))
+        .map(|id| format!("forwarding {} never reaches {id}", forwarding.tag))
+        .collect()
 }
 
 fn route_error(variant: fn(String, String) -> ConfigError, tag: &str, id: &str) -> ConfigError {
@@ -403,12 +360,12 @@ fn first_cycle<'a>(children: &HashMap<&'a str, Vec<&'a str>>) -> Option<&'a str>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TlsHostConfig;
+    use crate::{ListenAs, RelayHost, TlsHostConfig, To};
     use std::path::PathBuf;
 
     #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     struct Doc {
-        forwarding: Vec<TableForwarding>,
+        forwarding: Vec<Forwarding>,
     }
 
     fn relay(id: &str, protocol: RelayProtocol) -> Upstream {
@@ -460,14 +417,14 @@ mod tests {
         }
     }
 
-    fn entry(to: &str, groups: Vec<Group>, upstreams: Vec<Upstream>) -> TableForwarding {
-        TableForwarding {
+    fn entry(to: &str, groups: Vec<Group>, upstreams: Vec<Upstream>) -> Forwarding {
+        Forwarding {
             tag: "p".to_string(),
             listen: "[::]:443".parse().unwrap(),
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
             quic: None,
-            to: to.to_string(),
+            to: To::Route(to.to_string()),
             groups,
             upstreams,
         }
@@ -480,7 +437,7 @@ mod tests {
             *s = Some(Sticky::ClientIp);
         }
         let doc = Doc {
-            forwarding: vec![TableForwarding {
+            forwarding: vec![Forwarding {
                 listen_as: ListenAs::Relay(RelayHost::Quic(TlsHostConfig {
                     key: PathBuf::from("certs/relay/p/key.pem"),
                     full_chain: PathBuf::from("certs/relay/p/full_chain.pem"),
@@ -507,6 +464,7 @@ mod tests {
         for f in &parsed.forwarding {
             f.validate().unwrap();
         }
+        assert!(text.contains("to = \"g\""), "{text}");
         assert!(text.contains("weight = 2"), "{text}");
         assert!(
             !text.contains("weight = 1"),
@@ -535,6 +493,34 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("only applies to `balance`"), "{err}");
+    }
+
+    #[test]
+    fn a_tree_keeps_its_errors_and_takes_no_table_entries() {
+        let broken_tree = r#"
+            [[forwarding]]
+            tag = "p"
+            listen = "[::]:443"
+            listen_as = "raw"
+            to = { type = "exit", destination = "nowhere" }
+        "#;
+        let err = toml::from_str::<Doc>(broken_tree).unwrap_err().to_string();
+        assert!(
+            err.contains("nowhere"),
+            "the tree's own error survives: {err}"
+        );
+
+        let mixed = Forwarding {
+            to: To::Tree(crate::ForwardingTo::Exit {
+                destination: Remote::parse("10.0.0.1:80").unwrap(),
+                send_proxy_protocol: None,
+            }),
+            ..entry("unused", vec![], vec![exit("u:x")])
+        };
+        assert!(matches!(
+            mixed.validate(),
+            Err(ConfigError::RouteEntriesWithTree(_))
+        ));
     }
 
     #[test]

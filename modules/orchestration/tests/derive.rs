@@ -193,7 +193,7 @@ fn load_balance_members_follow_port_position() {
     let toml = derived(&b, &s);
     assert_golden("load_balance_fallback", &toml);
     let config = guru_worker_config::Config::from_toml_str(&toml).unwrap();
-    let members = match &config.forwardings[0].to {
+    let members = match config.forwardings[0].to.tree().unwrap() {
         guru_worker_config::ForwardingTo::LoadBalance(g) => g.members.clone(),
         other => panic!("expected a load balance group, got {other:?}"),
     };
@@ -562,7 +562,7 @@ fn a_secure_relay_with_a_leaf_derives_listener_dialer_and_pins() {
         // The dialing end verifies the leaf by SNI and points at the secure listener.
         let result = derive_server_config(&topology, &tokyo, &certificates, &config()).unwrap();
         assert!(result.invalid.is_empty(), "{:?}", result.invalid);
-        match &result.config.forwardings[0].to {
+        match result.config.forwardings[0].to.tree().unwrap() {
             ForwardingTo::Relay {
                 protocol, sni: got, ..
             } => {
@@ -645,7 +645,7 @@ fn quic_rates_are_paired_per_link() {
             ..QuicTuning::default()
         }
     );
-    match &tokyo_cfg.forwardings[0].to {
+    match tokyo_cfg.forwardings[0].to.tree().unwrap() {
         ForwardingTo::Relay { quic, .. } => assert_eq!(
             *quic,
             Some(QuicTuning {
@@ -706,7 +706,7 @@ fn quic_rates_are_paired_per_link() {
         assert_eq!(cfg.quic.send_mbps, 1000);
         assert!(cfg.forwardings[0].quic.is_none());
         assert!(matches!(
-            &cfg.forwardings[0].to,
+            cfg.forwardings[0].to.tree().unwrap(),
             ForwardingTo::Relay { quic: None, .. } | ForwardingTo::Exit { .. }
         ));
     }
@@ -721,7 +721,7 @@ fn quic_rates_are_paired_per_link() {
         .config;
     assert_eq!(cfg.quic.send_mbps, 1000);
     assert!(matches!(
-        &cfg.forwardings[0].to,
+        cfg.forwardings[0].to.tree().unwrap(),
         ForwardingTo::Relay { quic: None, .. }
     ));
 }

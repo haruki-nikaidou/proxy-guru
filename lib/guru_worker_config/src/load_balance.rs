@@ -53,7 +53,9 @@ mod tests {
             receive_proxy_protocol: None,
             listen_as: ListenAs::Raw,
             quic: None,
-            to,
+            to: crate::To::Tree(to),
+            groups: Vec::new(),
+            upstreams: Vec::new(),
         }
     }
 
@@ -90,10 +92,12 @@ mod tests {
                     receive_proxy_protocol: Some(TcpProxyProtocol::V2),
                     listen_as: ListenAs::Raw,
                     quic: None,
-                    to: ForwardingTo::Exit {
+                    to: crate::To::Tree(ForwardingTo::Exit {
                         destination: Remote::parse("10.0.0.5:8080").unwrap(),
                         send_proxy_protocol: Some(TcpProxyProtocol::V1),
-                    },
+                    }),
+                    groups: Vec::new(),
+                    upstreams: Vec::new(),
                 },
                 Forwarding {
                     tag: "tls-relay".to_string(),
@@ -101,12 +105,14 @@ mod tests {
                     receive_proxy_protocol: None,
                     listen_as: ListenAs::Tls(tls_host()),
                     quic: None,
-                    to: ForwardingTo::Relay {
+                    to: crate::To::Tree(ForwardingTo::Relay {
                         protocol: RelayProtocol::TlsOverTcp,
                         destination: Remote::parse("relay.internal:9000").unwrap(),
                         sni: Some("relay.example.com".to_string()),
                         quic: None,
-                    },
+                    }),
+                    groups: Vec::new(),
+                    upstreams: Vec::new(),
                 },
                 Forwarding {
                     tag: "quic-lb".to_string(),
@@ -114,7 +120,7 @@ mod tests {
                     receive_proxy_protocol: None,
                     listen_as: ListenAs::Relay(RelayHost::Quic(tls_host())),
                     quic: None,
-                    to: ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
+                    to: crate::To::Tree(ForwardingTo::LoadBalance(Box::new(LoadBalanceGroup {
                         strategy: LoadBalanceStrategy::Fallback,
                         members: smallvec::smallvec![
                             ForwardingTo::Exit {
@@ -136,7 +142,9 @@ mod tests {
                                 ],
                             })),
                         ],
-                    })),
+                    }))),
+                    groups: Vec::new(),
+                    upstreams: Vec::new(),
                 },
             ],
         };

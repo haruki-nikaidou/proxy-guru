@@ -99,7 +99,7 @@ fn mobile_cloud_fails_over_from_gcore_to_aws() {
     let mobile = table(&compiled, "mobile");
     assert_eq!(mobile.len(), 1);
     let p = entry(mobile, "p");
-    assert_eq!(p.to, "g");
+    assert_eq!(route_to(p), "g");
     assert_eq!(
         group(p, "g").policy,
         Policy::Failover {
@@ -158,7 +158,7 @@ fn mobile_cloud_fails_over_from_gcore_to_aws() {
             full_chain: PathBuf::from("certs/relay/gc2-in/full_chain.pem"),
         }))
     );
-    assert_eq!(gc2.to, "u:gc2-x");
+    assert_eq!(route_to(gc2), "u:gc2-x");
     assert!(gc2.groups.is_empty());
     match &upstream(gc2, "gc2-x").target {
         Target::Exit(exit) => assert_eq!(exit.destination, socket("10.0.0.5:8080")),
@@ -182,7 +182,7 @@ fn mobile_cloud_fails_over_from_gcore_to_aws() {
 fn mobile_cloud_degrades_for_workers_without_route_tables() {
     let compiled = mobile_cloud(false).compile();
     let mobile = legacy(&compiled, "mobile");
-    let ForwardingTo::LoadBalance(top) = &mobile[0].to else {
+    let ForwardingTo::LoadBalance(top) = tree(&mobile[0]) else {
         panic!("expected a group: {:#?}", mobile[0].to);
     };
     assert_eq!(top.strategy, LoadBalanceStrategy::Fallback);
@@ -239,7 +239,7 @@ fn a_transit_pod_splits_evenly_between_two_exits() {
     let compiled = f.compile();
 
     let hk = entry(table(&compiled, "hk"), "hk-in");
-    assert_eq!(hk.to, "g");
+    assert_eq!(route_to(hk), "g");
     assert_eq!(
         group(hk, "g").policy,
         Policy::Balance {
@@ -247,7 +247,7 @@ fn a_transit_pod_splits_evenly_between_two_exits() {
             sticky: None
         }
     );
-    assert_eq!(entry(table(&compiled, "us"), "p").to, "u:p-hk");
+    assert_eq!(route_to(entry(table(&compiled, "us"), "p")), "u:p-hk");
 }
 
 // --- 3. Four parallel edges between two pods --------------------------------
@@ -716,7 +716,7 @@ fn a_pending_certificate_invalidates_only_its_pod() {
 
     let compiled = f.compile();
     let s1 = &compiled.servers[&ServerId::new("s1")];
-    assert_eq!(s1.forwardings.tags(), ["p"]);
+    assert_eq!(s1.tags(), ["p"]);
     assert_eq!(s1.invalid.len(), 1);
     assert_eq!(s1.invalid[0].pod, PodId::new("t"));
     assert!(matches!(
@@ -764,7 +764,7 @@ fn a_server_without_an_address_invalidates_the_pods_dialing_it() {
         Invalid::TargetWithoutAddress { pod, .. } if pod.as_str() == "q"
     ));
     assert_eq!(
-        compiled.servers[&ServerId::new("s2")].forwardings.tags(),
+        compiled.servers[&ServerId::new("s2")].tags(),
         ["q"],
         "q's own listener does not need its address"
     );
@@ -803,10 +803,7 @@ fn relays_over_tls_or_quic_need_the_internal_ca_and_a_leaf() {
     let mut no_leaf = build();
     no_leaf.certificates.relay.clear();
     let compiled = no_leaf.compile();
-    assert_eq!(
-        compiled.servers[&ServerId::new("s1")].forwardings.tags(),
-        ["p"]
-    );
+    assert_eq!(compiled.servers[&ServerId::new("s1")].tags(), ["p"]);
     assert!(matches!(
         compiled.servers[&ServerId::new("s2")].invalid[0].reason,
         Invalid::RelayCertificateMissing
@@ -814,10 +811,7 @@ fn relays_over_tls_or_quic_need_the_internal_ca_and_a_leaf() {
 
     no_leaf.certificates.assume_issued = true;
     let compiled = no_leaf.compile();
-    assert_eq!(
-        compiled.servers[&ServerId::new("s2")].forwardings.tags(),
-        ["l"]
-    );
+    assert_eq!(compiled.servers[&ServerId::new("s2")].tags(), ["l"]);
 }
 
 // --- 8. QUIC rates paired across a link -------------------------------------
@@ -898,7 +892,7 @@ fn weights_become_repeated_members_for_old_workers() {
 
     let compiled = f.compile();
     let edge = legacy(&compiled, "edge");
-    let ForwardingTo::LoadBalance(group) = &edge[0].to else {
+    let ForwardingTo::LoadBalance(group) = tree(&edge[0]) else {
         panic!("expected a group: {:#?}", edge[0].to);
     };
     assert_eq!(group.strategy, LoadBalanceStrategy::RoundRobin);
@@ -919,7 +913,7 @@ fn weights_become_repeated_members_for_old_workers() {
         sticky(weighted(vec![(2, leaf("p-a")), (1, leaf("p-b"))])),
     );
     let compiled = f.compile();
-    let ForwardingTo::LoadBalance(group) = &legacy(&compiled, "edge")[0].to else {
+    let ForwardingTo::LoadBalance(group) = tree(&legacy(&compiled, "edge")[0]) else {
         panic!("expected a group");
     };
     assert_eq!(group.strategy, LoadBalanceStrategy::IpHash);
