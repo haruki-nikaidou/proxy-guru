@@ -5,6 +5,7 @@
 //! the claim that keeps a pass at-most-once per interval.
 
 pub mod acme;
+pub mod country;
 pub mod derive;
 pub mod health;
 pub mod live;

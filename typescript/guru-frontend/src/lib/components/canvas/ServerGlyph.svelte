@@ -4,7 +4,7 @@ import ServerIcon from '@lucide/svelte/icons/server';
 import { browser } from '$app/env';
 
 /**
- * The operator-chosen server icon, rendered on demand through Iconify.
+ * The server icon, rendered on demand through Iconify.
  *
  * Only two icon sets are offered, each behind a short prefix, so the field stays
  * a small vocabulary instead of the whole Iconify index:
@@ -12,18 +12,30 @@ import { browser } from '$app/env';
  * - `flag:us`     → `circle-flags:us`
  * - `logo:tauri`  → `thesvg-color:tauri`
  *
- * Anything else — an unknown prefix, a raw Iconify name, a name the set does not
- * contain, an empty field — renders the default glyph, so a typo can never blank
- * out a node header. Both branches are 1.5rem tall, so the slot never resizes
- * while the operator types.
+ * An empty field shows the flag of `country` — the country of the server's IPv4
+ * address — so every server gets a flag without anyone typing one; whatever the
+ * operator types overrides it. Anything that does not resolve — an unknown
+ * prefix, a raw Iconify name, a name the set does not contain, an empty field
+ * with no country — renders the default glyph, so a typo can never blank out a
+ * node header. Both branches are 1.5rem tall, so the slot never resizes while
+ * the operator types.
  */
 const SETS: Record<string, string> = { flag: 'circle-flags', logo: 'thesvg-color' };
 
-let { icon = '', class: className = '' }: { icon?: string; class?: string } = $props();
+let {
+	icon = '',
+	country = '',
+	class: className = ''
+}: { icon?: string; country?: string; class?: string } = $props();
 
-/** The full Iconify name, or `null` when the field is empty or malformed. */
+/** The icon to draw: the operator's, else the flag of a two-letter country. */
+const chosen = $derived(
+	icon.trim() || (/^[a-z]{2}$/i.test(country) ? `flag:${country.toLowerCase()}` : '')
+);
+
+/** The full Iconify name, or `null` when there is no icon or it is malformed. */
 const resolved = $derived.by(() => {
-	const match = /^([a-z]+):([a-z0-9-]+)$/.exec(icon.trim());
+	const match = /^([a-z]+):([a-z0-9-]+)$/.exec(chosen);
 	const set = match ? SETS[match[1]] : undefined;
 	return set ? `${set}:${match?.[2]}` : null;
 });

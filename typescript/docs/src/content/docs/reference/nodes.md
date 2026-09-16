@@ -171,13 +171,18 @@ channels yet*.
 One machine running `guru-worker`. A server is not a node spec but a container: it holds every
 **pod** on that machine plus the machine's **universal pod**. Pods never appear as separate cards.
 
-**Icon.** The header glyph is yours to pick, from two icon sets behind short prefixes: `flag:<code>`
-for a country flag (`flag:us`, `flag:jp`) and `logo:<name>` for a brand logo (`logo:tauri`,
-`logo:svelte`). Names come from [circle-flags](https://icon-sets.iconify.design/circle-flags/) and
+**Icon.** Left empty, the header shows the flag of the country the server's IPv4 address is in:
+the master looks each address up once through `country_lookup_url` (see the
+[configuration reference](/reference/configuration/#module-configuration)) and again when it
+changes, so the flag follows the card's IPv4 line. Whatever you type overrides it, from two icon
+sets behind short prefixes: `flag:<code>` for a country flag (`flag:us`, `flag:jp`) and
+`logo:<name>` for a brand logo (`logo:tauri`, `logo:svelte`). Names come from
+[circle-flags](https://icon-sets.iconify.design/circle-flags/) and
 [theSVG Color](https://icon-sets.iconify.design/thesvg-color/); the icon itself is fetched on demand
-from the Iconify API, so an air-gapped browser keeps the default glyph. Anything else — a raw
-Iconify name, an unknown prefix, a name the set does not have, an empty field — also renders the
-default server glyph, and the inspector previews the result next to the field while you type.
+from the Iconify API, so an air-gapped browser keeps the default glyph. Anything that does not
+resolve — a raw Iconify name, an unknown prefix, a name the set does not have, an empty field whose
+country is not known yet — renders the default server glyph, and the inspector previews the result
+next to the field while you type.
 
 The header badge is health, filled like a traffic light: a green `Online`, an amber `Degraded`
 (apply error, failed pods, or a revision lagging past the grace period), a red `Offline` (nothing

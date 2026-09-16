@@ -14,6 +14,9 @@ use std::time::Duration;
 pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 pub const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
     "https://acme-staging-v02.api.letsencrypt.org/directory";
+/// country.is: free, keyless, no quota (10 requests a second per client), open
+/// source and self-hostable; answers `{"ip":"…","country":"HK"}`.
+pub const DEFAULT_COUNTRY_LOOKUP_URL: &str = "https://api.country.is/{ip}";
 
 /// Operator-tunable orchestration settings: health thresholds and retention,
 /// ACME defaults, relay-certificate lifetimes.
@@ -80,6 +83,17 @@ pub struct OrchestrationConfig {
     pub agent_download_path: String,
     /// How often a live worker asks whether an update was requested for it.
     pub agent_update_poll_secs: u64,
+    /// Where the country of a server's IPv4 address is looked up: `{ip}` is
+    /// replaced by the address. The answer is either a JSON object with a
+    /// two-letter `country` field (country.is, GeoJS's `.json`) or just the two
+    /// letters (GeoJS, ipinfo's `/country`). Empty turns the lookup off.
+    pub country_lookup_url: String,
+    /// How often servers are checked for an IPv4 address whose country is not
+    /// known yet; a new or changed address is looked up on the next pass.
+    pub country_lookup_interval_secs: u64,
+    /// After a failed lookup, the same address is not asked about again for this
+    /// long.
+    pub country_lookup_retry_after_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -105,6 +119,9 @@ impl Default for OrchestrationConfig {
             agent_public_base_url: String::new(),
             agent_download_path: "/agent".to_string(),
             agent_update_poll_secs: 60,
+            country_lookup_url: DEFAULT_COUNTRY_LOOKUP_URL.to_string(),
+            country_lookup_interval_secs: 60,
+            country_lookup_retry_after_secs: 60 * 60,
         }
     }
 }
@@ -191,6 +208,14 @@ impl OrchestrationConfig {
 
     pub fn relay_rotation_interval(&self) -> Duration {
         Duration::from_secs(self.relay_rotation_interval_secs)
+    }
+
+    pub fn country_lookup_interval(&self) -> Duration {
+        Duration::from_secs(self.country_lookup_interval_secs)
+    }
+
+    pub fn country_lookup_retry_after(&self) -> Duration {
+        Duration::from_secs(self.country_lookup_retry_after_secs)
     }
 
     /// The keep-alive cadence of a live stream, never zero:

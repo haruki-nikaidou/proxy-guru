@@ -12,7 +12,7 @@
 //! consumers, or late after a backlog.
 //!
 //! Deciding *whether* a signal is due is pure, and publishing is the signal's own
-//! `send`: there is no state here beyond the five timestamps.
+//! `send`: there is no state here beyond one timestamp per job.
 
 use std::marker::PhantomData;
 use std::task::Poll;

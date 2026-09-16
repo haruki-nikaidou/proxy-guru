@@ -29,15 +29,12 @@ pub const DEFAULT_PUBLIC_IPV4_URLS: &str =
     "https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com";
 pub const DEFAULT_PUBLIC_IPV6_URLS: &str =
     "https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip";
-/// Answers with the ISO 3166-1 alpha-2 country of the caller's public address.
-pub const DEFAULT_GEO_URL: &str = "https://ipinfo.io/country";
 
 /// Where discovery looks; every field may be empty to disable that lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sources {
     pub ipv4_urls: String,
     pub ipv6_urls: String,
-    pub geo_url: String,
 }
 
 impl Sources {
@@ -46,7 +43,6 @@ impl Sources {
         Self {
             ipv4_urls: String::new(),
             ipv6_urls: String::new(),
-            geo_url: String::new(),
         }
     }
 }
@@ -57,8 +53,6 @@ pub struct Discovered {
     pub public_v6: Option<Ipv6Addr>,
     /// Non-loopback, non-link-local interface addresses, sorted, deduplicated.
     pub interfaces: Vec<IpAddr>,
-    /// ISO 3166-1 alpha-2 country of the public address, upper-case.
-    pub country: Option<String>,
 }
 
 impl Discovered {
@@ -67,7 +61,6 @@ impl Discovered {
             public_v4: self.public_v4.map(|a| a.to_string()).unwrap_or_default(),
             public_v6: self.public_v6.map(|a| a.to_string()).unwrap_or_default(),
             interfaces: self.interfaces.iter().map(ToString::to_string).collect(),
-            country: self.country.clone().unwrap_or_default(),
         }
     }
 }
@@ -89,10 +82,9 @@ pub async fn discover(sources: &Sources) -> Discovered {
     let v4 = split_urls(&sources.ipv4_urls);
     let v6 = split_urls(&sources.ipv6_urls);
     let start = CURSOR.fetch_add(1, Ordering::Relaxed);
-    let (public_v4, public_v6, country) = tokio::join!(
+    let (public_v4, public_v6) = tokio::join!(
         first_answer(&v4, start, IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         first_answer(&v6, start, IpAddr::V6(Ipv6Addr::UNSPECIFIED)),
-        country(sources.geo_url.trim()),
     );
     let public_v4 = match public_v4 {
         Some(IpAddr::V4(a)) => Some(a),
@@ -106,37 +98,7 @@ pub async fn discover(sources: &Sources) -> Discovered {
         public_v4,
         public_v6,
         interfaces: interfaces(),
-        country,
     }
-}
-
-/// The country code of whatever address `url` sees us from (the default routes
-/// over IPv4 first, like relays do); best effort like every lookup here.
-async fn country(url: &str) -> Option<String> {
-    if url.is_empty() {
-        return None;
-    }
-    let client = reqwest::Client::builder()
-        .timeout(LOOKUP_TIMEOUT)
-        .connect_timeout(LOOKUP_TIMEOUT)
-        .user_agent("guru-worker")
-        .build()
-        .ok()?;
-    let body = match client
-        .get(url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        Ok(response) => response.text().await.ok()?,
-        Err(error) => {
-            tracing::debug!(url, error = %error, "geo lookup failed");
-            return None;
-        }
-    };
-    let code = body.trim().to_ascii_uppercase();
-    // Two letters, nothing else: a captive portal or an error page is not a country.
-    (code.len() == 2 && code.bytes().all(|b| b.is_ascii_uppercase())).then_some(code)
 }
 
 /// Walks the providers from a rotating start until one answers for `family`.
@@ -234,7 +196,6 @@ mod tests {
         let started = std::time::Instant::now();
         let found = discover(&Sources::none()).await;
         assert!(found.public_v4.is_none() && found.public_v6.is_none());
-        assert!(found.country.is_none());
         assert!(started.elapsed() < LOOKUP_TIMEOUT);
     }
 

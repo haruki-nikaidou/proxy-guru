@@ -80,9 +80,12 @@ const channelOf = (podId: string) => data.channels[podId];
 	background="bg-canvas-server"
 	width="w-[300px]"
 >
-	<!-- `icon` names an Iconify icon (`flag:*` / `logo:*`); invalid or empty
-	     falls back to the default server glyph. -->
-	{#snippet icon()}<ServerGlyph icon={data.server.icon} />{/snippet}
+	<!-- `icon` names an Iconify icon (`flag:*` / `logo:*`); empty shows the flag
+	     of the IPv4 address's country, and anything unresolvable the default
+	     server glyph. -->
+	{#snippet icon()}
+		<ServerGlyph icon={data.server.icon} country={data.server.addresses.country} />
+	{/snippet}
 	{#snippet badge()}
 		<Badge variant={health.variant} class="shrink-0 {health.class}">
 			{serverHealthLabel(data.server.healthStatus)}

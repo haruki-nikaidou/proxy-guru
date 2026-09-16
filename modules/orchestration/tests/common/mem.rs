@@ -256,6 +256,9 @@ impl Builder {
             agent_update_error: None,
             agent_key_digest: None,
             agent_key_issued_at: None,
+            country: None,
+            country_address: None,
+            country_checked_at: None,
         });
         id
     }

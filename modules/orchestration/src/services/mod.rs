@@ -19,6 +19,7 @@ pub mod ca;
 pub mod canvas;
 pub mod config;
 pub mod converge;
+pub mod country;
 pub mod derive;
 pub mod dns;
 pub mod edge;

@@ -193,3 +193,21 @@ pub struct RenewCertificatesSignal {
 }
 
 interval_signal!(RenewCertificatesSignal, "renew_certificates", 60);
+
+/// **Periodic signal**
+///
+/// Look up the country of every server IPv4 address that has none: a new or
+/// changed address, or one whose last lookup failed long enough ago.
+///
+/// Published by: the `cron` scheduler, every 60 s.
+/// Consumed by: [`crate::hooks::country::CountryCronHook`].
+/// Route: exchange `orchestration` (direct), key `resolve_server_countries`.
+#[derive(
+    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
+)]
+pub struct ResolveServerCountriesSignal {
+    /// The scheduling tick, as a Unix timestamp in seconds.
+    pub tick_unix_secs: i64,
+}
+
+interval_signal!(ResolveServerCountriesSignal, "resolve_server_countries", 60);

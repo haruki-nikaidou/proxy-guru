@@ -71,7 +71,7 @@ on the distribute node re-rolls the landing ports, since a listener cannot
 change protocol in place.
 
 A server's addresses are learned, not typed: the worker reports its public
-IPv4/IPv6 (looked up through `--public-ipv4-urls` / `--public-ipv6-urls`), its country (`--geo-url`) and interface addresses on
+IPv4/IPv6 (looked up through `--public-ipv4-urls` / `--public-ipv6-urls`) and interface addresses on
 `Register` and whenever they change; the master records the peer address the
 registration came from (`x-real-ip` behind the documented proxy, see
 `trust_proxy_address_headers`). Operators may pin either family
@@ -81,6 +81,13 @@ dials is `ServerEntity::effective_address`: v4 pin → reported v4 → observed 
 `advertise_ip` instead, and a relay's `override_ip_address` still wins. A server
 with no address at all is a warning, and every pod on *other* servers that dials
 it stays in `invalid_pods` until one is known.
+
+The dashboard's flag is the country of the first IPv4 of that chain
+(`ServerEntity::v4_address`). No worker reports it: the `resolve_server_countries`
+pass looks each address up through `country_lookup_url` once, again when it
+changes and after a failure's `country_lookup_retry_after_secs`, and stores the
+answer with the address it belongs to (`country_address`), so a server whose
+address moved never shows the old address's flag.
 
 Listener identity — the `ListenerCap` convergence matches on — is
 `(server, port, protocol)`, never an address, so an address change re-derives

@@ -33,10 +33,11 @@ use kanau::message::MessageDe;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::events::{
-    CanvasDirty, DeriveStaleCanvasesSignal, RenewCertificatesSignal, RotateRelayCertificatesSignal,
-    SweepLivenessSignal, TrimHealthHistorySignal,
+    CanvasDirty, DeriveStaleCanvasesSignal, RenewCertificatesSignal, ResolveServerCountriesSignal,
+    RotateRelayCertificatesSignal, SweepLivenessSignal, TrimHealthHistorySignal,
 };
 use orchestration::hooks::acme::AcmeCronHook;
+use orchestration::hooks::country::CountryCronHook;
 use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::hooks::live::{LiveBus, run_redis_subscriber};
@@ -48,6 +49,7 @@ use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
 use orchestration::services::canvas::CanvasService;
 use orchestration::services::config::OrchestrationConfigService;
+use orchestration::services::country::CountryService;
 use orchestration::services::dns::DnsProviderService;
 use orchestration::services::edge::EdgeService;
 use orchestration::services::health::HealthService;
@@ -405,6 +407,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         WorkerMode::Consumer => {
+            let country = CountryCronHook {
+                country: CountryService {
+                    db: db.clone(),
+                    config: config.clone(),
+                    http: reqwest::Client::new(),
+                },
+            };
             let acme = AcmeCronHook {
                 acme: AcmeService {
                     db: db.clone(),
@@ -425,6 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bind_consumer::<SweepLivenessSignal, _>(&pool, &health).await?,
                 bind_consumer::<TrimHealthHistorySignal, _>(&pool, &health).await?,
                 bind_consumer::<RenewCertificatesSignal, _>(&pool, &acme).await?,
+                bind_consumer::<ResolveServerCountriesSignal, _>(&pool, &country).await?,
             ];
             let lost = tokio::select! {
                 () = shutdown() => false,
@@ -484,8 +494,9 @@ async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     declare_queue::<SweepLivenessSignal, HealthCronHook>(&pool).await?;
     declare_queue::<TrimHealthHistorySignal, HealthCronHook>(&pool).await?;
     declare_queue::<RenewCertificatesSignal, AcmeCronHook>(&pool).await?;
+    declare_queue::<ResolveServerCountriesSignal, CountryCronHook>(&pool).await?;
 
-    // One clock per job, so a scan that visits all five does not flatten their
+    // One clock per job, so a scan that visits all six does not flatten their
     // cadences: the hourly rotation fires on one scan in 720, not on every scan
     // that the 30 s sweep fires on.
     let mut derive_stale = IntervalJob::<DeriveStaleCanvasesSignal>::default();
@@ -493,6 +504,7 @@ async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut sweep_liveness = IntervalJob::<SweepLivenessSignal>::default();
     let mut trim_health = IntervalJob::<TrimHealthHistorySignal>::default();
     let mut renew_certificates = IntervalJob::<RenewCertificatesSignal>::default();
+    let mut resolve_countries = IntervalJob::<ResolveServerCountriesSignal>::default();
 
     // `Delay` rather than the default burst: a scan that ran late has nothing to
     // catch up on, because a job compares timestamps instead of counting ticks.
@@ -506,6 +518,7 @@ async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         sweep_liveness_secs = SweepLivenessSignal::EVERY_SECS,
         trim_health_history_secs = TrimHealthHistorySignal::EVERY_SECS,
         renew_certificates_secs = RenewCertificatesSignal::EVERY_SECS,
+        resolve_server_countries_secs = ResolveServerCountriesSignal::EVERY_SECS,
         "scheduling periodic execution signals"
     );
 
@@ -525,6 +538,7 @@ async fn run_cron(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     publish_due(&mut sweep_liveness, &pool, now).await;
                     publish_due(&mut trim_health, &pool, now).await;
                     publish_due(&mut renew_certificates, &pool, now).await;
+                    publish_due(&mut resolve_countries, &pool, now).await;
                 }
             }
         }

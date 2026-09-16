@@ -72,6 +72,7 @@ PostgreSQL によってキャンセルされ、エッジはそれを障害では
 | `trim_health_history` | `guru_orchestration_trim_health_history` | 300 秒 | `health_retention_interval_secs`（300） | `server_health_ttl_secs` / `node_health_ttl_secs` より古い `server_health_record` / `node_health_record` 行を削除します |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | 60 秒 | `acme_interval_secs`（60） | ACME の発行と更新: 有効期限の `acme_renew_before_secs` 前に更新し、失敗した試行は `acme_retry_after_secs` 後に再試行します |
 | `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 秒 | `relay_rotation_interval_secs`（3600） | 有効期限まで `relay_cert_renew_before_secs` 以内になったリレーのリーフ証明書を再発行し、そのキャンバスを再導出します |
+| `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 秒 | `country_lookup_interval_secs`（60） | 国がまだ分からないサーバーの IPv4 アドレスについて、`country_lookup_url` で国を調べます。新しいアドレスや変わったアドレスはすぐに、失敗した照会は `country_lookup_retry_after_secs` 後に再度調べます |
 
 層は 2 つあり、しかも同じ数字ではありません。スケジューラーは設定をまったく読まないため、真ん中の列の固定周期で
 publish します。一方 consumer は、何かを始める前に各実行を claim します — ジョブごとに `orchestration_job_run` 行を
@@ -99,7 +100,6 @@ publish します。一方 consumer は、何かを始める前に各実行を c
 | `--health-interval` | `GURU_HEALTH_INTERVAL_SECS` | `15`（ヘルスレポートの送信間隔（秒）。エージェントモード。1 以上である必要があります） |
 | `--public-ipv4-urls` | `GURU_PUBLIC_IPV4_URLS` | `https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com`（エージェントモード。呼び出し元の IPv4 をテキストで返すプロバイダーをカンマ区切りで指定します。開始位置をローテーションしながら順に試し、それぞれ 3 秒。60 秒ごとに再確認し、変化したら報告します。空にするとルックアップを無効化しますが、インターフェイスのアドレスは引き続き報告されます） |
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip`（IPv6 についての同じ設定） |
-| `--geo-url` | `GURU_GEO_URL` | `https://ipinfo.io/country`（エージェントモード。パブリックアドレスの 2 文字の国コードを返し、サーバーの横に表示されます。空にすると無効化） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 
 `--config` と `--master` は相互排他で、どちらも指定しない場合、ワーカーはデフォルトパス
@@ -355,7 +355,7 @@ destination = "backend.internal:8080"
 | キー | 構造体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます）、`country_lookup_url`（デフォルトは `https://api.country.is/{ip}`: サーバーの国旗のために IPv4 アドレスの国を調べる先で、`{ip}` がアドレスに置き換わります。応答は 2 文字の `country` フィールドを持つ JSON オブジェクトでも 2 文字だけでもよいので、`https://get.geojs.io/v1/ip/country/{ip}` も使えます。空にすると照会しません）、`country_lookup_interval_secs`（デフォルトは 60）、`country_lookup_retry_after_secs`（デフォルトは 3600: 失敗した照会の後、同じアドレスを再び調べるまでの時間） |
 
 `manage-tool db migrate` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
 `manage-tool config list` で保存されている内容を確認できます。`list` と `get` は行をそのまま出力し、
@@ -367,7 +367,7 @@ destination = "backend.internal:8080"
 manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 ```
 
-5 つの `*_interval_secs` フィールドは、定期ジョブが実際に実行され得る頻度です
+6 つの `*_interval_secs` フィールドは、定期ジョブが実際に実行され得る頻度です
 （[スケジューリングと実行](#スケジューリングと実行)）。これらが環境変数ではなくここにあるのは、フリート
 全体で値が一致していなければならないからです。間隔を強制する claim は、すべての consumer が共有する
 1 つのデータベース行です。

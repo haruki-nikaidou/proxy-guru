@@ -143,8 +143,13 @@ const removeServer = () =>
 		<!-- The preview is the only feedback that a name resolves: an unknown one
 		     shows the default glyph instead of the icon. -->
 		<div class="flex items-center gap-2">
-			<Input id="server-icon" bind:value={icon} disabled={!editable} />
-			<ServerGlyph {icon} />
+			<Input
+				id="server-icon"
+				bind:value={icon}
+				disabled={!editable}
+				placeholder={addresses.country ? `flag:${addresses.country.toLowerCase()}` : undefined}
+			/>
+			<ServerGlyph {icon} country={addresses.country} />
 		</div>
 		<Field.FieldDescription>{m.editor_server_icon_hint()}</Field.FieldDescription>
 	</Field.Field>
@@ -248,8 +253,8 @@ const removeServer = () =>
 	{#if addresses.effectiveAddress}
 		<span class="font-mono">{addresses.effectiveAddress}</span>
 		<Badge variant="outline" class="ms-1">{sourceLabel}</Badge>
-		{#if addresses.reportedCountry}
-			<Badge variant="secondary" class="ms-1 font-mono">{addresses.reportedCountry}</Badge>
+		{#if addresses.country}
+			<Badge variant="secondary" class="ms-1 font-mono">{addresses.country}</Badge>
 		{/if}
 	{:else}
 		<span class="text-muted-foreground">{m.editor_server_address_none()}</span>

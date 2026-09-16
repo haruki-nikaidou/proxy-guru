@@ -65,6 +65,7 @@ Worker 实际运行的内容。
 | `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `node_health_ttl_secs` 的 `server_health_record` / `node_health_record` 记录 |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs`（60） | ACME 签发与续期：在到期前 `acme_renew_before_secs` 续期，失败后经过 `acme_retry_after_secs` 重试 |
 | `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs`（3600） | 重新签发距到期不足 `relay_cert_renew_before_secs` 的中继叶证书，并重新派生其所属画布 |
+| `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 s | `country_lookup_interval_secs`（60） | 通过 `country_lookup_url` 查询还不知道国家的服务器 IPv4 地址：新地址或变化了的地址立即查询，查询失败的地址经过 `country_lookup_retry_after_secs` 后再查 |
 
 这是两层机制，而且两个数字并不相同。调度器按中间那一列的固定节奏发布信号，因为它不读取任何配置；
 消费者在真正动手之前会先声明这一次运行——每个任务一行 `orchestration_job_run`，通过 compare-and-set
@@ -90,7 +91,6 @@ Worker 实际运行的内容。
 | `--health-interval` | `GURU_HEALTH_INTERVAL_SECS` | `15`（两次健康上报之间的秒数；agent 模式；必须 ≥ 1） |
 | `--public-ipv4-urls` | `GURU_PUBLIC_IPV4_URLS` | `https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com`（agent 模式；以逗号分隔的服务方列表，它们以纯文本返回调用方的 IPv4 地址，从一个轮转的起点开始依次尝试，每个 3 秒；每 60 秒重新检查一次，发生变化时上报；留空则禁用该查询，网卡地址仍会照常上报） |
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip`（IPv6 同上） |
-| `--geo-url` | `GURU_GEO_URL` | `https://ipinfo.io/country`（agent 模式；返回公网地址所属国家的两字母代码，显示在服务器旁边；留空则禁用） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 
 `--config` 和 `--master` 互斥；两者都不给出时，Worker 以独立模式运行，并使用默认路径
@@ -326,7 +326,7 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 | 键 | 结构体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址）、`country_lookup_url`（默认 `https://api.country.is/{ip}`：为服务器的国旗查询其 IPv4 地址所在国家的地址，`{ip}` 会替换成该地址；返回值可以是带两字母 `country` 字段的 JSON 对象，也可以只是两个字母，所以 `https://get.geojs.io/v1/ip/country/{ip}` 也能用；留空则不查询）、`country_lookup_interval_secs`（默认 60）、`country_lookup_retry_after_secs`（默认 3600：查询失败后，要隔多久才再次查询同一个地址） |
 
 在 `manage-tool db migrate` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
 查看已存储的内容。`list` 和 `get` 会原样打印该行 —— 它们不做解码，因此即便某份文档会让 master 启动时
@@ -337,7 +337,7 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 ```
 
-那五个 `*_interval_secs` 字段规定了周期任务实际允许运行的频率
+那六个 `*_interval_secs` 字段规定了周期任务实际允许运行的频率
 （见[调度与执行](#调度与执行)）。它们放在这里而不是环境变量里，是因为整个集群必须就它们达成一致：
 强制执行间隔的那次声明就是所有消费者共享的一行数据库记录。
 

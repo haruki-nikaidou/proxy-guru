@@ -127,7 +127,7 @@
 	"editor_members_hint_distribute": "這是你定的規則：每個成員一條匯流排出，名字由你填。從成員拖到伺服器或下一級分發節點的「+ 匯流排」把手。改名不會斷線；移除成員前先斷開它的匯流排。",
 	"editor_members_hint_aggregate": "這是你定的規則：每個成員一條匯流排入，名字由你填。從伺服器的「匯流排出」拖到成員上。改名不會斷線；移除成員前先斷開它的匯流排。",
 	"editor_server_icon": "圖示",
-	"editor_server_icon_hint": "選填。flag:us 顯示國旗，logo:tauri 顯示品牌圖示。其他內容會回退為預設圖示。",
+	"editor_server_icon_hint": "留空時顯示 IPv4 位址所在國家的國旗。flag:us 顯示國旗，logo:tauri 顯示品牌圖示；其他內容會回退為預設圖示。",
 	"editor_server_log_level": "日誌等級",
 	"editor_server_ipv6": "IPv6 解析",
 	"editor_server_ipv6_hint": "僅影響出口目標為網域名稱時解析成 IPv4 或 IPv6，目前沒有其他作用，一般無需變更。",

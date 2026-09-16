@@ -127,7 +127,7 @@
 	"editor_members_hint_distribute": "这是你定的规则：每个成员一条总线出，名字由你填。从成员拖到服务器或下一级分发节点的\"+ 总线\"把手。改名不掉线；删除成员前先断开它的总线。",
 	"editor_members_hint_aggregate": "这是你定的规则：每个成员一条总线入，名字由你填。从服务器的\"总线出\"拖到成员上。改名不掉线；删除成员前先断开它的总线。",
 	"editor_server_icon": "图标",
-	"editor_server_icon_hint": "可选。flag:us 显示国旗，logo:tauri 显示品牌图标。其它内容会回退到默认图标。",
+	"editor_server_icon_hint": "留空时显示 IPv4 地址所在国家的国旗。flag:us 显示国旗，logo:tauri 显示品牌图标；其它内容会回退到默认图标。",
 	"editor_server_log_level": "日志级别",
 	"editor_server_ipv6": "IPv6 解析",
 	"editor_server_ipv6_hint": "仅影响出口目标为域名时解析成 IPv4 还是 IPv6，目前没有其它作用，一般无需改动。",

@@ -1217,8 +1217,12 @@ export interface ServerAddresses {
   observedAt: string;
   effectiveAddress: string;
   effectiveSource: AddressSource;
-  /** ISO 3166-1 alpha-2, as the worker reported it; empty when unknown. */
-  reportedCountry: string;
+  /**
+   * ISO 3166-1 alpha-2 country of the server's IPv4 address (the first IPv4 of
+   * the pinned, reported, observed chain), as the master looked it up; empty
+   * until a lookup for that address succeeded.
+   */
+  country: string;
 }
 
 export interface Server {
@@ -3968,7 +3972,7 @@ function createBaseServerAddresses(): ServerAddresses {
     observedAt: "",
     effectiveAddress: "",
     effectiveSource: 0,
-    reportedCountry: "",
+    country: "",
   };
 }
 
@@ -4001,8 +4005,8 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     if (message.effectiveSource !== 0) {
       writer.uint32(72).int32(message.effectiveSource);
     }
-    if (message.reportedCountry !== "") {
-      writer.uint32(82).string(message.reportedCountry);
+    if (message.country !== "") {
+      writer.uint32(82).string(message.country);
     }
     return writer;
   },
@@ -4091,7 +4095,7 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
             break;
           }
 
-          message.reportedCountry = reader.string();
+          message.country = reader.string();
           continue;
         }
       }
@@ -4138,11 +4142,7 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
         : isSet(object.effective_source)
         ? addressSourceFromJSON(object.effective_source)
         : 0,
-      reportedCountry: isSet(object.reportedCountry)
-        ? globalThis.String(object.reportedCountry)
-        : isSet(object.reported_country)
-        ? globalThis.String(object.reported_country)
-        : "",
+      country: isSet(object.country) ? globalThis.String(object.country) : "",
     };
   },
 
@@ -4175,8 +4175,8 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     if (message.effectiveSource !== 0) {
       obj.effectiveSource = addressSourceToJSON(message.effectiveSource);
     }
-    if (message.reportedCountry !== "") {
-      obj.reportedCountry = message.reportedCountry;
+    if (message.country !== "") {
+      obj.country = message.country;
     }
     return obj;
   },
@@ -4195,7 +4195,7 @@ export const ServerAddresses: MessageFns<ServerAddresses> = {
     message.observedAt = object.observedAt ?? "";
     message.effectiveAddress = object.effectiveAddress ?? "";
     message.effectiveSource = object.effectiveSource ?? 0;
-    message.reportedCountry = object.reportedCountry ?? "";
+    message.country = object.country ?? "";
     return message;
   },
 };

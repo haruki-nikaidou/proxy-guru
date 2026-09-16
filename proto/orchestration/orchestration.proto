@@ -298,8 +298,10 @@ message ServerAddresses {
   string observed_at = 7;
   string effective_address = 8;
   AddressSource effective_source = 9;
-  // ISO 3166-1 alpha-2, as the worker reported it; empty when unknown.
-  string reported_country = 10;
+  // ISO 3166-1 alpha-2 country of the server's IPv4 address (the first IPv4 of
+  // the pinned, reported, observed chain), as the master looked it up; empty
+  // until a lookup for that address succeeded.
+  string country = 10;
 }
 message Server {
   string id = 1;

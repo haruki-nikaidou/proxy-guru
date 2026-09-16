@@ -103,7 +103,7 @@ const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddress
 	observedAt: addresses?.observedAt ?? '',
 	effectiveAddress: addresses?.effectiveAddress ?? '',
 	effectiveSource: toAddressSource(addresses?.effectiveSource ?? AddressSource.UNSPECIFIED),
-	reportedCountry: addresses?.reportedCountry ?? ''
+	country: addresses?.country ?? ''
 });
 
 /** The 12-colour channel palette: `--channel-0` … `--channel-11`. */

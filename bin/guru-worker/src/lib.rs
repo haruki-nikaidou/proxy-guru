@@ -201,7 +201,6 @@ async fn run_agent(cli: cli::Cli, master: String) -> Result<(), BoxError> {
             sources: addresses::Sources {
                 ipv4_urls: cli.public_ipv4_urls.clone(),
                 ipv6_urls: cli.public_ipv6_urls.clone(),
-                geo_url: cli.geo_url.clone(),
             },
             update_poll: std::time::Duration::from_secs(DEFAULT_UPDATE_POLL_SECS),
             self_update: !cli.no_self_update,

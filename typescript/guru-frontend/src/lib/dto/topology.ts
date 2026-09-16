@@ -232,8 +232,12 @@ export type ServerAddressesDto = {
 	/** What other servers dial by default; empty when nothing is known yet. */
 	effectiveAddress: string;
 	effectiveSource: AddressSourceName;
-	/** ISO 3166-1 alpha-2 of the public address, as the worker reported it. */
-	reportedCountry: string;
+	/**
+	 * ISO 3166-1 alpha-2 of the server's IPv4 address, as the control plane
+	 * looked it up; empty until a lookup for that address succeeded. The card's
+	 * flag falls back to it when no icon is set.
+	 */
+	country: string;
 };
 /**
  * How the control plane last judged a worker. `unknown` covers both "never

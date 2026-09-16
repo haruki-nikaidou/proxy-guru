@@ -8,7 +8,7 @@ use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 table_record!(ServerId, "orchestration_server");
 
@@ -80,6 +80,15 @@ pub struct ServerEntity {
     /// place of an operator API key. Only the digest is ever stored.
     pub agent_key_digest: Option<String>,
     pub agent_key_issued_at: Option<DateTime<Utc>>,
+    /// ISO 3166-1 alpha-2 country of `country_address`, upper-case, as the master
+    /// looked it up; `None` until a lookup for that address succeeded.
+    pub country: Option<String>,
+    /// The IPv4 address `country` belongs to. Compared with [`Self::v4_address`]
+    /// before the country is shown, so a server whose address moved never wears
+    /// the old address's flag.
+    pub country_address: Option<String>,
+    /// The last lookup for `country_address`, successful or not.
+    pub country_checked_at: Option<DateTime<Utc>>,
 }
 
 /// The address set a worker discovers about itself and sends with `Register`
@@ -89,10 +98,6 @@ pub struct ReportedAddresses {
     pub public_v4: Option<String>,
     pub public_v6: Option<String>,
     pub interfaces: Vec<String>,
-    /// ISO 3166-1 alpha-2 country of the public address, when the worker could
-    /// look it up.
-    #[serde(default)]
-    pub country: Option<String>,
     pub reported_at: DateTime<Utc>,
 }
 
@@ -102,7 +107,6 @@ impl ReportedAddresses {
         self.public_v4 == other.public_v4
             && self.public_v6 == other.public_v6
             && self.interfaces == other.interfaces
-            && self.country == other.country
     }
 }
 
@@ -115,15 +119,14 @@ pub enum AddressSource {
 }
 
 impl ServerEntity {
-    /// The address other servers dial by default: the IPv4 override, else the
-    /// reported public IPv4, else the address the master observed, else the same
-    /// chain for IPv6. IPv4 first because that is what most peers can reach; a
-    /// pod that should be dialed over IPv6 sets its own `advertise_ip`.
-    pub fn effective_address(&self) -> Option<(IpAddr, AddressSource)> {
+    /// Every address a peer could dial, most preferred first: the IPv4 override,
+    /// the reported public IPv4, the observed address when it is IPv4, then the
+    /// same chain for IPv6. A slot that is empty or does not parse is `None`.
+    fn address_candidates(&self) -> [(Option<IpAddr>, AddressSource); 6] {
         let parse = |s: &Option<String>| s.as_deref().and_then(|v| v.parse::<IpAddr>().ok());
         let reported = self.reported_addresses.as_ref();
         let observed = parse(&self.observed_address);
-        let candidates = [
+        [
             (parse(&self.override_v4), AddressSource::Override),
             (
                 reported.and_then(|r| parse(&r.public_v4)),
@@ -136,10 +139,37 @@ impl ServerEntity {
                 AddressSource::Reported,
             ),
             (observed.filter(IpAddr::is_ipv6), AddressSource::Observed),
-        ];
-        candidates
+        ]
+    }
+
+    /// The address other servers dial by default: the IPv4 override, else the
+    /// reported public IPv4, else the address the master observed, else the same
+    /// chain for IPv6. IPv4 first because that is what most peers can reach; a
+    /// pod that should be dialed over IPv6 sets its own `advertise_ip`.
+    pub fn effective_address(&self) -> Option<(IpAddr, AddressSource)> {
+        self.address_candidates()
             .into_iter()
             .find_map(|(address, source)| address.map(|a| (a, source)))
+    }
+
+    /// The server's IPv4 address: the first IPv4 of the same chain, which is the
+    /// one the dashboard's IPv4 line shows and the one its country is looked up
+    /// for.
+    pub fn v4_address(&self) -> Option<Ipv4Addr> {
+        self.address_candidates()
+            .into_iter()
+            .find_map(|(address, _)| match address {
+                Some(IpAddr::V4(v4)) => Some(v4),
+                _ => None,
+            })
+    }
+
+    /// The looked-up country, only while it still belongs to the server's IPv4.
+    pub fn country_of_v4(&self) -> Option<&str> {
+        let current = self.v4_address()?.to_string();
+        (self.country_address.as_deref() == Some(current.as_str()))
+            .then_some(self.country.as_deref())
+            .flatten()
     }
 }
 
@@ -314,6 +344,57 @@ impl Processor<FindServerById> for Db {
                 .fetch_optional(self.db())
                 .await?,
         )
+    }
+}
+
+/// Every server of every canvas, for the fleet-wide passes that are no one
+/// canvas's concern.
+#[derive(Debug)]
+pub struct ListAllServers;
+
+impl Processor<ListAllServers> for Db {
+    type Output = Vec<ServerEntity>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:ListAllServers", skip_all, err)]
+    async fn process(&self, _: ListAllServers) -> Result<Self::Output, Self::Error> {
+        Ok(
+            sqlx::query_as("SELECT * FROM orchestration_server ORDER BY id")
+                .fetch_all(self.db())
+                .await?,
+        )
+    }
+}
+
+/// Records a country lookup: `country` (or `None` when it failed) for the IPv4
+/// `address`, made at `checked_at`. All three `None` forget the lookup of an
+/// address the server no longer has. Nothing is fenced: a lookup that raced an
+/// address change stores an answer for the old address, which is never shown and
+/// is redone by the next pass.
+#[derive(Debug)]
+pub struct SetServerCountry {
+    pub server: ServerId,
+    pub address: Option<String>,
+    pub country: Option<String>,
+    pub checked_at: Option<DateTime<Utc>>,
+}
+
+impl Processor<SetServerCountry> for Db {
+    type Output = ();
+    type Error = Error;
+    #[tracing::instrument(name = "Query:SetServerCountry", skip_all, err)]
+    async fn process(&self, input: SetServerCountry) -> Result<Self::Output, Self::Error> {
+        sqlx::query(
+            "UPDATE orchestration_server
+                SET country = $2, country_address = $3, country_checked_at = $4
+              WHERE id = $1",
+        )
+        .bind(input.server)
+        .bind(input.country)
+        .bind(input.address)
+        .bind(input.checked_at)
+        .execute(self.db())
+        .await?;
+        Ok(())
     }
 }
 

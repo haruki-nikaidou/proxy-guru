@@ -39,7 +39,7 @@ pub struct AgentOptions {
     /// Time between two health reports when the master's register reply does not
     /// dictate one.
     pub health_interval: Duration,
-    /// Where the worker learns its own public addresses and country.
+    /// Where the worker learns its own public addresses.
     pub sources: Sources,
     /// Time between two update polls when the master's register reply does not
     /// dictate one.
@@ -162,7 +162,6 @@ async fn session(
     tracing::info!(
         public_v4 = ?discovered.public_v4,
         public_v6 = ?discovered.public_v6,
-        country = ?discovered.country,
         interfaces = discovered.interfaces.len(),
         "discovered own addresses"
     );

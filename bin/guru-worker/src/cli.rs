@@ -65,10 +65,6 @@ pub struct Cli {
         default_value = crate::addresses::DEFAULT_PUBLIC_IPV6_URLS
     )]
     pub public_ipv6_urls: String,
-    /// Agent mode: a URL answering with the two-letter country of the caller's
-    /// public address, shown next to the server in the dashboard. Empty disables it.
-    #[arg(long, env = "GURU_GEO_URL", default_value = crate::addresses::DEFAULT_GEO_URL)]
-    pub geo_url: String,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
     /// Agent mode: never self-update, even when the dashboard asks. A requested

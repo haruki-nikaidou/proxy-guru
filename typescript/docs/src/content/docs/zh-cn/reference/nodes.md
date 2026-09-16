@@ -156,12 +156,14 @@ distribute 的镜像：捆绑重新汇合的地方。它的**成员**就是它�
 一台运行 `guru-worker` 的机器。Server 不是一份节点规格，而是一个容器：它容纳该机器上的每一个
 **pod**，以及这台机器的 **universal pod**。pod 从不作为独立卡片出现。
 
-**图标。** 表头字形由你自行选择，可以从两个图标集里取，用简短前缀区分：`flag:<code>` 表示国旗
-（`flag:us`、`flag:jp`），`logo:<name>` 表示品牌 logo（`logo:tauri`、`logo:svelte`）。名称来自
+**图标。** 字段留空时，表头显示服务器 IPv4 地址所在国家的国旗：master 通过 `country_lookup_url`
+（见[配置参考](/zh-cn/reference/configuration/#模块配置)）对每个地址只查一次，地址变了再查，所以国旗
+跟着卡片上的 IPv4 那一行走。你填写的内容优先于它，可以从两个图标集里取，用简短前缀区分：`flag:<code>`
+表示国旗（`flag:us`、`flag:jp`），`logo:<name>` 表示品牌 logo（`logo:tauri`、`logo:svelte`）。名称来自
 [circle-flags](https://icon-sets.iconify.design/circle-flags/) 和
 [theSVG Color](https://icon-sets.iconify.design/thesvg-color/)；图标本身是按需从 Iconify API 获取的，
-所以在与外网隔离的浏览器中会保留默认字形。其他任何输入 —— 裸的 Iconify 名称、未知前缀、图标集里不存在
-的名称、空字段 —— 同样渲染默认的服务器字形；在你输入时，检查器会在字段旁预览效果。
+所以在与外网隔离的浏览器中会保留默认字形。无法解析的输入 —— 裸的 Iconify 名称、未知前缀、图标集里不存在
+的名称、国家尚未查到时的空字段 —— 渲染默认的服务器字形；在你输入时，检查器会在字段旁预览效果。
 
 表头徽标表示健康状况，像红绿灯一样用底色区分：绿色 `Online`、琥珀色 `Degraded`（应用配置出错、有失败的
 pod，或修订版本落后超过宽限期）、红色 `Offline`（连续三个健康检查间隔没有任何上报 —— 默认为 45 秒），
