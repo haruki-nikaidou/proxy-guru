@@ -2,39 +2,25 @@ import type {
 	NodeHealthRecord as ProtoNodeHealthRecord,
 	ServerHealthRecord as ProtoServerHealthRecord
 } from 'app-protobuf/orchestration/orchestration';
-import { NodeHealthStatus, ServerHealthStatus } from 'app-protobuf/orchestration/orchestration';
+import { NodeHealthStatus } from 'app-protobuf/orchestration/orchestration';
 import * as v from 'valibot';
 import type {
 	NodeHealthPoint,
 	NodeHealthStatusName,
 	ServerHealthPoint,
-	ServerHealthSeries,
-	ServerHealthStatusName
+	ServerHealthSeries
 } from '#lib/dto/health.js';
 import { HEALTH_WINDOWS } from '#lib/dto/health.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
 import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
+import { toServerHealth } from '#lib/server/topology/enums.js';
 import { query } from '$app/server';
 
 // Health is readable by every role: the control plane is authoritative on
 // permissions, so no role check happens here.
 const windowSchema = v.optional(v.picklist(HEALTH_WINDOWS, 'health_window_invalid'), 60);
-
-/** Every unknown / UNSPECIFIED value reads as `unknown`, never as a status. */
-function toServerStatus(value: ServerHealthStatus): ServerHealthStatusName {
-	switch (value) {
-		case ServerHealthStatus.SERVER_ONLINE:
-			return 'online';
-		case ServerHealthStatus.SERVER_DEGRADED:
-			return 'degraded';
-		case ServerHealthStatus.SERVER_OFFLINE:
-			return 'offline';
-		default:
-			return 'unknown';
-	}
-}
 
 function toNodeStatus(value: NodeHealthStatus): NodeHealthStatusName {
 	switch (value) {
@@ -53,7 +39,7 @@ function toNodeStatus(value: NodeHealthStatus): NodeHealthStatusName {
 const toServerPoint = (record: ProtoServerHealthRecord): ServerHealthPoint => ({
 	id: record.id,
 	reportTime: record.reportTime,
-	status: toServerStatus(record.status),
+	status: toServerHealth(record.status),
 	uploadBytes: Number(record.uploadBytes),
 	downloadBytes: Number(record.downloadBytes),
 	currentConnections: Number(record.currentConnections),
@@ -93,7 +79,7 @@ export const listServerHealth = query(
 				return {
 					serverId: server.id,
 					serverName: server.name,
-					status: toServerStatus(server.healthStatus),
+					status: toServerHealth(server.healthStatus),
 					// The control plane answers newest first; a chart plots along time.
 					points: records.map(toServerPoint).reverse()
 				};

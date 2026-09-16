@@ -2,9 +2,14 @@
  * The health dashboard's view of the recorded worker reports. Protobuf never
  * reaches the client: the numeric enums become string unions and every `int64`
  * counter is narrowed to a number in the remote function.
+ *
+ * A server's status is the same union the canvas uses, re-exported so a page
+ * that only deals in health need not reach into the topology DTO.
  */
+import type { ServerHealthStatusName } from './topology.js';
 
-export type ServerHealthStatusName = 'unknown' | 'online' | 'degraded' | 'offline';
+export type { ServerHealthStatusName };
+
 export type NodeHealthStatusName = 'unknown' | 'ready' | 'deploying' | 'failed';
 
 /**
