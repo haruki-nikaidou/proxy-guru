@@ -17,18 +17,17 @@ import {
 	connectNodePorts,
 	createServerNode,
 	createStandaloneNode,
-	deleteNode,
-	deleteServerNode,
-	disconnectEdge,
 	getCanvasGraph,
-	locateNodeCanvas,
-	moveNode,
-	moveServerNode
+	locateNodeCanvas
 } from '#lib/components/canvas/commands.js';
+import { runDeletes, runMoves } from '#lib/components/canvas/selection.js';
+import { ZOOM_MAX, ZOOM_MIN, canvasViewport } from '#lib/components/canvas/viewport.svelte.js';
 import { setEdgeOpener } from '#lib/components/canvas/edges/open.svelte.js';
 import { setFocusedNode } from '#lib/components/canvas/focus.svelte.js';
 import {
 	buildBackendIndex,
+	canvasNames,
+	connectEnd,
 	buildFlowEdges,
 	buildFlowNodes,
 	buildPortIndex,
@@ -38,7 +37,6 @@ import {
 	keepNodes,
 	mergeTombstones,
 	parseFlowNodeId,
-	parseGroupHandle,
 	reconcileFlowEdges,
 	reconcileFlowNodes,
 	type FlowNode,
@@ -48,6 +46,8 @@ import {
 	type Tombstones
 } from '#lib/components/canvas/graph.js';
 import BundleEdge from '#lib/components/canvas/edges/BundleEdge.svelte';
+import CanvasMenubar from '#lib/components/canvas/CanvasMenubar.svelte';
+import CanvasProblems from '#lib/components/canvas/CanvasProblems.svelte';
 import CanvasExportNode from '#lib/components/canvas/nodes/CanvasExportNode.svelte';
 import CanvasImportNode from '#lib/components/canvas/nodes/CanvasImportNode.svelte';
 import EntryNode from '#lib/components/canvas/nodes/EntryNode.svelte';
@@ -59,11 +59,7 @@ import AddExportDialog from '#lib/components/canvas/panels/AddExportDialog.svelt
 import AddSubcanvasDialog from '#lib/components/canvas/panels/AddSubcanvasDialog.svelte';
 import ForceDeleteDialog from '#lib/components/canvas/panels/ForceDeleteDialog.svelte';
 import NodePanel from '#lib/components/canvas/panels/NodePanel.svelte';
-import { Badge } from '#lib/components/ui/badge/index.js';
-import { Button } from '#lib/components/ui/button/index.js';
-import * as Card from '#lib/components/ui/card/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
-import * as Menubar from '#lib/components/ui/menubar/index.js';
 import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { errorMessage } from '#lib/i18n/codes.js';
@@ -84,8 +80,8 @@ let edges = $state.raw<Edge[]>([]);
 let portIndex = $state.raw(new Map<string, PortIndexEntry>());
 let panelTarget = $state<PanelTarget | null>(null);
 let forceTargets = $state<ForceTarget[]>([]);
-let problemsOpen = $state(false);
 let flowEl = $state<HTMLDivElement | null>(null);
+const view = canvasViewport(() => flowEl);
 /**
  * The delete batches still in flight, each owning what it dropped from the
  * mirror. Every delete command refreshes the shared graph query, so without this
@@ -97,14 +93,7 @@ let flowEl = $state<HTMLDivElement | null>(null);
 let deleteBatches = $state.raw<Tombstones[]>([]);
 const pendingDeletes = $derived(mergeTombstones(deleteBatches));
 
-const {
-	screenToFlowPosition,
-	updateNode,
-	getViewport,
-	setViewport,
-	getZoom,
-	fitView: fitViewport
-} = useSvelteFlow();
+const { updateNode } = useSvelteFlow();
 const updateNodeInternals = useUpdateNodeInternals();
 
 const nodeTypes = {
@@ -166,89 +155,10 @@ const failureMessage = (err: unknown): string => {
 	return errorMessage(body?.code, body?.message ?? '');
 };
 
-/** Centre of the visible pane, in flow coordinates. */
-function palettePosition(): { x: number; y: number } {
-	const rect = flowEl?.getBoundingClientRect();
-	if (!rect) return { x: 0, y: 0 };
-	const point = screenToFlowPosition({
-		x: rect.left + rect.width / 2,
-		y: rect.top + rect.height / 2
-	});
-	return { x: Math.round(point.x), y: Math.round(point.y) };
-}
-
-/**
- * The View menu stands in for Svelte Flow's `Controls`: `interactive` is the
- * lock button (dragging, connecting and selecting at once), and the zoom label
- * follows the viewport.
- */
-let interactive = $state(true);
-let fullscreen = $state(false);
-let zoom = $state(1);
-
-/**
- * Fullscreens the document, not the flow pane: the menus and dialogs portal into
- * `document.body`, so anything smaller would render them outside the fullscreen
- * element and make them invisible.
- */
-function toggleFullscreen() {
-	const request = document.fullscreenElement
-		? document.exitFullscreen()
-		: document.documentElement.requestFullscreen();
-	// A refused request is the browser's call, not a failure worth reporting.
-	request.catch(() => undefined);
-}
-
-const ZOOM_MIN = 0.2;
-const ZOOM_MAX = 2;
-const ZOOM_STEP = 1.2;
-
-/**
- * Steps the zoom around the centre of the pane, or fits the whole canvas. The
- * viewport is moved with `setViewport` rather than `zoomIn`/`zoomOut`, whose
- * `scaleBy` leaves the transform untouched in Svelte Flow 1.6.
- */
-async function rescale(step: 'in' | 'out' | 'fit') {
-	if (step === 'fit') {
-		await fitViewport();
-	} else {
-		const current = getViewport();
-		const wanted = current.zoom * (step === 'in' ? ZOOM_STEP : 1 / ZOOM_STEP);
-		const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, wanted));
-		const rect = flowEl?.getBoundingClientRect();
-		// The pane centre stays put: it is the point the zoom is anchored on.
-		const cx = (rect?.width ?? 0) / 2;
-		const cy = (rect?.height ?? 0) / 2;
-		const ratio = next / current.zoom;
-		await setViewport({
-			x: cx - (cx - current.x) * ratio,
-			y: cy - (cy - current.y) * ratio,
-			zoom: next
-		});
-	}
-	zoom = getZoom();
-}
-
-/**
- * Every name visible on the canvas, so a fresh default never duplicates one.
- * Pods are included: they render inside their server and carry a name of their
- * own, so a node named after one would be just as confusing.
- */
-function usedNames(): ReadonlySet<string> {
-	const current = graph.current;
-	if (!current) return new Set();
-	const names = new Set<string>();
-	for (const server of current.servers) {
-		names.add(server.name);
-		for (const pod of server.pods) names.add(pod.name);
-	}
-	for (const node of current.nodes) names.add(node.name);
-	for (const pod of current.orphanPods) names.add(pod.name);
-	return names;
-}
+const usedNames = () => canvasNames(graph.current);
 
 async function addServer() {
-	const { x, y } = palettePosition();
+	const { x, y } = view.position();
 	try {
 		await createServerNode({
 			canvasId,
@@ -269,7 +179,7 @@ async function addNode(
 	kind: 'entry' | 'relay' | 'exit' | 'load_balance_distribute' | 'load_balance_aggregate',
 	typeLabel: string
 ) {
-	const { x, y } = palettePosition();
+	const { x, y } = view.position();
 	try {
 		await createStandaloneNode({
 			canvasId,
@@ -312,33 +222,9 @@ function selectNode(node: FlowNode) {
 	if (target) goto(`/canvas/${target}`);
 }
 
-/**
- * Positions are persisted on drop. These two commands deliberately skip the
- * query refresh: the local position already matches, so re-rendering the whole
- * graph after every drag would only cost a flicker.
- */
 async function persistMove(dragged: FlowNode[]) {
 	try {
-		for (const node of dragged) {
-			const { kind, id } = parseFlowNodeId(node.id);
-			const x = Math.round(node.position.x);
-			const y = Math.round(node.position.y);
-			if (kind === 'server') {
-				await moveServerNode({ canvasId, serverId: id, x, y });
-			} else if (node.data.kind !== 'server') {
-				// `UpdateNodeMeta` replaces name and comment, so they are resent as-is.
-				// An export's y orders the mirrored ports on the parent's import node.
-				await moveNode({
-					canvasId,
-					nodeId: id,
-					name: node.data.node.name,
-					comment: node.data.node.comment,
-					x,
-					y,
-					boundary: node.data.kind === 'canvas_export'
-				});
-			}
-		}
+		await runMoves(canvasId, dragged);
 	} catch (err) {
 		reportError(err);
 		await refresh();
@@ -358,7 +244,7 @@ const ARROW_KEYS: Record<string, true> = {
  * flow count: the node panel's inputs handle their own arrows.
  */
 function nudgeStop(event: KeyboardEvent) {
-	if (!editable || !interactive || !ARROW_KEYS[event.key]) return;
+	if (!editable || !view.interactive || !ARROW_KEYS[event.key]) return;
 	if (!(event.target instanceof Node) || !flowEl?.contains(event.target)) return;
 	const selected = nodes.filter(node => node.selected);
 	if (selected.length > 0) persistMove(selected);
@@ -369,30 +255,14 @@ const isValidConnection = (connection: Edge | Connection): boolean => {
 	return current ? canConnect(connection, portIndex, current, edges) : false;
 };
 
-/**
- * A handle is either a port id or a bundle-capable node's group (`u:<flow>:<group>`);
- * the control plane creates the port behind a group in the same write.
- */
-function connectEnd(
-	handle: string
-): { portId: string } | { nodeId: string; group: 'channel_out' | 'bundle_in' } {
-	const group = parseGroupHandle(handle);
-	if (!group) return { portId: handle };
-	const { kind, id } = parseFlowNodeId(group.flowId);
-	// A server card's bundle handles belong to the universal pod drawn inside it.
-	const nodeId =
-		kind === 'server'
-			? (graph.current?.servers.find(server => server.id === id)?.universal?.nodeId ?? '')
-			: id;
-	return { nodeId, group: group.group };
-}
-
 async function connect(connection: Connection) {
+	const current = graph.current;
+	if (!current) return;
 	try {
 		await connectNodePorts({
 			canvasId,
-			output: connectEnd(connection.sourceHandle ?? ''),
-			input: connectEnd(connection.targetHandle ?? '')
+			output: connectEnd(current, connection.sourceHandle ?? ''),
+			input: connectEnd(current, connection.targetHandle ?? '')
 		});
 		toast.success(m.editor_connected());
 	} catch (err) {
@@ -417,9 +287,6 @@ async function beforeDelete({
 	nodes: FlowNode[];
 	edges: Edge[];
 }): Promise<boolean> {
-	const failures: ForceTarget[] = [];
-	let deleted = false;
-
 	const gone: Tombstones = {
 		nodes: new Set(doomedNodes.map(node => node.id)),
 		edges: new Set(doomedEdges.map(edge => edge.id))
@@ -428,59 +295,25 @@ async function beforeDelete({
 	nodes = keepNodes(nodes, gone);
 	edges = keepEdges(edges, gone);
 
-	try {
-		for (const edge of doomedEdges) {
-			try {
-				await disconnectEdge({ canvasId, edgeId: edge.id, force: false });
-				deleted = true;
-			} catch (err) {
-				failures.push({
-					kind: 'edge',
-					id: edge.id,
-					label: m.editor_disconnected(),
-					message: failureMessage(err)
-				});
-			}
-		}
-
-		for (const node of doomedNodes) {
-			const { kind, id } = parseFlowNodeId(node.id);
-			const label = node.data.kind === 'server' ? node.data.server.name : node.data.node.name;
-			// Retiring an import hands its target back to the root listing; retiring
-			// an export takes its mirrored port off the parent's import node.
-			const subcanvasTarget =
-				node.data.kind === 'canvas_import' ? node.data.node.targetCanvasId : '';
-			const boundary = node.data.kind === 'canvas_export';
-			try {
-				if (kind === 'server') await deleteServerNode({ canvasId, serverId: id, force: false });
-				else await deleteNode({ canvasId, nodeId: id, force: false, subcanvasTarget, boundary });
-				deleted = true;
-			} catch (err) {
-				failures.push({
-					kind,
-					id,
-					label,
-					message: failureMessage(err),
-					subcanvasTarget,
-					boundary
-				});
-			}
-		}
-	} finally {
+	const outcome = await runDeletes(
+		canvasId,
+		{ nodes: doomedNodes, edges: doomedEdges },
+		failureMessage
+	).finally(() => {
 		// This batch has settled: it stops hiding its own items, so the reconcile
 		// that follows brings back whatever the control plane refused. Any batch
 		// still running keeps hiding its own.
 		deleteBatches = deleteBatches.filter(batch => batch !== gone);
-	}
+	});
 
-	if (failures.length > 0) {
+	if (outcome.failures.length > 0) {
 		// Forcing needs admin; everyone else only gets the reason.
-		if (admin) forceTargets = failures;
-		else toast.error(failures[0]?.message ?? '');
+		if (admin) forceTargets = outcome.failures;
+		else toast.error(outcome.failures[0]?.message ?? '');
 		// Every refusal above left the server untouched, but a call can also fail
 		// after the control plane acted, so this one case is re-read.
 		await refresh();
-	} else if (deleted) {
+	} else if (outcome.deleted) {
 		toast.success(m.editor_deleted());
 	}
 
@@ -541,7 +374,7 @@ $effect(() => {
 
 <svelte:window onkeyup={nudgeStop} />
 <svelte:document
-	onfullscreenchange={() => (fullscreen = document.fullscreenElement !== null)}
+	onfullscreenchange={() => (view.fullscreen = document.fullscreenElement !== null)}
 />
 
 <svelte:boundary>
@@ -563,163 +396,37 @@ $effect(() => {
 						minZoom={ZOOM_MIN}
 						maxZoom={ZOOM_MAX}
 						colorMode={mode.current ?? 'system'}
-						nodesDraggable={editable && interactive}
-						nodesConnectable={editable && interactive}
-						elementsSelectable={interactive}
+						nodesDraggable={editable && view.interactive}
+						nodesConnectable={editable && view.interactive}
+						elementsSelectable={view.interactive}
 						{isValidConnection}
 						onconnect={connect}
 						onbeforedelete={beforeDelete}
 						onnodeclick={({ node }) => selectNode(node)}
 						onedgeclick={({ edge }) => (panelTarget = { kind: 'edge', id: edge.id })}
 						onnodedragstop={({ nodes: dragged }) => persistMove(dragged)}
-						onmove={(_, viewport) => (zoom = viewport.zoom)}
-						deleteKey={editable && interactive ? 'Delete' : null}
+						onmove={(_, viewport) => (view.zoom = viewport.zoom)}
+						deleteKey={editable && view.interactive ? 'Delete' : null}
 					>
 						<Background />
 						<MiniMap />
 
 						<Panel position="top-left">
-							<!-- The bar floats over the grid, so it needs a surface of its own. -->
-							<Menubar.Root class="bg-background shadow-sm">
-								{#if editable}
-									<Menubar.Menu>
-										<Menubar.Trigger>{m.editor_menu_nodes()}</Menubar.Trigger>
-										<Menubar.Content>
-											<Menubar.Group>
-												<Menubar.Item onSelect={addServer}>{m.editor_new_server()}</Menubar.Item>
-												<Menubar.Item onSelect={() => addNode('entry', m.editor_add_entry())}>
-													{m.editor_new_entry()}
-												</Menubar.Item>
-												<Menubar.Item onSelect={() => addNode('relay', m.editor_add_relay())}>
-													{m.editor_new_relay()}
-												</Menubar.Item>
-												<Menubar.Item onSelect={() => addNode('exit', m.editor_add_exit())}>
-													{m.editor_new_exit()}
-												</Menubar.Item>
-											</Menubar.Group>
-											<Menubar.Separator />
-											<Menubar.Group>
-												<Menubar.Item
-													onSelect={() =>
-														addNode('load_balance_distribute', m.editor_add_lb_distribute())}
-												>
-													{m.editor_new_lb_distribute()}
-												</Menubar.Item>
-												<Menubar.Item
-													onSelect={() =>
-														addNode('load_balance_aggregate', m.editor_add_lb_aggregate())}
-												>
-													{m.editor_new_lb_aggregate()}
-												</Menubar.Item>
-											</Menubar.Group>
-										</Menubar.Content>
-									</Menubar.Menu>
-
-									<Menubar.Menu>
-										<Menubar.Trigger>{m.editor_kind_subcanvas()}</Menubar.Trigger>
-										<Menubar.Content>
-											<Menubar.Group>
-												<Menubar.Item
-													onSelect={() => {
-														subcanvasMode = 'create';
-														subcanvasOpen = true;
-													}}
-												>
-													{m.editor_subcanvas_create_title()}
-												</Menubar.Item>
-												<Menubar.Item
-													onSelect={() => {
-														subcanvasMode = 'import';
-														subcanvasOpen = true;
-													}}
-												>
-													{m.editor_menu_subcanvas_import()}
-												</Menubar.Item>
-												<Menubar.Item onSelect={() => (exportDialogOpen = true)}>
-													{m.editor_kind_export()}
-												</Menubar.Item>
-											</Menubar.Group>
-										</Menubar.Content>
-									</Menubar.Menu>
-								{/if}
-
-								<!-- Opening the menu re-reads the zoom: `fitView` and the node panel move
-								     the viewport without a move event. -->
-								<Menubar.Menu
-									onOpenChange={open => {
-										if (open) zoom = getZoom();
-									}}
-								>
-									<Menubar.Trigger>{m.editor_menu_view()}</Menubar.Trigger>
-									<Menubar.Content>
-										<Menubar.Group>
-											<Menubar.CheckboxItem
-												checked={fullscreen}
-												onCheckedChange={toggleFullscreen}
-											>
-												{m.editor_view_fullscreen()}
-											</Menubar.CheckboxItem>
-											<Menubar.CheckboxItem bind:checked={interactive}>
-												{m.editor_view_interactive()}
-											</Menubar.CheckboxItem>
-										</Menubar.Group>
-										<Menubar.Separator />
-										<Menubar.Group>
-											<Menubar.GroupHeading>
-												{m.editor_view_zoom({ percent: Math.round(zoom * 100) })}
-											</Menubar.GroupHeading>
-											<Menubar.Item closeOnSelect={false} onSelect={() => rescale('in')}>
-												{m.editor_view_zoom_in()}
-											</Menubar.Item>
-											<Menubar.Item closeOnSelect={false} onSelect={() => rescale('out')}>
-												{m.editor_view_zoom_out()}
-											</Menubar.Item>
-											<Menubar.Item onSelect={() => rescale('fit')}>
-												{m.editor_view_zoom_fit()}
-											</Menubar.Item>
-										</Menubar.Group>
-									</Menubar.Content>
-								</Menubar.Menu>
-							</Menubar.Root>
+							<CanvasMenubar
+								{editable}
+								{view}
+								onAddServer={addServer}
+								onAddNode={addNode}
+								onSubcanvas={mode => {
+									subcanvasMode = mode;
+									subcanvasOpen = true;
+								}}
+								onExport={() => (exportDialogOpen = true)}
+							/>
 						</Panel>
 
 						<Panel position="bottom-left">
-							{#if current}
-								{@const problems = current.problems}
-								{#if problems.length === 0}
-									<Badge variant="secondary">{m.canvas_health_ok()}</Badge>
-								{:else if problems.length > 3 && !problemsOpen}
-									<Button size="sm" variant="outline" onclick={() => (problemsOpen = true)}>
-										{m.editor_problems({ count: problems.length })}
-									</Button>
-								{:else}
-									<Card.Root class="max-w-md gap-2 py-3">
-										<Card.Content class="grid gap-2 px-3">
-											{#if current.orphanPods.length > 0}
-												<p class="text-xs text-muted-foreground">
-													{m.editor_pod_orphan({ count: current.orphanPods.length })}
-												</p>
-											{/if}
-											{#each problems as problem (problem.message)}
-												<button
-													type="button"
-													class="flex items-start gap-2 text-start text-xs hover:underline"
-													onclick={() => openProblem(problem.nodeIds)}
-												>
-													<Badge
-														variant={problem.severity === 'error' ? 'destructive' : 'outline'}
-													>
-														{problem.severity === 'error'
-															? m.editor_severity_error()
-															: m.editor_severity_warning()}
-													</Badge>
-													<span>{problem.message}</span>
-												</button>
-											{/each}
-										</Card.Content>
-									</Card.Root>
-								{/if}
-							{/if}
+							<CanvasProblems graph={current} onopen={openProblem} />
 						</Panel>
 					</SvelteFlow>
 
@@ -754,13 +461,13 @@ $effect(() => {
 				bind:open={subcanvasOpen}
 				mode={subcanvasMode}
 				{canvasId}
-				place={palettePosition}
+				place={view.position}
 				suggest={suggestSubcanvasName}
 			/>
 			<AddExportDialog
 				bind:open={exportDialogOpen}
 				{canvasId}
-				place={palettePosition}
+				place={view.position}
 				suggest={suggestExportName}
 			/>
 		{/if}

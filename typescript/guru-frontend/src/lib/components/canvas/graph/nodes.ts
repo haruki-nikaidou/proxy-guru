@@ -173,3 +173,20 @@ export function buildBackendIndex(
 	}
 	return index;
 }
+
+/**
+ * Every name visible on a canvas, so a fresh default never duplicates one. Pods
+ * are included: they render inside their server and carry a name of their own,
+ * so a node named after one would be just as confusing.
+ */
+export function canvasNames(graph: CanvasGraph | undefined): ReadonlySet<string> {
+	const names = new Set<string>();
+	if (!graph) return names;
+	for (const server of graph.servers) {
+		names.add(server.name);
+		for (const pod of server.pods) names.add(pod.name);
+	}
+	for (const node of graph.nodes) names.add(node.name);
+	for (const pod of graph.orphanPods) names.add(pod.name);
+	return names;
+}

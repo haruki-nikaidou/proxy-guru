@@ -7,7 +7,7 @@ import type {
 	UniversalGroupName
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
-import { flowNodeId, groupHandleId } from './ids.js';
+import { flowNodeId, groupHandleId, parseFlowNodeId, parseGroupHandle } from './ids.js';
 
 /**
  * The endpoints an edge may attach to, and the rule for whether a drag between
@@ -171,4 +171,26 @@ export function randomFreePort(used: Iterable<number>): number {
 		if (!taken.has(port)) return port;
 	}
 	return low;
+}
+
+/** One end of a connect, as the control plane names it. */
+export type ConnectEnd =
+	| { portId: string }
+	| { nodeId: string; group: 'channel_out' | 'bundle_in' };
+
+/**
+ * What a Svelte Flow handle means: a port id, or a bundle-capable node's group
+ * (`u:<flow>:<group>`), behind which the control plane creates the port in the
+ * same write as the edge.
+ */
+export function connectEnd(graph: CanvasGraph, handle: string): ConnectEnd {
+	const group = parseGroupHandle(handle);
+	if (!group) return { portId: handle };
+	const { kind, id } = parseFlowNodeId(group.flowId);
+	// A server card's bundle handles belong to the universal pod drawn inside it.
+	const nodeId =
+		kind === 'server'
+			? (graph.servers.find(server => server.id === id)?.universal?.nodeId ?? '')
+			: id;
+	return { nodeId, group: group.group };
 }
