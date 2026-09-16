@@ -10,7 +10,8 @@ import type { HealthWindowMinutes, ServerHealthSeries } from '#lib/dto/health.js
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import NodeEventsPanel from './NodeEventsPanel.svelte';
-import { formatBytes, formatCount, serverStatusLabel, serverStatusVariant } from './format.js';
+import { formatBytes, formatCount } from './format.js';
+import { serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
 
 let {
 	series,
@@ -83,10 +84,10 @@ let tab = $state('metrics');
 		<Card.Title class="flex items-center gap-2">
 			{series.serverName}
 			<Badge
-				variant={serverStatusVariant(series.status)}
+				variant={serverHealthBadge(series.status).variant}
 				class={series.status === 'unknown' ? 'text-muted-foreground' : undefined}
 			>
-				{serverStatusLabel(series.status)}
+				{serverHealthLabel(series.status)}
 			</Badge>
 		</Card.Title>
 		<Card.Description class="flex flex-wrap gap-x-4 gap-y-1">

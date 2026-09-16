@@ -6,7 +6,7 @@ import {
 	getServerConfigToml,
 	getServerRollout
 } from '#lib/components/canvas/commands.js';
-import { serverHealthBadge, serverHealthLabel } from '#lib/components/canvas/graph.js';
+import { serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';

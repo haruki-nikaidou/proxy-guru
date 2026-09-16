@@ -8,10 +8,8 @@ import type {
 	ExitNodeDto,
 	LoadBalanceNodeDto,
 	RelayNodeDto,
-	ServerDto,
-	ServerHealthStatusName
+	ServerDto
 } from '#lib/dto/topology.js';
-import { m } from '#lib/paraglide/messages.js';
 import { flowNodeId } from './ids.js';
 
 /** The canvas graph as the cards Svelte Flow draws; the components stay dumb. */
@@ -115,35 +113,6 @@ export function buildFlowNodes(graph: CanvasGraph): FlowNode[] {
 	}
 	return nodes;
 }
-
-/**
- * The shared health vocabulary of the canvas: the node badge and the server
- * panel must read the same way. `unknown` is never dressed as healthy.
- */
-export function serverHealthLabel(status: ServerHealthStatusName): string {
-	switch (status) {
-		case 'online':
-			return m.editor_health_online();
-		case 'degraded':
-			return m.editor_health_degraded();
-		case 'offline':
-			return m.editor_health_offline();
-		default:
-			return m.editor_health_unknown();
-	}
-}
-
-/** Badge variant per status; `unknown` is an outline badge with muted text. */
-export const serverHealthBadge = (
-	status: ServerHealthStatusName
-): { variant: 'secondary' | 'outline' | 'destructive'; class: string } =>
-	status === 'online'
-		? { variant: 'secondary', class: '' }
-		: status === 'degraded'
-			? { variant: 'outline', class: '' }
-			: status === 'offline'
-				? { variant: 'destructive', class: '' }
-				: { variant: 'outline', class: 'text-muted-foreground' };
 
 /**
  * Backend id (server, pod or standalone node) → the flow node that draws it and

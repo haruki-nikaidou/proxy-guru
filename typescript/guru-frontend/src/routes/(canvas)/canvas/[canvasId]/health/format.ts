@@ -1,9 +1,5 @@
 import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
-import type {
-	HealthWindowMinutes,
-	NodeHealthStatusName,
-	ServerHealthStatusName
-} from '#lib/dto/health.js';
+import type { HealthWindowMinutes, NodeHealthStatusName } from '#lib/dto/health.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 
@@ -29,19 +25,6 @@ export function formatBytes(value: number): string {
 export const formatCount = (value: number): string =>
 	new Intl.NumberFormat(getLocale()).format(value);
 
-export function serverStatusLabel(status: ServerHealthStatusName): string {
-	switch (status) {
-		case 'online':
-			return m.health_status_online();
-		case 'degraded':
-			return m.health_status_degraded();
-		case 'offline':
-			return m.health_status_offline();
-		default:
-			return m.health_status_unknown();
-	}
-}
-
 export function nodeStatusLabel(status: NodeHealthStatusName): string {
 	switch (status) {
 		case 'ready':
@@ -52,18 +35,6 @@ export function nodeStatusLabel(status: NodeHealthStatusName): string {
 			return m.health_node_status_failed();
 		default:
 			return m.health_node_status_unknown();
-	}
-}
-
-/** Shared vocabulary: healthy is solid, in-between is outlined, broken is destructive. */
-export function serverStatusVariant(status: ServerHealthStatusName): BadgeVariant {
-	switch (status) {
-		case 'online':
-			return 'secondary';
-		case 'offline':
-			return 'destructive';
-		default:
-			return 'outline';
 	}
 }
 

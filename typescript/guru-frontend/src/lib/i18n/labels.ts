@@ -1,10 +1,12 @@
+import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
 import type {
 	CanvasExportAsName,
 	ExportPortKindName,
 	Ipv6ResolveName,
 	LoadBalanceModeName,
 	ProxyProtocolName,
-	RelayProtocolName
+	RelayProtocolName,
+	ServerHealthStatusName
 } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 
@@ -95,3 +97,33 @@ export function roleLabel(role: string): string {
 			return m.role_unknown();
 	}
 }
+
+/**
+ * The shared health vocabulary: the node badge, the server panel and the
+ * health page must read the same way — they used to carry two sets of message
+ * keys and had already drifted apart. `unknown` is never dressed as healthy.
+ */
+export function serverHealthLabel(status: ServerHealthStatusName): string {
+	switch (status) {
+		case 'online':
+			return m.editor_health_online();
+		case 'degraded':
+			return m.editor_health_degraded();
+		case 'offline':
+			return m.editor_health_offline();
+		default:
+			return m.editor_health_unknown();
+	}
+}
+
+/** Badge variant per status; `unknown` is an outline badge with muted text. */
+export const serverHealthBadge = (
+	status: ServerHealthStatusName
+): { variant: BadgeVariant; class: string } =>
+	status === 'online'
+		? { variant: 'secondary', class: '' }
+		: status === 'degraded'
+			? { variant: 'outline', class: '' }
+			: status === 'offline'
+				? { variant: 'destructive', class: '' }
+				: { variant: 'outline', class: 'text-muted-foreground' };

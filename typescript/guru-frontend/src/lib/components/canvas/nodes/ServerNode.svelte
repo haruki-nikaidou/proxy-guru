@@ -1,17 +1,11 @@
 <script lang="ts">
 import type { NodeProps } from '@xyflow/svelte';
 import ServerGlyph from '#lib/components/canvas/ServerGlyph.svelte';
-import {
-	channelColor,
-	portLabel,
-	serverHealthBadge,
-	serverHealthLabel,
-	type FlowNodeData
-} from '#lib/components/canvas/graph.js';
+import { channelColor, portLabel, type FlowNodeData } from '#lib/components/canvas/graph.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
-import { ipv6Label } from '#lib/i18n/labels.js';
+import { ipv6Label, serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
 import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';

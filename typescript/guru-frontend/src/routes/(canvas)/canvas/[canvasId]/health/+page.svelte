@@ -11,7 +11,8 @@ import { m } from '#lib/paraglide/messages.js';
 import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CanvasNodeEvents from './CanvasNodeEvents.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
-import { formatCount, serverStatusLabel, windowLabel } from './format.js';
+import { formatCount, windowLabel } from './format.js';
+import { serverHealthLabel } from '#lib/i18n/labels.js';
 import { listServerHealth } from './health.remote.js';
 
 const canvasId = $derived(page.params.canvasId ?? '');
@@ -80,19 +81,19 @@ function pickWindow(value: string) {
 			<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 				<Card.Root>
 					<Card.Header>
-						<Card.Description>{serverStatusLabel('online')}</Card.Description>
+						<Card.Description>{serverHealthLabel('online')}</Card.Description>
 						<Card.Title class="text-3xl tabular-nums">{formatCount(summary.online)}</Card.Title>
 					</Card.Header>
 				</Card.Root>
 				<Card.Root>
 					<Card.Header>
-						<Card.Description>{serverStatusLabel('degraded')}</Card.Description>
+						<Card.Description>{serverHealthLabel('degraded')}</Card.Description>
 						<Card.Title class="text-3xl tabular-nums">{formatCount(summary.degraded)}</Card.Title>
 					</Card.Header>
 				</Card.Root>
 				<Card.Root>
 					<Card.Header>
-						<Card.Description>{serverStatusLabel('offline')}</Card.Description>
+						<Card.Description>{serverHealthLabel('offline')}</Card.Description>
 						<Card.Title class="text-3xl tabular-nums">{formatCount(summary.offline)}</Card.Title>
 					</Card.Header>
 				</Card.Root>
