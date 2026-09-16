@@ -253,7 +253,13 @@ server's `refresh_key_generation`, like the rest of the agent path. The stream
 closing marks the server `Offline`; `hooks::health::HealthCronHook` catches a
 worker that vanished without closing on the `sweep_liveness` signal (no report
 for `health_report_interval × health_offline_after_intervals`) and trims both
-tables to their TTLs on `trim_health_history`. The current status is
+tables to their TTLs on `trim_health_history`. Going offline hands the watch
+session back (lease dropped, `watch_epoch` bumped), so a stream a proxy keeps
+open for a dead worker cannot hold the server. The same sweep revokes the
+session of a server that is already `Offline` once its registration
+(`registered_at`) is older than that threshold without a report: a worker that
+registered again and lost its connection before reporting changes no status, and
+nothing else would end its stream. The current status is
 denormalised on `orchestration_server.health_status` for listings.
 
 ## Certificates

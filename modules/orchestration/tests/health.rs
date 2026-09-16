@@ -18,7 +18,8 @@ use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, LoadBalanceAggregateConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
 use orchestration::entities::db::server::{
-    FindServerById, RenewServerWatchSession, ServerEntity, ServerId, ServerIpv6Resolve,
+    ClaimServerWatchSession, FindServerById, RenewServerWatchSession, ServerEntity, ServerId,
+    ServerIpv6Resolve,
 };
 use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::SweepLivenessSignal;
@@ -858,6 +859,7 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
         w.health
             .process(SweepLiveness { now: before })
             .await?
+            .flipped
             .is_empty()
     );
     let row = server_row(&w, &f.server).await;
@@ -866,10 +868,14 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
     assert_eq!(row.watch_epoch, held.watch_epoch);
 
     let after = reported_at + threshold + TimeDelta::seconds(1);
-    let flipped = w.health.process(SweepLiveness { now: after }).await?;
+    let swept = w.health.process(SweepLiveness { now: after }).await?;
     assert_eq!(
-        flipped.iter().map(|id| id.0.clone()).collect::<Vec<_>>(),
+        swept.flipped.iter().map(|id| id.0.clone()).collect::<Vec<_>>(),
         vec![f.server.0.clone()]
+    );
+    assert!(
+        swept.revoked.is_empty(),
+        "the flip already handed the session back"
     );
     let row = server_row(&w, &f.server).await;
     assert_eq!(row.health_status, ServerHealthStatus::Offline);
@@ -908,9 +914,153 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
         w.health
             .process(SweepLiveness { now: after })
             .await?
+            .flipped
             .is_empty(),
         "an offline server is not flipped again"
     );
+    Ok(())
+}
+
+/// The zombie the flip cannot reach, as it happened on a live host: a worker's
+/// connection dies, the server goes offline and the session is handed back; the
+/// worker registers again while the server is still offline, and that connection
+/// dies too, before the first report. A proxy that never noticed keeps the new
+/// watch stream open, so the master renews the lease for nobody and refuses every
+/// registration after it. The status never changes again, so only the sweep can
+/// take the session back — and only once the registration is older than the
+/// offline threshold, so a worker that has just registered keeps its session.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let first = register(&w, &f.server).await?;
+    take_and_ack(&w, &first, vec![ok("web"), ok("api")]).await?;
+    record(&w, &first, vec![ok("web"), ok("api")]).await?;
+    assert!(
+        w.health
+            .process(MarkServerOffline {
+                server: f.server.clone(),
+                generation: Some(first.generation),
+            })
+            .await?
+    );
+
+    let agent = register(&w, &f.server).await?;
+    let now = Utc::now();
+    let claimed =
+        w.db.process(ClaimServerWatchSession {
+            server: f.server.clone(),
+            generation: agent.generation,
+            now,
+            lease_until: now + TimeDelta::seconds(30),
+        })
+        .await?
+        .unwrap();
+    assert_eq!(claimed.health_status, ServerHealthStatus::Offline);
+    let registered_at = claimed.registered_at.unwrap();
+    assert!(
+        claimed.last_health_report_at.unwrap() < registered_at,
+        "the last report is the previous session's"
+    );
+    let threshold = w.health.config.health_offline_after();
+    // The stream keeps renewing whatever the clock says, as the master's own
+    // heartbeat does for a stream behind a proxy.
+    let renew = async |at: DateTime<Utc>| {
+        w.db.process(RenewServerWatchSession {
+            server: f.server.clone(),
+            generation: agent.generation,
+            epoch: claimed.watch_epoch,
+            now: at,
+            lease_until: at + TimeDelta::seconds(30),
+        })
+        .await
+        .unwrap()
+    };
+
+    let before = registered_at + threshold - TimeDelta::seconds(1);
+    assert!(renew(before).await);
+    let swept = w.health.process(SweepLiveness { now: before }).await?;
+    assert!(swept.flipped.is_empty() && swept.revoked.is_empty());
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.watch_epoch, claimed.watch_epoch);
+    assert!(
+        row.session_lease_until.is_some(),
+        "a registration younger than the threshold keeps its session"
+    );
+
+    let after = registered_at + threshold + TimeDelta::seconds(1);
+    assert!(renew(after).await);
+    let history = server_history(&w, &f.server).await.len();
+    let swept = w.health.process(SweepLiveness { now: after }).await?;
+    assert!(swept.flipped.is_empty(), "the server was offline already");
+    assert_eq!(
+        swept.revoked.iter().map(|id| id.0.clone()).collect::<Vec<_>>(),
+        vec![f.server.0.clone()]
+    );
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Offline);
+    assert_eq!(row.session_lease_until, None, "the lease is dropped");
+    assert_eq!(row.watch_epoch, claimed.watch_epoch + 1, "the epoch moves");
+    assert_eq!(
+        server_history(&w, &f.server).await.len(),
+        history,
+        "no status changed, so no record is written"
+    );
+    assert!(
+        !renew(after).await,
+        "the stream that held the lease cannot renew it"
+    );
+    let successor = register(&w, &f.server).await?;
+    assert_eq!(successor.generation, agent.generation + 1);
+    Ok(())
+}
+
+/// A long-lived session that keeps reporting is never revoked, however old its
+/// registration: its reports keep the server out of `Offline`.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let agent = register(&w, &f.server).await?;
+    take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
+    let held = server_row(&w, &f.server).await;
+    // A report an hour into the session, and a sweep just after it.
+    let reported_at = held.registered_at.unwrap() + TimeDelta::hours(1);
+    assert!(
+        w.db.process(InsertServerHealthRecord {
+            server: f.server.clone(),
+            generation: agent.generation,
+            status: ServerHealthStatus::Online,
+            report_time: reported_at,
+            upload_bytes: 0,
+            download_bytes: 0,
+            current_connections: 0,
+            max_connections: 0,
+            nodes: Vec::new(),
+        })
+        .await?
+        .is_some()
+    );
+    let now = reported_at + TimeDelta::seconds(1);
+    assert!(
+        w.db.process(RenewServerWatchSession {
+            server: f.server.clone(),
+            generation: agent.generation,
+            epoch: held.watch_epoch,
+            now,
+            lease_until: now + TimeDelta::seconds(30),
+        })
+        .await?
+    );
+
+    let swept = w.health.process(SweepLiveness { now }).await?;
+    assert!(swept.flipped.is_empty() && swept.revoked.is_empty());
+    let row = server_row(&w, &f.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Online);
+    assert_eq!(row.watch_epoch, held.watch_epoch);
+    assert!(row.session_lease_until.is_some());
     Ok(())
 }
 

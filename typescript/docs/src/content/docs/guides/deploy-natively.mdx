@@ -277,8 +277,11 @@ The server block, with the certificate you already have for the hostname:
 
 ```nginx
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    # TCP keepalive on the listening sockets: a peer that vanished without a FIN is
+    # dropped after ~2 min idle. A socket option covers every server block on the
+    # same address and port, and may be given only once per address and port.
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
     http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
@@ -332,7 +335,7 @@ nginx is root's too — the whole of section 7 runs from the operator account:
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Three of those settings deserve a sentence each:
+Four of those settings deserve a sentence each:
 
 - **`grpc_read_timeout 7d`.** With the 60 s default, nginx ends `WatchConfig` every minute, the
   worker re-registers, and its refresh key rotates every minute — a self-inflicted
@@ -344,6 +347,15 @@ Three of those settings deserve a sentence each:
   connection. With nginx in between those PINGs are answered by nginx, so a worker that vanished
   without a FIN is noticed when nginx times out the health body instead — about a minute rather than
   twenty seconds. Acceptable; this constant is where to tune it.
+- **`so_keepalive=60s:15s:4`.** `client_body_timeout` only reaches a worker with a health stream
+  open. One whose connection died right after it registered, before its first report, leaves nginx
+  nothing to time out: `WatchConfig` has sent its whole request and the master has nothing to send,
+  so the stream stays open until `grpc_read_timeout` while the master renews the session lease and
+  refuses every retry of that worker. TCP keepalive probes the idle connection after 60 s and drops
+  it after four unanswered probes, about two minutes in all. It is an option of the listening
+  socket, so it covers every server block on that address and port and may appear only once per
+  address and port. The master's liveness sweep revokes such a session as well, three report
+  intervals after the registration.
 
 Only the `Origin`/forwarded headers on the dashboard location are mandatory for correctness (see the
 [dashboard warning](/guides/deploy-with-docker/#9-run-the-dashboard)); the rest is what keeps long-lived

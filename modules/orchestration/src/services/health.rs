@@ -16,7 +16,8 @@ use crate::entities::db::health::{
 };
 use crate::entities::db::node::NodeId;
 use crate::entities::db::server::{
-    FindServerById, ReportedAddresses, ServerId, UpdateReportedAddresses,
+    FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId,
+    UpdateReportedAddresses,
 };
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
@@ -381,13 +382,26 @@ impl Processor<MarkServerOffline> for HealthService {
 /// One liveness sweep: every server that has not reported within
 /// `health_offline_after()` (or never did) goes `Offline`, and hands its watch
 /// session back (see [`MarkServerOffline`]).
+///
+/// A server that is already `Offline` has nothing to flip, but its watch session
+/// may still be held by a registration that never reported — one made after the
+/// flip, whose connection died before its first report. That session is revoked
+/// once it is older than the same threshold (see [`RevokeSilentWatchSessions`]).
 pub struct SweepLiveness {
     pub now: DateTime<Utc>,
 }
 
+/// What one liveness sweep changed.
+#[derive(Debug, Default)]
+pub struct SweepOutcome {
+    /// Servers that went `Offline` for lack of reports.
+    pub flipped: Vec<ServerId>,
+    /// Servers already `Offline` whose watch session was revoked.
+    pub revoked: Vec<ServerId>,
+}
+
 impl Processor<SweepLiveness> for HealthService {
-    /// The servers that went offline in this sweep.
-    type Output = Vec<ServerId>;
+    type Output = SweepOutcome;
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:SweepLiveness", skip_all, err)]
     async fn process(&self, input: SweepLiveness) -> Result<Self::Output, Self::Error> {
@@ -421,7 +435,19 @@ impl Processor<SweepLiveness> for HealthService {
                 flipped.push(server.id);
             }
         }
-        Ok(flipped)
+        // A threshold too large to subtract leaves no registration old enough.
+        let registered_before = chrono::TimeDelta::from_std(threshold)
+            .ok()
+            .and_then(|threshold| input.now.checked_sub_signed(threshold))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        let revoked = self
+            .db
+            .process(RevokeSilentWatchSessions {
+                now: input.now,
+                registered_before,
+            })
+            .await?;
+        Ok(SweepOutcome { flipped, revoked })
     }
 }
 

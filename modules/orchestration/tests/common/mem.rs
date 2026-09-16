@@ -239,6 +239,7 @@ impl Builder {
             refresh_key_generation: 0,
             watch_epoch: 0,
             session_lease_until: None,
+            registered_at: None,
             last_seen_at: None,
             last_health_report_at: None,
             health_status: orchestration::entities::db::health::ServerHealthStatus::Offline,

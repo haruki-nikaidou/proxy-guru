@@ -255,8 +255,11 @@ server 块如下，使用你已经为该主机名准备好的证书：
 
 ```nginx
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    # TCP keepalive on the listening sockets: a peer that vanished without a FIN is
+    # dropped after ~2 min idle. A socket option covers every server block on the
+    # same address and port, and may be given only once per address and port.
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
     http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
@@ -310,7 +313,7 @@ nginx 同样属于 root 的范畴 —— 整个第 7 节都在运维账户中执
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-其中三个配置项各值得说明一句：
+其中四个配置项各值得说明一句：
 
 - **`grpc_read_timeout 7d`。** 如果用 60 秒的默认值，nginx 每分钟就会结束一次 `WatchConfig`，Worker
   随之重新注册，刷新密钥每分钟轮换一次 —— 这等于自己制造了一场重新注册风暴。
@@ -319,6 +322,12 @@ sudo nginx -t && sudo systemctl reload nginx
 - **`client_body_timeout 60s`。** master 通过自身连接上的 HTTP/2 PING 来检测失联的 Worker。中间加了 nginx 之后，这些 PING 由
   nginx 应答，因此一个没有发 FIN 就消失的 Worker，只能在 nginx 让健康上报的请求体超时之后才被发现 ——
   大约一分钟，而不是二十秒。这是可以接受的；要调整的常量就在这里。
+- **`so_keepalive=60s:15s:4`。** `client_body_timeout` 只管得到已经打开健康流的 Worker。如果 Worker
+  刚注册完、还没第一次上报连接就断了，nginx 就没有任何东西可以超时：`WatchConfig` 的请求已经发完，master
+  也没有要发的数据，这条流会一直开到 `grpc_read_timeout`，期间 master 不断续租会话，拒绝这个 Worker
+  的每一次重试。TCP keepalive 在连接空闲 60 秒后开始探测，连续 4 次没有响应就断开，总共大约两分钟。
+  它是监听 socket 的选项，所以对同一地址和端口上的所有 server 块都生效，而且每个地址和端口只能写一次。
+  master 的存活巡检也会在注册满三个上报间隔后吊销这种会话。
 
 严格来说，只有控制台 location 上的 `Origin`/转发头是正确性所必需的（参见
 [控制台警告](/zh-cn/guides/deploy-with-docker/#9-运行控制台)）；其余配置是用来维持长连接流的。

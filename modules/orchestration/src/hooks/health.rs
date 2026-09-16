@@ -3,6 +3,8 @@
 //! A worker's report stream closing marks its server `Offline` at once; the
 //! sweep is the backstop for a master that never saw the close (it restarted,
 //! or the connection died without a FIN) and for servers that never reported.
+//! It also revokes the watch session of a server that is already `Offline` when
+//! the registration holding it never reported: nothing else would ever end it.
 //!
 //! Neither pass is run by the process that schedules it: `--mode cron` publishes
 //! [`SweepLivenessSignal`] / [`TrimHealthHistorySignal`] and this consumer does
@@ -52,14 +54,20 @@ impl Processor<SweepLivenessSignal> for HealthCronHook {
         {
             return Ok(());
         }
-        let flipped = self
+        let swept = self
             .health
             .process(SweepLiveness { now: Utc::now() })
             .await?;
-        if !flipped.is_empty() {
+        if !swept.flipped.is_empty() {
             tracing::info!(
-                servers = flipped.len(),
+                servers = swept.flipped.len(),
                 "servers went offline for lack of reports"
+            );
+        }
+        for server in &swept.revoked {
+            tracing::warn!(
+                server = %server,
+                "revoked a watch session whose registration never reported"
             );
         }
         Ok(())

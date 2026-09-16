@@ -698,13 +698,13 @@ async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> Te
     );
 
     // The master, not the worker: a sweep far in the future flips the server.
-    let flipped = w
+    let swept = w
         .health
         .process(SweepLiveness {
             now: Utc::now() + TimeDelta::days(1),
         })
         .await?;
-    assert!(flipped.contains(&server));
+    assert!(swept.flipped.contains(&server));
     let message = next_message(&mut events, |m| {
         matches!(
             m,

@@ -223,8 +223,11 @@ server ブロックは次のとおりです。証明書はそのホスト名用�
 
 ```nginx
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    # TCP keepalive on the listening sockets: a peer that vanished without a FIN is
+    # dropped after ~2 min idle. A socket option covers every server block on the
+    # same address and port, and may be given only once per address and port.
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
     http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
@@ -278,11 +281,12 @@ nginx も root の領域です。セクション 7 全体をオペレーター�
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-このうち 3 つの設定については、それぞれ一言説明しておきます。
+このうち 4 つの設定については、それぞれ一言説明しておきます。
 
 - **`grpc_read_timeout 7d`**。デフォルトの 60 秒では、nginx が毎分 `WatchConfig` を終了させ、ワーカーが再登録し、リフレッシュキーが毎分ローテーションします。自ら招いた再登録の嵐です。
 - **`client_max_body_size 0`**。`ReportHealth` はクライアントストリーミング RPC です。1 つの HTTP/2 リクエストのボディが、セッションが続く間、レポート 1 件ごとに伸び続けます。nginx はボディの上限を累積で判定するため、上限を設けると数週間後にヘルスストリームがリセットされてしまいます。
 - **`client_body_timeout 60s`**。マスターは自身の接続上の HTTP/2 PING で死んだワーカーを検出します。間に nginx が入ると、その PING には nginx が応答するため、FIN を返さずに消えたワーカーは、nginx がヘルスボディをタイムアウトしたときに初めて気づかれます。つまり 20 秒ではなく 1 分程度になります。許容範囲であり、調整したい場合はこの定数が対象です。
+- **`so_keepalive=60s:15s:4`**。`client_body_timeout` が効くのは、ヘルスストリームを開いているワーカーだけです。登録直後、最初のレポートより前に接続が切れたワーカーについては、nginx がタイムアウトさせられるものが何もありません。`WatchConfig` はリクエストを送り終えており、マスターにも送るデータがないため、ストリームは `grpc_read_timeout` まで開いたままになり、その間マスターはセッションのリースを更新し続け、そのワーカーの再試行をすべて拒否します。TCP keepalive はアイドルな接続を 60 秒後にプローブし、4 回応答がなければ切断します。合計でおよそ 2 分です。リッスンソケットのオプションなので、同じアドレスとポートのすべての server ブロックに適用され、アドレスとポートごとに一度しか書けません。マスターの生存確認スイープも、登録からレポート間隔 3 回分が過ぎたこうしたセッションを取り消します。
 
 正しさのために必須なのは、ダッシュボードの location にある `Origin`／forwarded ヘッダーだけです（[ダッシュボードの注意](/ja/guides/deploy-with-docker/#9-ダッシュボードを動かす)を参照）。残りは長寿命ストリームを維持するための設定です。
 

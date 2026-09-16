@@ -41,6 +41,9 @@ pub struct ServerEntity {
     /// While this is in the future, one worker session owns the server: another
     /// registration is refused until it lapses or the owning stream releases it.
     pub session_lease_until: Option<DateTime<Utc>>,
+    /// When the session holding `refresh_key_generation` registered; `None` until
+    /// a worker ever has.
+    pub registered_at: Option<DateTime<Utc>>,
     pub last_seen_at: Option<DateTime<Utc>>,
     /// When the last health report was accepted. Distinct from `last_seen_at`
     /// (the watch stream's heartbeat) so a live config stream cannot mask a dead
@@ -643,7 +646,7 @@ impl Processor<RegisterWorkerSession> for Db {
             "UPDATE orchestration_server
              SET current_dynamic_refresh_key = $2,
                  refresh_key_generation = refresh_key_generation + 1,
-                 session_lease_until = $3, last_seen_at = $4,
+                 session_lease_until = $3, last_seen_at = $4, registered_at = $4,
                  observed_address = $5, observed_at = $4,
                  reported_addresses = COALESCE($6, reported_addresses),
                  agent_version = COALESCE($7, agent_version),
@@ -871,6 +874,51 @@ impl Processor<ReleaseServerWatchSession> for Db {
         .execute(self.db())
         .await?;
         Ok(())
+    }
+}
+
+/// Takes the watch session away from every offline server whose lease is still
+/// renewed for a registration older than `registered_before` that has not
+/// reported since: the lease is dropped and the epoch moves, exactly as when a
+/// server goes offline.
+///
+/// Going offline cannot catch this session. A worker that registers while its
+/// server is already `Offline` and loses its connection before the first report
+/// changes no status, yet a proxy that never saw the connection die — it has
+/// nothing to send, so nothing times out — keeps the `WatchConfig` stream open, and
+/// the master renews the lease on its own timer for as long as it does. Every
+/// registration meanwhile is refused. Without the lease the stream fails its next
+/// renew and ends, and the worker's next registration is accepted.
+///
+/// One statement, so every condition holds for the row as it is written: a report
+/// that landed in the meantime has taken the server out of `Offline`, and the
+/// session keeps its lease.
+#[derive(Debug)]
+pub struct RevokeSilentWatchSessions {
+    pub now: DateTime<Utc>,
+    /// Only a registration strictly older than this has been silent long enough.
+    pub registered_before: DateTime<Utc>,
+}
+
+impl Processor<RevokeSilentWatchSessions> for Db {
+    /// The servers whose session was revoked.
+    type Output = Vec<ServerId>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:RevokeSilentWatchSessions", skip_all, err)]
+    async fn process(&self, input: RevokeSilentWatchSessions) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_scalar(
+            "UPDATE orchestration_server
+             SET session_lease_until = NULL, watch_epoch = watch_epoch + 1
+             WHERE health_status = 'offline'
+               AND session_lease_until > $1
+               AND registered_at < $2
+               AND (last_health_report_at IS NULL OR last_health_report_at < registered_at)
+             RETURNING id",
+        )
+        .bind(input.now)
+        .bind(input.registered_before)
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
