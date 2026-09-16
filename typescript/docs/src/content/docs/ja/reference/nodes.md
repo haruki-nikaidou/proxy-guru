@@ -113,7 +113,7 @@ distribute の鏡像で、バンドルが再び合流する場所です。その
 
 ## Server
 
-![「hk-1」というタイトルの Server ノードカード。Online バッジ、アドレスと最終確認時刻の行、チャネルドット 2 つを持つ Universal pod セクション、左側に fan-out という名前の四角い bundle ハンドル 1 つと淡い「+ bundle」ハンドル、右側に四角い bundle out ハンドル、そして「No pods yet」](/img/nodes/node-server.avif)
+![「gcore-hk-1」というタイトルの Server ノードカード。香港の旗、緑の Online バッジ、IPv4・IPv6・最終確認時刻の行、チャネルドット 2 つを持つ Universal pod セクション、左側に fan-out という名前の四角い bundle ハンドルと淡い「+ bundle」「+ channel」ハンドル、右側に四角い bundle out ハンドル、そして「No pods yet」](/img/nodes/node-server.avif)
 
 `guru-worker` を実行している 1 台のマシンです。サーバーはノードスペックではなくコンテナで、そのマシン上のすべての **ポッド** と、マシンの **universal ポッド** を保持します。ポッドが独立したカードとして現れることはありません。
 

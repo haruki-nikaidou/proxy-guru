@@ -151,7 +151,7 @@ distribute 的镜像：捆绑重新汇合的地方。它的**成员**就是它�
 
 ## Server
 
-![一张标题为 “hk-1” 的 Server 节点卡片，带 Online 徽标、地址行与最后上报时间行，一个包含两个通道圆点的 Universal pod 区块，左侧有一个名为 fan-out 的方形 bundle 连接点以及一个浅色的 “+ bundle” 连接点，右侧有一个方形 bundle out 连接点，并显示 “No pods yet”](/img/nodes/node-server.avif)
+![一张标题为 “gcore-hk-1” 的 Server 节点卡片，带香港旗帜、绿色 Online 徽标、IPv4、IPv6 与最后上报时间行，一个包含两个通道圆点的 Universal pod 区块，左侧有一个名为 fan-out 的方形 bundle 连接点以及浅色的 “+ bundle”“+ channel” 连接点，右侧有一个方形 bundle out 连接点，并显示 “No pods yet”](/img/nodes/node-server.avif)
 
 一台运行 `guru-worker` 的机器。Server 不是一份节点规格，而是一个容器：它容纳该机器上的每一个
 **pod**，以及这台机器的 **universal pod**。pod 从不作为独立卡片出现。

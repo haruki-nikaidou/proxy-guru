@@ -166,7 +166,7 @@ channels yet*.
 
 ## Server
 
-![A Server node card titled "hk-1" with an Online badge, address and last-seen lines, a Universal pod section with two channel dots, one square bundle handle named fan-out plus a faint "+ bundle" handle on the left and a square bundle out handle on the right, and "No pods yet"](/img/nodes/node-server.avif)
+![A Server node card titled "gcore-hk-1" with a Hong Kong flag, a green Online badge, IPv4, IPv6 and last-seen lines, a Universal pod section with two channel dots, a square bundle handle named fan-out plus faint "+ bundle" and "+ channel" handles on the left, a square bundle out handle on the right, and "No pods yet"](/img/nodes/node-server.avif)
 
 One machine running `guru-worker`. A server is not a node spec but a container: it holds every
 **pod** on that machine plus the machine's **universal pod**. Pods never appear as separate cards.
