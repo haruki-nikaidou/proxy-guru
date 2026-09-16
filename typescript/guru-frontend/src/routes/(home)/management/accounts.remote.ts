@@ -6,6 +6,7 @@ import { type AccountMutation, accountMutationBlock } from '#lib/guards.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { authClient } from '#lib/server/grpc.js';
 import { fetchIdentity } from '#lib/server/identity.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { command, form, query } from '$app/server';
 
@@ -19,7 +20,6 @@ const emailSchema = v.pipe(
 );
 // The control plane accepts any password, including an empty one.
 const passwordSchema = v.pipe(v.string(), v.minLength(8, 'password_too_short'));
-const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 
 export const listAccounts = query(async (): Promise<AccountRow[]> => {
 	const metadata = sessionMetadata(requireSessionId());

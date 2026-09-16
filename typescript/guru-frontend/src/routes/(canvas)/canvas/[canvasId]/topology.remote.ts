@@ -12,9 +12,9 @@ import type { CanvasOption } from '#lib/dto/canvas.js';
 import type { CanvasGraph } from '#lib/dto/topology.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { toCanvasGraph } from '#lib/server/topology/canvas.js';
-import { idSchema } from '#lib/server/topology/schemas.js';
 import { query } from '$app/server';
 
 export const getCanvasGraph = query(

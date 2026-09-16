@@ -8,12 +8,12 @@ import type {
 } from '#lib/dto/tls.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { command, form, query } from '$app/server';
 
 // Every endpoint below is Admin only in `modules/orchestration`; the control
 // plane stays authoritative and this layer does not re-check the role.
-const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 const providerNameSchema = v.pipe(
 	v.string(),
 	v.trim(),

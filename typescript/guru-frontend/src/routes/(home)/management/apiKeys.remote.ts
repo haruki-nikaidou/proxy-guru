@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import type { ApiKeyRow } from '#lib/dto/identity.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { authClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { command, form, query } from '$app/server';
 
@@ -11,7 +12,6 @@ const keyNameSchema = v.pipe(
 	v.minLength(1, 'api_key_name_required'),
 	v.maxLength(64, 'api_key_name_too_long')
 );
-const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 
 /** `ListApiKeys` only ever returns the caller's own keys — they are self-service. */
 export const listApiKeys = query(async (): Promise<ApiKeyRow[]> => {

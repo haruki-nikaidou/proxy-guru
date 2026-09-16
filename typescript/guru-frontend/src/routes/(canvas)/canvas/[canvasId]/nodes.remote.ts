@@ -11,13 +11,13 @@ import {
 import * as v from 'valibot';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { fromBalanceMode, fromProxy, fromRelayProtocol } from '#lib/server/topology/enums.js';
 import {
 	balanceModeSchema,
 	commentSchema,
 	coordSchema,
-	idSchema,
 	membersSchema,
 	nameSchema,
 	optionalIpSchema,

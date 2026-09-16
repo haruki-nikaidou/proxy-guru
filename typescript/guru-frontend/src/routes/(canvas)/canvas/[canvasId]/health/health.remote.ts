@@ -14,12 +14,12 @@ import type {
 import { HEALTH_WINDOWS } from '#lib/dto/health.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { query } from '$app/server';
 
 // Health is readable by every role: the control plane is authoritative on
 // permissions, so no role check happens here.
-const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 const windowSchema = v.optional(v.picklist(HEALTH_WINDOWS, 'health_window_invalid'), 60);
 
 /** Every unknown / UNSPECIFIED value reads as `unknown`, never as a status. */

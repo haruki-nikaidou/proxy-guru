@@ -11,6 +11,7 @@ import type {
 } from '#lib/dto/canvas.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { command, form, query } from '$app/server';
 
@@ -26,7 +27,6 @@ const descriptionSchema = v.optional(
 	v.pipe(v.string(), v.trim(), v.maxLength(1000, 'canvas_description_too_long')),
 	''
 );
-const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 
 const PROBLEM_LIMIT = 5;
 

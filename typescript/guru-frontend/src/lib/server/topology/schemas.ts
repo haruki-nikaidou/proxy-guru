@@ -4,8 +4,8 @@
  * round-tripping; the messages are codes, resolved by `#lib/i18n/codes.js`.
  */
 import * as v from 'valibot';
+import { idSchema } from '../schemas.js';
 
-export const idSchema = v.pipe(v.string(), v.minLength(1, 'id_required'));
 export const nameSchema = v.pipe(
 	v.string(),
 	v.trim(),

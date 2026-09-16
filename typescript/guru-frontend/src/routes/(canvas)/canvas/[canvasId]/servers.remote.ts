@@ -12,6 +12,7 @@ import type {
 } from '#lib/dto/topology.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { toSnapshot } from '#lib/server/topology/decode.js';
 import { fromIpv6 } from '#lib/server/topology/enums.js';
@@ -20,7 +21,6 @@ import {
 	commentSchema,
 	coordSchema,
 	extraAddressesSchema,
-	idSchema,
 	ipv6Schema,
 	logLevelSchema,
 	nameSchema,

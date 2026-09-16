@@ -6,9 +6,10 @@
 import * as v from 'valibot';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
+import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { fromGroup } from '#lib/server/topology/enums.js';
-import { connectEndSchema, idSchema } from '#lib/server/topology/schemas.js';
+import { connectEndSchema } from '#lib/server/topology/schemas.js';
 import { command } from '$app/server';
 import { getCanvasGraph } from './topology.remote.js';
 
