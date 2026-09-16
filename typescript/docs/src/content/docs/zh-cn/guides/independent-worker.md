@@ -16,8 +16,8 @@ unit。
 
 |                              | 独立模式（`--config`） | Agent 模式（`--master`） |
 |---|---|---|
-| 配置的唯一来源 | 节点上的文件 | SurrealDB 中的画布 |
-| 是否需要 SurrealDB / RabbitMQ / master | 否 | 是 |
+| 配置的唯一来源 | 节点上的文件 | 数据库中的画布 |
+| 是否需要 PostgreSQL / RabbitMQ / master | 否 | 是 |
 | 是否需要运维 API 密钥 | 否 | 是 |
 | 变更如何生效 | 你编辑文件，然后 `SIGHUP` | master 流式下发一个修订版本 |
 | 跨节点的发布顺序 | 由你自行安排 | 收敛式、按依赖排序 |
@@ -42,7 +42,7 @@ unit。
 - 对任何 TLS 或 QUIC 监听器：一份 PEM 格式的私钥和完整证书链，且**必须已经存在于主机上**。Worker
   只会从配置里的路径读取它们；两种模式下它都不会申请或生成证书。
 
-你**不**需要 Docker、SurrealDB、RabbitMQ、控制台、API 密钥，也不需要能连通除你自己的上游之外的任何网络。
+你**不**需要 Docker、PostgreSQL、RabbitMQ、控制台、API 密钥，也不需要能连通除你自己的上游之外的任何网络。
 
 ## 3. 安装二进制
 
@@ -252,6 +252,6 @@ systemctl reload guru-worker
 
 1. 在画布中把该节点建模为一台服务器，让 master 派生它的配置。
 2. 对比两份文件 —— `manage-tool orchestration export-config --server <key>`
-   会打印画布当前派生出的内容，也就是 master 将要下发的那份文件。（该命令需要访问 SurrealDB，所以要在运维机器上运行，而不是在 Worker 节点上。）
+   会打印画布当前派生出的内容，也就是 master 将要下发的那份文件。（该命令需要访问数据库，所以要在运维机器上运行，而不是在 Worker 节点上。）
 3. 把 `--config <file>` 换成 `--master <url> --server <key>`，通过 `GURU_API_KEY` 或 `--api-key-file` 提供 API
    密钥，并加上一个可写的 `--state-dir`，让节点在重启后能恢复它的 last-known-good 配置。

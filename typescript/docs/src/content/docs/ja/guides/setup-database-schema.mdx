@@ -1,163 +1,95 @@
 ---
 title: データベーススキーマのセットアップ
-description: surrealkit で SurrealDB のスキーマを適用・維持する方法 — 管理用テーブル、レビュー可能なロールアウト、デプロイを挟んだ expand/contract の順序、そしてモジュール設定のシード投入。
+description: sqlx マイグレーションで PostgreSQL のスキーマを適用・維持する方法 — 誰が適用するのか、ローリングアップグレードで必要になること、そしてモジュール設定のシード投入。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-スキーマはコントロールプレーンが適用するものではありません。リポジトリ内の宣言的な `.surql` ファイル群であり、
-[surrealkit](https://github.com/surrealdb/surrealkit) で適用します — 最初の master を起動する前に一度、
-そしてスキーマを変更するアップグレードのたびに再度実行します。2 つのデプロイガイド
-（[Docker](/ja/guides/deploy-with-docker/)、[ネイティブ](/ja/guides/deploy-natively/)）はどちらもここを参照しており、
-以降のスキーマ変更もすべて同じ手順に従います。
+スキーマはリポジトリ内の SQL マイグレーション群であり、コンパイル時にバイナリへ埋め込まれます。
+`guru-master` は起動時に未適用のものをすべて適用するため、新規インストールでは空のデータベース以外に
+ここで必要なものはありません — このページは、代わりに意図的なタイミングで適用したい場合のためのものです:
+最初の master を起動する前、デプロイの直前、あるいはまだどの master も接続していないデータベースに対して。
+2 つのデプロイガイド（[Docker](/ja/guides/deploy-with-docker/)、[ネイティブ](/ja/guides/deploy-natively/)）は
+どちらもここを参照しており、以降のスキーマ変更もすべて同じ手順に従います。
 
 リポジトリに含まれているもの:
 
 | パス | 内容 |
 |---|---|
-| `database/setup.surql` | surrealkit 自身が必要とする 2 つの管理用テーブル: `__entity` と `__rollout` |
-| `database/schema/{auth,base,orchestration}.surql` | モジュールごとに 1 ファイル — テーブル、フィールド、インデックス、関数 |
-| `database/seed/seed.surql` | 任意のシードデータ |
-| `database/rollouts/*.toml` | 生成されたロールアウトマニフェスト（変更ごとに 1 つ） |
-| `database/snapshots/*.json` | 次回の `plan` が差分を取る対象となる、生成済みのカタログ/スキーマスナップショット |
+| `database/migrations/*.sql` | マイグレーション。ファイル名順に適用され、一度適用したものは決して編集しません |
 
-前提条件: `surrealkit` がインストールされていること、および root 認証情報で到達できる SurrealDB ≥ 3.2 —
+前提条件: 到達可能な PostgreSQL ≥ 16 と、その接続 URL —
 いずれも[前提条件](/ja/guides/prerequisites/)を参照してください。
 
-## 1. surrealkit を正しいデータベースに向ける
+## 1. ツールを正しいデータベースに向ける
 
-すべてのコマンドはリポジトリのルートから実行してください。surrealkit は `./database` を作業ディレクトリからの
-相対パスとして解決します（`--folder` で上書きできます）。
+どちらのバイナリも接続情報を 1 本の URL として受け取ります: `--database-url`、または環境変数の
+`GURU_DATABASE_URL` です。
+
+```
+postgres://guru:<password>@127.0.0.1:15432/guru
+```
 
 :::caution[接続情報は必ず明示的に渡す]
-surrealkit は **CLI フラグ > 環境変数 > `.env`** の順で解決し、作業ディレクトリにある `.env` はそこから
-起動されたすべてのプロセスに引き継がれます。別環境の認証情報も置かれているマシンでは、フラグを 1 つ忘れただけで
-「ローカル向け」のコマンドが本番環境を書き換えてしまいます。このリポジトリの `surrealkit.toml` が接続の
-デフォルト値を一切設定していないのは意図的なものです。
+`GURU_DATABASE_URL` は、それを export したシェルから起動されたすべてのプロセスに引き継がれ、作業ディレクトリに
+ある `.env` も同じように引き継がれます。別環境の認証情報も置かれているマシンでは、フラグを 1 つ忘れただけで
+「ローカル向け」のコマンドが本番環境を書き換えてしまいます。
 :::
 
-フラグを短く保ち、パスワードにどんな文字が含まれていても壊れないよう、接続情報はシェル関数にまとめます —
-`SK="… --pass $pw"` のような文字列変数ではスペースで再トークン化されてしまいます:
+`manage-tool` は同じチェックアウトからビルドする（`cargo build --release -p manage-tool`）か、
+`master-v*` リリースが `manage-tool-<version>-x86_64-unknown-linux-gnu` として添付しているものを
+ダウンロードして使います。
 
 <Tabs syncKey="deployment">
 <TabItem label="ネイティブデプロイ">
 
-チェックアウト自身の `.env` に接続情報（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`）が入っているので、これを読み込みます:
+チェックアウト自身の `.env` に接続情報が入っているので、これを読み込みます:
 
 ```sh
 cd /path/to/proxy-guru
 set -a; . ./.env; set +a
-
-sk() {
-  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
-    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" "$@"
-}
 ```
 
 </TabItem>
 <TabItem label="イメージデプロイ">
 
-デプロイ用の `.env` はチェックアウトではなく Compose ファイルの隣にあり、root 認証情報を
-`SURREAL_ROOT_USER`/`SURREAL_ROOT_PASSWORD`、ネームスペースとデータベースを `GURU_NS`/`GURU_DB` という名前で
-持っています。スキーマ関連のコマンドはチェックアウトから実行するため、別ディレクトリのファイルを読み込むのではなく
-パスワードを手で渡します:
+デプロイ用の `.env` はチェックアウトではなく Compose ファイルの隣にあるため、別ディレクトリのファイルを
+読み込むのではなく URL を手で渡します:
 
 ```sh
 cd /path/to/proxy-guru
-read -rs SURREAL_ROOT_PASSWORD    # paste it; not echoed
-export SURREAL_ROOT_PASSWORD
-
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
-}
+read -rs GURU_DATABASE_URL    # paste it; not echoed
+export GURU_DATABASE_URL
 ```
 
 </TabItem>
 </Tabs>
 
 データベースがリモートホストのループバックでしか待ち受けていない場合は、先にトンネルを張ってください:
-`ssh -N -L 8000:127.0.0.1:8000 guru-host`。
+`ssh -N -L 15432:127.0.0.1:5432 guru-host`。
 
 ## 2. スキーマを適用する
 
-<Steps>
+```sh
+./target/release/manage-tool db migrate
+# schema is up to date
+```
 
-1. **管理用テーブル。** データベースごとに一度だけ、他のすべてより先に実行します:
-
-   ```sh
-   sk setup
-   ```
-
-2. **plan。** `plan` はスキーマファイルと稼働中のデータベースを比較し、レビュー可能なマニフェストを書き出します。
-   `lint` はデータベースに触れずにそれを検証します。適用する前にマニフェストを読んでください。
-
-   ```sh
-   sk rollout plan --name initial_schema
-   # Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
-   # Updated ./database/snapshots/catalog_snapshot.json
-
-   sk rollout lint 20260913083052__initial_schema
-   ```
-
-3. **expand。** `start` は非破壊的な前半 — 新しいテーブル、フィールド、インデックス、関数 — を適用します。
-   古いコントロールプレーンがまだサービスを提供している状態でも安全に実行できます:
-
-   ```sh
-   sk rollout start 20260913083052__initial_schema
-   # Rollout ... is ready to complete.
-   ```
-
-4. **contract。** `complete` は新しいコードがもう使わないものを削除するため、対応するバイナリが動き出す前に
-   実行しては絶対にいけません。初回インストールでは生かしておくべき旧バージョンが存在しないので、そのまま続けて
-   実行します:
-
-   ```sh
-   sk rollout complete 20260913083052__initial_schema
-   ```
-
-5. **確認。**
-
-   ```sh
-   sk status
-   # __rollout:20260913083052__initial_schema [completed] initial_schema
-   ```
-
-</Steps>
+手順はこれだけです。この操作は冪等で、すでに実行済みのマイグレーションは `_sqlx_migrations` テーブルに
+記録されておりスキップされます。複数のプロセスが同時に実行しても構いません — マイグレーターは PostgreSQL の
+アドバイザリロックを取得するため、master 群が一斉に起動しても各マイグレーションはちょうど一度だけ適用されます。
 
 ## 3. モジュール設定のシードを投入する
 
 オペレーターが調整する設定値 — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、更新ウィンドウ、
 各定期ジョブの実行間隔 — は環境変数ではなくデータベースに、キーごとに 1 行の `app_config` レコードとして
-格納されます。スキーマを適用したら、`manage-tool` でデフォルト値を一度書き込みます。この CLI は同じ
-チェックアウトからビルドする（`cargo build --release -p manage-tool`）か、`master-v*` タグの GitHub
-リリースが公開しているバイナリ `manage-tool-<version>-x86_64-unknown-linux-gnu` をダウンロードして
-使います。どちらでも中身は同じなので、以下の `./target/release/manage-tool` は自分が置いたパスに
-読み替えて構いません。データベース関連のフラグは `guru-master`と同じ名前で、同様に環境変数から
-`SURREALDB_*` を読むため、適切なファイルを読み込んだ直後でない場合は明示的に渡してください:
-
-<Tabs syncKey="deployment">
-<TabItem label="ネイティブデプロイ">
+格納されます。スキーマを適用したら、デフォルト値を一度書き込みます:
 
 ```sh
-(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
+./target/release/manage-tool config seed
 # seeded auth
 # seeded orchestration
 ```
-
-</TabItem>
-<TabItem label="イメージデプロイ">
-
-```sh
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
-  --namespace guru --database guru \
-  config seed
-```
-
-</TabItem>
-</Tabs>
 
 この操作は冪等で、編集済みの値を上書きすることはないため、スキーマ変更のたびに再実行して構いません。
 `config list`、`config get <key>`、`config set <key> <json>` でこれらの値を確認・変更できます。master は
@@ -171,50 +103,26 @@ sk() {
 
 ## 4. その後のスキーマ変更
 
-アップグレードは同じ 4 つのコマンドで、2 つの半分の間にデプロイを挟むだけです。この分割こそが expand/contract の
-すべての狙いです:
+スキーマ変更とは `database/migrations/` に新しいファイルを追加することです。適用済みのマイグレーションを
+編集することは決してありません。データベースが記録しているのは、どのマイグレーションを実行したかであって、
+その内容ではないからです。
 
 <Steps>
 
-1. `sk rollout plan --name <change>` を実行し、マニフェストを読みます。
+1. 新しいマイグレーションを適用します。新しいバイナリをデプロイする（各 master が起動時にマイグレートします）か、
+   前倒しで済ませたい場合は新しいチェックアウトから `manage-tool db migrate` を実行します。
 
-2. `sk rollout start <target>` — expand。稼働中の master はそのまま動き続けます。まだ何も削除されていないからです。
-
-3. 新しいスキーマに対応するバイナリをデプロイし（イメージタグを上げる、あるいは再ビルドしてユニットを再起動する）、
-   動作を検証します。
-
-4. `sk rollout complete <target>` — contract。新しいコードが不要とした対象が削除されるのは、この時点です。
+2. 対応するバイナリをデプロイし、動作を検証します。
 
 </Steps>
 
-手順 3 または 4 で問題が起きた場合は、`sk rollout rollback <target>` でロールアウトを巻き戻し、
-前バージョンのタグ/バイナリに戻します。途中で強制終了されたロールアウトは `__rollout.status` を `running_*` の
-まま残すので、次の計画を立てる前に `sk rollout repair <target>` でメタデータを修復してください。
-
-| コマンド | 使う場面 |
-|---|---|
-| `sk rollout baseline` | すでにスキーマが入っているデータベースに対する最初のロールアウト — 空の状態からの差分ではなく、現在の状態をそのまま採用します |
-| `sk rollout rollback <target>` | 進行中のロールアウトを巻き戻す |
-| `sk rollout repair <target>` | `start`/`complete` が途中で強制終了され、`__rollout.status` が `running_*` で止まっているとき。メタデータのみを整合させます |
-| `sk status` | データベース側が適用済みと認識している内容 |
-
-:::caution[`surrealkit sync` は使い捨てデータベース向け]
-`sync` は即座に差分を反映し、削除されたオブジェクトを刈り取ります — マニフェストもレビュー手順もロールバックも
-ありません。[ローカル開発](/ja/guides/local-development/)では正しいツールですが、失いたくないデータを持つ
-対象には不適切です。
+:::caution[ローリングアップグレードでは 2 つのスキーマが同時に見える]
+新しいバイナリが順次入れ替わっている間、古いバイナリはマイグレーション済みのデータベースに対してサービスを
+提供し続けます。追加だけを行うマイグレーションは古いバイナリにとって安全ですが、古いバイナリがまだ読んでいる
+カラムを削除・リネームするものは安全ではありません。そうした変更は 2 つに分けてください — 追加を行い旧来の形を
+使うのをやめるリリースと、それを削除する後続のリリース — あるいは、その 2 つの間ですべての master を短時間
+停止させることを受け入れてください。
 :::
 
-## 5. マニフェストの保管
-
-`database/rollouts/*.toml` と `database/snapshots/*.json` は、次回の `plan` が稼働中のデータベースの現状を知る
-ための情報源なので、失われないようにしなければなりません — しかしこれらは**コミットされません**。`.gitignore` が
-両ディレクトリを意図的に除外しています。これらは環境ごとの状態であり、特定の 1 つのデータベースに対して
-`rollout plan` が生成したものです。別環境のマニフェストは、存在しないよりも有害です。
-
-したがって、スキーマコマンドを実行するマシン上に保管し、そのディレクトリをデプロイの `.env` と一緒に
-バックアップしてください。複数のオペレーターが同じデータベースを管理している場合は、認証情報と同じ方法で
-共有します — スキーマ運用を所有する 1 台のホスト、あるいは 1 つのシークレットストアで — リポジトリ経由では
-ありません。
-
-これらを失ってもデータベースが失われるわけではありませんが、次の `plan` は空のカタログから差分を取ります。
-その場合は `sk rollout baseline` で稼働中の状態を再採用してください。
+リポジトリの外に保管しておくべきものはありません: マイグレーションはコミットされており、どのデータベースが
+何を適用済みかは、そのデータベース自身に記録されています。

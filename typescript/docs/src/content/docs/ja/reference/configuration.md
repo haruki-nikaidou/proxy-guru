@@ -12,11 +12,9 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--address` | `SURREALDB_HOST` | `ws://127.0.0.1:8000` |
-| `--username` | `SURREALDB_USER` | `root` |
-| `--password` | `SURREALDB_PASSWORD` | `root` |
-| `--namespace` | `SURREALDB_NAMESPACE` | *必須* |
-| `--database` | `SURREALDB_NAME` | *必須* |
+| `--database-url` | `GURU_DATABASE_URL` | *`cron` 以外のすべてのモードで必須* |
+| `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（1 以上である必要があります） |
+| `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（1 以上である必要があります） |
 | `--amqp-uri` | `AMQP_URI` | *すべてのモードで必須* |
 | `--redis-url` | `REDIS_URL` | *`dashboard_grpc`、`workers_grpc`、`consumer` で必須* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（1 以上である必要があります） |
@@ -52,9 +50,13 @@ Redis は、データベース接続を開く 3 つのモードで必須であ�
 DNS プロバイダートークンを再入力し、すべての証明書を再発行することになります。また、キーをその場で変更する
 ことはサポートされていません。
 
-データベース関連の引数が必要なのは、接続を開く 3 つのモードだけです。`cron` はこれらを無視し、
-ネームスペースなしで起動します。ネームスペースがなければ起動を拒む時計は、使われないだけの
-データベース依存を抱えることになるからです。
+`GURU_DATABASE_URL` が必要なのは、接続を開く 3 つのモードだけです。`cron` はこれを無視し、データベース URL を
+まったく持たずに起動します。URL がなければ起動を拒む時計は、使われないだけのデータベース依存を抱えることに
+なるからです。接続を開くモードでは、プールが最大 `GURU_DB_POOL_SIZE` 本の接続を保持し、すべての
+ステートメントはサーバー側で `GURU_DB_STATEMENT_TIMEOUT_MS` に制限されます。これを超えたステートメントは
+PostgreSQL によってキャンセルされ、エッジはそれを障害ではなく `UNAVAILABLE` として報告します。また、
+サービスを提供する master はそれぞれ起動時に、アドバイザリロックの下で未適用のマイグレーションをすべて
+適用します。そのため、フリートが一斉に起動しても各マイグレーションはちょうど一度だけ適用されます。
 
 ### スケジューリングと実行
 
@@ -284,14 +286,13 @@ destination = "backend.internal:8080"
 
 ## `manage-tool`
 
-グローバルフラグは `guru-master` のデータベースオプションと同じです: `--address`（`SURREALDB_HOST`）、
-`--username`（`SURREALDB_USER`）、`--password`（`SURREALDB_PASSWORD`）、`--namespace`（`SURREALDB_NAMESPACE`）、
-`--database`（`SURREALDB_NAME`）。
+グローバルフラグは 1 つだけです: `--database-url`（`GURU_DATABASE_URL`）。`guru-master` が読むのと同じ URL です。
 
 | サブコマンド | 用途 |
 |---|---|
 | `create-admin --email <email> --password <password>` | 最初の管理者アカウントをブートストラップします |
 | `generate-master-key` | 新しい `GURU_MASTER_KEY` を出力します（データベースは不要） |
+| `db migrate` | 未適用のスキーママイグレーションをすべて適用します。`guru-master` も起動時に同じことを行います |
 | `config seed` | 値が保存されていないすべてのキーにデフォルト値を書き込みます。編集済みのキーには触れません |
 | `config list` | すべてのキーと保存されているドキュメント（未保存ならデフォルト値）を出力します |
 | `config get <key>` | 1 つのキーの保存されたドキュメントをデコードせずに出力します — 壊れていても読めます |
@@ -328,7 +329,7 @@ destination = "backend.internal:8080"
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます） |
 
-`surrealkit sync` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
+`manage-tool db migrate` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
 `manage-tool config list` で保存されている内容を確認できます。`list` と `get` は行をそのまま出力し、
 デコードしません。そのため、マスターの起動時の読み込みを失敗させるドキュメントでも中身を確認できます。
 `set` はドキュメント全体を置き換えますが、書き込む前に設定の型へデコードされるため、部分的なペイロードは

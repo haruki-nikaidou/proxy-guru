@@ -1,6 +1,6 @@
 ---
 title: 前置条件
-description: 在部署控制平面之前先准备好它依赖的一切——SurrealDB、RabbitMQ、Redis、Docker、构建工具链、surrealkit、Bun，以及一个带证书的主机名。
+description: 在部署控制平面之前先准备好它依赖的一切——PostgreSQL、RabbitMQ、Redis、Docker、构建工具链、Bun，以及一个带证书的主机名。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -13,11 +13,10 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 | | 使用 Docker 部署 | 原生部署 |
 |---|---|---|
-| SurrealDB ≥ 3.2 | 需要 | 需要 |
+| PostgreSQL ≥ 16 | 需要 | 需要 |
 | RabbitMQ 3.13/4.x | 需要 | 需要 |
 | Redis ≥ 7 | 需要 | 需要 |
 | Docker Engine + Compose | 需要（用于运行已发布的应用镜像；数据存储是否使用它可自行选择） | 不需要 |
-| `surrealkit` | 需要 | 需要 |
 | Rust 工具链 + `protoc` | 仅在你选择自行构建 `manage-tool` 时需要——它也可以从 `master-v*` release 下载 | 需要——它要构建全部二进制 |
 | C 工具链、`make`、`cmake` | 同上：仅在自行构建 `manage-tool` 时需要（它会引入证书相关依赖栈——基于 aws-lc 的 `instant-acme`/`rcgen`，其内置的 C 源码需要编译器和 cmake） | 需要，原因相同 |
 | `perl` | 不需要 | 需要——`guru-worker` 会编译内置的 OpenSSL，而它由一个 perl 脚本完成配置 |
@@ -26,7 +25,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## 1. Docker Engine 与 Compose（仅镜像部署）
 
-只有选择镜像部署时才需要安装 Docker。原生部署不要求 Docker：你可以直接安装 SurrealDB 和
+只有选择镜像部署时才需要安装 Docker。原生部署不要求 Docker：你可以直接安装 PostgreSQL 和
 RabbitMQ，也可以使用托管服务或其他运行方式。先选定你的发行版；本页所有标签页都会随之联动。
 
 <Tabs syncKey="distro">
@@ -174,7 +173,7 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 不需要 `libssl-dev`/`openssl-devel`，也不需要 `libprotobuf` 的开发包：Rust 构建所需的那部分
 都由它自己内置。
 
-## 3. Rust、surrealkit 与 Bun
+## 3. Rust 与 Bun
 
 上面的所有步骤都需要 root；本节的一切都属于将要**持有代码检出目录**的那个账号，而这个账号
 因部署方式而异：
@@ -194,7 +193,7 @@ Docker 或其他主机管理权限。
 </TabItem>
 <TabItem label="镜像部署">
 
-检出目录里不会常驻运行任何东西——它存放 `surrealkit` 要用的 schema 文件，并且可以用来构建
+检出目录里不会常驻运行任何东西——它存放 Compose 文件，并且可以用来构建
 `manage-tool`（也可以改为从某个 `master-v*` release 下载那个二进制）——所以放在你自己的运维账号下
 就是合适的。完全不需要 Bun。
 
@@ -212,16 +211,7 @@ Docker 或其他主机管理权限。
    . "$HOME/.cargo/env"
    ```
 
-2. **surrealkit** 是 [配置数据库 Schema](/zh-cn/guides/setup-database-schema/) 所使用的
-   schema 工具。使用 `cargo install surrealkit` 安装（若已安装 cargo-binstall，也可使用
-   `cargo binstall surrealkit`）。本指南以 0.7.0 版为准；请确认已安装的版本：
-
-   ```sh wrap frame="none"
-   surrealkit --version
-   ```
-
-3. **代码检出。** 两篇指南都需要 `database/` 下的 schema 文件：它们不包含在应用镜像中，也不随
-   release 发布。`manage-tool` 可以从这里构建，也可以从某个 `master-v*` release 下载。镜像部署指南还会
+2. **代码检出。** `manage-tool` 可以从这里构建，也可以从某个 `master-v*` release 下载。镜像部署指南还会
    使用 Compose 文件；原生部署只有在选择可选的容器方案时才使用它。
 
    ```sh wrap frame="none"
@@ -243,15 +233,15 @@ Docker 或其他主机管理权限。
 
 </Steps>
 
-## 4. SurrealDB、RabbitMQ 与 Redis
+## 4. PostgreSQL、RabbitMQ 与 Redis
 
 ### 控制平面对它们的要求
 
 | | 要求 |
 |---|---|
-| SurrealDB | **3.2 或更高版本。** 更旧的 3.0 版本二进制与本工作区链接的客户端不兼容，并且会错误处理那些读取同一事务中先前写入行的断言，表现为莫名其妙的 "table does not exist" 或事务被取消的错误。 |
-| | **Root 凭据。** `guru-master` 以 `Root { username, password }` 登录，然后再选择命名空间和数据库；namespace 级或 database 级的用户做不到这一点。 |
-| | **持久化存储。** 把 `rocksdb:/data/guru.db` 放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。 |
+| PostgreSQL | **16 或更高版本。** 一个数据库，通过一个 URL 访问。控制平面自己拥有它的 schema：它会应用随二进制一起发布的 migration，因此它连接时所用的角色只需要对该数据库拥有普通的 `CREATE`/`ALTER` 权限，不需要任何集群级权限。 |
+| | **持久化存储**，放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。对这一个数据库执行 `pg_dump` 就是一份完整备份。 |
+| | **给连接池留出余量。** 每个提供服务的 master 最多持有 `GURU_DB_POOL_SIZE` 个连接（默认 10 个），而这样的 master 有三个，所以请把 `max_connections` 留得明显高于 30。 |
 | RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。本项目只测试过 RabbitMQ。 |
 | | URI 形式：`amqp://user:password@host:5672/`，其中**结尾的斜杠**表示选择默认 vhost。`/%2f` 这种写法会被解析器拒绝。 |
 | | 在**全部四种 master 模式中消息代理都是必需的**。周期性工作本身*就是*消息：它停机期间，没有任何过期画布被清扫，没有任何静默的服务器被标记为 `Offline`，也没有任何证书会被续期。请把它当作依赖，而不是可选的优化。 |
@@ -266,23 +256,22 @@ Docker 或其他主机管理权限。
 :::
 
 数据存储不要求使用容器或 Docker Compose。你可以按照官方
-[SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)、
+[PostgreSQL 下载页面](https://www.postgresql.org/download/)、
 [RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
 [Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装，使用托管服务，或采用
 下方的 Compose 示例。无论选择哪种方式，都必须满足上表的要求。
 
 ### 凭据
 
-生成的密码要**对 URL 安全**——消息代理的密码会被插入 `AMQP_URI`，其中 `@`、`:`、`/` 和 `%`
-会改变 URI 的含义：
+生成的密码要**对 URL 安全**——两个密码都会被插入某个 URI（`GURU_DATABASE_URL` 与
+`AMQP_URI`），其中 `@`、`:`、`/` 和 `%` 会改变 URI 的含义：
 
 ```sh
-openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
 ```
 
-十六进制字符串可以规避所有引号和百分号编码的问题。如果你坚持要用标点符号，请在 `AMQP_URI`
-中对其做百分号编码（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）；SurrealDB 的密码
-是作为 argv 值传入的，只需要注意引号。
+十六进制字符串可以规避所有引号和百分号编码的问题。如果你坚持要用标点符号，请在两个 URI
+中都对其做百分号编码（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）。
 
 现在就把连接凭据记录到控制平面将要读取的文件中。镜像部署的 Compose 示例也会从该文件读取
 数据存储凭据：
@@ -292,38 +281,33 @@ openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
 
 ```sh
 # /path/to/proxy-guru/.env   (chmod 600; gitignored)
-SURREALDB_HOST=ws://127.0.0.1:8000
-SURREALDB_USER=root
-SURREALDB_PASSWORD=<first hex string>
-SURREALDB_NAMESPACE=guru
-SURREALDB_NAME=guru
+GURU_DATABASE_URL=postgres://guru:<first hex string>@127.0.0.1:5432/guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
 REDIS_URL=redis://127.0.0.1:6379/
 ```
 
-systemd 之后会通过 `EnvironmentFile=` 逐字读取这个文件。请完整写出 `AMQP_URI`，因为 systemd
-**不会**展开 `${…}`。
+systemd 之后会通过 `EnvironmentFile=` 逐字读取这个文件。请完整写出 `GURU_DATABASE_URL` 和
+`AMQP_URI`，因为 systemd **不会**展开 `${…}`。
 
 </TabItem>
 <TabItem label="镜像部署">
 
 ```sh
 # /srv/guru/.env   (chmod 600)
-SURREAL_ROOT_USER=root
-SURREAL_ROOT_PASSWORD=<first hex string>
+POSTGRES_USER=guru
+POSTGRES_PASSWORD=<first hex string>
+POSTGRES_DB=guru
 
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
-
-GURU_NS=guru
-GURU_DB=guru
 ```
 
 请先创建 `/srv/guru`（`sudo mkdir -p /srv/guru`）；下面的 Compose 文件就放在这个 `.env`
 旁边，镜像部署指南之后还会向它追加 `MASTER_VERSION`、`FRONTEND_VERSION` 和
-`GURU_MASTER_KEY`。
+`GURU_MASTER_KEY`。`GURU_DATABASE_URL` 和 `AMQP_URI` 同样不会出现在其中：Compose 会用上面这些
+变量把两者拼出来，就像 Redis 不需要凭据、于是它直接把 URL 写死成 `redis://redis:6379/` 一样。
 
 </TabItem>
 </Tabs>
@@ -333,11 +317,11 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="原生部署">
 
-按照官方 [SurrealDB 安装指南](https://surrealdb.com/docs/running/installation)、
+按照官方 [PostgreSQL 下载页面](https://www.postgresql.org/download/)、
 [RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
-[Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装这三个服务。为 SurrealDB
-配置持久化存储、Root 凭据以及监听 `8000` 端口的回环地址；为 RabbitMQ 配置 `.env` 中的用户和
-密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址；Redis 只需要一个监听 `6379` 端口的回环
+[Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装这三个服务。创建一个
+`guru` 角色以及一个归它所有的 `guru` 数据库，并让它监听 `5432` 端口的回环地址；为 RabbitMQ 配置
+`.env` 中的用户和密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址；Redis 只需要一个监听 `6379` 端口的回环
 地址，并关掉它的持久化（`--save '' --appendonly no`）——控制平面不在其中存放任何状态。使用操作系统的
 服务管理器启动这三个服务，并将它们设为开机自启。
 
@@ -355,22 +339,24 @@ Docker Compose 只是可选方案，并非部署要求。若选择它，仓库�
 name: guru
 
 services:
-  surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
+  postgres:
+    image: postgres:18.6-alpine
     restart: unless-stopped
-    command:
-      - start
-      - --user
-      - ${SURREAL_ROOT_USER}
-      - --pass
-      - ${SURREAL_ROOT_PASSWORD}
-      - rocksdb:/data/guru.db
-    user: root
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - surreal-data:/data
+      # The 18-series image mounts the whole cluster here, not at /…/data.
+      - postgres-data:/var/lib/postgresql
     # Loopback only: the operator machine reaches it through an SSH tunnel.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   rabbitmq:
     image: rabbitmq:4-alpine
@@ -393,23 +379,22 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
 volumes:
-  surreal-data:
+  postgres-data:
   rabbit-data:
 ```
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq redis
+sudo docker compose up -d postgres rabbitmq redis
 ```
 
-各个 master 会在之后的镜像部署指南中加入同一个文件——数据存储必须先存在，因为在任何 master
-启动之前 schema 就得先就位。
+各个 master 会在之后的镜像部署指南中加入同一个文件——数据存储必须先存在，因为 master 启动时
+会自己把 schema 应用到数据库上。
 
 </TabItem>
 </Tabs>
 
-Compose 示例还有三个关键细节。`surrealdb/surrealdb` 镜像以一个无特权用户运行，无法写入 root
-所有的卷或绑定挂载，因此需要 `user: root`。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
+Compose 示例还有两个关键细节。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
 所以仓库的 Compose 文件固定了 `hostname:`；否则每次重新创建容器都会得到一个空的消息代理。Redis
 刻意没有卷：它的服务命令关掉了 RDB 与 AOF，因为经过它的一切都只是过路的实时事件。
 
@@ -438,8 +423,9 @@ Cloudflare 的代理会在 100 秒没有数据后关闭流式响应。`WatchConf
 
 ## 6. 下一步
 
-数据存储已经运行，但还是空的。在启动任何 master 之前先应用 schema——这部分单独成篇，
-因为同一套流程会在此后整个安装生命周期里维护 schema：
+数据存储已经运行，但还是空的。master 启动时会自己把数据库补齐，但先把 schema 应用一遍，可以让
+schema 层面的问题变成一条明确的报错，而不是一个反复重启的服务——同一篇文章还涵盖模块配置的种子写入
+以及此后每一次 schema 变更：
 **[配置数据库 Schema](/zh-cn/guides/setup-database-schema/)**。
 
 然后继续阅读 [使用 Docker 部署](/zh-cn/guides/deploy-with-docker/) 或

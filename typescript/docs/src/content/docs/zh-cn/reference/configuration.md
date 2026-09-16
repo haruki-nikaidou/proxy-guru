@@ -12,11 +12,9 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--address` | `SURREALDB_HOST` | `ws://127.0.0.1:8000` |
-| `--username` | `SURREALDB_USER` | `root` |
-| `--password` | `SURREALDB_PASSWORD` | `root` |
-| `--namespace` | `SURREALDB_NAMESPACE` | *必填* |
-| `--database` | `SURREALDB_NAME` | *必填* |
+| `--database-url` | `GURU_DATABASE_URL` | *除 `cron` 外所有模式均必填* |
+| `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（必须 ≥ 1） |
+| `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（必须 ≥ 1） |
 | `--amqp-uri` | `AMQP_URI` | *所有模式下均必填* |
 | `--redis-url` | `REDIS_URL` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（必须 ≥ 1） |
@@ -47,8 +45,12 @@ Worker 实际运行的内容。
 `cron` 从不接触密钥材料，也不会读取该密钥。它被有意设计成不提供命令行参数：argv 在进程列表中是可见的。
 丢失该密钥意味着必须重新录入每个 DNS 提供商令牌并重新签发所有证书；也不支持原地更换。
 
-数据库相关参数只在会建立连接的那三种模式下必填。`cron` 会忽略它们，甚至完全不需要 namespace 即可启动：
-一个没有 namespace 就拒绝启动的时钟，等于背上了一个用不到的数据库依赖。
+`GURU_DATABASE_URL` 只在会建立连接的那三种模式下必填。`cron` 会忽略它，甚至完全不需要数据库 URL
+即可启动：一个没有数据库 URL 就拒绝启动的时钟，等于背上了一个用不到的数据库依赖。在会打开连接的那些
+模式下，连接池最多持有 `GURU_DB_POOL_SIZE` 个连接，每条语句都由服务端按 `GURU_DB_STATEMENT_TIMEOUT_MS`
+限时——超时的语句会被 PostgreSQL 取消，边界层会把它报成 `UNAVAILABLE`，而不是一次故障。此外，每个
+提供服务的 master 都会在启动时应用所有尚未应用的 migration，过程持有一把 advisory lock，因此一批同时
+启动的 master 只会把每个 migration 恰好应用一次。
 
 ### 调度与执行
 
@@ -260,14 +262,13 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 
 ## `manage-tool`
 
-全局参数与 `guru-master` 的数据库选项一致：`--address`（`SURREALDB_HOST`）、`--username`
-（`SURREALDB_USER`）、`--password`（`SURREALDB_PASSWORD`）、`--namespace`（`SURREALDB_NAMESPACE`）、
-`--database`（`SURREALDB_NAME`）。
+只有一个全局参数：`--database-url`（`GURU_DATABASE_URL`），和 `guru-master` 读取的是同一个 URL。
 
 | 子命令 | 用途 |
 |---|---|
 | `create-admin --email <email> --password <password>` | 初始化第一个管理员账户 |
 | `generate-master-key` | 打印一个新的 `GURU_MASTER_KEY`（无需数据库） |
+| `db migrate` | 应用所有尚未应用的 Schema migration；`guru-master` 启动时做的是同一件事 |
 | `config seed` | 为每个尚无取值的键写入默认值；已修改过的键保持不变 |
 | `config list` | 打印每个键及其存储的文档（若没有存储值则打印默认值） |
 | `config get <key>` | 原样打印某个键存储的文档，不做解码 —— 即使文档已损坏也能读出 |
@@ -302,7 +303,7 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址） |
 
-在 `surrealkit sync` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
+在 `manage-tool db migrate` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
 查看已存储的内容。`list` 和 `get` 会原样打印该行 —— 它们不做解码，因此即便某份文档会让 master 启动时
 读取失败，你仍然可以检视它。`set` 会替换整份文档，但在写入之前会先解码成该配置对应的类型，因此不完整的
 载荷会用默认值补齐，而形状错误的载荷会在到达数据行之前就被拒绝：

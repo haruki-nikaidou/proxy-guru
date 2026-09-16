@@ -14,7 +14,7 @@ import { FileTree } from '@astrojs/starlight/components';
 | `bin/manage-tool` | 管理 CLI：`create-admin` 初始化引导、`orchestration export-config`。 |
 | `lib/guru_worker_config` | Worker 配置模型，由两个平面共享。 |
 | `lib/rpguru_sdk` | 由 `proto/` 生成的 gRPC/protobuf 类型（Rust）。 |
-| `lib/newtype_record_id` | 用于生成带类型的 SurrealDB record id 的 `table_record!` 宏。 |
+| `lib/db_types` | `table_record!` 与 `text_enum!`：带类型的行 id 和以文本存储的枚举。 |
 | `modules/auth` | 账号、会话、API key、RBAC。 |
 | `modules/orchestration` | 画布、服务器、节点、连线；拓扑校验、配置派生、Worker 发布。 |
 | `modules/notify` | 通知模块 —— 已按 `base` 搭好骨架，尚未实现。 |
@@ -43,7 +43,7 @@ Processor = State + async fn(Input) -> Result<Output, Error>
   - config.rs 带类型的配置（对应一行 `app_config`，JSON 文档）
   - utils/ 小巧、几乎无依赖的辅助函数
   - entities/ 持久化层
-    - surreal/ SurrealDB 行类型 + `SurrealProcessor` 查询
+    - db/ PostgreSQL 行类型 + sqlx 查询
     - redis/ Redis 键值类型（rkyv 编码）
   - services/ 业务逻辑（有状态的 Processor）
   - events/ AMQP 消息载荷 + 路由
@@ -54,7 +54,7 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 
 | 你正在写…… | 就放到…… |
 |---|---|
-| 一条 SurrealDB 查询或一个表行类型 | `entities/surreal` |
+| 一条 PostgreSQL 查询或一个表行类型 | `entities/db` |
 | 一个 Redis 缓存值或临时令牌 | `entities/redis` |
 | 一个组合了查询与规则的用例 | `services` |
 | 一条其他模块会响应的消息 | `events` |
@@ -67,10 +67,10 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 
 - **依赖方向：** `rpc → services → entities/events/config`。功能模块可以依赖 `base`，但 `base`
   不得依赖任何功能模块；模块之间也不得直接触碰彼此的内部实现 —— 它们通过 gRPC 或 AMQP 事件通信。
-- **`entities/surreal`：** 每个表或聚合对应一个子模块；行结构体派生 `SurrealValue`；record id 由
-  `table_record!(NameId, "table")` 包装。每条查询在
-  `wakuwaku::surreal::SurrealProcessor` 上实现一次 `Processor`，`Error = surrealdb::Error`。
-  查询是在运行时校验的，因此必须由针对 `mem://` 的集成测试覆盖。
+- **`entities/db`：** 每个表或聚合对应一个子模块；行结构体派生 `sqlx::FromRow`；id 由
+  `table_record!(NameId, "table")` 包装，以文本存储的枚举由 `text_enum!` 统一写一次。每条查询在
+  `base::db::Db` 上实现一次 `Processor`，`Error = base::db::Error`；包含多条语句的写入要放进一个
+  `begin()` 事务。查询是在运行时校验的，因此必须由针对真实数据库的集成测试覆盖（`#[sqlx::test]`）。
 - **`services`：** 持有自身依赖的 `Clone` 结构体，每个操作一个 `Processor` 实现，返回领域类型 ——
   绝不返回 protobuf 类型。
 - **`events`：** 消息载荷加上 `AmqpRouting`（`EXCHANGE`、`EXCHANGE_TYPE`、`ROUTING_KEY`）与
@@ -83,17 +83,21 @@ Processor = State + async fn(Input) -> Result<Output, Error>
   一侧。由此带来的结果是：broker 在全部四种模式下都是必需的 —— RabbitMQ 停机期间，配置派生扫描、存活
   扫描和证书续期都不会发生，直到它恢复为止。
 - **`rpc`：** 只做薄适配 —— 解码请求、调用服务、编码回复。不含业务逻辑。
-- **错误：** 在 service/hook 边界使用 `wakuwaku::Error`；`entities/surreal` 内部使用
-  `surrealdb::Error`，并在服务层通过 `?` 转换。
+- **错误：** 在 service/hook 边界使用 `wakuwaku::Error`；`entities/db` 内部使用
+  `base::db::Error`，并在服务层通过 `?` 转换。它把"数据库没有应答"（`UNAVAILABLE`）与"数据库拒绝了
+  请求"区分开来，并把 `Error::Conflict` 与这两者都区分开：那是一个确定没有提交的事务。
 - **Lint：** crate 级别 `deny(clippy::unwrap_used)`、`expect_used` 与 `panic`。请求路径上不允许
   panic。
 - **Tracing：** 使用 `#[tracing::instrument(skip_all, err)]` 并显式指定 span `name` —— entities 用
   `Query:<Input>`（或 `Query-Transaction:<Input>`），services 用 `Service:<Input>`，hook processor 用
   `Hook:<Input>`。gRPC handler 不需要指定；trait 方法名本身就标识了 span。
 
-## SurrealDB 注意事项
+## PostgreSQL 注意事项
 
-- 使用 `type::record(tb, id)`；旧的 `type::thing` 已在 3.x 中移除。
-- 绝不要绑定名为 `token` 的变量 —— 它是保留字。
-- 如果某个字段断言会读取某一行，请把这一行写在触发该断言的 `CREATE` *之后*；部分服务端版本无法通过
-  `record::exists()` 看到同一事务内的 `UPDATE`。
+- 比较可空列请用 `IS DISTINCT FROM`，而不是 `<>`：`<>` 与 `NULL` 比较的结果是 `NULL`，而不是
+  `true`，所以用它写出来的围栏条件会悄无声息地永不匹配。
+- `jsonb` 文档里的 JSON `null` 不是 SQL 的 `NULL`；用 `jsonb_typeof` 区分两者。
+- `sqlx::query*` 接受的是 `&'static str`，所以在运行时拼出来的语句需要 `sqlx::AssertSqlSafe` ——
+  只在测试里这么做；`src/` 中没有任何地方格式化 SQL。
+- Schema 只做 migration，绝不做原地修改：`guru-master` 在启动时持有一把 advisory lock 应用所有尚未
+  应用的 migration，因此一批同时启动的 master 只会把每个 migration 恰好应用一次。

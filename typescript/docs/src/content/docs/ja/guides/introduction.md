@@ -85,7 +85,7 @@ PROXY プロトコル v1 と v2 は両端でサポートされています。
 
 Tokio 上の Rust 2024、[`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau)（すべては `Processor`）、Tonic による gRPC、ストレージには
-SurrealDB（スキーマは `database/`、surrealkit で管理）、オペレーター API のライブ `Watch*` ストリームには
+PostgreSQL（sqlx、マイグレーションは `database/migrations`）、オペレーター API のライブ `Watch*` ストリームには
 Redis の pub/sub、モジュール間イベントには AMQP、トレーシングには OpenTelemetry、そして1つの生成済み API
 クライアントを共有する `typescript/` 配下の Bun ワークスペース。
 

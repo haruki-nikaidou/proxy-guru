@@ -1,23 +1,23 @@
 ---
 title: Local Development
-description: Bring up SurrealDB, RabbitMQ, Redis, the control plane and the dashboard on one machine.
+description: Bring up PostgreSQL, RabbitMQ, Redis, the control plane and the dashboard on one machine.
 ---
 
-The control plane needs a SurrealDB instance, an AMQP broker and a Redis server. Everything else
+The control plane needs a PostgreSQL database, an AMQP broker and a Redis server. Everything else
 runs from the workspace.
 
 :::caution[The repository `.env` is not a dev profile]
-The root `.env` can hold **production** credentials (`SURREALDB_HOST`, `SURREALDB_USER`,
-`SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`, `REDIS_URL`), and every
-process you start inherits it. Pass the database flags explicitly — or override the variables — so
-a local run cannot talk to a remote database by accident.
+The root `.env` can hold **production** credentials (`GURU_DATABASE_URL`, `AMQP_URI`,
+`REDIS_URL`), and every process you start inherits it. Pass `--database-url` explicitly — or
+override the variable — so a local run cannot talk to a remote database by accident.
 :::
 
 ## 1. Dependencies
 
 ```sh
-docker run -d --name guru-surreal -p 8000:8000 \
-  surrealdb/surrealdb:latest start --user root --pass root
+docker run -d --name guru-postgres -p 15432:5432 \
+  -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
+  postgres:18.6-alpine
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
 
@@ -27,8 +27,7 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
   redis-server --save '' --appendonly no
 ```
 
-Use a SurrealDB **3.2 or newer** server. Older 3.0 binaries disagree with the client the workspace
-links against and mis-handle assertions that read a row written earlier in the same transaction.
+Use PostgreSQL **16 or newer**.
 
 The broker URI form matters: use `amqp://guest:guest@127.0.0.1:5672/` for the default vhost. Redis
 takes `redis://127.0.0.1:6379/` and no credentials. If something else already listens on `6379`, set
@@ -37,21 +36,19 @@ name that port in `REDIS_URL`.
 
 ## 2. Schema
 
-Schema lives in `database/schema/*.surql` (one file per module) and is managed with
-[surrealkit](https://surrealdb.com/):
+The schema is a set of sqlx migrations in `database/migrations/`, embedded into the binaries.
+`guru-master` applies what is pending when it starts; to do it by hand:
 
 ```sh
-surrealkit sync --host ws://127.0.0.1:8000 --ns guru --db guru
+export GURU_DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru
+cargo run -p manage-tool -- db migrate
 ```
 
 Then write the default module configuration into the `app_config` table. It is idempotent and never
-overwrites a value you have edited, so re-run it after every sync:
+overwrites a value you have edited, so re-run it after every migration:
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
-  config seed
+cargo run -p manage-tool -- config seed
 ```
 
 `config list`, `config get <key>` and `config set <key> <json>` inspect and change those values; the
@@ -61,9 +58,7 @@ masters pick them up on restart. See
 ## 3. Bootstrap an administrator
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password 'change-me'
 ```
 
@@ -86,8 +81,7 @@ Each mode is a separate process. The operator API the dashboard talks to is `das
 ```sh
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -99,8 +93,7 @@ health retention, ACME and relay-leaf rotation):
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -159,9 +152,14 @@ bun run generate:proto
 
 ## Tests
 
-Module integration tests run against an in-memory SurrealDB (`mem://`) and apply the module's own
-schema file, so they need no running server:
+Module integration tests run against a real PostgreSQL server: `#[sqlx::test]` creates one throwaway
+database per test from `DATABASE_URL` and applies the migrations to it. Point that at a **test**
+database, never the one a master runs against — the test runner creates and drops databases next to
+it:
 
 ```sh
+export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_test
 cargo test
 ```
+
+Create it once with `createdb` (or `CREATE DATABASE guru_test;`); the role needs `CREATEDB`.

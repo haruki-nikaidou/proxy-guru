@@ -1,163 +1,96 @@
 ---
 title: Setup Database Schema
-description: Apply and maintain the SurrealDB schema with surrealkit — bookkeeping tables, reviewable rollouts, expand/contract ordering around a deploy, and the module configuration seed.
+description: Apply and maintain the PostgreSQL schema with sqlx migrations — who applies them, what a rolling upgrade needs, and the module configuration seed.
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The schema is not applied by the control plane. It is a set of declarative `.surql` files in the
-repository, applied with [surrealkit](https://github.com/surrealdb/surrealkit) — before the first
-master starts, and again around every upgrade that changes it. Both deployment guides
-([Docker](/guides/deploy-with-docker/), [native](/guides/deploy-natively/)) point here, and so does
-every later schema change.
+The schema is a set of SQL migrations in the repository, embedded into the binaries at compile
+time. `guru-master` applies whatever is pending when it starts, so a fresh installation needs
+nothing here beyond an empty database — this page is for applying them deliberately instead:
+before the first master starts, ahead of a deploy, or against a database no master runs against
+yet. Both deployment guides ([Docker](/guides/deploy-with-docker/),
+[native](/guides/deploy-natively/)) point here, and so does every later schema change.
 
 What is in the repository:
 
 | Path | Contents |
 |---|---|
-| `database/setup.surql` | The two bookkeeping tables surrealkit itself needs: `__entity` and `__rollout` |
-| `database/schema/{auth,base,orchestration}.surql` | One file per module — tables, fields, indexes, functions |
-| `database/seed/seed.surql` | Optional seed data |
-| `database/rollouts/*.toml` | Generated rollout manifests (one per change) |
-| `database/snapshots/*.json` | Generated catalog/schema snapshots the next `plan` diffs against |
+| `database/migrations/*.sql` | The migrations, applied in filename order and never edited once applied |
 
-Prerequisites: `surrealkit` installed and a reachable SurrealDB ≥ 3.2 with root credentials — both
-from [Prerequisites](/guides/prerequisites/).
+Prerequisites: a reachable PostgreSQL ≥ 16 and the connection URL for it — both from
+[Prerequisites](/guides/prerequisites/).
 
-## 1. Point surrealkit at the right database
+## 1. Point the tool at the right database
 
-Run every command from the repository root: surrealkit resolves `./database` relative to the
-working directory (`--folder` overrides it).
+Both binaries take the connection as one URL: `--database-url`, or `GURU_DATABASE_URL` in the
+environment.
 
-:::caution[Always pass the connection explicitly]
-surrealkit resolves **CLI flags > environment > `.env`**, and a `.env` in the working directory is
-inherited by every process started there. On a machine that also holds credentials for another
-environment, a forgotten flag is how a "local" command ends up rewriting production. `surrealkit.toml`
-in this repository sets no connection defaults on purpose.
+```
+postgres://guru:<password>@127.0.0.1:15432/guru
+```
+
+:::caution[Pass the connection explicitly]
+`GURU_DATABASE_URL` is inherited by every process started in a shell that exported it, and a `.env`
+in the working directory is inherited the same way. On a machine that also holds credentials for
+another environment, a forgotten flag is how a "local" command ends up rewriting production.
 :::
 
-Wrap the connection in a shell function so the flags stay short and the password survives whatever
-characters it contains — a `SK="… --pass $pw"` string variable would be re-tokenized on spaces:
+`manage-tool` is built from the same checkout (`cargo build --release -p manage-tool`), or
+downloaded from a `master-v*` release, which attaches it as
+`manage-tool-<version>-x86_64-unknown-linux-gnu`.
 
 <Tabs syncKey="deployment">
 <TabItem label="Native deployment">
 
-The checkout's own `.env` holds the connection (`SURREALDB_HOST`, `SURREALDB_USER`,
-`SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`), so source it:
+The checkout's own `.env` holds the connection, so source it:
 
 ```sh
 cd /path/to/proxy-guru
 set -a; . ./.env; set +a
-
-sk() {
-  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
-    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" "$@"
-}
 ```
 
 </TabItem>
 <TabItem label="Image deployment">
 
-The deployment `.env` lives next to the Compose file, not in the checkout, and names the root
-credentials `SURREAL_ROOT_USER`/`SURREAL_ROOT_PASSWORD` with `GURU_NS`/`GURU_DB`. Schema commands
-run from the checkout, so pass the password in by hand rather than sourcing a file from another
-directory:
+The deployment `.env` lives next to the Compose file, not in the checkout, so pass the URL in by
+hand rather than sourcing a file from another directory:
 
 ```sh
 cd /path/to/proxy-guru
-read -rs SURREAL_ROOT_PASSWORD    # paste it; not echoed
-export SURREAL_ROOT_PASSWORD
-
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
-}
+read -rs GURU_DATABASE_URL    # paste it; not echoed
+export GURU_DATABASE_URL
 ```
 
 </TabItem>
 </Tabs>
 
 If the database only listens on loopback on a remote host, tunnel to it first:
-`ssh -N -L 8000:127.0.0.1:8000 guru-host`.
+`ssh -N -L 15432:127.0.0.1:5432 guru-host`.
 
 ## 2. Apply the schema
 
-<Steps>
+```sh
+./target/release/manage-tool db migrate
+# schema is up to date
+```
 
-1. **Bookkeeping tables.** Once per database, before anything else:
-
-   ```sh
-   sk setup
-   ```
-
-2. **Plan.** `plan` diffs the schema files against the live database and writes a reviewable
-   manifest; `lint` validates it without touching the database. Read the manifest before applying
-   it.
-
-   ```sh
-   sk rollout plan --name initial_schema
-   # Generated rollout manifest ./database/rollouts/20260913083052__initial_schema.toml
-   # Updated ./database/snapshots/catalog_snapshot.json
-
-   sk rollout lint 20260913083052__initial_schema
-   ```
-
-3. **Expand.** `start` applies the non-destructive half — new tables, fields, indexes, functions.
-   It is safe to run while an older control plane is still serving:
-
-   ```sh
-   sk rollout start 20260913083052__initial_schema
-   # Rollout ... is ready to complete.
-   ```
-
-4. **Contract.** `complete` drops what the new code no longer uses, so it must never run before the
-   matching binaries do. On a first install there is no old version to keep alive, so it follows
-   immediately:
-
-   ```sh
-   sk rollout complete 20260913083052__initial_schema
-   ```
-
-5. **Confirm.**
-
-   ```sh
-   sk status
-   # __rollout:20260913083052__initial_schema [completed] initial_schema
-   ```
-
-</Steps>
+That is the whole step. It is idempotent: every migration that has already run is recorded in the
+`_sqlx_migrations` table and skipped. Several processes may run it at once — the migrator takes a
+PostgreSQL advisory lock, so a fleet of masters starting together applies each migration exactly
+once.
 
 ## 3. Seed the module configuration
 
 Operator-tunable settings — health thresholds and retention, the default ACME directory, the
 renewal window, how often each periodic job runs — live in the database, one `app_config` row per
-key, not in the environment. Write the defaults once the schema is in place, with `manage-tool` —
-built from the same checkout (`cargo build --release -p manage-tool`), or downloaded from a
-`master-v*` release, which attaches it as `manage-tool-<version>-x86_64-unknown-linux-gnu`. Its
-database flags have the same names as `guru-master`'s, and they also read `SURREALDB_*` from the
-environment, so pass them explicitly unless you have just sourced the right file:
-
-<Tabs syncKey="deployment">
-<TabItem label="Native deployment">
+key, not in the environment. Write the defaults once the schema is in place:
 
 ```sh
-(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
+./target/release/manage-tool config seed
 # seeded auth
 # seeded orchestration
 ```
-
-</TabItem>
-<TabItem label="Image deployment">
-
-```sh
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
-  --namespace guru --database guru \
-  config seed
-```
-
-</TabItem>
-</Tabs>
 
 It is idempotent and never overwrites a value you have edited, so re-run it after every schema
 change. `config list`, `config get <key>` and `config set <key> <json>` inspect and change those
@@ -170,51 +103,24 @@ back to defaults could move ACME from staging to the production directory.
 
 ## 4. Later schema changes
 
-An upgrade is the same four commands with the deploy wedged between the two halves, which is the
-entire point of the split:
+A schema change is a new file in `database/migrations/`; an applied migration is never edited,
+because the database records which ones it has run, not what they said.
 
 <Steps>
 
-1. `sk rollout plan --name <change>` and read the manifest.
+1. Apply the new migrations, either by deploying the new binaries (each master migrates at startup)
+   or, to front-load it, with `manage-tool db migrate` from the new checkout.
 
-2. `sk rollout start <target>` — expand. The running masters keep working: nothing they use has been
-   removed yet.
-
-3. Deploy the binaries that match the new schema (bump the image tags, or rebuild and restart the
-   units), then verify.
-
-4. `sk rollout complete <target>` — contract. Only now do the objects the new code dropped go away.
+2. Deploy the binaries that match, then verify.
 
 </Steps>
 
-If step 3 or 4 goes wrong, `sk rollout rollback <target>` reverts the rollout and the previous
-version's tags/binaries go back. A rollout killed mid-flight leaves `__rollout.status` on
-`running_*`; heal the metadata with `sk rollout repair <target>` before planning anything else.
-
-| Command | When |
-|---|---|
-| `sk rollout baseline` | First rollout against a database that already carries the schema — adopts the current state instead of diffing it from empty |
-| `sk rollout rollback <target>` | Revert an in-flight rollout |
-| `sk rollout repair <target>` | `start`/`complete` was killed mid-flight and `__rollout.status` is stuck on `running_*`; reconciles metadata only |
-| `sk status` | What the database thinks is applied |
-
-:::caution[`surrealkit sync` is for disposable databases]
-`sync` reconciles immediately and prunes deleted objects — no manifest, no review step, no rollback.
-It is the right tool in [Local Development](/guides/local-development/) and wrong on anything whose
-data you would miss.
+:::caution[A rolling upgrade sees both schemas at once]
+While the new binaries roll out, the old ones are still serving against the migrated database. A
+migration that only adds things is safe for them; one that drops or renames a column the old binary
+still reads is not. Split such a change in two — one release that adds and stops using the old
+shape, a later one that drops it — or accept a short stop of every master between the two.
 :::
 
-## 5. Keeping the manifests
-
-`database/rollouts/*.toml` and `database/snapshots/*.json` are how the next `plan` knows what the
-live database already has, so they must survive — but they are **not** committed. `.gitignore`
-excludes both directories on purpose: they are per-environment state, regenerated by `rollout plan`
-against one specific database, and a manifest from another environment is worse than none.
-
-So: keep them on the machine that runs the schema commands, and back that directory up together
-with the deployment's `.env`. If several operators maintain the same database, share them the way
-you share the credentials — one host or one secret store that owns the schema workflow — not
-through the repository.
-
-Losing them does not lose the database, but the next `plan` will diff from an empty catalog; use
-`sk rollout baseline` to re-adopt the live state instead.
+There is nothing to keep outside the repository: the migrations are committed, and what a database
+has applied is recorded in that database.

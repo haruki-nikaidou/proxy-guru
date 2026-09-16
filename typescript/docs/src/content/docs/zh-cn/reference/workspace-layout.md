@@ -11,11 +11,11 @@ bin/              # Rust 二进制 —— 只做装配，不含业务逻辑
 lib/
   rpguru_sdk/         # 生成的 gRPC/protobuf 类型（Rust）
   guru_worker_config/ # worker 配置模型，由两个平面共享
-  newtype_record_id/  # 用于带类型 record id 的 table_record! 宏
+  db_types/           # table_record! 与 text_enum!：带类型的行 id 和文本枚举
 modules/          # 业务逻辑，每个功能一个 crate
   auth/  orchestration/  notify/  base/
 proto/            # protobuf 定义（按模块分组）—— 唯一的 API 来源
-database/         # SurrealDB Schema + 种子数据 + 测试（由 surrealkit 管理）
+database/         # PostgreSQL Schema：sqlx migration（database/migrations）
 typescript/       # Bun 工作区：所有前端 / TypeScript 包
   app-protobuf/       # 生成的 gRPC/protobuf TypeScript 代码（共享）
   guru-frontend/      # SvelteKit 控制台

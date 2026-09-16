@@ -1,6 +1,6 @@
 ---
 title: Docker でデプロイ
-description: GHCR のイメージからコントロールプレーンを動かし、surrealkit でスキーマを適用し、SurrealDB、RabbitMQ、Redis を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
+description: GHCR のイメージからコントロールプレーンを動かし、スキーマを適用し、PostgreSQL、RabbitMQ、Redis を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
 ---
 
 このガイドは、何も入っていないマシンから動作するダッシュボードまで、シングルホストの本番デプロイを通しで
@@ -16,9 +16,9 @@ description: GHCR のイメージからコントロールプレーンを動か�
 
 | コンポーネント | 実行モード | 通信相手 |
 |---|---|---|
-| オペレーター API | `dashboard_grpc` | SurrealDB、RabbitMQ、Redis |
-| ワーカー API | `workers_grpc` | SurrealDB、RabbitMQ、Redis |
-| 定期ジョブ + 導出フック | `consumer` | SurrealDB、RabbitMQ、Redis |
+| オペレーター API | `dashboard_grpc` | PostgreSQL、RabbitMQ、Redis |
+| ワーカー API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
+| 定期ジョブ + 導出フック | `consumer` | PostgreSQL、RabbitMQ、Redis |
 | スケジューラー | `cron` | RabbitMQ |
 | ダッシュボード | — | オペレーター API（gRPC） |
 
@@ -27,7 +27,7 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 そのため、ワーカーノード向けの Docker イメージは提供していません。
 :::
 
-永続的な状態が存在する場所はちょうど 2 か所です: **SurrealDB**（キャンバス、サーバー、ノード、エッジ、
+永続的な状態が存在する場所はちょうど 2 か所です: **PostgreSQL**（キャンバス、サーバー、ノード、エッジ、
 アカウント、設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、
 定期ジョブごとに 1 本）。**Redis** は 3 つ目のデータストアであり、唯一何も保持しないものです。単一の pub/sub
 チャンネルで、オペレーター API のライブイベントを master のレプリカ間に運ぶだけで、永続化は一切設定しません。
@@ -45,7 +45,7 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 | `50051` | `dashboard_grpc` | **プライベート。** ダッシュボード専用。平文 h2c で、TLS なし、トランスポート層の認証なし。 |
 | `50052` | `workers_grpc` | データプレーンのノードから到達可能にする（VPN、プライベートネットワーク、または TLS 終端する gRPC プロキシ）。 |
 | `3000` | ダッシュボード | HTTPS リバースプロキシの背後に置く。直接公開してはいけません。 |
-| `8000` | SurrealDB | **プライベート。** 持っている認証情報は root のみです。 |
+| `5432` | PostgreSQL | **プライベート。** ロール 1 つ、データベース 1 つ、パスワード 1 つ。 |
 | `5672` | RabbitMQ | **プライベート。** |
 | `6379` | Redis | **プライベート。** 認証情報は一切ありません。アクセス制御はリスナーそのものです。 |
 
@@ -60,8 +60,8 @@ master の両モードは平文の HTTP/2 で待ち受け、ダッシュボー�
 
 このガイドの前に **[前提条件](/ja/guides/prerequisites/)** を済ませてください。イメージデプロイの場合、
 そのページから必要なのは: Docker Engine と Compose プラグイン、オペレーターマシン上のこのリポジトリの
-チェックアウト（`database/` 配下のスキーマファイルはイメージとして配布されていません）、`surrealkit`、
-`openssl`、TLS 証明書を持つ DNS 名 — そして SurrealDB、RabbitMQ、Redis 自体で、これらは同ページが
+チェックアウト（Compose ファイルのため）、
+`openssl`、TLS 証明書を持つ DNS 名 — そして PostgreSQL、RabbitMQ、Redis 自体で、これらは同ページが
 `/srv/guru/docker-compose.yml` から `/srv/guru/.env` の認証情報とともに起動します。
 
 `manage-tool` CLI もイメージには含まれていませんが、**ビルドは必須ではありません**: `master-v*` タグは
@@ -69,6 +69,7 @@ GHCR のイメージに加えて、`guru-master` と `manage-tool` のバイナ�
 （セクション 10）。ダウンロードしたバイナリを使うなら、Rust ツールチェーン、`protobuf-compiler`、
 C ツールチェーン、`cmake` はどれも不要です。これらが要るのは自分でビルドする場合だけで、`manage-tool` が
 証明書関連のスタックを取り込み、そのクレートがベンダリングされた C ソースをコンパイルするためです。
+スキーマはバイナリの中に入って配布されるため、適用のためにチェックアウトから何かを取り出す必要はありません。
 どちらにしても Bun は不要で（ダッシュボードはイメージとして配布されます）、`perl` が必要なのは
 `guru-worker` をビルドする場所だけで、ここではありません。
 
@@ -91,7 +92,7 @@ C ツールチェーン、`cmake` はどれも不要です。これらが要る�
 ## 4. シークレットを配置する
 
 [前提条件](/ja/guides/prerequisites/)で、Compose ファイルの隣に `/srv/guru/.env` をデータストアの認証情報
-（`SURREAL_ROOT_USER`、`SURREAL_ROOT_PASSWORD`、`RABBIT_USER`、`RABBIT_PASSWORD`、`GURU_NS`、`GURU_DB`）
+（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`RABBIT_USER`、`RABBIT_PASSWORD`）
 とともに作成済みです。セクション 3 で固定したイメージタグを追記します:
 
 ```sh
@@ -104,67 +105,54 @@ FRONTEND_VERSION=v0.2.0-beta
 `GURU_MASTER_KEY` は、`manage-tool` で生成できるようになるセクション 7 で同じファイルに追加します。
 
 :::caution[リポジトリの `.env` は別のファイルです]
-リポジトリのルートには*別の*環境の認証情報を含む `.env` が置かれている場合があり、`surrealkit` も、その
-ディレクトリから起動したすべてのプロセスもそれを引き継ぎます（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`）。
-`surrealkit` は CLI フラグ > 環境変数 > `.env` の順で解決するので、スキーマコマンドを実行するときは常に
-`--host/--ns/--db/--user/--pass` を明示的に渡してください。フラグを 1 つ忘れただけで「ローカル向け」の
-コマンドが本番環境を書き換えてしまいます。
+リポジトリのルートには*別の*環境の認証情報を含む `.env` が置かれている場合があり
+（`GURU_DATABASE_URL`、`AMQP_URI`）、そのディレクトリから起動したすべてのプロセスがそれを引き継ぎます。
+チェックアウトから `manage-tool` を実行するときは、`--database-url` を明示的に渡してください。
+フラグを 1 つ忘れただけで「ローカル向け」のコマンドが本番環境を書き換えてしまいます。
 :::
 
-## 5. SurrealDB、RabbitMQ と Redis
+## 5. PostgreSQL、RabbitMQ と Redis
 
-3 つのデータストア、それらの Compose サービス、および背後にある要件（SurrealDB ≥ 3.2、root 認証情報、
-永続的な RocksDB ストレージ、RabbitMQ はデフォルト vhost で末尾スラッシュ付きの URI、Redis は 7.x で
+3 つのデータストア、それらの Compose サービス、および背後にある要件（PostgreSQL ≥ 16 で永続ストレージ、
+RabbitMQ はデフォルト vhost で末尾スラッシュ付きの URI、Redis は 7.x で
 認証情報も永続化もなし）は
-**[前提条件 → SurrealDB、RabbitMQ と Redis](/ja/guides/prerequisites/#4-surrealdbrabbitmq-と-redis)** に
+**[前提条件 → PostgreSQL、RabbitMQ と Redis](/ja/guides/prerequisites/#4-postgresqlrabbitmq-と-redis)** に
 まとめられています。master を起動する前に、これらが立ち上がっている必要があります:
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
 このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 3 つあります: ブローカーは
 **4 つすべて**の master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、
-証明書更新を止めてしまいます — master は SurrealDB に **root** としてサインインするため、`/srv/guru/.env` の
-認証情報がセクション 7 の `x-master` アンカーが渡すものになり、そして Redis はデータベース接続を開く
+証明書更新を止めてしまいます — master は `/srv/guru/.env` にあるロールでデータベースへ到達し、
+セクション 7 の `x-master` アンカーがそれを URL に組み立てます。そして Redis はデータベース接続を開く
 3 つのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
 ストリームへの配信だけで、それ以外は何も止まりません。編集は適用され、キャンバスは導出され、ワーカーは
 設定を受け取り続けます。subscriber は自力で再接続し、すべての watcher にデータベースの再読み込みを求めます。
 同梱のダッシュボードはまだこれらのストリームを利用していないため、現時点では Redis を失ってもブラウザーからは
 まったく見えません。
 
-## 6. `surrealkit` でスキーマを適用する
+## 6. スキーマを適用する
 
-**[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)** に従い、*イメージデプロイ*タブを
-選んでください。こちらは `/srv/guru/.env` の名前を使い、チェックアウトから実行します:
+各 master は起動時に未適用のものを適用するので、初回インストールではこのセクションは任意です — ただし先に
+実行しておけば、スキーマの問題が 4 つの再起動するコンテナの中ではなくここで表面化します。
+**[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)** に従ってください:
 
 ```sh
-cd ~/proxy-guru                      # your checkout
-read -rs SURREAL_ROOT_PASSWORD       # paste the root password, it is not echoed
-export SURREAL_ROOT_PASSWORD
-
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
-}
-sk setup                             # then rollout plan / lint / start / complete
+read -rs GURU_DATABASE_URL           # paste the URL, it is not echoed
+export GURU_DATABASE_URL
+./manage-tool db migrate
 ```
 
 データベースがサーバー上のループバックでしか待ち受けていない場合は、トンネルを張ってください:
-`ssh -N -L 8000:127.0.0.1:8000 guru-host`。
-
-このデプロイでは、あの記事と 1 点だけ結論が変わります: `sk rollout complete`（破壊的な後半）は、
-セクション 7 でスキーマに対応する master バージョンをロールアウトした**後**に実行します。初回インストールでは
-生かしておくべき旧バージョンがないので、2 つの半分を続けて実行します。`database/` 配下に書き出される
-ロールアウトマニフェストとスナップショットは、このオペレーターマシンに残ります — これらは gitignore された
-環境ごとの状態なので、コミットするのではなく認証情報と一緒にバックアップしてください。
+`ssh -N -L 5432:127.0.0.1:5432 guru-host`。
 
 ## 7. コントロールプレーンを動かす
 
 `guru-master` の*デプロイ*設定は環境変数から来ます: `GURU_WORKER_MODE` がモードを選び、
-`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`、`GURU_MASTER_KEY` には
+`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL`、`GURU_MASTER_KEY` には
 **デフォルト値がありません**。
 オペレーターがインストールごとに調整するもの — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、
 更新ウィンドウ、各定期ジョブの実行間隔 — は代わりにデータベースに置かれるため（手順 8）、レプリカ側で
@@ -184,32 +172,28 @@ master キーは一度生成し、データベースの認証情報と一緒に�
 （`dashboard_grpc`、`workers_grpc`、`consumer`）で必須で、`cron` は使いません。
 
 同じ `docker-compose.yml` を拡張します: `x-master` アンカーは `services:` の上に、4 つのサービスは
-その中の `surrealdb`、`rabbitmq`、`redis` の隣に置きます:
+その中の `postgres`、`rabbitmq`、`redis` の隣に置きます:
 
 ```yaml
 x-master: &master
   image: ghcr.io/haruki-nikaidou/guru-master:${MASTER_VERSION}
   restart: unless-stopped
   environment: &master-env
-    SURREALDB_HOST: ws://surrealdb:8000
-    SURREALDB_USER: ${SURREAL_ROOT_USER}
-    SURREALDB_PASSWORD: ${SURREAL_ROOT_PASSWORD}
-    SURREALDB_NAMESPACE: ${GURU_NS}
-    SURREALDB_NAME: ${GURU_DB}
+    GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
-    surrealdb:
-      condition: service_started
+    postgres:
+      condition: service_healthy
     rabbitmq:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... surrealdb, rabbitmq and redis from section 5 ...
+  # ... postgres, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -271,9 +255,7 @@ TLS または QUIC 上のリレーリンクは、その Pod が導出される�
 
 ```sh
 GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
-  orchestration init-ca
+  --database-url "$GURU_DATABASE_URL" orchestration init-ca
 ```
 
 CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバスに再導出のマークを付けます。2 回目の実行は
@@ -291,7 +273,7 @@ CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバ�
   `live bus connected` をログし、再接続のあとは開いているすべての `Watch*` ストリームにデータベースを
   読み直させるため、古い状態が残りません。その間にチャンネルが運んでいたものは失われますが、それで
   構いません — このチャンネルが運ぶのは進行中のイベントであって、状態ではありません。このデプロイで
-  バックアップに値するのは、依然として SurrealDB だけです（セクション 13）。
+  バックアップに値するのは、依然として PostgreSQL だけです（セクション 13）。
 
 起動します:
 
@@ -331,14 +313,12 @@ master-cron-1       | INFO guru_master: scheduling periodic execution signals sc
 cd ~/proxy-guru
 cargo build --release -p manage-tool
 
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
+./target/release/manage-tool --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password '<strong password>'
-# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+# Created admin account uz0ih3b30nrekqzs1h1y
 ```
 
-データベース関連の 5 つのフラグはすべて明示的に渡してください — これらも環境変数から `SURREALDB_*` を読むため、
+`--database-url` は明示的に渡してください — `manage-tool` も環境変数から `GURU_DATABASE_URL` を読むため、
 紛れ込んだ `.env` がコマンドの向き先を黙って変えてしまいます。
 
 ダウンロードしたバイナリを使う場合は、このガイドに出てくる `./target/release/manage-tool` を自分が置いた
@@ -351,10 +331,7 @@ cargo build --release -p manage-tool
 の一部です — そこで省略した場合は、今ここで実行してください:
 
 ```sh
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
-  --namespace guru --database guru \
-  config seed
+./manage-tool --database-url "$GURU_DATABASE_URL" config seed
 # seeded auth
 # seeded orchestration
 ```
@@ -495,11 +472,9 @@ chmod +x manage-tool
 交換可能です。このガイドのコマンドはすべて後者の形で書いていますが、自分が置いたバイナリのパスに
 読み替えて構いません。フラグ、サブコマンド、挙動はまったく同じです。
 
-:::note[チェックアウトはそれでも必要です]
-リリースに含まれるのはバイナリだけです。`database/` 配下のスキーマファイルと、それを適用する
-`surrealkit` の実行（セクション 6）はチェックアウトからしか行えません。`manage-tool` をダウンロードして
-省けるのは Rust のビルドツールチェーンであって、チェックアウトそのものではありません。
-:::
+スキーマに別途の成果物は要りません。マイグレーションは両方のバイナリにコンパイル済みで組み込まれているため、
+ダウンロードしたバイナリで `manage-tool db migrate` を実行すれば、対応する master が適用するのとまったく
+同じものが適用されます。
 
 ## 11. GitHub リリースからワーカーバイナリを取得する
 
@@ -583,11 +558,11 @@ chmod +x guru-worker
 
 ```sh
 # 1. データストア
-docker compose ps                     # surrealdb + rabbitmq + redis が healthy
+docker compose ps                     # postgres + rabbitmq が healthy、redis は up
 
 # 2. スキーマ
-sk status                             # セクション 6 のもの
-#   → 適用したロールアウトが [completed] になっていること
+./manage-tool db migrate              # セクション 6 のもの
+#   → schema is up to date
 
 # 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
@@ -604,7 +579,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 #    ブラウザーではなく、このログ行です。
 docker compose logs master-dashboard | grep 'live bus connected'
 
-# 7. 管理者アカウントでログインする — ダッシュボード → オペレーター API → SurrealDB を
+# 7. 管理者アカウントでログインする — ダッシュボード → オペレーター API → データベースを
 #    端から端まで動かすチェックはこれだけです。
 ```
 
@@ -613,27 +588,22 @@ docker compose logs master-dashboard | grep 'live bus connected'
 
 ## 13. アップグレード、バックアップ、ロールバック
 
-**アップグレード。** スキーマを先に、コードを次に、contract を最後に:
+**アップグレード。** `.env` の `MASTER_VERSION`（ダッシュボードにも新しいタグがあれば `FRONTEND_VERSION` も）
+を上げ、`docker compose pull && docker compose up -d` を実行します。新しい master は起動しながら、未適用の
+マイグレーションを自分で適用します。
 
-1. `surrealkit rollout plan --name <change>` を実行し、マニフェストをレビューします。
-2. `surrealkit rollout start <target>` — expand のみ。稼働中のバージョンはそのまま動き続けます。
-3. `.env` の `MASTER_VERSION`（ダッシュボードにも新しいタグがあれば `FRONTEND_VERSION` も）を上げ、
-   `docker compose pull && docker compose up -d` を実行します。
-4. 検証してから `surrealkit rollout complete <target>` を実行します。
+ロールバックとは、バージョン変数を前のタグに固定し直すことです — ただしそれでマイグレーションが取り消される
+わけではないため、古いバイナリが読んでいるものを削除・リネームするマイグレーションを含むリリースは、この方法では
+ロールバックできません。該当する場合はリリースノートに記載されます。
 
-手順 3 または 4 で問題が起きた場合: `surrealkit rollout rollback <target>` を実行し、バージョン変数を
-前のタグに戻してください。途中で強制終了されたロールアウトは `__rollout.status` を `running_*` のまま
-残すので、次の計画を立てる前に `surrealkit rollout repair <target>` でメタデータを修復してください。
-
-**バックアップ。** 代替不能な状態を持つのは SurrealDB だけです:
+**バックアップ。** 代替不能な状態を持つのは PostgreSQL だけです:
 
 ```sh
-docker compose exec -T surrealdb /surreal export \
-  --endpoint http://127.0.0.1:8000 --user root --pass '<pw>' \
-  --ns guru --db guru - > guru-$(date +%F).surql
+docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  > guru-$(date +%F).sql
 ```
 
-素早いリストア経路が欲しければ `surreal-data` ボリュームのスナップショットも取ってください。RabbitMQ は
+素早いリストア経路が欲しければ `postgres-data` ボリュームのスナップショットも取ってください。RabbitMQ は
 バックアップ不要です: そのキューが保持しているのは編集ヒントと実行シグナルで、どちらもスケジューラーが
 再発行し、世代カウンターが冪等にしてくれます — ただしブローカーは*稼働している*必要があります。止まっている
 あいだは定期ジョブが一切走らないからです。Redis にはバックアップするものが何もありません: ボリュームも、
@@ -650,7 +620,7 @@ subscriber が再接続した時点で元どおりに動きます。
 |---|---|
 | ダッシュボードのログインが `Forbidden` / `Cross-site remote requests are forbidden` を返す | 再構成されたオリジンがブラウザーの `Origin` と一致していません。HTTPS で配信するか、`PROTOCOL_HEADER`/`HOST_HEADER` を設定して `X-Forwarded-Proto` と `X-Forwarded-Host`（ポート付き）を転送してください。`ORIGIN` は効きません。 |
 | ログインは成功するが、次のリクエストで `/auth` に戻される | `Secure` なセッション Cookie が破棄されました — ブラウザーが平文 HTTP でダッシュボードに到達しています。 |
-| `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` が未設定です。デフォルト値はありません。 |
+| master が `this mode opens the database: set GURU_DATABASE_URL` で終了する | URL が未設定か空です。デフォルト値はありません。これを必要としない唯一のモードが `cron` です。 |
 | master が `master key: GURU_MASTER_KEY is not set`（あるいは `must be 32 bytes`）で終了する | `dashboard_grpc`、`workers_grpc`、`consumer` はこのキーを必要とします（`cron` は読みません）。`manage-tool generate-master-key` で生成してください。環境変数からのみ読み込まれます。 |
 | master が `stored config for key ... does not match its type` で終了する | 保存されているドキュメントが壊れているか、フィールド名の変更より古いものです。`manage-tool config get <key>` で確認し、`config set` で書き直してください。 |
 | TLS Entry の Pod が `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
@@ -658,8 +628,8 @@ subscriber が再接続した時点で元どおりに動きます。
 | master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。4 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
 | master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` は不要です）。 |
 | `consumer` または `cron` が定期的に再起動する | ブローカー喪失時には想定される挙動です: クライアントは再接続しないのでプロセスが終了し、再起動ポリシーが立て直します。master ではなくブローカーを調べてください。 |
-| クリーンインストール直後に `table does not exist` やトランザクションのキャンセルが起きる | SurrealDB が 3.2 より古いか、スキーマが適用されていません。`surrealkit status` を確認してください。 |
-| `surrealkit` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が接続情報を与えていました。常に `--host/--ns/--db/--user/--pass` を渡してください。 |
+| クリーンインストール直後に `relation "…" does not exist` が出る | マイグレーションが実行されていません。`GURU_DATABASE_URL` のロールにそのデータベースへの `CREATE` 権限がない可能性があります。`manage-tool db migrate` を実行し、そのエラーを読んでください。 |
+| `manage-tool` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が `GURU_DATABASE_URL` を与えていました。常に `--database-url` を渡してください。 |
 | キャンバスの編集がワーカーに届かない | `consumer` が停止しています: 編集フックと古いキャンバスのスイープの両方を実行するため、これなしでは何も導出されません。`consumer` が起動している場合は `cron` を確認してください — 時計がなければスイープは発火せず、`CanvasDirty` が生きている編集だけが導出されます。 |
 | 定期ジョブが動かなくなる（`Offline` にならない、更新も走らない） | RabbitMQ が停止しているか、`cron` が停止しています。両方必要です: 時計がシグナルを発行し、consumer がそれを実行します。 |
 | `Watch*` ストリームがスナップショットを配信しなくなる（同じ内容を unary API で読むと変更が見える） | Redis が停止しているか、そのストリームを提供している `dashboard_grpc` レプリカから到達できません。そのレプリカのログで `live bus connected` を探してください。編集自体は適用され、導出も走ります。止まっているのはライブ配信だけで、再接続すれば再開します。 |

@@ -84,8 +84,8 @@ Business logic lives in `modules/`, one crate per feature:
 ## Stack
 
 Rust 2024 on Tokio, [`wakuwaku`](https://crates.io/crates/wakuwaku) +
-[`kanau`](https://crates.io/crates/kanau) (everything is a `Processor`), gRPC via Tonic, SurrealDB
-for storage (schema in `database/`, managed with surrealkit), Redis pub/sub for the operator API's
+[`kanau`](https://crates.io/crates/kanau) (everything is a `Processor`), gRPC via Tonic, PostgreSQL
+for storage (sqlx; migrations in `database/migrations`), Redis pub/sub for the operator API's
 live `Watch*` streams, AMQP for inter-module events, OpenTelemetry for tracing, and a Bun workspace
 under `typescript/` sharing one generated API client.
 

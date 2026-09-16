@@ -113,10 +113,8 @@ on the Entry node in the canvas editor.
 `manage-tool` prints the exact TOML the master derived for one server:
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
-  orchestration export-config --server <orchestration_server key>
+cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
+  orchestration export-config --server <orchestration_server id>
 ```
 
 The same model backs standalone workers: the printed file can be handed to

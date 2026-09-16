@@ -12,11 +12,9 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--address` | `SURREALDB_HOST` | `ws://127.0.0.1:8000` |
-| `--username` | `SURREALDB_USER` | `root` |
-| `--password` | `SURREALDB_PASSWORD` | `root` |
-| `--namespace` | `SURREALDB_NAMESPACE` | *required* |
-| `--database` | `SURREALDB_NAME` | *required* |
+| `--database-url` | `GURU_DATABASE_URL` | *required in every mode but `cron`* |
+| `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10` (must be ≥ 1) |
+| `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000` (must be ≥ 1) |
 | `--amqp-uri` | `AMQP_URI` | *required in every mode* |
 | `--redis-url` | `REDIS_URL` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
@@ -52,9 +50,14 @@ key. It is deliberately not a flag: argv is visible in process listings. Losing 
 re-entering every DNS provider token and re-issuing every certificate; changing it is not supported
 in place.
 
-The database arguments are required only in the three modes that open a connection. `cron` ignores
-them and starts without a namespace at all: a clock that refused to start without one would carry
-a database dependency, just an unused one.
+`GURU_DATABASE_URL` is required only in the three modes that open a connection. `cron` ignores it
+and starts without a database URL at all: a clock that refused to start without one would carry a
+database dependency, just an unused one. In the modes that do open it, the pool holds up to
+`GURU_DB_POOL_SIZE` connections and every statement is bounded by the server at
+`GURU_DB_STATEMENT_TIMEOUT_MS` — a statement past it is cancelled by PostgreSQL, which the edge
+reports as `UNAVAILABLE` rather than as a fault. Each serving master also applies whatever
+migrations are pending when it starts, under an advisory lock, so a fleet starting together applies
+each one exactly once.
 
 ### Scheduling versus executing
 
@@ -291,14 +294,13 @@ acknowledged to the master, which records the failed pods on the server and the 
 
 ## `manage-tool`
 
-Global flags mirror `guru-master`'s database options: `--address` (`SURREALDB_HOST`), `--username`
-(`SURREALDB_USER`), `--password` (`SURREALDB_PASSWORD`), `--namespace` (`SURREALDB_NAMESPACE`),
-`--database` (`SURREALDB_NAME`).
+One global flag: `--database-url` (`GURU_DATABASE_URL`), the same URL `guru-master` reads.
 
 | Subcommand | Purpose |
 |---|---|
 | `create-admin --email <email> --password <password>` | Bootstrap the first administrator account |
 | `generate-master-key` | Print a fresh `GURU_MASTER_KEY` (needs no database) |
+| `db migrate` | Apply every pending schema migration; `guru-master` does the same at startup |
 | `config seed` | Write the default values for every key that has none; leaves edited keys untouched |
 | `config list` | Print every key with its stored document (or the defaults when it has none) |
 | `config get <key>` | Print one key's stored document, undecoded — readable even when it is corrupt |
@@ -335,7 +337,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it) |
 
-Run `manage-tool config seed` after `surrealkit sync` to write the defaults, and
+Run `manage-tool config seed` after `manage-tool db migrate` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do
 not decode it, so a document that fails a master's startup read is still inspectable. A `set`
 replaces the whole document, but it is decoded into the config's type first, so a partial payload

@@ -1,6 +1,6 @@
 ---
 title: Prerequisites
-description: Set up everything the control plane depends on before you deploy it — SurrealDB, RabbitMQ, Redis, Docker, the build toolchain, surrealkit, Bun, and a hostname with a certificate.
+description: Set up everything the control plane depends on before you deploy it — PostgreSQL, RabbitMQ, Redis, Docker, the build toolchain, Bun, and a hostname with a certificate.
 ---
 
 import { Steps, Tabs, TabItem } from "@astrojs/starlight/components";
@@ -14,11 +14,10 @@ What each method actually needs:
 
 |                              | Deploy with Docker                                                                                                                        | Deploy Natively                                                            |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| SurrealDB ≥ 3.2              | yes                                                                                                                                       | yes                                                                        |
+| PostgreSQL ≥ 16              | yes                                                                                                                                       | yes                                                                        |
 | RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
 | Redis 7.x                    | yes                                                                                                                                       | yes                                                                        |
 | Docker Engine + Compose      | yes (runs the published application images; optional for the datastores)                                                                  | no                                                                         |
-| `surrealkit`                 | yes                                                                                                                                       | yes                                                                        |
 | Rust toolchain + `protoc`    | only if you build `manage-tool` yourself — it is also attached to every `master-v*` release                                                | yes — it builds every binary                                               |
 | C toolchain, `make`, `cmake` | same — only if you build `manage-tool`, which pulls in the certificate stack (`instant-acme`/`rcgen` on aws-lc), whose vendored C sources need a compiler and cmake | yes, same reason                                                           |
 | `perl`                       | no                                                                                                                                        | yes — `guru-worker` compiles vendored OpenSSL, configured by a perl script |
@@ -28,7 +27,7 @@ What each method actually needs:
 ## 1. Docker Engine and Compose (image deployment only)
 
 Install Docker only if you are following the image deployment. Native deployment does not require
-Docker: install SurrealDB, RabbitMQ and Redis directly, use managed services, or run them by
+Docker: install PostgreSQL, RabbitMQ and Redis directly, use managed services, or run them by
 another method. Pick your distro once; every tab on this page follows.
 
 <Tabs syncKey="distro">
@@ -176,7 +175,7 @@ None of these are decoration — each is a real dependency of this workspace:
 No `libssl-dev`/`openssl-devel` and no `libprotobuf` development packages: what the Rust build needs
 of those, it vendors.
 
-## 3. Rust, surrealkit and Bun
+## 3. Rust and Bun
 
 Everything above needed root; everything in this section belongs to the account that will **own the
 checkout**, and that account differs per deployment method:
@@ -196,7 +195,7 @@ or other host-administration privileges, even if you choose containers for the d
 </TabItem>
 <TabItem label="Image deployment">
 
-Nothing runs from the checkout permanently — it holds the schema files, and builds `manage-tool`
+Nothing runs from the checkout permanently — it holds the Compose file, and builds `manage-tool`
 only if you would rather not download it from a `master-v*` release — so your own operator account
 is the right place. Bun is not needed at all.
 
@@ -214,17 +213,7 @@ is the right place. Bun is not needed at all.
    . "$HOME/.cargo/env"
    ```
 
-2. **surrealkit**, the schema tool used by
-   [Setup Database Schema](/guides/setup-database-schema/). Install it with `cargo install
-   surrealkit` (or `cargo binstall surrealkit` if you have cargo-binstall). These guides target
-   version 0.7.0; confirm the installed version:
-
-   ```sh wrap frame="none"
-   surrealkit --version
-   ```
-
-3. **The checkout.** Both guides need the schema files under `database/`, and those ship in no image
-   and no release, so the clone is required. `manage-tool` is the flexible part: build it here, or
+2. **The checkout.** `manage-tool` is the flexible part: build it here, or
    download it from a `master-v*` GitHub release, which carries it next to the `guru-master` binary
    (`x86_64-unknown-linux-gnu`). The image guide also uses the Compose file; native deployment only
    uses that file if you choose the optional container path.
@@ -248,15 +237,15 @@ is the right place. Bun is not needed at all.
 
 </Steps>
 
-## 4. SurrealDB, RabbitMQ and Redis
+## 4. PostgreSQL, RabbitMQ and Redis
 
 ### What the control plane needs from them
 
 |           | Requirement                                                                                                                                                                                                                                                     |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SurrealDB | **3.2 or newer.** Older 3.0 binaries disagree with the client the workspace links against and mis-handle assertions that read a row written earlier in the same transaction, which surfaces as spurious "table does not exist" or cancelled-transaction errors. |
-|           | **Root credentials.** `guru-master` signs in with `Root { username, password }` and then selects namespace and database; a namespace- or database-scoped user cannot do that.                                                                                   |
-|           | **Durable storage.** `rocksdb:/data/guru.db` on a volume you back up. This is the only irreplaceable state in the system.                                                                                                                                       |
+| PostgreSQL | **16 or newer.** One database, reached through one URL. The control plane owns its schema: it applies the migrations it ships with, so the role it connects as needs ordinary `CREATE`/`ALTER` rights on that database — nothing cluster-wide. |
+|           | **Durable storage** on a volume you back up. This is the only irreplaceable state in the system. `pg_dump` of the one database is a complete backup.                                                                                                             |
+|           | **Room for the pool.** Each serving master holds up to `GURU_DB_POOL_SIZE` connections (10 by default) and there are three of them, so leave `max_connections` comfortably above thirty.                                                                          |
 | RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. RabbitMQ is the only broker tested by this project.                                  |
 |           | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser.                                                                                                                 |
 |           | The broker is **mandatory in all four master modes**. Periodic work _is_ a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
@@ -272,7 +261,7 @@ you validate an alternative end to end.
 :::
 
 Neither containers nor Docker Compose are required for the datastores. Follow the official
-[SurrealDB installation guide](https://surrealdb.com/docs/running/installation),
+[PostgreSQL download page](https://www.postgresql.org/download/),
 [RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
 [Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/), use
 managed services, or use the Compose examples below. Whichever method you choose must satisfy the
@@ -280,16 +269,15 @@ requirements above.
 
 ### Credentials
 
-Generate the passwords **URL-safe** — the broker password is interpolated into `AMQP_URI`, where
-`@`, `:`, `/` and `%` change the meaning of the URI:
+Generate the passwords **URL-safe** — both are interpolated into a URI (`GURU_DATABASE_URL` and
+`AMQP_URI`), where `@`, `:`, `/` and `%` change the meaning of the URI:
 
 ```sh
-openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
 ```
 
 Hex avoids every quoting and percent-encoding question. If you insist on punctuation, percent-encode
-it in `AMQP_URI` (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`); SurrealDB's password is passed
-as an argv value and needs quoting only.
+it in both URIs (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`).
 
 Two passwords, not three: Redis takes no credentials at all. Its listener is the access control —
 bind it to loopback, or leave it on the private Compose network. The other two guard state that a
@@ -303,39 +291,33 @@ Compose example also reads its datastore credentials from this file:
 
 ```sh
 # /path/to/proxy-guru/.env   (chmod 600; gitignored)
-SURREALDB_HOST=ws://127.0.0.1:8000
-SURREALDB_USER=root
-SURREALDB_PASSWORD=<first hex string>
-SURREALDB_NAMESPACE=guru
-SURREALDB_NAME=guru
+GURU_DATABASE_URL=postgres://guru:<first hex string>@127.0.0.1:5432/guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
 REDIS_URL=redis://127.0.0.1:6379/
 ```
 
-systemd later reads this file verbatim through `EnvironmentFile=`. Keep `AMQP_URI` written out in
-full; systemd does **not** expand `${…}`.
+systemd later reads this file verbatim through `EnvironmentFile=`. Keep `GURU_DATABASE_URL` and
+`AMQP_URI` written out in full; systemd does **not** expand `${…}`.
 
 </TabItem>
 <TabItem label="Image deployment">
 
 ```sh
 # /srv/guru/.env   (chmod 600)
-SURREAL_ROOT_USER=root
-SURREAL_ROOT_PASSWORD=<first hex string>
+POSTGRES_USER=guru
+POSTGRES_PASSWORD=<first hex string>
+POSTGRES_DB=guru
 
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
-
-GURU_NS=guru
-GURU_DB=guru
 ```
 
 Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below lives next to this
 `.env`, and the image guide adds `MASTER_VERSION`, `FRONTEND_VERSION` and `GURU_MASTER_KEY` to it.
-`REDIS_URL` never appears in it: Redis needs no credentials, so Compose spells the URL out itself
-(`redis://redis:6379/`), exactly as it builds `AMQP_URI` from the two Rabbit variables.
+`GURU_DATABASE_URL` and `AMQP_URI` never appear in it either: Compose builds both from the variables
+above, the way it spells Redis out itself (`redis://redis:6379/`) because Redis needs no credentials.
 
 </TabItem>
 </Tabs>
@@ -346,10 +328,10 @@ Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below liv
 <TabItem label="Native deployment">
 
 Install the three services with the official
-[SurrealDB installation guide](https://surrealdb.com/docs/running/installation),
+[PostgreSQL download page](https://www.postgresql.org/download/),
 [RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
-[Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/). Configure
-SurrealDB with durable storage, root credentials and a loopback listener on port `8000`; configure
+[Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/). Create a
+`guru` role and a `guru` database owned by it, with a loopback listener on port `5432`; configure
 RabbitMQ with the user and password from `.env`, the default vhost, durable storage and a loopback
 listener on port `5672`; configure Redis with a loopback listener on port `6379` and persistence
 turned off (`save ""` and `appendonly no`), because nothing in it is worth restoring. Use your
@@ -370,22 +352,24 @@ Compose file, next to the `.env` that holds their credentials:
 name: guru
 
 services:
-  surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
+  postgres:
+    image: postgres:18.6-alpine
     restart: unless-stopped
-    command:
-      - start
-      - --user
-      - ${SURREAL_ROOT_USER}
-      - --pass
-      - ${SURREAL_ROOT_PASSWORD}
-      - rocksdb:/data/guru.db
-    user: root
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - surreal-data:/data
+      # The 18-series image mounts the whole cluster here, not at /…/data.
+      - postgres-data:/var/lib/postgresql
     # Loopback only: the operator machine reaches it through an SSH tunnel.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   rabbitmq:
     image: rabbitmq:4-alpine
@@ -408,23 +392,22 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
 volumes:
-  surreal-data:
+  postgres-data:
   rabbit-data:
 ```
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq redis
+sudo docker compose up -d postgres rabbitmq redis
 ```
 
 The masters are added to this same file later, in the image guide — the datastores have to exist
-first, because the schema has to be in place before any master starts.
+first, because a master applies the schema to the database as it starts.
 
 </TabItem>
 </Tabs>
 
-The Compose examples need two additional details. The `surrealdb/surrealdb` image runs as an
-unprivileged user that cannot write a root-owned volume or bind mount, hence `user: root`. RabbitMQ
+The Compose examples need one additional detail. RabbitMQ
 names its data directory after its node name, `rabbit@<hostname>`, so the repository's Compose file
 pins `hostname:`; without it every container recreation would start an empty broker. Redis is the
 odd one out on purpose: no volume, no published port and no healthcheck — the masters reach it over
@@ -456,8 +439,9 @@ Leave the record DNS-only; TLS to your own nginx already protects the API key in
 
 ## 6. Next
 
-The datastores are up but empty. Apply the schema before starting any master — that is its own
-article, because the same flow maintains the schema for the rest of the installation's life:
+The datastores are up but empty. A master fills the database in as it starts, but applying the
+schema first turns a schema problem into one clear error instead of a restarting service — and the
+same article covers the module configuration seed and every later schema change:
 **[Setup Database Schema](/guides/setup-database-schema/)**.
 
 Then continue with [Deploy with Docker](/guides/deploy-with-docker/) or

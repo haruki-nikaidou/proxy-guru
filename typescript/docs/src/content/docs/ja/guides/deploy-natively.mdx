@@ -1,11 +1,11 @@
 ---
 title: ネイティブにデプロイ
-description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、SurrealDB、RabbitMQ、Redis に接続し、surrealkit でスキーマを適用し、ワーカー向けの TLS を nginx で終端します。
+description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、PostgreSQL、RabbitMQ、Redis に接続し、スキーマを適用し、ワーカー向けの TLS を nginx で終端します。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。SurrealDB、RabbitMQ、Redis はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
+[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。PostgreSQL、RabbitMQ、Redis はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
 
 さらに、イメージ版のガイドが扱っていない点も説明します。それは、ワーカー API を**ダッシュボードと同じ公開ホスト名上の TLS** の背後に置くことです。これにより、インターネット上のどこにいるワーカーでも VPN なしで `--master https://guru.example.com` で到達できます。
 
@@ -15,7 +15,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 | コンポーネント | 実行方法 | リスニング先 |
 |---|---|---|
-| SurrealDB 3.2 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:8000` |
+| PostgreSQL 16+ | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5432` |
 | RabbitMQ 4 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5672` |
 | Redis 7 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:6379` |
 | `guru-master` ×4 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
@@ -26,13 +26,13 @@ nginx 以外はすべてループバックにバインドします。公開さ�
 
 ## 2. 前提条件
 
-まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、surrealkit、Bun、チェックアウト、到達可能な SurrealDB・RabbitMQ・Redis、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
+まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、Bun、チェックアウト、到達可能な PostgreSQL・RabbitMQ・Redis、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
 
 チェックアウトから実行することによる 2 つの帰結は、始める前に改めて確認しておく価値があります。
 
 ### デプロイ用ユーザー
 
-前提条件のページでは（ツールチェーンの節の *ネイティブデプロイ* タブで）非特権の `guru` ユーザーを作成し、rustup、surrealkit、Bun、チェックアウトをそのユーザーとしてインストールします。セクション 5〜6 のユニットがそのユーザーとして動くからです。バイナリ、`.env`、`data/`、surrealkit のマニフェストはいずれも、そのユーザーが所有するチェックアウトの中にあります。これは、これらのユニットで `DynamicUser=`/`ProtectHome=` を使えない理由でもあります。
+前提条件のページでは（ツールチェーンの節の *ネイティブデプロイ* タブで）非特権の `guru` ユーザーを作成し、rustup、Bun、チェックアウトをそのユーザーとしてインストールします。セクション 5〜6 のユニットがそのユーザーとして動くからです。バイナリ、`.env`、`data/` はいずれも、そのユーザーが所有するチェックアウトの中にあります。これは、これらのユニットで `DynamicUser=`/`ProtectHome=` を使えない理由でもあります。
 
 そのため本ガイドには 2 つの実行コンテキストが登場し、各コマンドがどちらに属するかを毎回明示します。ビルド、スキーマ、`manage-tool`、ダッシュボードのビルドは **`guru`**、systemd、nginx、ホストレベルのデータストア管理は**自分の sudo 可能なアカウント**です。`guru` に sudo は必要ありません。
 
@@ -53,7 +53,7 @@ cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 
 ### シークレットファイル
 
-[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報を含む `/path/to/proxy-guru/.env` はすでに作成済みです — `SURREALDB_*`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`、そして認証情報をまったく必要としない `REDIS_URL=redis://127.0.0.1:6379/` です。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
+[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報を含む `/path/to/proxy-guru/.env` はすでに作成済みです — `GURU_DATABASE_URL`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`、そして認証情報をまったく必要としない `REDIS_URL=redis://127.0.0.1:6379/` です。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
 
 <Steps>
 
@@ -87,23 +87,11 @@ cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 cd /path/to/proxy-guru
 set -a; . ./.env; set +a       # the credentials you wrote above
 
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREALDB_PASSWORD" "$@"
-}
-sk setup                                            # once per database
-sk rollout plan --name initial_schema               # then lint / start / complete
+./target/release/manage-tool db migrate
+./target/release/manage-tool config seed
 ```
 
-ここだけ、あの記事とは扱いが変わる点が 1 つあります。以後のスキーマ変更では、`complete` はセクション 5〜6 で再ビルドしたマスターが稼働し、動作確認できるまで待ちます。`database/` 以下に書き出されるマニフェストとスナップショットはこのホストに残ります（環境ごとの状態として gitignore されています）。`.env` と一緒にバックアップしてください。
-
-最後に、同じ記事にある設定のシード投入を実行します。
-
-```sh
-(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
-# seeded auth
-# seeded orchestration
-```
+厳密に言えば、ここでの `db migrate` は任意です — 各マスターが起動時に未適用のものを適用します — が、いま実行しておけば、4 つのユニットが起動を試みる前にスキーマの問題が表面化します。`config seed` は書き込んだキーごとに 1 行を出力します（`seeded auth`、`seeded orchestration`）。
 
 ### 内部 CA と最初の管理者
 
@@ -113,7 +101,7 @@ sk rollout plan --name initial_schema               # then lint / start / comple
 (set -a; . ./.env; set +a; ./target/release/manage-tool orchestration init-ca)
 (set -a; . ./.env; set +a; ./target/release/manage-tool create-admin \
     --email admin@example.com --password '<strong password>')
-# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+# Created admin account uz0ih3b30nrekqzs1h1y
 ```
 
 `init-ca` は `GURU_MASTER_KEY` を必要とし（`.env` が供給します）、CA 証明書を出力し、TLS/QUIC リレーを含むすべてのキャンバスを再導出対象としてマークし、2 回目の実行は拒否します。
@@ -159,7 +147,7 @@ sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc 
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、SurrealDB、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要としません — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
+`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、PostgreSQL、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要としません — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
 
 コード変更後の再デプロイはシェル 2 つでの作業です。`guru` としてビルドし、オペレーターとして再起動します。
 
@@ -305,15 +293,14 @@ sudo nginx -t && sudo systemctl reload nginx
 ```sh
 # 1. ローカルにネイティブインストールした場合の例のみ。リモートサービスはプロバイダーのヘルスチェックで
 #    確認してください
-surreal is-ready --endpoint http://127.0.0.1:8000
+pg_isready -h 127.0.0.1 -p 5432
 rabbitmq-diagnostics -q ping
 redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
-# 2. スキーマ（guru: database/ 配下のマニフェストを所有しています）
+# 2. スキーマ
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
-  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
-    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
-#   → 適用したロールアウトが [completed] になっていること
+  ./target/release/manage-tool db migrate'
+#   → schema is up to date
 
 # 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと、そして
 #    dashboard_grpc から `live bus connected` が 1 行 — オペレーター API の `Watch*`
@@ -335,7 +322,7 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
 #   ERROR guru_worker::agent: agent session ended error=... "Missing identity"
 ```
 
-その後、セクション 4 で作成したアカウントを使って `https://guru.example.com/` にログインします。ダッシュボード → オペレーター API → SurrealDB を端から端まで動かすチェックはこれだけです。他がすべて通るのにこれが `Forbidden` を返す場合は、セクション 7 の forwarded ヘッダーが間違っています。
+その後、セクション 4 で作成したアカウントを使って `https://guru.example.com/` にログインします。ダッシュボード → オペレーター API → データベースを端から端まで動かすチェックはこれだけです。他がすべて通るのにこれが `Forbidden` を返す場合は、セクション 7 の forwarded ヘッダーが間違っています。
 
 最後に、ダッシュボードでサーバーと API キーを作成し、`--master https://guru.example.com` で実際のワーカーを起動します。3 分以上そのまま観察してください。それが nginx の 60 秒のデフォルトを上書きできている証拠になります。そのうえでキャンバスの変更を反映させ、ログに `applied config revision` が出るのを確認します。
 

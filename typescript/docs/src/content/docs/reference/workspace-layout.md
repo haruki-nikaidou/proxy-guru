@@ -11,11 +11,11 @@ bin/              # Rust binaries — wiring only, no business logic
 lib/
   rpguru_sdk/         # generated gRPC/protobuf types (Rust)
   guru_worker_config/ # worker config model, shared by both planes
-  newtype_record_id/  # table_record! macro for typed record ids
+  db_types/           # table_record! and text_enum!: typed row ids, text-backed enums
 modules/          # business logic, one crate per feature
   auth/  orchestration/  notify/  base/
 proto/            # protobuf definitions (grouped by module) — the single API source
-database/         # SurrealDB schema + seed + tests (managed by surrealkit)
+database/         # PostgreSQL schema: sqlx migrations (database/migrations)
 typescript/       # Bun workspace: all frontend / TypeScript packages
   app-protobuf/       # generated gRPC/protobuf TypeScript code (shared)
   guru-frontend/      # SvelteKit dashboard

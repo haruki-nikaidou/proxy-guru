@@ -17,8 +17,8 @@ and never constructs a gRPC client, never reads `GURU_API_KEY`, and never touche
 
 |                              | Standalone (`--config`) | Agent (`--master`) |
 |---|---|---|
-| Source of truth | The file on the node | The canvas in SurrealDB |
-| Needs SurrealDB / RabbitMQ / master | No | Yes |
+| Source of truth | The file on the node | The canvas in the database |
+| Needs PostgreSQL / RabbitMQ / master | No | Yes |
 | Needs an operator API key | No | Yes |
 | How a change lands | You edit the file, then `SIGHUP` | Master streams a revision |
 | Rollout ordering across nodes | Yours to arrange | Convergent, dependency-ordered |
@@ -50,7 +50,7 @@ The config format is `lib/guru_worker_config`, shared by both planes — see
   host**. The worker reads them from the paths in the config; it never fetches or generates
   certificates in either mode.
 
-You do **not** need Docker, SurrealDB, RabbitMQ, the dashboard, an API key, or network reachability
+You do **not** need Docker, PostgreSQL, RabbitMQ, the dashboard, an API key, or network reachability
 to anything except your own upstreams.
 
 ## 3. Install the binary
@@ -279,7 +279,7 @@ change rather than a rewrite:
 1. Model the node as a server in a canvas and let the master derive its config.
 2. Compare the two files — `manage-tool orchestration export-config --server <key>` prints what the
    canvas currently derives, which is the file the master would stream. (That command talks to
-   SurrealDB, so it runs on an operator machine, not on the worker node.)
+   the database, so it runs on an operator machine, not on the worker node.)
 3. Swap `--config <file>` for `--master <url> --server <key>`, provide a key through
    `GURU_API_KEY` or `--api-key-file` — an operator API key, or better the server's own agent key
    the dashboard issues — and add a writable `--state-dir` so the node can restore its

@@ -1,6 +1,6 @@
 ---
 title: Deploy with Docker
-description: Run the control plane from the GHCR images, apply the schema with surrealkit, set up SurrealDB, RabbitMQ and Redis, and ship the worker binary from a GitHub release.
+description: Run the control plane from the GHCR images, apply the schema, set up PostgreSQL, RabbitMQ and Redis, and ship the worker binary from a GitHub release.
 ---
 
 This guide walks a single-host production deployment from an empty machine to a working dashboard.
@@ -16,9 +16,9 @@ Four processes, all from **one** image, plus the dashboard:
 
 | Component | Run mode | Talks to |
 |---|---|---|
-| Operator API | `dashboard_grpc` | SurrealDB, RabbitMQ, Redis |
-| Worker API | `workers_grpc` | SurrealDB, RabbitMQ, Redis |
-| Periodic + derivation hooks | `consumer` | SurrealDB, RabbitMQ, Redis |
+| Operator API | `dashboard_grpc` | PostgreSQL, RabbitMQ, Redis |
+| Worker API | `workers_grpc` | PostgreSQL, RabbitMQ, Redis |
+| Periodic + derivation hooks | `consumer` | PostgreSQL, RabbitMQ, Redis |
 | Scheduler | `cron` | RabbitMQ |
 | Dashboard | — | Operator API (gRPC) |
 
@@ -27,7 +27,7 @@ Because of the nature of a TCP reverse proxy server, deploying a worker inside a
 is bad practice. Therefore, we do not provide a Docker image for worker nodes.
 :::
 
-Durable state lives in exactly two places: **SurrealDB** (canvases, servers, nodes, edges, accounts,
+Durable state lives in exactly two places: **PostgreSQL** (canvases, servers, nodes, edges, accounts,
 config views) and **RabbitMQ** (one durable queue for "this canvas changed" hints, plus one per
 periodic job). **Redis** is the third datastore and the only one that keeps nothing: it carries the
 operator API's live events between master replicas on a single pub/sub channel, with no persistence
@@ -45,7 +45,7 @@ Ports, and who is allowed to reach them:
 | `50051` | `dashboard_grpc` | **Private.** The dashboard only; plaintext h2c, no TLS, no auth at the transport level. |
 | `50052` | `workers_grpc` | Reachable by data-plane nodes (VPN, private network, or a TLS-terminating gRPC proxy). |
 | `3000` | dashboard | Behind your HTTPS reverse proxy; never publish directly. |
-| `8000` | SurrealDB | **Private.** Root credentials are all it has. |
+| `5432` | PostgreSQL | **Private.** One role, one database, one password. |
 | `5672` | RabbitMQ | **Private.** |
 | `6379` | Redis | **Private.** No credentials at all; the listener is the access control. |
 
@@ -60,15 +60,15 @@ crosses the public internet.
 
 Work through **[Prerequisites](/guides/prerequisites/)** before this guide. For an image deployment
 you need, from that page: Docker Engine and the Compose plugin, a checkout of this repository on an
-operator machine (the schema files under `database/` are not shipped anywhere else), `surrealkit`,
-`openssl`, a DNS name with a TLS certificate — and SurrealDB, RabbitMQ and Redis themselves, which
+operator machine (for the Compose file), `openssl`, a DNS name with a TLS certificate — and
+PostgreSQL, RabbitMQ and Redis themselves, which
 that page brings up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
 
 `guru-master` and `manage-tool` are published as plain binaries too: every `master-v*` tag attaches
 them to a GitHub release next to the image (section 10), so a Rust toolchain, `protobuf-compiler`,
 a C toolchain and `cmake` are only needed **if you choose to build them** — `manage-tool` pulls in
-the certificate stack, whose crates compile vendored C sources. The checkout itself is still
-required either way, for the `database/` schema files that `surrealkit` applies.
+the certificate stack, whose crates compile vendored C sources. The schema travels inside the
+binaries, so nothing has to be copied out of the checkout to apply it.
 
 Bun is the one thing you can skip here — the dashboard ships as an image. `perl` is only needed
 where `guru-worker` is built, which is not here.
@@ -97,8 +97,8 @@ Both images are public, so no `docker login ghcr.io` is needed to pull.
 ## 4. Lay out the secrets
 
 [Prerequisites](/guides/prerequisites/) already created `/srv/guru/.env` next to the Compose file,
-with the datastore credentials (`SURREAL_ROOT_USER`, `SURREAL_ROOT_PASSWORD`, `RABBIT_USER`,
-`RABBIT_PASSWORD`, `GURU_NS`, `GURU_DB`). Append the image tags you pinned in section 3:
+with the datastore credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `RABBIT_USER`,
+`RABBIT_PASSWORD`). Append the image tags you pinned in section 3:
 
 ```sh
 # /srv/guru/.env  (append)
@@ -110,68 +110,54 @@ FRONTEND_VERSION=v0.2.0-beta
 `GURU_MASTER_KEY` joins the same file in section 7, once `manage-tool` can print one.
 
 :::caution[The repository `.env` is a different file]
-The repository root may contain a `.env` with credentials of *another* environment, and both
-`surrealkit` and every process started from that directory inherit it (`SURREALDB_HOST`,
-`SURREALDB_USER`, `SURREALDB_PASSWORD`, `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`).
-`surrealkit` resolves CLI flags > environment > `.env`, so always pass `--host/--ns/--db/--user/--pass`
-explicitly when you run schema commands. A forgotten flag is how a "local" command ends up
-rewriting production.
+The repository root may contain a `.env` with credentials of *another* environment
+(`GURU_DATABASE_URL`, `AMQP_URI`), and every process started from that directory inherits it. Pass
+`--database-url` explicitly when you run `manage-tool` from a checkout. A forgotten flag is how a
+"local" command ends up rewriting production.
 :::
 
-## 5. SurrealDB, RabbitMQ and Redis
+## 5. PostgreSQL, RabbitMQ and Redis
 
-All three datastores, their Compose services and the requirements behind them (SurrealDB ≥ 3.2, root
-credentials, durable RocksDB storage; RabbitMQ on the default vhost with a trailing-slash URI; Redis
-7.x with no credentials and no persistence) live in
-**[Prerequisites → SurrealDB, RabbitMQ and Redis](/guides/prerequisites/#4-surrealdb-rabbitmq-and-redis)**.
+All three datastores, their Compose services and the requirements behind them (PostgreSQL ≥ 16 with
+durable storage; RabbitMQ on the default vhost with a trailing-slash URI; Redis 7.x with no
+credentials and no persistence) live in
+**[Prerequisites → PostgreSQL, RabbitMQ and Redis](/guides/prerequisites/#4-postgresql-rabbitmq-and-redis)**.
 They must be up before any master starts:
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
 Three consequences worth repeating here, because they shape this deployment: the broker is mandatory
 in **all four** master modes — periodic work is a message, so a broker outage stalls derivation,
-liveness and certificate renewal — and the masters sign in to SurrealDB as **root**, so the
-credentials in `/srv/guru/.env` are the ones the `x-master` anchor in section 7 passes on. Redis is
+liveness and certificate renewal — and the masters reach the database with the role in
+`/srv/guru/.env`, which the `x-master` anchor in section 7 assembles into a URL. Redis is
 the third: required by the three modes that open a database connection, and far cheaper to lose.
 An outage stops delivery on open `Watch*` streams and nothing else — edits still apply, canvases
 still derive, workers still get their config — and the subscriber reconnects on its own, then has
 every watcher re-read the database. The bundled dashboard does not consume those streams yet, so
 losing Redis is currently invisible in the browser.
 
-## 6. Apply the schema with `surrealkit`
+## 6. Apply the schema
 
-Follow **[Setup Database Schema](/guides/setup-database-schema/)** — pick its *Image deployment*
-tab, which uses the `/srv/guru/.env` names and runs from your checkout:
+Each master applies what is pending when it starts, so this section is optional on a first install —
+but running it first means a schema problem surfaces here rather than in four restarting containers.
+Follow **[Setup Database Schema](/guides/setup-database-schema/)**:
 
 ```sh
-cd ~/proxy-guru                      # your checkout
-read -rs SURREAL_ROOT_PASSWORD       # paste the root password, it is not echoed
-export SURREAL_ROOT_PASSWORD
-
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
-}
-sk setup                             # then rollout plan / lint / start / complete
+read -rs GURU_DATABASE_URL           # paste the URL, it is not echoed
+export GURU_DATABASE_URL
+./manage-tool db migrate
 ```
 
 If the database only listens on loopback on the server, tunnel to it:
-`ssh -N -L 8000:127.0.0.1:8000 guru-host`.
-
-One thing that article settles differently for this deployment: `sk rollout complete` (the
-destructive half) belongs **after** section 7 has rolled out the master version that matches the
-schema. On a first install the two halves run back to back, since there is no old version to keep
-alive. The rollout manifests and snapshots it writes under `database/` stay on this operator
-machine — they are gitignored per-environment state, so back them up with your credentials rather
-than committing them.
+`ssh -N -L 5432:127.0.0.1:5432 guru-host`.
 
 ## 7. Run the control plane
 
 `guru-master`'s *deployment* settings come from the environment: `GURU_WORKER_MODE` picks the mode,
-and `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI`, `REDIS_URL` and `GURU_MASTER_KEY` have
+and `GURU_DATABASE_URL`, `AMQP_URI`, `REDIS_URL` and `GURU_MASTER_KEY` have
 **no defaults**. Everything an operator tunes per installation — health thresholds and retention,
 the default ACME directory, the renewal window, how often each periodic job runs — lives in the
 database instead (step 8), so replicas need no matching environment.
@@ -189,32 +175,28 @@ no database:
 ```
 
 Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the four
-services inside it, next to `surrealdb`, `rabbitmq` and `redis`:
+services inside it, next to `postgres`, `rabbitmq` and `redis`:
 
 ```yaml
 x-master: &master
   image: ghcr.io/haruki-nikaidou/guru-master:${MASTER_VERSION}
   restart: unless-stopped
   environment: &master-env
-    SURREALDB_HOST: ws://surrealdb:8000
-    SURREALDB_USER: ${SURREAL_ROOT_USER}
-    SURREALDB_PASSWORD: ${SURREAL_ROOT_PASSWORD}
-    SURREALDB_NAMESPACE: ${GURU_NS}
-    SURREALDB_NAME: ${GURU_DB}
+    GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
-    surrealdb:
-      condition: service_started
+    postgres:
+      condition: service_healthy
     rabbitmq:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... surrealdb, rabbitmq and redis from section 5 ...
+  # ... postgres, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -275,9 +257,7 @@ operator machine, with the same `GURU_MASTER_KEY` the master uses:
 
 ```sh
 GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
-  orchestration init-ca
+  --database-url "$GURU_DATABASE_URL" orchestration init-ca
 ```
 
 It prints the CA certificate and marks every canvas holding a TLS/QUIC relay for re-derivation. It
@@ -294,7 +274,7 @@ Three operational notes that follow from the code:
 - Redis behaves the other way round: the subscriber reconnects by itself (500 ms doubling to 10 s)
   and logs `live bus connected` each time, and after every reconnect it has every open `Watch*`
   stream re-read the database, so nothing stays stale. What it held in the meantime is lost and that
-  is fine — the channel carries in-flight events, never state. SurrealDB is still the only thing in
+  is fine — the channel carries in-flight events, never state. PostgreSQL is still the only thing in
   this deployment worth backing up (section 13).
 
 Start them:
@@ -335,15 +315,13 @@ image, so either build it from your checkout or download it from a `master-v*` r
 cd ~/proxy-guru
 cargo build --release -p manage-tool
 
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
+./target/release/manage-tool --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password '<strong password>'
-# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+# Created admin account uz0ih3b30nrekqzs1h1y
 ```
 
-Pass all five database flags explicitly — they also read `SURREALDB_*` from the environment, so a
-stray `.env` silently redirects the command.
+Pass `--database-url` explicitly — `manage-tool` also reads `GURU_DATABASE_URL` from the
+environment, so a stray `.env` silently redirects the command.
 
 ### Seed the module configuration
 
@@ -353,10 +331,7 @@ configuration](/guides/setup-database-schema/#3-seed-the-module-configuration) �
 skipped it there:
 
 ```sh
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
-  --namespace guru --database guru \
-  config seed
+./manage-tool --database-url "$GURU_DATABASE_URL" config seed
 # seeded auth
 # seeded orchestration
 ```
@@ -496,8 +471,8 @@ chmod +x manage-tool
 A downloaded `manage-tool` is interchangeable with `./target/release/manage-tool` in every command
 on this page: same flags, same subcommands, only the path differs.
 
-What a release cannot give you is the schema: the files under `database/` and the `surrealkit`
-rollout they feed (section 6) still come from a checkout.
+The schema needs no separate artefact: the migrations are compiled into both binaries, so
+`manage-tool db migrate` from a downloaded binary applies exactly what the matching master would.
 
 ## 11. Get the worker binary from a GitHub release
 
@@ -583,11 +558,11 @@ Work through these in order — each one fails loudly and independently:
 
 ```sh
 # 1. Datastores
-docker compose ps                     # surrealdb + rabbitmq healthy, redis up
+docker compose ps                     # postgres + rabbitmq healthy, redis up
 
 # 2. Schema
-sk status                             # from section 6
-#   → the rollout you applied, [completed]
+./manage-tool db migrate              # from section 6
+#   → schema is up to date
 
 # 3. Control plane: one banner per mode, and no restart loop
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
@@ -605,34 +580,29 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. Log in with the admin account — this is the only check that exercises
-#    dashboard → operator API → SurrealDB end to end.
+#    dashboard → operator API → database end to end.
 ```
 
 If step 7 fails with `Forbidden` while steps 1–5 pass, re-read the proxy warning in section 9.
 
 ## 13. Upgrades, backups, rollback
 
-**Upgrading.** Schema first, code second, contraction last:
+**Upgrading.** Bump `MASTER_VERSION` (and `FRONTEND_VERSION`, if the dashboard also has a new tag)
+in `.env`, then `docker compose pull && docker compose up -d`. The new masters apply any pending
+migrations themselves as they start.
 
-1. `surrealkit rollout plan --name <change>` and review the manifest.
-2. `surrealkit rollout start <target>` — expansion only; the running version keeps working.
-3. Bump `MASTER_VERSION` (and `FRONTEND_VERSION`, if the dashboard also has a new tag) in
-   `.env`, then `docker compose pull && docker compose up -d`.
-4. Verify, then `surrealkit rollout complete <target>`.
+Rolling back means pinning the version variables to the previous tags — but a migration is not
+undone by that, so a release whose migration drops or renames something the old binary reads cannot
+be rolled back this way. The release notes say when that is the case.
 
-If step 3 or 4 goes wrong: `surrealkit rollout rollback <target>`, and pin the version variables
-back to the previous tags. A rollout killed mid-flight leaves `__rollout.status` on `running_*` — heal the
-metadata with `surrealkit rollout repair <target>` before planning anything else.
-
-**Backups.** SurrealDB is the only irreplaceable state:
+**Backups.** PostgreSQL is the only irreplaceable state:
 
 ```sh
-docker compose exec -T surrealdb /surreal export \
-  --endpoint http://127.0.0.1:8000 --user root --pass '<pw>' \
-  --ns guru --db guru - > guru-$(date +%F).surql
+docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  > guru-$(date +%F).sql
 ```
 
-Snapshot the `surreal-data` volume too if you want a fast restore path. RabbitMQ needs no backup:
+Snapshot the `postgres-data` volume too if you want a fast restore path. RabbitMQ needs no backup:
 its queues hold edit hints and execution signals, both of which the scheduler re-publishes and the
 generation counters make idempotent — but the broker has to be *running*, because no periodic job
 happens while it is not. Redis needs no backup either, and for a stronger reason: it is configured
@@ -649,7 +619,7 @@ usual Docker log driver.
 |---|---|
 | Dashboard login returns `Forbidden` / `Cross-site remote requests are forbidden` | Reconstructed origin ≠ browser `Origin`. Serve over HTTPS, or set `PROTOCOL_HEADER`/`HOST_HEADER` and forward `X-Forwarded-Proto` and `X-Forwarded-Host` (with the port). `ORIGIN` has no effect. |
 | Login succeeds, next request bounces back to `/auth` | The `Secure` session cookie was dropped — the browser reached the dashboard over plain HTTP. |
-| `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` are unset; they have no defaults. |
+| Master exits with `this mode opens the database: set GURU_DATABASE_URL` | The URL is unset or empty; it has no default. `cron` is the one mode that does not need it. |
 | Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | `dashboard_grpc`, `workers_grpc` and `consumer` need the key (`cron` does not read it). Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
 | Master exits with `stored config for key ... does not match its type` | The stored document is corrupt or predates a renamed field. Inspect it with `manage-tool config get <key>` and rewrite it with `config set`. |
 | A TLS Entry's pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
@@ -658,8 +628,8 @@ usual Docker log driver.
 | Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` does not. |
 | A `Watch*` stream stops delivering snapshots (the same read over the unary API shows the change) | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
 | `consumer` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
-| `table does not exist` / cancelled transactions right after a clean install | SurrealDB older than 3.2, or the schema was never applied. Check `surrealkit status`. |
-| `surrealkit` wrote to the wrong database | A `.env` in the working directory supplied the connection. Always pass `--host/--ns/--db/--user/--pass`. |
+| `relation "…" does not exist` right after a clean install | The migrations never ran: the role in `GURU_DATABASE_URL` may lack `CREATE` on the database. Run `manage-tool db migrate` and read its error. |
+| `manage-tool` wrote to the wrong database | A `.env` in the working directory supplied `GURU_DATABASE_URL`. Always pass `--database-url`. |
 | Canvas edits never reach a worker | `consumer` is down: it runs both the edit hook and the stale-canvas sweep, so nothing derives without it. If `consumer` is up, check `cron` — without the clock the sweep never fires and only edits with a live `CanvasDirty` derive. |
 | Periodic jobs stop happening (nothing goes `Offline`, no renewals) | RabbitMQ is down, or `cron` is. Both are required: the clock publishes the signals, the consumer runs them. |
 

@@ -1,21 +1,22 @@
 ---
 title: 本地开发
-description: 在同一台机器上启动 SurrealDB、RabbitMQ、Redis、控制平面与控制台。
+description: 在同一台机器上启动 PostgreSQL、RabbitMQ、Redis、控制平面与控制台。
 ---
 
-控制平面需要一个 SurrealDB 实例、一个 AMQP 消息代理和一个 Redis 服务端。其余部分全部从工作区直接运行。
+控制平面需要一个 PostgreSQL 数据库、一个 AMQP 消息代理和一个 Redis 服务端。其余部分全部从工作区直接运行。
 
 :::caution[仓库根目录的 `.env` 不是开发配置]
-根目录的 `.env` 可能保存着**生产环境**凭据（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`），而你启动的
-每个进程都会继承它。请显式传入数据库相关参数——或者覆盖这些变量——这样本地运行才不会意外连上远程数据库。
+根目录的 `.env` 可能保存着**生产环境**凭据（`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL`），
+而你启动的每个进程都会继承它。请显式传入 `--database-url`——或者覆盖这个变量——这样本地运行才不会
+意外连上远程数据库。
 :::
 
 ## 1. 依赖组件
 
 ```sh
-docker run -d --name guru-surreal -p 8000:8000 \
-  surrealdb/surrealdb:latest start --user root --pass root
+docker run -d --name guru-postgres -p 15432:5432 \
+  -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
+  postgres:18.6-alpine
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
 
@@ -23,8 +24,7 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
   redis-server --save '' --appendonly no
 ```
 
-请使用 **3.2 或更高版本**的 SurrealDB 服务端。更旧的 3.0 版本二进制与本工作区链接的客户端不兼容，
-并且会错误处理那些读取同一事务中先前写入行的断言。
+请使用 **16 或更高版本**的 PostgreSQL。
 
 消息代理 URI 的写法很关键：默认 vhost 请使用 `amqp://guest:guest@127.0.0.1:5672/`。Redis 的 URL 是
 `redis://127.0.0.1:6379/`；它只做 pub/sub——运维 API `Watch*` 流的实时事件都经由它，因此这里关掉了
@@ -34,21 +34,19 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 ## 2. Schema
 
-Schema 位于 `database/schema/*.surql`（每个模块一个文件），由
-[surrealkit](https://surrealdb.com/) 负责管理：
+Schema 是 `database/migrations/` 下的一组 sqlx migration，它们被嵌入到二进制文件里。
+`guru-master` 启动时会应用所有尚未应用的 migration；如果要手动执行：
 
 ```sh
-surrealkit sync --host ws://127.0.0.1:8000 --ns guru --db guru
+export GURU_DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru
+cargo run -p manage-tool -- db migrate
 ```
 
 随后把各模块的默认配置写入 `app_config` 表。该操作是幂等的，且绝不会覆盖你手动修改过的值，
-因此每次 sync 之后都可以重新执行：
+因此每次 migration 之后都可以重新执行：
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
-  config seed
+cargo run -p manage-tool -- config seed
 ```
 
 `config list`、`config get <key>` 和 `config set <key> <json>` 可以查看和修改这些值；
@@ -58,9 +56,7 @@ master 进程会在重启时读取它们。参见
 ## 3. 初始化管理员账号
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password 'change-me'
 ```
 
@@ -83,8 +79,7 @@ export GURU_MASTER_KEY='<the printed value>'
 ```sh
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -95,8 +90,7 @@ cargo run -p guru-master -- \
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -151,9 +145,13 @@ bun run generate:proto
 
 ## 测试
 
-模块集成测试运行在内存版 SurrealDB（`mem://`）上，并会应用模块自身的 schema 文件，
-因此无需启动任何服务端：
+模块集成测试运行在一个真实的 PostgreSQL 服务端上：`#[sqlx::test]` 会基于 `DATABASE_URL`
+为每个测试创建一个用完即弃的数据库，并对它应用全部 migration。请把这个变量指向一个**测试**
+数据库，绝不要指向某个 master 正在使用的库——测试运行器会在它旁边不断创建和删除数据库：
 
 ```sh
+export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_test
 cargo test
 ```
+
+用 `createdb`（或 `CREATE DATABASE guru_test;`）创建它一次即可；对应的角色需要 `CREATEDB` 权限。

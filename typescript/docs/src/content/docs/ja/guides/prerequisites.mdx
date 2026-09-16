@@ -1,6 +1,6 @@
 ---
 title: 前提条件
-description: コントロールプレーンをデプロイする前に、依存コンポーネントをすべて用意します — SurrealDB、RabbitMQ、Redis、Docker、ビルドツールチェーン、surrealkit、Bun、そして証明書付きのホスト名。
+description: コントロールプレーンをデプロイする前に、依存コンポーネントをすべて用意します — PostgreSQL、RabbitMQ、Redis、Docker、ビルドツールチェーン、Bun、そして証明書付きのホスト名。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -14,11 +14,10 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 | | Docker でデプロイ | ネイティブにデプロイ |
 |---|---|---|
-| SurrealDB ≥ 3.2 | 必要 | 必要 |
+| PostgreSQL ≥ 16 | 必要 | 必要 |
 | RabbitMQ 3.13/4.x | 必要 | 必要 |
 | Redis 7.x | 必要 | 必要 |
 | Docker Engine + Compose | 必要（公開済みアプリケーションイメージの実行に使用。データストアへの使用は任意） | 不要 |
-| `surrealkit` | 必要 | 必要 |
 | Rust ツールチェーン + `protoc` | `manage-tool` を自分でビルドする場合のみ必要 — バイナリは `master-v*` リリースからダウンロードできます | 必要 — すべてのバイナリをビルドします |
 | C ツールチェーン、`make`、`cmake` | 同上 — `manage-tool` は証明書関連のクレート群（aws-lc 上の `instant-acme`/`rcgen`）を取り込み、同梱の C ソースのビルドにコンパイラーと cmake が必要です | 必要 — 理由は同じです |
 | `perl` | 不要 | 必要 — `guru-worker` は同梱の OpenSSL をビルドし、その構成は perl スクリプトが行います |
@@ -28,13 +27,13 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 イメージデプロイの Rust 行が「場合のみ」なのは、`master-v*` タグが GHCR のイメージに加えて
 `guru-master` と `manage-tool` のバイナリ（`x86_64-unknown-linux-gnu`）を GitHub リリースとしても公開する
 ようになったからです。それをダウンロードして使うなら、ビルド用のツールチェーンは一切必要ありません。
-ただし `database/` 配下のスキーマファイルはリリースに含まれないため、チェックアウトと `surrealkit` は
-どちらの方式でも必要です。
+スキーマはバイナリに埋め込まれて配布されるため、スキーマを適用するためだけにチェックアウトが
+必要になることはありません。
 
 ## 1. Docker Engine と Compose（イメージデプロイのみ）
 
 Docker が必要なのは、イメージデプロイを選ぶ場合だけです。ネイティブデプロイに Docker は不要であり、
-SurrealDB、RabbitMQ、Redis は直接インストールするか、マネージドサービスまたは別の実行方法を利用できます。
+PostgreSQL、RabbitMQ、Redis は直接インストールするか、マネージドサービスまたは別の実行方法を利用できます。
 ディストリビューションを一度選べば、このページのすべてのタブが連動します。
 
 <Tabs syncKey="distro">
@@ -182,7 +181,7 @@ sudo pacman -S --needed base-devel cmake protobuf openssl nginx curl unzip git
 `libssl-dev`/`openssl-devel` や `libprotobuf` の開発パッケージは不要です。Rust のビルドがそれらに必要とする分は、
 すべて同梱されています。
 
-## 3. Rust、surrealkit、Bun
+## 3. Rust と Bun
 
 ここまでの作業には root が必要でした。このセクションの作業はすべて、**チェックアウトを所有する**アカウントに
 属します。そしてそのアカウントはデプロイ方式によって異なります:
@@ -202,7 +201,7 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 </TabItem>
 <TabItem label="イメージデプロイ">
 
-チェックアウトから常駐するものは何もありません。スキーマファイルを置き、必要なら `manage-tool` を
+チェックアウトから常駐するものは何もありません。Compose ファイルを置き、必要なら `manage-tool` を
 ビルドするだけなので、自分のオペレーターアカウントが適切です（`manage-tool` は `master-v*` リリースから
 ダウンロードすることもでき、その場合 Rust すら要りません）。Bun はまったく必要ありません。
 
@@ -222,20 +221,10 @@ systemd から見つけられるサービスユーザーのホームに配置さ
    . "$HOME/.cargo/env"
    ```
 
-2. **surrealkit** は
-   [データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)で使うスキーマツールです。
-   `cargo install surrealkit`（cargo-binstall がある場合は `cargo binstall surrealkit`）で
-   インストールしてください。このガイドはバージョン 0.7.0 を対象にしています。インストール済みの
-   バージョンを確認します:
-
-   ```sh wrap frame="none"
-   surrealkit --version
-   ```
-
-3. **チェックアウト。** どちらのガイドでも `database/` 以下のスキーマファイルが必要で、ネイティブデプロイでは
-   ここからすべてのバイナリをビルドします。イメージガイドでは Compose ファイルも使います。ネイティブデプロイで
-   このファイルを使うのは、任意のコンテナ構成を選んだ場合だけです。スキーマファイルはアプリケーションイメージ
-   にも GitHub リリースにも含まれていません。
+2. **チェックアウト。** 柔軟に選べるのは `manage-tool` です。ここでビルドするか、`guru-master` の
+   バイナリと並んで公開されている `master-v*` の GitHub リリース（`x86_64-unknown-linux-gnu`）から
+   ダウンロードしてください。イメージガイドでは Compose ファイルも使います。ネイティブデプロイで
+   このファイルを使うのは、任意のコンテナ構成を選んだ場合だけです。
 
    ```sh wrap frame="none"
    git clone \
@@ -256,15 +245,15 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 
 </Steps>
 
-## 4. SurrealDB、RabbitMQ と Redis
+## 4. PostgreSQL、RabbitMQ と Redis
 
 ### コントロールプレーンが求める条件
 
 | | 要件 |
 |---|---|
-| SurrealDB | **3.2 以降。** 3.0 系の古いバイナリはワークスペースがリンクしているクライアントと互換性がなく、同一トランザクション内で先に書き込まれた行を読む ASSERT を正しく扱えません。その結果、実際には存在しないはずの "table does not exist" やトランザクション中断のエラーとして現れます。 |
-| | **root 認証情報。** `guru-master` は `Root { username, password }` でサインインしてからネームスペースとデータベースを選択します。ネームスペースやデータベースにスコープされたユーザーではこれができません。 |
-| | **永続ストレージ。** バックアップ対象のボリューム上に `rocksdb:/data/guru.db` を置きます。これはシステム内で唯一、失うと復元できない状態です。 |
+| PostgreSQL | **16 以降。** データベースは 1 つ、接続も 1 本の URL だけです。コントロールプレーンは自分のスキーマを自分で所有します — 同梱のマイグレーションを自分で適用するため、接続に使うロールにはそのデータベースに対する通常の `CREATE`/`ALTER` 権限が必要です。クラスター全体の権限は不要です。 |
+| | **永続ストレージ。** バックアップ対象のボリューム上に置いてください。これはシステム内で唯一、失うと復元できない状態です。そのデータベース 1 つの `pg_dump` が完全なバックアップになります。 |
+| | **コネクションプールの余裕。** サービスを提供する master はそれぞれ最大 `GURU_DB_POOL_SIZE` 本（デフォルトは 10）の接続を保持し、それが 3 つあります。そのため `max_connections` は 30 を十分に上回る値にしておいてください。 |
 | RabbitMQ | 3.13/4.x のサーバーであれば何でも構いません。コントロールプレーンは起動時に自身の exchange と永続キューを宣言するため、事前に作成しておくものはありません。デフォルト vhost のユーザーが 1 つあれば十分です。このプロジェクトでテスト済みのブローカーは RabbitMQ だけです。 |
 | | URI の書式: `amqp://user:password@host:5672/` で、**末尾のスラッシュ**がデフォルト vhost を選択します。`/%2f` 形式はパーサーに拒否されます。 |
 | | ブローカーは**4 つのマスターモードすべてで必須**です。定期処理はメッセージそのものであり、ブローカーが停止している間は古いキャンバスのスイープも、応答のないサーバーを `Offline` にする処理も、証明書の更新も行われません。最適化ではなく依存コンポーネントとして扱ってください。 |
@@ -280,23 +269,22 @@ systemd から見つけられるサービスユーザーのホームに配置さ
 :::
 
 データストアにコンテナや Docker Compose は必須ではありません。公式の
-[SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
+[PostgreSQL ダウンロードページ](https://www.postgresql.org/download/)と
 [RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従い、Redis はディストリビューションの
 パッケージか公式の配布物を使うか、あるいはマネージドサービスまたは以下の Compose 例を使用してください。
 どの方法でも、上記の要件を満たす必要があります。
 
 ### 認証情報
 
-パスワードは**URL セーフ**な形式で生成してください。ブローカーのパスワードは `AMQP_URI` に埋め込まれ、そこでは
-`@`、`:`、`/`、`%` が URI の意味を変えてしまいます:
+パスワードは**URL セーフ**な形式で生成してください。どちらも URI（`GURU_DATABASE_URL` と `AMQP_URI`）に
+埋め込まれ、そこでは `@`、`:`、`/`、`%` が URI の意味を変えてしまいます:
 
 ```sh
-openssl rand -hex 32          # once for SurrealDB, once for RabbitMQ
+openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
 ```
 
 16 進文字列であれば、クォートやパーセントエンコーディングの問題は一切起きません。どうしても記号を使いたい場合は、
-`AMQP_URI` 内でパーセントエンコードしてください（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）。
-SurrealDB のパスワードは argv の値として渡されるため、クォートだけで済みます。
+両方の URI 内でパーセントエンコードしてください（`@` → `%40`、`:` → `%3A`、`/` → `%2F`、`%` → `%25`）。
 
 接続用の認証情報を、コントロールプレーンが読み込むファイルに記録します。イメージデプロイ用の Compose 例も、
 データストアの認証情報をこのファイルから読み込みます:
@@ -306,11 +294,7 @@ SurrealDB のパスワードは argv の値として渡されるため、クォ�
 
 ```sh
 # /path/to/proxy-guru/.env   (chmod 600; gitignored)
-SURREALDB_HOST=ws://127.0.0.1:8000
-SURREALDB_USER=root
-SURREALDB_PASSWORD=<first hex string>
-SURREALDB_NAMESPACE=guru
-SURREALDB_NAME=guru
+GURU_DATABASE_URL=postgres://guru:<first hex string>@127.0.0.1:5432/guru
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
 AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
@@ -318,25 +302,25 @@ REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd は後で `EnvironmentFile=` からこのファイルをそのまま読み込みます。systemd は `${…}` を
-**展開しない**ため、`AMQP_URI` は完全な形で書き出してください。
+**展開しない**ため、`GURU_DATABASE_URL` と `AMQP_URI` は完全な形で書き出してください。
 
 </TabItem>
 <TabItem label="イメージデプロイ">
 
 ```sh
 # /srv/guru/.env   (chmod 600)
-SURREAL_ROOT_USER=root
-SURREAL_ROOT_PASSWORD=<first hex string>
+POSTGRES_USER=guru
+POSTGRES_PASSWORD=<first hex string>
+POSTGRES_DB=guru
 
 RABBIT_USER=guru
 RABBIT_PASSWORD=<second hex string>
-
-GURU_NS=guru
-GURU_DB=guru
 ```
 
 先に `/srv/guru` を作成してください（`sudo mkdir -p /srv/guru`）。以下の Compose ファイルはこの `.env` の
 隣に置き、イメージガイドではここに `MASTER_VERSION`、`FRONTEND_VERSION`、`GURU_MASTER_KEY` を追記します。
+`GURU_DATABASE_URL` と `AMQP_URI` もこのファイルには現れません。Compose が上記の変数から両方を組み立てます。
+Redis に認証情報が要らないため Compose が URL をそのまま書いている（`redis://redis:6379/`）のと同じ考え方です。
 
 </TabItem>
 </Tabs>
@@ -346,12 +330,13 @@ GURU_DB=guru
 <Tabs>
 <TabItem label="ネイティブデプロイ">
 
-3 つのサービスをインストールします。SurrealDB と RabbitMQ は公式の
-[SurrealDB インストールガイド](https://surrealdb.com/docs/running/installation)と
+3 つのサービスをインストールします。PostgreSQL と RabbitMQ は公式の
+[PostgreSQL ダウンロードページ](https://www.postgresql.org/download/)と
 [RabbitMQ ダウンロードガイド](https://www.rabbitmq.com/docs/download)に従い、Redis はディストリビューションの
-パッケージか公式の配布物で構いません。SurrealDB は永続ストレージ、root 認証情報、ポート `8000` の
-ループバックリスナーを設定し、RabbitMQ は `.env` のユーザーとパスワード、デフォルト vhost、永続ストレージ、
-ポート `5672` のループバックリスナーを設定し、Redis はポート `6379` のループバックリスナーだけを設定します
+パッケージか公式の配布物で構いません。PostgreSQL では `guru` ロールと、それが所有する `guru` データベースを
+作成し、ポート `5432` のループバックリスナーを設定します。RabbitMQ は `.env` のユーザーとパスワード、
+デフォルト vhost、永続ストレージ、ポート `5672` のループバックリスナーを設定し、Redis はポート `6379` の
+ループバックリスナーだけを設定します
 （保存するものがないので、AOF も RDB も無効にして構いません）。オペレーティングシステムのサービスマネージャーを
 使って 3 つすべてを起動し、ブート時に有効化してください。
 
@@ -369,22 +354,24 @@ Docker Compose は任意の代替手段であり、デプロイ要件ではあ�
 name: guru
 
 services:
-  surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
+  postgres:
+    image: postgres:18.6-alpine
     restart: unless-stopped
-    command:
-      - start
-      - --user
-      - ${SURREAL_ROOT_USER}
-      - --pass
-      - ${SURREAL_ROOT_PASSWORD}
-      - rocksdb:/data/guru.db
-    user: root
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - surreal-data:/data
+      # The 18-series image mounts the whole cluster here, not at /…/data.
+      - postgres-data:/var/lib/postgresql
     # Loopback only: the operator machine reaches it through an SSH tunnel.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   rabbitmq:
     image: rabbitmq:4-alpine
@@ -407,23 +394,22 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
 volumes:
-  surreal-data:
+  postgres-data:
   rabbit-data:
 ```
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d surrealdb rabbitmq redis
+sudo docker compose up -d postgres rabbitmq redis
 ```
 
 マスターは後でイメージガイドの中で同じファイルに追加します。データストアが先に存在していなければならないのは、
-どのマスターを起動する前にもスキーマが適用済みである必要があるからです。
+マスターが起動時に自分でスキーマをデータベースへ適用するからです。
 
 </TabItem>
 </Tabs>
 
-Compose 例では、さらに重要な点が 2 つあります。`surrealdb/surrealdb` イメージは非特権ユーザーで動作し、
-root 所有のボリュームやバインドマウントには書き込めないため、`user: root` が必要です。RabbitMQ は
+Compose 例では、さらに重要な点が 1 つあります。RabbitMQ は
 データディレクトリをノード名 `rabbit@<hostname>` に基づいて命名するため、リポジトリの Compose ファイルは
 `hostname:` を固定しています。これがないと、コンテナを作り直すたびに空のブローカーで起動してしまいます。
 
@@ -453,8 +439,9 @@ Cloudflare のプロキシは、データが 100 秒流れないストリーミ�
 
 ## 6. 次のステップ
 
-データストアは起動しましたが、まだ空です。マスターを起動する前にスキーマを適用してください。同じ手順が
-インストール環境の生涯にわたってスキーマを維持し続けるため、独立した記事になっています:
+データストアは起動しましたが、まだ空です。マスターは起動時にデータベースを埋めますが、先にスキーマを
+適用しておけば、スキーマの問題が「再起動を繰り返すサービス」ではなく 1 つの明確なエラーとして出ます。
+同じ記事がモジュール設定のシードと、以後のすべてのスキーマ変更も扱います:
 **[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)**。
 
 その後は [Docker でデプロイ](/ja/guides/deploy-with-docker/) か

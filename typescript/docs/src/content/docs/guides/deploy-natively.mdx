@@ -1,6 +1,6 @@
 ---
 title: Deploy Natively
-description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to SurrealDB, RabbitMQ and Redis, apply the schema with surrealkit, and terminate TLS for workers with nginx.
+description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to PostgreSQL, RabbitMQ and Redis, apply the schema, and terminate TLS for workers with nginx.
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -8,7 +8,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 The [Deploy with Docker](/guides/deploy-with-docker/) guide runs the application from images. This
 guide is the other common shape: **one machine that is both the build box and the control plane**.
 The Rust binaries run from `target/release/` under systemd, and the dashboard runs from its build
-output. SurrealDB, RabbitMQ and Redis may be native services, managed services or containers; Docker
+output. PostgreSQL, RabbitMQ and Redis may be native services, managed services or containers; Docker
 is not required. A code change is `cargo build` plus a unit restart, with no application image in
 between.
 
@@ -23,7 +23,7 @@ checkout. Nothing else is host-specific.
 
 | Piece | Runs as | Listens on |
 |---|---|---|
-| SurrealDB 3.2 | Native service, managed service, or container | `127.0.0.1:8000` by default |
+| PostgreSQL 16+ | Native service, managed service, or container | `127.0.0.1:5432` by default |
 | RabbitMQ 4 | Native service, managed service, or container | `127.0.0.1:5672` by default |
 | Redis 7 | Native service, managed service, or container | `127.0.0.1:6379` by default |
 | `guru-master` ×4 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
@@ -36,8 +36,8 @@ the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent
 ## 2. Prerequisites
 
 Work through **[Prerequisites](/guides/prerequisites/)** first: the host packages (C toolchain,
-`cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, surrealkit, Bun, the checkout, reachable
-SurrealDB, RabbitMQ and Redis services, and a hostname with a certificate. The native build compiles
+`cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, Bun, the checkout, reachable
+PostgreSQL, RabbitMQ and Redis services, and a hostname with a certificate. The native build compiles
 vendored OpenSSL and aws-lc and runs the dashboard from Bun. Docker is optional and only needed if
 you choose to run one of the datastores in a container.
 
@@ -46,10 +46,9 @@ Two consequences of running from a checkout are worth restating before you start
 ### The deployment user
 
 The prerequisites create an unprivileged `guru` user (in the *Native deployment* tab of its
-toolchain section) and install rustup, surrealkit, Bun and the checkout as that user, because the
-units in sections 5–6 run as it: the binaries, the `.env`, `data/` and the surrealkit manifests all
-live inside the checkout it owns — which is also why those units cannot use
-`DynamicUser=`/`ProtectHome=`.
+toolchain section) and install rustup, Bun and the checkout as that user, because the units in
+sections 5–6 run as it: the binaries, the `.env` and `data/` all live inside the checkout it owns —
+which is also why those units cannot use `DynamicUser=`/`ProtectHome=`.
 
 This guide therefore has two execution contexts, and says which one every command belongs to:
 **`guru`** for the build, the schema, `manage-tool` and the dashboard build; **your own
@@ -78,7 +77,7 @@ continuing.
 ### The secrets file
 
 [Prerequisites](/guides/prerequisites/) already created `/path/to/proxy-guru/.env` with the
-datastore credentials — `SURREALDB_*`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`, and
+datastore credentials — `GURU_DATABASE_URL`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`, and
 `REDIS_URL=redis://127.0.0.1:6379/`, which needs no credentials at all. The masters read the same
 file through `EnvironmentFile=`, so append what they add:
 
@@ -120,26 +119,13 @@ with the credentials it already holds:
 cd /path/to/proxy-guru
 set -a; . ./.env; set +a       # the credentials you wrote above
 
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREALDB_PASSWORD" "$@"
-}
-sk setup                                            # once per database
-sk rollout plan --name initial_schema               # then lint / start / complete
+./target/release/manage-tool db migrate
+./target/release/manage-tool config seed
 ```
 
-One thing that article settles differently here: on a later schema change, `complete` waits until
-the rebuilt masters from sections 5–6 are running and verified. The manifests and snapshots it
-writes under `database/` stay on this host (they are gitignored per-environment state) — back them
-up with the `.env`.
-
-Finish with the configuration seed from the same article:
-
-```sh
-(set -a; . ./.env; set +a; ./target/release/manage-tool config seed)
-# seeded auth
-# seeded orchestration
-```
+Strictly speaking `db migrate` is optional here — each master applies what is pending when it
+starts — but running it now means a schema problem surfaces before four units try to start on it.
+`config seed` prints one line per key it wrote (`seeded auth`, `seeded orchestration`).
 
 ### The internal CA and the first administrator
 
@@ -151,7 +137,7 @@ need the internal CA before their pods can derive.
 (set -a; . ./.env; set +a; ./target/release/manage-tool orchestration init-ca)
 (set -a; . ./.env; set +a; ./target/release/manage-tool create-admin \
     --email admin@example.com --password '<strong password>')
-# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+# Created admin account uz0ih3b30nrekqzs1h1y
 ```
 
 `init-ca` needs `GURU_MASTER_KEY` (the `.env` supplies it), prints the CA certificate, marks every
@@ -203,7 +189,7 @@ journalctl -u 'guru-master@*' -n 20
 ```
 
 `consumer` and `cron` exit non-zero when the broker connection drops; `Restart=always` is what heals
-them, so keep it. Have SurrealDB, RabbitMQ and Redis running (or enabled at boot) before you enable
+them, so keep it. Have PostgreSQL, RabbitMQ and Redis running (or enabled at boot) before you enable
 these units: `dashboard_grpc`, `workers_grpc` and `consumer` refuse to start without a reachable
 `REDIS_URL` — `cron` needs neither it nor the database — and `Restart=always` is what carries them
 over a datastore that comes up later. Once a master is up, a Redis that dies is reconnected in
@@ -392,15 +378,14 @@ fresh operator shell. Checks for the service account are wrapped in `sudo -iu gu
 
 ```sh
 # 1. Local datastore examples only; use provider health checks for remote services
-surreal is-ready --endpoint http://127.0.0.1:8000
+pg_isready -h 127.0.0.1 -p 5432
 rabbitmq-diagnostics -q ping
 redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
-# 2. Schema (guru: it owns the manifests under database/)
+# 2. Schema
 sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a && \
-  surrealkit --host "$SURREALDB_HOST" --ns "$SURREALDB_NAMESPACE" --db "$SURREALDB_NAME" \
-    --user "$SURREALDB_USER" --pass "$SURREALDB_PASSWORD" status'
-#   → the rollout you applied, [completed]
+  ./target/release/manage-tool db migrate'
+#   → schema is up to date
 
 # 3. Control plane: one banner per mode, no restart loop, and one `live bus connected`
 #    from dashboard_grpc — the operator API's `Watch*` streams are served from it
@@ -422,7 +407,7 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && GURU_API_KEY=bogus \
 ```
 
 Then log in at `https://guru.example.com/` with the account from section 4 — that is the only check
-that exercises dashboard → operator API → SurrealDB end to end. If it returns `Forbidden` while
+that exercises dashboard → operator API → database end to end. If it returns `Forbidden` while
 everything else passes, the forwarded headers in section 7 are wrong.
 
 Finally, create a server and an API key in the dashboard and start a real worker with

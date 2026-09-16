@@ -94,10 +94,8 @@ forwarding 对应的一个 `PodStatus`。每次上报会生成一行 `server_hea
 `manage-tool` 会打印 master 为某台服务器派生出的确切 TOML：
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
-  orchestration export-config --server <orchestration_server key>
+cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
+  orchestration export-config --server <orchestration_server id>
 ```
 
 独立模式的 Worker 背后是同一个模型：打印出来的文件可以直接交给 `guru-worker --config`。

@@ -1,23 +1,24 @@
 ---
 title: ローカル開発
-description: SurrealDB、RabbitMQ、Redis、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
+description: PostgreSQL、RabbitMQ、Redis、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
 ---
 
-コントロールプレーンには SurrealDB インスタンス、AMQP ブローカー、そして Redis サーバーが必要です。
+コントロールプレーンには PostgreSQL データベース、AMQP ブローカー、そして Redis サーバーが必要です。
 それ以外はすべてワークスペースから実行できます。
 
 :::caution[リポジトリの `.env` は開発用プロファイルではありません]
-ルートの `.env` には**本番**の認証情報（`SURREALDB_HOST`、`SURREALDB_USER`、
-`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL`）が入っていることがあり、起動した
-すべてのプロセスがそれを継承します。データベース関連のフラグを明示的に渡す（あるいは変数を上書きする）ことで、
+ルートの `.env` には**本番**の認証情報（`GURU_DATABASE_URL`、`AMQP_URI`、
+`REDIS_URL`）が入っていることがあり、起動した
+すべてのプロセスがそれを継承します。`--database-url` を明示的に渡す（あるいは変数を上書きする）ことで、
 ローカル実行がうっかりリモートのデータベースに接続しないようにしてください。
 :::
 
 ## 1. 依存サービス
 
 ```sh
-docker run -d --name guru-surreal -p 8000:8000 \
-  surrealdb/surrealdb:latest start --user root --pass root
+docker run -d --name guru-postgres -p 15432:5432 \
+  -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
+  postgres:18.6-alpine
 
 docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
 
@@ -27,8 +28,7 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
   redis-server --save '' --appendonly no
 ```
 
-SurrealDB は **3.2 以降**のサーバーを使用してください。3.0 系の古いバイナリはワークスペースがリンクしている
-クライアントと互換性がなく、同一トランザクション内で先に書き込まれた行を読む ASSERT を正しく扱えません。
+PostgreSQL は **16 以降**を使用してください。
 
 ブローカーの URI の書式には注意が必要です。デフォルトの vhost には `amqp://guest:guest@127.0.0.1:5672/` を使います。
 Redis は `redis://127.0.0.1:6379/` を受け取り、認証情報はありません。ホスト側の `6379` を別のプロセスが
@@ -37,21 +37,19 @@ Redis は `redis://127.0.0.1:6379/` を受け取り、認証情報はありま�
 
 ## 2. スキーマ
 
-スキーマは `database/schema/*.surql`（モジュールごとに 1 ファイル）に置かれ、
-[surrealkit](https://surrealdb.com/) で管理します:
+スキーマは `database/migrations/` に置かれた sqlx のマイグレーション群で、バイナリに埋め込まれています。
+`guru-master` は起動時に未適用のものを適用します。手動で行う場合は次のようにします:
 
 ```sh
-surrealkit sync --host ws://127.0.0.1:8000 --ns guru --db guru
+export GURU_DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru
+cargo run -p manage-tool -- db migrate
 ```
 
 続いて、モジュールのデフォルト設定を `app_config` テーブルへ書き込みます。この処理は冪等で、編集済みの値を
-上書きすることはないため、sync のたびに再実行してください:
+上書きすることはないため、マイグレーションのたびに再実行してください:
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
-  config seed
+cargo run -p manage-tool -- config seed
 ```
 
 `config list`、`config get <key>`、`config set <key> <json>` でこれらの値を確認・変更できます。マスターは
@@ -61,9 +59,7 @@ cargo run -p manage-tool -- \
 ## 3. 管理者アカウントの初期作成
 
 ```sh
-cargo run -p manage-tool -- \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password 'change-me'
 ```
 
@@ -86,8 +82,7 @@ export GURU_MASTER_KEY='<the printed value>'
 ```sh
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -99,8 +94,7 @@ ACME とリレーリーフ証明書のローテーション）の実行主体で
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
-  --address ws://127.0.0.1:8000 --username root --password root \
-  --namespace guru --database guru \
+  --database-url "$GURU_DATABASE_URL" \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
@@ -156,9 +150,15 @@ bun run generate:proto
 
 ## テスト
 
-モジュールの結合テストはインメモリの SurrealDB（`mem://`）に対して実行され、モジュール自身のスキーマファイルを
-適用するため、サーバーを起動しておく必要はありません:
+モジュールの結合テストは実際の PostgreSQL サーバーに対して実行されます。`#[sqlx::test]` が `DATABASE_URL`
+から使い捨てのデータベースをテストごとに 1 つ作成し、そこへマイグレーションを適用します。これは必ず
+**テスト用**のデータベースに向けてください。master が使うデータベースに向けてはいけません — テストランナーは
+その隣にデータベースを作成しては削除します:
 
 ```sh
+export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_test
 cargo test
 ```
+
+このデータベースは `createdb`（または `CREATE DATABASE guru_test;`）で一度だけ作成します。ロールには
+`CREATEDB` 権限が必要です。

@@ -11,11 +11,11 @@ bin/              # Rust バイナリ — 配線のみ、ビジネスロジッ�
 lib/
   rpguru_sdk/         # 生成された gRPC/protobuf 型（Rust）
   guru_worker_config/ # ワーカー設定モデル、両プレーンで共有
-  newtype_record_id/  # 型付きレコード ID 用の table_record! マクロ
+  db_types/           # 型付き行 ID とテキスト列挙のための table_record! / text_enum! マクロ
 modules/          # ビジネスロジック、機能ごとに 1 クレート
   auth/  orchestration/  notify/  base/
 proto/            # protobuf 定義（モジュール単位でグループ化）— API の唯一の定義元
-database/         # SurrealDB のスキーマ + シード + テスト（surrealkit が管理）
+database/         # PostgreSQL のスキーマ: sqlx マイグレーション（database/migrations）
 typescript/       # Bun ワークスペース: すべてのフロントエンド / TypeScript パッケージ
   app-protobuf/       # 生成された gRPC/protobuf の TypeScript コード（共有）
   guru-frontend/      # SvelteKit ダッシュボード

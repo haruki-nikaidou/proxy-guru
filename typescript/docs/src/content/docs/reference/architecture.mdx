@@ -14,7 +14,7 @@ import { FileTree } from '@astrojs/starlight/components';
 | `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`. |
 | `lib/guru_worker_config` | The worker config model, shared by both planes. |
 | `lib/rpguru_sdk` | Generated gRPC/protobuf types (Rust) from `proto/`. |
-| `lib/newtype_record_id` | `table_record!` macro for typed SurrealDB record ids. |
+| `lib/db_types` | `table_record!` and `text_enum!`: typed row ids and text-backed enums. |
 | `modules/auth` | Accounts, sessions, API keys, RBAC. |
 | `modules/orchestration` | Canvases, servers, nodes, edges; topology validation, config derivation, worker rollout. |
 | `modules/notify` | Notification module — scaffolded from `base`, not implemented yet. |
@@ -43,7 +43,7 @@ Every module crate mirrors `modules/base`:
   - config.rs typed configuration (one `app_config` row, JSON document)
   - utils/ small, dependency-light helpers
   - entities/ persistence layer
-    - surreal/ SurrealDB row types + `SurrealProcessor` queries
+    - db/ PostgreSQL row types + sqlx queries
     - redis/ Redis key/value types (rkyv-encoded)
   - services/ business logic (stateful Processors)
   - events/ AMQP payloads + routing
@@ -54,7 +54,7 @@ Every module crate mirrors `modules/base`:
 
 | You are writing… | Put it in… |
 |---|---|
-| A SurrealDB query or a table row type | `entities/surreal` |
+| A PostgreSQL query or a table row type | `entities/db` |
 | A Redis-cached value or ephemeral token | `entities/redis` |
 | A use case that combines queries and rules | `services` |
 | A message other modules react to | `events` |
@@ -68,10 +68,11 @@ Every module crate mirrors `modules/base`:
 - **Dependency direction:** `rpc → services → entities/events/config`. A feature module may depend
   on `base`, but `base` must not depend on a feature module, and modules must not reach into each
   other's internals — they communicate via gRPC or AMQP events.
-- **`entities/surreal`:** one submodule per table or aggregate; a row struct deriving
-  `SurrealValue`; the record id wrapped by `table_record!(NameId, "table")`. One `Processor` impl
-  per query on `wakuwaku::surreal::SurrealProcessor`, with `Error = surrealdb::Error`. Queries are
-  validated at runtime, so they are covered by integration tests against `mem://`.
+- **`entities/db`:** one submodule per table or aggregate; a row struct deriving `sqlx::FromRow`;
+  the id wrapped by `table_record!(NameId, "table")`, an enum stored as text spelled once by
+  `text_enum!`. One `Processor` impl per query on `base::db::Db`, with `Error = base::db::Error`;
+  a multi-statement write is one `begin()` transaction. Queries are checked at runtime, so they are
+  covered by integration tests against a real database (`#[sqlx::test]`).
 - **`services`:** `Clone` structs owning their dependencies, one `Processor` impl per operation,
   returning domain types — never protobuf types.
 - **`events`:** the payload plus `AmqpRouting` (`EXCHANGE`, `EXCHANGE_TYPE`, `ROUTING_KEY`) and
@@ -85,8 +86,10 @@ Every module crate mirrors `modules/base`:
   the consumer. The consequence is that the broker is mandatory in all four modes: with RabbitMQ
   down, no derivation sweep, liveness sweep or certificate renewal happens until it is back.
 - **`rpc`:** thin adapters — decode request, call a service, encode reply. No business logic.
-- **Errors:** `wakuwaku::Error` at the service/hook boundary; `surrealdb::Error` inside
-  `entities/surreal`, which converts with `?` at the service layer.
+- **Errors:** `wakuwaku::Error` at the service/hook boundary; `base::db::Error` inside
+  `entities/db`, which converts with `?` at the service layer. It separates a database that did not
+  answer (`UNAVAILABLE`) from a refusal, and `Error::Conflict` from both: a transaction that
+  definitely did not commit.
 - **Lints:** crate-level `deny(clippy::unwrap_used)`, `expect_used` and `panic`. No panics on the
   request path.
 - **Tracing:** `#[tracing::instrument(skip_all, err)]` with an explicit span `name` —
@@ -94,9 +97,12 @@ Every module crate mirrors `modules/base`:
   `Hook:<Input>` for hook processors. gRPC handlers need none; the trait-method name already
   labels the span.
 
-## SurrealDB notes
+## PostgreSQL notes
 
-- Use `type::record(tb, id)`; the old `type::thing` was removed in 3.x.
-- Never bind a variable named `token` — it is reserved.
-- Write any row that a later field assertion reads *after* the `CREATE` that triggers it; some
-  server versions do not see an in-transaction `UPDATE` from `record::exists()`.
+- Compare a nullable column with `IS DISTINCT FROM`, not `<>`: `<>` against `NULL` is `NULL`, which
+  is not `true`, so a fence written with it silently never matches.
+- A JSON `null` inside a `jsonb` document is not SQL `NULL`; `jsonb_typeof` tells them apart.
+- `sqlx::query*` take a `&'static str`, so a statement built at runtime needs
+  `sqlx::AssertSqlSafe` — tests only; nothing in `src/` formats SQL.
+- The schema is a migration, never an edit: `guru-master` applies what is pending at startup under
+  an advisory lock, so a fleet starting together applies each one exactly once.

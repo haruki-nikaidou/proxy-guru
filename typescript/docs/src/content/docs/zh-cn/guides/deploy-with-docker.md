@@ -1,6 +1,6 @@
 ---
 title: 使用 Docker 部署
-description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，搭建 SurrealDB、RabbitMQ 与 Redis，并从 GitHub release 分发 worker 二进制文件。
+description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreSQL、RabbitMQ 与 Redis，并从 GitHub release 分发 worker 二进制文件。
 ---
 
 本指南带你把单机生产部署从一台空机器一路做到可用的控制台。它假设你熟悉 Linux、Docker 和反向代理，
@@ -15,9 +15,9 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 
 | 组件 | 运行模式 | 通信对象 |
 |---|---|---|
-| 运维 API | `dashboard_grpc` | SurrealDB、RabbitMQ、Redis |
-| Worker API | `workers_grpc` | SurrealDB、RabbitMQ、Redis |
-| 周期任务 + 派生钩子 | `consumer` | SurrealDB、RabbitMQ、Redis |
+| 运维 API | `dashboard_grpc` | PostgreSQL、RabbitMQ、Redis |
+| Worker API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
+| 周期任务 + 派生钩子 | `consumer` | PostgreSQL、RabbitMQ、Redis |
 | 调度器 | `cron` | RabbitMQ |
 | 控制台 | — | 运维 API（gRPC） |
 
@@ -26,7 +26,7 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 因此，我们不提供 Worker 节点的 Docker 镜像。
 :::
 
-状态只存在两个地方：**SurrealDB**（画布、服务器、节点、边、账号、配置视图）和 **RabbitMQ**
+状态只存在两个地方：**PostgreSQL**（画布、服务器、节点、边、账号、配置视图）和 **RabbitMQ**
 （一个持久队列承载"这个画布变了"的提示，外加每个周期任务一个队列）。容器文件系统上不保存任何东西，
 所以每个容器都是可丢弃的。**Redis** 也是必需的，但它不持有状态：它在单一 pub/sub 频道上，把运维 API
 的实时事件在各个 master 副本之间传递，并且不配置任何持久化，重启它最多丢掉正在路上的那几个事件。
@@ -42,7 +42,7 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 | `50051` | `dashboard_grpc` | **私有。** 仅供控制台访问；明文 h2c，无 TLS，传输层无认证。 |
 | `50052` | `workers_grpc` | 数据平面节点可访问（VPN、私有网络，或一个终结 TLS 的 gRPC 代理）。 |
 | `3000` | 控制台 | 放在你的 HTTPS 反向代理之后；绝不要直接对外暴露。 |
-| `8000` | SurrealDB | **私有。** 它持有的只有 root 凭据。 |
+| `5432` | PostgreSQL | **私有。** 一个角色、一个数据库、一个密码。 |
 | `5672` | RabbitMQ | **私有。** |
 | `6379` | Redis | **私有。** 只承载 pub/sub；其中没有任何持久状态。 |
 
@@ -55,13 +55,14 @@ description: 从 GHCR 镜像运行控制平面，用 surrealkit 应用 Schema，
 ## 2. 前置条件
 
 先完成 **[前置条件](/zh-cn/guides/prerequisites/)**，再来看本指南。对于镜像部署，你需要那一页中的：
-Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（`database/` 下的 Schema 文件不以镜像形式
-发布）、`surrealkit`、`openssl`、一个带 TLS 证书的 DNS 名称 —— 以及 SurrealDB、RabbitMQ 和 Redis 本身，
-那一页会用 `/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
+Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（用于取得 Compose 文件）、`openssl`、
+一个带 TLS 证书的 DNS 名称 —— 以及 PostgreSQL、RabbitMQ 和 Redis 本身，那一页会用
+`/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
 
 `manage-tool` CLI 同样不在镜像里，但它不必自己构建：它和 `guru-master` 一样，会作为原始二进制文件随每个
 `master-v*` release 发布（第 10 节）。因此 Rust 工具链、`protobuf-compiler`、C 工具链和 `cmake` 只有在你
 **选择自行构建**它时才需要 —— `manage-tool` 会引入证书相关的依赖栈，其 crate 需要编译内置的 C 源码。
+Schema 随二进制一起分发，因此应用它不需要从检出目录里复制任何东西。
 Bun 在这里可以跳过 —— 控制台以镜像形式发布。`perl` 只在构建 `guru-worker` 的地方才需要，而那不是这里。
 
 ## 3. 选定版本
@@ -82,8 +83,8 @@ Bun 在这里可以跳过 —— 控制台以镜像形式发布。`perl` 只在�
 ## 4. 安排好密钥
 
 [前置条件](/zh-cn/guides/prerequisites/)已经在 Compose 文件旁创建了 `/srv/guru/.env`，其中包含数据存储
-凭据（`SURREAL_ROOT_USER`、`SURREAL_ROOT_PASSWORD`、`RABBIT_USER`、`RABBIT_PASSWORD`、`GURU_NS`、
-`GURU_DB`）。把你在第 3 节中固定的镜像标签追加进去：
+凭据（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`RABBIT_USER`、`RABBIT_PASSWORD`）。
+把你在第 3 节中固定的镜像标签追加进去：
 
 ```sh
 # /srv/guru/.env  (append)
@@ -95,62 +96,50 @@ FRONTEND_VERSION=v0.2.0-beta
 `GURU_MASTER_KEY` 会在第 7 节加入同一个文件，那时 `manage-tool` 已经可以打印一个出来。
 
 :::caution[仓库里的 `.env` 是另一个文件]
-仓库根目录下可能有一个 `.env`，里面是*另一套*环境的凭据，而 `surrealkit` 以及从该目录启动的每个进程都会
-继承它（`SURREALDB_HOST`、`SURREALDB_USER`、`SURREALDB_PASSWORD`、`SURREALDB_NAMESPACE`、
-`SURREALDB_NAME`、`AMQP_URI`）。`surrealkit` 的解析优先级是 CLI 参数 > 环境变量 > `.env`，所以执行
-Schema 命令时请始终显式传入 `--host/--ns/--db/--user/--pass`。一个被遗漏的参数，就是"本地"命令最终改写
-生产库的原因。
+仓库根目录下可能有一个 `.env`，里面是*另一套*环境的凭据（`GURU_DATABASE_URL`、`AMQP_URI`），而从该
+目录启动的每个进程都会继承它。在检出目录里运行 `manage-tool` 时，请显式传入 `--database-url`。
+一个被遗漏的参数，就是"本地"命令最终改写生产库的原因。
 :::
 
-## 5. SurrealDB、RabbitMQ 与 Redis
+## 5. PostgreSQL、RabbitMQ 与 Redis
 
-三个数据存储、它们的 Compose 服务以及背后的要求（SurrealDB ≥ 3.2、root 凭据、持久的 RocksDB 存储；
+三个数据存储、它们的 Compose 服务以及背后的要求（PostgreSQL ≥ 16，带持久化存储；
 RabbitMQ 使用默认 vhost，URI 以斜杠结尾；Redis 7.x，只做 pub/sub，不需要任何持久化）都在
-**[前置条件 → SurrealDB、RabbitMQ 与 Redis](/zh-cn/guides/prerequisites/#4-surrealdbrabbitmq-与-redis)** 中。
+**[前置条件 → PostgreSQL、RabbitMQ 与 Redis](/zh-cn/guides/prerequisites/#4-postgresqlrabbitmq-与-redis)** 中。
 它们必须在任何 master 启动之前就位：
 
 ```sh
 cd /srv/guru
-docker compose ps          # surrealdb up, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
 有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部四种** master 模式下消息中间件都是
 必需的 —— 周期性工作就是一条消息，所以 broker 中断会让派生、存活检测和证书续期一起停摆；master
-是以 **root** 身份登录 SurrealDB 的，所以 `/srv/guru/.env` 里的凭据正是第 7 节中 `x-master` 锚点向下
-传递的那一份；而 Redis 在会打开数据库连接的那三种模式下必填（`cron` 不用它），丢掉它的代价也小得多。
+用 `/srv/guru/.env` 里的角色连接数据库，第 7 节中的 `x-master` 锚点会把它拼成一个 URL；
+而 Redis 在会打开数据库连接的那三种模式下必填（`cron` 不用它），丢掉它的代价也小得多。
 中断只会让已打开的 `Watch*` 流停止投递，除此之外别无影响 —— 编辑照样生效，画布照样派生，Worker 照样
 拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。随包发布的控制台目前
 还不消费这些流，所以丢掉 Redis 在浏览器里暂时是看不出来的。
 
-## 6. 用 `surrealkit` 应用 Schema
+## 6. 应用 Schema
 
-按 **[配置数据库 Schema](/zh-cn/guides/setup-database-schema/)** 操作 —— 选它的*镜像部署*标签页，
-那一页使用 `/srv/guru/.env` 里的变量名，并从你的检出目录运行：
+每个 master 启动时都会应用尚未应用的 migration，所以首次安装时这一节是可选的 —— 但先执行一遍，
+可以让 Schema 上的问题在这里暴露，而不是在四个不断重启的容器里暴露。
+按 **[配置数据库 Schema](/zh-cn/guides/setup-database-schema/)** 操作：
 
 ```sh
-cd ~/proxy-guru                      # your checkout
-read -rs SURREAL_ROOT_PASSWORD       # paste the root password, it is not echoed
-export SURREAL_ROOT_PASSWORD
-
-sk() {
-  surrealkit --host ws://127.0.0.1:8000 --ns guru --db guru \
-    --user root --pass "$SURREAL_ROOT_PASSWORD" "$@"
-}
-sk setup                             # then rollout plan / lint / start / complete
+read -rs GURU_DATABASE_URL           # paste the URL, it is not echoed
+export GURU_DATABASE_URL
+./manage-tool db migrate
 ```
 
 如果数据库在服务器上只监听 loopback，请建立隧道：
-`ssh -N -L 8000:127.0.0.1:8000 guru-host`。
-
-那篇文章里有一点在本部署中的结论不同：`sk rollout complete`（破坏性的那一半）应当放在第 7 节发布了与
-Schema 匹配的 master 版本**之后**。首次安装时两个半程可以背靠背执行，因为没有需要保活的旧版本。它在
-`database/` 下写出的发布清单和快照会留在这台运维机器上 —— 它们是被 gitignore 的按环境区分的状态，
-所以请把它们和凭据一起备份，而不是提交到仓库。
+`ssh -N -L 5432:127.0.0.1:5432 guru-host`。
 
 ## 7. 运行控制平面
 
 `guru-master` 的*部署*类设置来自环境变量：`GURU_WORKER_MODE` 选择运行模式，而
-`SURREALDB_NAMESPACE`、`SURREALDB_NAME`、`AMQP_URI`、`REDIS_URL` 和 `GURU_MASTER_KEY` **没有默认值**。
+`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL` 和 `GURU_MASTER_KEY` **没有默认值**。
 所有由运维按安装实例调优的项 —— 健康阈值与保留期、默认的 ACME 目录、续期窗口、各个周期任务的运行频率 ——
 都改为存放在数据库里（第 8 节），因此副本之间不需要保持环境变量一致。
 
@@ -163,33 +152,29 @@ master key 只生成一次，并与数据库凭据一起保管 —— 它在静�
 ./target/release/manage-tool generate-master-key
 ```
 
-扩展同一个 `docker-compose.yml`：`x-master` 锚点放在 `services:` 上方，四个服务放在其中，与 `surrealdb`
-和 `rabbitmq` 并列：
+扩展同一个 `docker-compose.yml`：`x-master` 锚点放在 `services:` 上方，四个服务放在其中，与 `postgres`、
+`rabbitmq` 和 `redis` 并列：
 
 ```yaml
 x-master: &master
   image: ghcr.io/haruki-nikaidou/guru-master:${MASTER_VERSION}
   restart: unless-stopped
   environment: &master-env
-    SURREALDB_HOST: ws://surrealdb:8000
-    SURREALDB_USER: ${SURREAL_ROOT_USER}
-    SURREALDB_PASSWORD: ${SURREAL_ROOT_PASSWORD}
-    SURREALDB_NAMESPACE: ${GURU_NS}
-    SURREALDB_NAME: ${GURU_DB}
+    GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
-    surrealdb:
-      condition: service_started
+    postgres:
+      condition: service_healthy
     rabbitmq:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... surrealdb, rabbitmq and redis from section 5 ...
+  # ... postgres, rabbitmq and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -247,9 +232,7 @@ services:
 
 ```sh
 GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
-  orchestration init-ca
+  --database-url "$GURU_DATABASE_URL" orchestration init-ca
 ```
 
 它会打印 CA 证书，并把每个包含 TLS/QUIC relay 的画布标记为需要重新派生。它拒绝被执行第二次。
@@ -303,15 +286,13 @@ master-cron-1       | INFO guru_master: scheduling periodic execution signals sc
 cd ~/proxy-guru
 cargo build --release -p manage-tool
 
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password '<root password>' \
-  --namespace guru --database guru \
+./target/release/manage-tool --database-url "$GURU_DATABASE_URL" \
   create-admin --email admin@example.com --password '<strong password>'
-# Created admin account auth_account:uz0ih3b30nrekqzs1h1y
+# Created admin account uz0ih3b30nrekqzs1h1y
 ```
 
-五个数据库参数请全部显式传入 —— 它们同样会从环境变量读取 `SURREALDB_*`，所以一个多余的 `.env`
-会悄悄把命令重定向到别处。
+请显式传入 `--database-url` —— `manage-tool` 同样会从环境变量读取 `GURU_DATABASE_URL`，所以一个多余的
+`.env` 会悄悄把命令重定向到别处。
 
 ### 初始化模块配置
 
@@ -320,10 +301,7 @@ cargo build --release -p manage-tool
 如果你在那里跳过了，现在就执行：
 
 ```sh
-./target/release/manage-tool \
-  --address ws://127.0.0.1:8000 --username root --password "$SURREAL_ROOT_PASSWORD" \
-  --namespace guru --database guru \
-  config seed
+./manage-tool --database-url "$GURU_DATABASE_URL" config seed
 # seeded auth
 # seeded orchestration
 ```
@@ -457,8 +435,8 @@ chmod +x manage-tool
 Schema 与配置类型。
 :::
 
-即使二进制都靠下载，那份检出也仍然需要：`database/` 下的 Schema 文件和 `surrealkit` 只能从仓库获得
-（第 6 节）。
+Schema 不需要单独的产物：migration 已经编译进两个二进制文件里，所以用下载来的二进制执行
+`manage-tool db migrate`，应用的内容与相同版本的 master 完全一致。
 
 ## 11. 从 GitHub release 获取 worker 二进制文件
 
@@ -543,11 +521,11 @@ chmod +x guru-worker
 
 ```sh
 # 1. 数据存储
-docker compose ps                     # surrealdb、rabbitmq、redis 均已启动
+docker compose ps                     # postgres、rabbitmq 健康，redis 已启动
 
 # 2. Schema
-sk status                             # 来自第 6 节
-#   → 你应用的那次 rollout，[completed]
+./manage-tool db migrate              # 来自第 6 节
+#   → schema is up to date
 
 # 3. 控制平面：每种模式一条启动横幅，且没有重启循环
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
@@ -564,34 +542,29 @@ curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. 用管理员账号登录 —— 这是唯一能端到端走通
-#    控制台 → 运维 API → SurrealDB 的检查。
+#    控制台 → 运维 API → 数据库的检查。
 ```
 
 如果第 1–5 步都通过，而第 7 步以 `Forbidden` 失败，请重读第 9 节里的代理警告。
 
 ## 13. 升级、备份、回滚
 
-**升级。** 先 Schema，再代码，收缩放在最后：
+**升级。** 在 `.env` 中提升 `MASTER_VERSION`（如果控制台也有新标签，同时提升 `FRONTEND_VERSION`），
+然后执行 `docker compose pull && docker compose up -d`。新的 master 会在启动时自行应用所有尚未应用的
+migration。
 
-1. `surrealkit rollout plan --name <change>`，并审查清单。
-2. `surrealkit rollout start <target>` —— 只做扩张；运行中的版本继续正常工作。
-3. 在 `.env` 中提升 `MASTER_VERSION`（如果控制台也有新标签，同时提升 `FRONTEND_VERSION`），
-   然后执行 `docker compose pull && docker compose up -d`。
-4. 验证，然后执行 `surrealkit rollout complete <target>`。
+回滚意味着把版本变量固定回上一批标签 —— 但这并不会撤销已经执行过的 migration，所以如果某个版本的
+migration 删除或重命名了旧二进制仍在读取的东西，就无法用这种方式回滚。遇到这种情况时，release notes
+会写明。
 
-如果第 3 步或第 4 步出了问题：执行 `surrealkit rollout rollback <target>`，并把版本变量固定回上一批标签。
-中途被杀掉的发布会让 `__rollout.status` 停在 `running_*` —— 在规划任何新变更之前，先用
-`surrealkit rollout repair <target>` 修复元数据。
-
-**备份。** SurrealDB 是唯一无法重建的状态：
+**备份。** PostgreSQL 是唯一无法重建的状态：
 
 ```sh
-docker compose exec -T surrealdb /surreal export \
-  --endpoint http://127.0.0.1:8000 --user root --pass '<pw>' \
-  --ns guru --db guru - > guru-$(date +%F).surql
+docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  > guru-$(date +%F).sql
 ```
 
-如果你想要一条快速恢复路径，也请给 `surreal-data` 卷做快照。RabbitMQ 不需要备份：它的队列里装的是编辑
+如果你想要一条快速恢复路径，也请给 `postgres-data` 卷做快照。RabbitMQ 不需要备份：它的队列里装的是编辑
 提示和执行信号，两者都会被调度器重新发布，而代数计数器保证了幂等 —— 但 broker 必须是*运行中*的，
 因为它不在的时候不会有任何周期任务发生。
 Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB 配置运行，里面根本没有可保存的东西。
@@ -607,7 +580,7 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 |---|---|
 | 控制台登录返回 `Forbidden` / `Cross-site remote requests are forbidden` | 重建出的 origin ≠ 浏览器的 `Origin`。请用 HTTPS 提供服务，或设置 `PROTOCOL_HEADER`/`HOST_HEADER` 并转发 `X-Forwarded-Proto` 和 `X-Forwarded-Host`（带端口）。`ORIGIN` 没有任何效果。 |
 | 登录成功，但下一个请求又跳回 `/auth` | 带 `Secure` 的会话 cookie 被丢弃了 —— 浏览器是通过纯 HTTP 访问控制台的。 |
-| `error: the following required arguments were not provided: --namespace` | `SURREALDB_NAMESPACE` / `SURREALDB_NAME` 未设置；它们没有默认值。 |
+| master 以 `this mode opens the database: set GURU_DATABASE_URL` 退出 | URL 未设置或为空；它没有默认值。`cron` 是唯一不需要它的模式。 |
 | master 以 `master key: GURU_MASTER_KEY is not set`（或 `must be 32 bytes`）退出 | `dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要这个密钥（`cron` 不读取它）。用 `manage-tool generate-master-key` 生成一个；它只从环境变量读取。 |
 | master 以 `stored config for key ... does not match its type` 退出 | 存储的文档损坏，或早于某次字段重命名。用 `manage-tool config get <key>` 检查它，并用 `config set` 重写。 |
 | 某个 TLS Entry 的 pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
@@ -616,8 +589,8 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 | master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 不需要。 |
 | 某个 `Watch*` 流不再投递快照（用一元 API 读同一份数据却能看到那次变更） | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
 | `consumer` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
-| 全新安装后立刻出现 `table does not exist` / 事务被取消 | SurrealDB 版本低于 3.2，或者 Schema 从未被应用。检查 `surrealkit status`。 |
-| `surrealkit` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了连接信息。请始终显式传入 `--host/--ns/--db/--user/--pass`。 |
+| 全新安装后立刻出现 `relation "…" does not exist` | migration 从未运行：`GURU_DATABASE_URL` 中的角色可能对该数据库没有 `CREATE` 权限。执行 `manage-tool db migrate` 并阅读它的报错。 |
+| `manage-tool` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了 `GURU_DATABASE_URL`。请始终显式传入 `--database-url`。 |
 | 画布编辑永远到不了 worker | `consumer` 挂了：编辑钩子和过期画布清扫都由它运行，没有它什么都不会派生。如果 `consumer` 是正常的，就检查 `cron` —— 没有时钟，清扫永远不会触发，只有带活跃 `CanvasDirty` 的编辑才会派生。 |
 | 周期任务不再发生（没有节点变 `Offline`，没有续期） | RabbitMQ 挂了，或者 `cron` 挂了。两者都是必需的：时钟发布信号，consumer 执行它们。 |
 
