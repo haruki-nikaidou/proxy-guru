@@ -7,7 +7,7 @@ import * as Chart from '#lib/components/ui/chart/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import * as Tabs from '#lib/components/ui/tabs/index.js';
 import type { HealthWindowMinutes, ServerHealthSeries } from '#lib/dto/health.js';
-import { formatTimestamp } from '#lib/i18n/format.js';
+import { formatAxisTime, formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import NodeEventsPanel from './NodeEventsPanel.svelte';
 import { formatBytes, formatCount } from './format.js';
@@ -49,6 +49,8 @@ const connectionsConfig = $derived({
 /** The x value is a `Date`; the one timestamp formatter takes RFC3339. */
 const tooltipLabel = (value: unknown) =>
 	formatTimestamp(value instanceof Date ? value.toISOString() : String(value));
+/** The x axis ticks read in UTC+8 like every other time on the dashboard. */
+const axisTime = (value: Date) => formatAxisTime(value, windowMinutes);
 
 /**
  * The chart measures its own gutters against the *default* tick format, so a
@@ -147,7 +149,7 @@ let tab = $state('metrics');
 											color: 'var(--color-download)'
 										}
 									]}
-									props={{ yAxis: { format: formatBytes } }}
+									props={{ xAxis: { format: axisTime }, yAxis: { format: formatBytes } }}
 									padding={AXIS_PADDING}
 								>
 									{#snippet tooltip()}
@@ -181,7 +183,7 @@ let tab = $state('metrics');
 											color: 'var(--color-current)'
 										}
 									]}
-									props={{ yAxis: { format: formatCount } }}
+									props={{ xAxis: { format: axisTime }, yAxis: { format: formatCount } }}
 									padding={AXIS_PADDING}
 								>
 									{#snippet tooltip()}
