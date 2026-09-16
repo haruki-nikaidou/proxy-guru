@@ -42,8 +42,6 @@ const updateAgent = () =>
 		() => requestAgentUpdate({ canvasId, serverId: server.id }),
 		m.editor_agent_update_requested()
 	);
-
-// A pod is placed on exactly one server, so pods are created here. Their stored
 </script>
 
 <!-- The worker on this server: the version it registered as, the version that

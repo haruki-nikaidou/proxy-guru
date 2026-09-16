@@ -42,6 +42,7 @@ let {
 
 const writes = panelWrites();
 
+// The panel is only mounted while it is open for this server, so the rollout is
 // fetched exactly then; a different target re-runs the query through its arg.
 const rollout = $derived(getServerRollout({ serverId: server.id }));
 

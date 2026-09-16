@@ -91,7 +91,7 @@ export const toPod = (node: ProtoNode, pod: ProtoPodConfig): PodDto => ({
 	ports: toPorts(node, NO_LABELS)
 });
 
-export const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddressesDto => ({
+const toAddresses = (addresses: ProtoServerAddresses | undefined): ServerAddressesDto => ({
 	v4: { reported: addresses?.v4?.reported ?? '', pinned: addresses?.v4?.pinned ?? '' },
 	v6: { reported: addresses?.v6?.reported ?? '', pinned: addresses?.v6?.pinned ?? '' },
 	extra: addresses?.extra ?? [],

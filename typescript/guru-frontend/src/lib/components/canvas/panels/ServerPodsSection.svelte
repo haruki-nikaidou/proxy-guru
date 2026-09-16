@@ -74,6 +74,7 @@ const bindLabel = (value: string): string =>
 const advertiseLabel = (value: string): string =>
 	value === '' ? m.editor_pod_advertise_auto() : value;
 
+// A pod is placed on exactly one server, so pods are created here. Their stored
 // position is unused: they render inside the server node.
 const addPod = () =>
 	writes.run(async () => {
@@ -90,8 +91,6 @@ const addPod = () =>
 		newPodName = '';
 		rerollPort();
 	}, m.editor_saved());
-
-// The command retires the server's pods first; the panel closes on its own once
 </script>
 
 <h3 class="text-sm font-medium">{m.editor_pods()}</h3>

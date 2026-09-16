@@ -111,13 +111,13 @@ const save = () =>
 		m.editor_saved()
 	);
 
+// The command retires the server's pods first; the panel closes on its own once
+// the refreshed graph no longer holds the server.
 const removeServer = () =>
 	writes.run(async () => {
 		await deleteServerNode({ canvasId, serverId: server.id, force: false });
 		deleteOpen = false;
 	}, m.editor_deleted());
-
-// The panel is only mounted while it is open for this server, so the rollout is
 </script>
 
 <Field.FieldGroup>
