@@ -12,7 +12,8 @@ import { flowNodeId, groupHandleId, parseFlowNodeId, parseGroupHandle } from './
 /**
  * The endpoints an edge may attach to, and the rule for whether a drag between
  * two of them is allowed — which mirrors `check_edges` in the control plane so
- * a doomed drag never round-trips.
+ * a doomed drag never round-trips. A port here is a Svelte Flow handle; the TCP
+ * port a pod listens on is `./pod-ports.js`.
  */
 
 /**
@@ -149,28 +150,6 @@ export function portLabel(port: CanvasPort): string {
 	if (port.key === 'listen') return m.editor_port_listen();
 	if (port.key === 'destination') return m.editor_port_destination();
 	return port.key;
-}
-
-/** Where suggested pod ports come from: the same high range the control plane
- * draws generated landing pods from. */
-export const POD_PORT_RANGE: readonly [number, number] = [40000, 59999];
-
-/**
- * A random port in [`POD_PORT_RANGE`] that no pod in `used` holds. Collisions
- * with anything else on the host surface as an apply error on the pod, which is
- * what the re-roll button is for.
- */
-export function randomFreePort(used: Iterable<number>): number {
-	const taken = new Set(used);
-	const [low, high] = POD_PORT_RANGE;
-	const span = high - low + 1;
-	const buffer = new Uint32Array(1);
-	for (let attempt = 0; attempt < 64; attempt += 1) {
-		crypto.getRandomValues(buffer);
-		const port = low + ((buffer[0] ?? 0) % span);
-		if (!taken.has(port)) return port;
-	}
-	return low;
 }
 
 /** One end of a connect, as the control plane names it. */

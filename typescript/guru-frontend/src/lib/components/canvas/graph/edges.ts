@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/svelte';
 import type { CanvasGraph, ChannelDto, PortKindName } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
-import { channelColor, flowNodeId } from './ids.js';
+import { flowNodeId } from './ids.js';
 import { buildPortIndex, type PortIndexEntry, portLabel } from './ports.js';
 
 /**
@@ -90,6 +90,10 @@ function bundleChannels(
 			.sort((a, b) => a.ordinal - b.ordinal);
 	return new Map(bundles.map(bundle => [bundle.id, resolve(carried.get(bundle.from) ?? [])]));
 }
+
+/** The CSS colour of a channel; the palette wraps every 12 channels. */
+export const channelColor = (channel: Pick<ChannelDto, 'colorIndex'>): string =>
+	`var(--channel-${channel.colorIndex})`;
 
 /** A thin edge in a channel's colour: the one rule it carries, end to end. */
 const channelStyle = (channel: ChannelDto): string =>

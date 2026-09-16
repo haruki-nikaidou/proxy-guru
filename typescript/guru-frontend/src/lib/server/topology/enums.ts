@@ -158,6 +158,10 @@ export const toAddressSource = (value: AddressSource): AddressSourceName => {
 	}
 };
 
+export const toExportPortKind = (value: PortKind): ExportPortKindName =>
+	value === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination';
+export const toExportAs = (value: CanvasExportAs): CanvasExportAsName =>
+	value === CanvasExportAs.INPUT_INTO_CANVAS ? 'input_into_canvas' : 'output_out_of_canvas';
 export const fromPortKind = (value: ExportPortKindName): PortKind =>
 	value === 'derive_listen' ? PortKind.DERIVE_LISTEN : PortKind.DERIVE_DESTINATION;
 export const fromExportAs = (value: CanvasExportAsName): CanvasExportAs =>

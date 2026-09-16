@@ -13,8 +13,6 @@ import type {
 } from 'app-protobuf/orchestration/orchestration';
 import {
 	AddressSource,
-	CanvasExportAs,
-	PortKind,
 	ProblemKind,
 	ProblemSeverity
 } from 'app-protobuf/orchestration/orchestration';
@@ -34,6 +32,8 @@ import type {
 import {
 	toAddressSource,
 	toBalanceMode,
+	toExportAs,
+	toExportPortKind,
 	toIpv6,
 	toPortDirection,
 	toPortKind,
@@ -259,12 +259,8 @@ export function toStandalone(
 		return {
 			...base,
 			kind: 'canvas_export',
-			portKind:
-				spec.canvasExport.kind === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination',
-			exportAs:
-				spec.canvasExport.direction === CanvasExportAs.INPUT_INTO_CANVAS
-					? 'input_into_canvas'
-					: 'output_out_of_canvas'
+			portKind: toExportPortKind(spec.canvasExport.kind),
+			exportAs: toExportAs(spec.canvasExport.direction)
 		};
 	}
 	return null;
