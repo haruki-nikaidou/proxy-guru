@@ -176,12 +176,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SURREALDB_NAME (or pass --namespace and --database)"
             .into());
     };
-    // One WebSocket to the database for the whole process. The SDK (3.2.x)
-    // reconnects it on its own but never fails the requests that were in flight
-    // when the socket dropped (its router cites surrealdb/surrealdb#7037): they
-    // hang for good. Every place a worker or a dashboard waits on such a call
-    // bounds it — the auth layers, the unary agent handlers — so a lost answer
-    // costs one retried call, not a stuck worker.
+    // One WebSocket to the database for the whole process, and no request
+    // timeout anywhere in that client: `query_timeout` is wired into the
+    // embedded engines only, so an answer that never arrives is an await that
+    // never returns. The SDK reconnects on its own and does fail the requests
+    // that were in flight (`clear_pending_requests`), but only once the
+    // reconnect completes, only for sessions its map still holds as `Ok`, and
+    // never for a response its router cannot match to a caller — it drops those
+    // and logs, which is the hang its own `fail_all_pending_requests` comment
+    // cites (surrealdb/surrealdb#7037). So every place a worker or a dashboard
+    // waits on such a call bounds it: the auth layers, the unary agent
+    // handlers. A lost answer then costs one retried call, not a stuck worker.
     let db = surrealdb::engine::any::connect(&cli.address).await?;
     db.signin(Root {
         username: cli.username.clone(),
