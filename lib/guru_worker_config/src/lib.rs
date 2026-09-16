@@ -11,6 +11,7 @@
 
 pub mod error;
 pub mod load_balance;
+pub mod table;
 
 use compact_str::CompactString;
 pub use error::ConfigError;
@@ -19,6 +20,7 @@ use serde::Deserializer;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+pub use table::TableForwarding;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -22,6 +22,16 @@ pub enum ConfigError {
     QuicTuning(String),
     #[error("{0}")]
     KeepAlive(String),
+    #[error("forwarding {0} defines route id {1} more than once")]
+    DuplicateRouteId(String, String),
+    #[error("forwarding {0} refers to route id {1}, which it does not define")]
+    UnknownRouteId(String, String),
+    #[error("forwarding {0} has an empty group {1}")]
+    EmptyRouteGroup(String, String),
+    #[error("forwarding {0} gives {1} a weight of zero")]
+    ZeroRouteWeight(String, String),
+    #[error("forwarding {0} has a group cycle through {1}")]
+    RouteCycle(String, String),
     #[error("read {path}: {source}")]
     Io {
         path: PathBuf,
