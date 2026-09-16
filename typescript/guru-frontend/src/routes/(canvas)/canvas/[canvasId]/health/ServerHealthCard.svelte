@@ -29,6 +29,7 @@ const rows = $derived(
 		max: point.maxConnections
 	}))
 );
+const health = $derived(serverHealthBadge(series.status));
 const latest = $derived(series.points.at(-1));
 const peak = $derived(
 	series.points.reduce((most, point) => Math.max(most, point.maxConnections), 0)
@@ -83,10 +84,7 @@ let tab = $state('metrics');
 	<Card.Header>
 		<Card.Title class="flex items-center gap-2">
 			{series.serverName}
-			<Badge
-				variant={serverHealthBadge(series.status).variant}
-				class={series.status === 'unknown' ? 'text-muted-foreground' : undefined}
-			>
+			<Badge variant={health.variant} class={health.class}>
 				{serverHealthLabel(series.status)}
 			</Badge>
 		</Card.Title>

@@ -179,13 +179,14 @@ from the Iconify API, so an air-gapped browser keeps the default glyph. Anything
 Iconify name, an unknown prefix, a name the set does not have, an empty field — also renders the
 default server glyph, and the inspector previews the result next to the field while you type.
 
-The header badge is health: `Online`, `Degraded` (apply error, failed pods, or a revision lagging
-past the grace period), `Offline` (nothing reported for three health intervals — 45 s by default),
-or `Unknown`. The two summary lines are the log level, the IPv6 resolution policy
-(`Required`/`Preferred`/`Tolerated`/`Forbidden`, default `Tolerated`), the effective address or
-`no address yet`, the reported country — then the last watch-stream heartbeat, with `not reporting`
-appended while the server is offline. Once the server has QUIC rates, `brutal ↑1000/↓1000` (or
-`Cubic ↑…/↓…`) sits between them.
+The header badge is health, filled like a traffic light: a green `Online`, an amber `Degraded`
+(apply error, failed pods, or a revision lagging past the grace period), a red `Offline` (nothing
+reported for three health intervals — 45 s by default), or an outlined `Unknown`. Under the header,
+one line holds the server's IPv4 address and one its IPv6 address (each the first of pinned,
+reported and observed, see below, or `no address yet`), then the time of the last health report,
+with `not reporting` appended while the server is offline. The settings are the inspector's, not
+the card's: the log level, the IPv6 resolution policy (`Required`/`Preferred`/`Tolerated`/`Forbidden`,
+default `Tolerated`) and the QUIC rates below.
 
 **QUIC relay links.** The inspector's last group is this server's side of every QUIC relay link it
 takes part in: the congestion control (`Cubic`, or `Brutal`, which sends at exactly the up rate

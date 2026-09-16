@@ -5,12 +5,8 @@ import { channelColor, portLabel, type FlowNodeData } from '#lib/components/canv
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
-import {
-	ipv6Label,
-	quicCongestionLabel,
-	serverHealthBadge,
-	serverHealthLabel
-} from '#lib/i18n/labels.js';
+import { serverHealthBadge, serverHealthLabel } from '#lib/i18n/labels.js';
+import type { ServerAddressesDto } from '#lib/dto/topology.js';
 import GroupHandle from './GroupHandle.svelte';
 import NodeShell from './NodeShell.svelte';
 import PortHandle from './PortHandle.svelte';
@@ -21,13 +17,23 @@ let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'server' }> 
 
 const universal = $derived(data.server.universal);
 
-const ipv6 = $derived(ipv6Label(data.server.ipv6Resolve));
-/** `brutal ↑1000/↓1000` once the server has QUIC numbers; nothing at the defaults. */
-const quic = $derived(
-	data.server.quic.upMbps > 0 || data.server.quic.downMbps > 0
-		? `${quicCongestionLabel(data.server.quic.congestion)} ↑${data.server.quic.upMbps}/↓${data.server.quic.downMbps}`
-		: ''
-);
+/**
+ * The address of one family, walked the way `ServerEntity::effective_address`
+ * walks each family on the control plane: the pinned address, else the one the
+ * worker reported, else the address it registered from when that is of this
+ * family. Empty when the family has none.
+ */
+const addressOf = (addresses: ServerAddressesDto, family: 'v4' | 'v6'): string => {
+	const observed = addresses.observedAddress;
+	const observedFamily = observed === '' ? null : observed.includes(':') ? 'v6' : 'v4';
+	return (
+		addresses[family].pinned ||
+		addresses[family].reported ||
+		(observedFamily === family ? observed : '')
+	);
+};
+const v4 = $derived(addressOf(data.server.addresses, 'v4'));
+const v6 = $derived(addressOf(data.server.addresses, 'v6'));
 
 const health = $derived(serverHealthBadge(data.server.healthStatus));
 /**
@@ -54,6 +60,17 @@ const listenOf = (bindIp: string | null, port: number): string =>
 const channelOf = (podId: string) => data.channels[podId];
 </script>
 
+{#snippet addressLine(label: string, address: string)}
+	<p class="truncate px-3 text-xs text-muted-foreground">
+		{label}
+		{#if address}
+			<span class="font-mono">{address}</span>
+		{:else}
+			{m.editor_server_address_none_short()}
+		{/if}
+	</p>
+{/snippet}
+
 <NodeShell
 	{id}
 	title={data.server.name}
@@ -71,16 +88,12 @@ const channelOf = (podId: string) => data.channels[podId];
 			{serverHealthLabel(data.server.healthStatus)}
 		</Badge>
 	{/snippet}
-	<p class="truncate px-3 pt-1 text-xs text-muted-foreground">
-		{data.server.logLevel} · {ipv6} ·
-		{#if quic}<span class="font-mono">{quic}</span> ·{/if}
-		<span class="font-mono">
-			{data.server.addresses.effectiveAddress || m.editor_server_address_none_short()}
-		</span>
-		{#if data.server.addresses.reportedCountry}
-			· <span class="font-mono">{data.server.addresses.reportedCountry}</span>
-		{/if}
-	</p>
+	<!-- One line per address family; the server's settings (log level, IPv6
+	     policy, QUIC) live in the panel, not on the card. -->
+	<div class="pt-1">
+		{@render addressLine(m.editor_server_address_v4(), v4)}
+		{@render addressLine(m.editor_server_address_v6(), v6)}
+	</div>
 	<!-- The health report time, not `lastSeenAt`: the latter also moves with the
 	     config stream's heartbeat, which the master keeps up on its own timer, so
 	     it can read "5 s ago" on a server that is offline. -->

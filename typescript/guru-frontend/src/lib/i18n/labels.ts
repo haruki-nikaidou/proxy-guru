@@ -120,14 +120,19 @@ export function serverHealthLabel(status: ServerHealthStatusName): string {
 	}
 }
 
-/** Badge variant per status; `unknown` is an outline badge with muted text. */
+/**
+ * Badge look per status: a filled traffic light for the three states a worker
+ * reports, and `unknown` as an outline with muted text. The fills are fixed
+ * colours, not theme tokens, so green, amber and red mean the same in both
+ * themes; white text stays above 4.5:1 on green-700 and red-600 at `text-xs`.
+ */
 export const serverHealthBadge = (
 	status: ServerHealthStatusName
 ): { variant: BadgeVariant; class: string } =>
 	status === 'online'
-		? { variant: 'secondary', class: '' }
+		? { variant: 'default', class: 'bg-green-700 text-white' }
 		: status === 'degraded'
-			? { variant: 'outline', class: '' }
+			? { variant: 'default', class: 'bg-amber-400 text-amber-950' }
 			: status === 'offline'
-				? { variant: 'destructive', class: '' }
+				? { variant: 'default', class: 'bg-red-600 text-white' }
 				: { variant: 'outline', class: 'text-muted-foreground' };
