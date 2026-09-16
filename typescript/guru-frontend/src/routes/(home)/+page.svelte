@@ -9,6 +9,7 @@ import { Switch } from '#lib/components/ui/switch/index.js';
 import { canEditWorkspace } from '#lib/permissions.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CanvasCard from './CanvasCard.svelte';
 import CanvasFormDialog from './CanvasFormDialog.svelte';
 import { listCanvases } from './canvases.remote.js';
@@ -77,13 +78,7 @@ const canvases = $derived(listCanvases({ includeSubcanvases: showSubcanvases }))
 	{/if}
 
 	{#snippet failed(error)}
-		{@const body = (error as { body?: App.Error }).body}
-		<Empty.Root>
-			<Empty.Header>
-				<Empty.Title>{m.error_title()}</Empty.Title>
-				<Empty.Description>{errorMessage(body?.code, body?.message ?? '')}</Empty.Description>
-			</Empty.Header>
-		</Empty.Root>
+		<BoundaryError {error} />
 	{/snippet}
 </svelte:boundary>
 

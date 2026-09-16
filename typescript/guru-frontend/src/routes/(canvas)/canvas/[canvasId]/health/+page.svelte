@@ -8,6 +8,7 @@ import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 import { HEALTH_WINDOWS, type HealthWindowMinutes } from '#lib/dto/health.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CanvasNodeEvents from './CanvasNodeEvents.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
 import { formatCount, serverStatusLabel, windowLabel } from './format.js';
@@ -114,13 +115,7 @@ function pickWindow(value: string) {
 		{/if}
 
 		{#snippet failed(error)}
-			{@const body = (error as { body?: App.Error }).body}
-			<Empty.Root>
-				<Empty.Header>
-					<Empty.Title>{m.error_title()}</Empty.Title>
-					<Empty.Description>{errorMessage(body?.code, body?.message ?? '')}</Empty.Description>
-				</Empty.Header>
-			</Empty.Root>
+			<BoundaryError {error} />
 		{/snippet}
 	</svelte:boundary>
 </div>

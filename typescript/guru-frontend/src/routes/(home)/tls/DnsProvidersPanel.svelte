@@ -10,7 +10,7 @@ import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import type { DnsProviderDto, DnsProviderKindName } from '#lib/dto/tls.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import DnsProviderFormDialog from './DnsProviderFormDialog.svelte';
@@ -39,8 +39,7 @@ async function confirmDelete(row: DnsProviderDto) {
 	} catch (err) {
 		// FAILED_PRECONDITION while an Entry still references the provider; the
 		// control plane's own text names what is still using it.
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
+		toast.error(errorText(err));
 	}
 }
 </script>

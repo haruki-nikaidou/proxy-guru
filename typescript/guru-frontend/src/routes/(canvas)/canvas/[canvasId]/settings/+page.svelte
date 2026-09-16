@@ -16,6 +16,7 @@ import { Textarea } from '#lib/components/ui/textarea/index.js';
 import { errorMessage, issueMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import { canEditWorkspace } from '#lib/permissions.js';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import DeleteCanvasDialog from '../../../../(home)/DeleteCanvasDialog.svelte';
 import { listCanvasOptions, updateCanvas } from '../../../../(home)/canvases.remote.js';
 import type { PageProps } from './$types.js';
@@ -144,13 +145,7 @@ $effect(() => {
 		{/if}
 
 		{#snippet failed(error)}
-			{@const body = (error as { body?: App.Error }).body}
-			<Empty.Root>
-				<Empty.Header>
-					<Empty.Title>{m.error_title()}</Empty.Title>
-					<Empty.Description>{errorMessage(body?.code, body?.message ?? '')}</Empty.Description>
-				</Empty.Header>
-			</Empty.Root>
+			<BoundaryError {error} />
 		{/snippet}
 	</svelte:boundary>
 </div>

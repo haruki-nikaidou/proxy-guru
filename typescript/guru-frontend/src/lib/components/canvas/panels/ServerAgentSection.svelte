@@ -7,7 +7,7 @@ import { Button } from '#lib/components/ui/button/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { ServerDto } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
@@ -121,9 +121,8 @@ const updateAgent = () =>
 	{/if}
 
 	{#snippet failed(error)}
-		{@const body = (error as { body?: App.Error }).body}
 		<Alert.Root variant="destructive" class="mt-3">
-			<Alert.Description>{errorMessage(body?.code, body?.message ?? '')}</Alert.Description>
+			<Alert.Description>{errorText(error)}</Alert.Description>
 		</Alert.Root>
 	{/snippet}
 </svelte:boundary>

@@ -15,7 +15,7 @@ import {
 	type Identity
 } from '#lib/dto/identity.js';
 import { accountMutationBlock } from '#lib/guards.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorMessage, errorText } from '#lib/i18n/codes.js';
 import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import CreateAccountDialog from './CreateAccountDialog.svelte';
@@ -28,8 +28,7 @@ let createOpen = $state(false);
 let deleteTarget = $state<AccountRow | null>(null);
 
 function reportError(err: unknown) {
-	const body = (err as { body?: App.Error }).body;
-	toast.error(errorMessage(body?.code, body?.message ?? ''));
+	toast.error(errorText(err));
 }
 
 async function changeRole(row: AccountRow, role: AssignableRole) {

@@ -9,7 +9,7 @@ import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import type { ApiKeyRow } from '#lib/dto/identity.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import CreateApiKeyDialog from './CreateApiKeyDialog.svelte';
@@ -25,8 +25,7 @@ async function confirmRevoke(row: ApiKeyRow) {
 		revokeTarget = null;
 		toast.success(m.api_keys_revoked());
 	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
+		toast.error(errorText(err));
 	}
 }
 </script>

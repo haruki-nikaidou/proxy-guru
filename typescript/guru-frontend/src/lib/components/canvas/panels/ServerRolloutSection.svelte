@@ -16,7 +16,7 @@ import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import type { ConfigSnapshotDto, ServerDto } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
@@ -228,11 +228,10 @@ const forget = () =>
 	{/if}
 
 	{#snippet failed(error)}
-		{@const body = (error as { body?: App.Error }).body}
 		<h3 class="text-sm font-medium">{m.editor_rollout_title()}</h3>
 		<Alert.Root variant="destructive" class="mt-2">
 			<Alert.Title>{m.editor_rollout_unavailable()}</Alert.Title>
-			<Alert.Description>{errorMessage(body?.code, body?.message ?? '')}</Alert.Description>
+			<Alert.Description>{errorText(error)}</Alert.Description>
 		</Alert.Root>
 	{/snippet}
 </svelte:boundary>
@@ -277,9 +276,8 @@ const forget = () =>
 				{/if}
 
 				{#snippet failed(error)}
-					{@const body = (error as { body?: App.Error }).body}
 					<Alert.Root variant="destructive">
-						<Alert.Description>{errorMessage(body?.code, body?.message ?? '')}</Alert.Description>
+						<Alert.Description>{errorText(error)}</Alert.Description>
 					</Alert.Root>
 				{/snippet}
 			</svelte:boundary>

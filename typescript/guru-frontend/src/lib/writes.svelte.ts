@@ -1,5 +1,5 @@
 import { toast } from 'svelte-sonner';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 
 /**
  * What every panel and dialog does around a write: keep its controls disabled
@@ -34,8 +34,7 @@ export function panelWrites(): PanelWrites {
 				await write();
 				if (success !== undefined) toast.success(success);
 			} catch (err) {
-				const body = (err as { body?: App.Error }).body;
-				toast.error(errorMessage(body?.code, body?.message ?? ''));
+				toast.error(errorText(err));
 			} finally {
 				pending = false;
 			}

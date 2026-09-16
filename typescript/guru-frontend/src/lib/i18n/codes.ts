@@ -86,6 +86,16 @@ export function issueMessage(code: string): string {
  * `App.Error` codes. The special code `server_message` means the control plane
  * supplied actionable English text, which is displayed verbatim.
  */
+/**
+ * What a remote function threw, as a sentence. Rejections carry the app's error
+ * body, so the reason the control plane gave survives to the screen; anything
+ * without one falls back the same way `errorMessage` does.
+ */
+export function errorText(err: unknown): string {
+	const body = (err as { body?: App.Error }).body;
+	return errorMessage(body?.code, body?.message ?? '');
+}
+
 export function errorMessage(code: string | undefined, fallback: string): string {
 	switch (code) {
 		case 'forbidden':

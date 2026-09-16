@@ -14,7 +14,7 @@ import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 import type { ConfigKeyName } from '#lib/dto/config.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import { listConfigDocuments, saveConfigDocument } from './config.remote.js';
 
@@ -72,8 +72,7 @@ async function save() {
 		// A rejected payload is shown next to the editor and the operator's text
 		// is left alone: refetching here would throw away the edit they have to
 		// fix. `server_message` carries the control plane's own English text.
-		const body = (err as { body?: App.Error }).body;
-		rejections[key] = errorMessage(body?.code, body?.message ?? '');
+		rejections[key] = errorText(err);
 	} finally {
 		saving = null;
 	}

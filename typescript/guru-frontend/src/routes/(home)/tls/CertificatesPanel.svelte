@@ -11,7 +11,7 @@ import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 import type { CertificateDto, CertificateStatusName } from '#lib/dto/tls.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import {
@@ -68,8 +68,7 @@ function expiryHint(notAfter: string): string | null {
 }
 
 function reportError(err: unknown) {
-	const body = (err as { body?: App.Error }).body;
-	toast.error(errorMessage(body?.code, body?.message ?? ''));
+	toast.error(errorText(err));
 }
 
 async function retry(row: CertificateDto) {

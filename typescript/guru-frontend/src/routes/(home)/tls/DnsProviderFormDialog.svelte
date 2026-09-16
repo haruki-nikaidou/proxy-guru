@@ -11,7 +11,7 @@ import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { DnsProviderDto, DnsProviderKindName } from '#lib/dto/tls.js';
-import { errorMessage, issueMessage } from '#lib/i18n/codes.js';
+import { errorText, issueMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import { createDnsProvider, updateDnsProvider } from './tls.remote.js';
 
@@ -80,8 +80,7 @@ async function submit(current: { submit(): Promise<boolean> }) {
 	} catch (err) {
 		// A refusal (duplicate name, unknown provider) arrives as actionable
 		// English text from the control plane.
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
+		toast.error(errorText(err));
 	}
 }
 </script>

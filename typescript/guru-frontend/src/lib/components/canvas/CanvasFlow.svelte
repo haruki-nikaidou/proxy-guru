@@ -62,11 +62,12 @@ import NodePanel from '#lib/components/canvas/panels/NodePanel.svelte';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
-import { errorMessage } from '#lib/i18n/codes.js';
+import { errorText } from '#lib/i18n/codes.js';
 import { suggestName } from '#lib/i18n/naming.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 import type { CanvasGraph } from '#lib/dto/topology.js';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { goto, replaceState } from '$app/navigation';
 import { page } from '$app/state';
 
@@ -145,15 +146,7 @@ $effect(() => {
 
 const refresh = () => getCanvasGraph({ canvasId }).refresh();
 
-function reportError(err: unknown) {
-	const body = (err as { body?: App.Error }).body;
-	toast.error(errorMessage(body?.code, body?.message ?? ''));
-}
-
-const failureMessage = (err: unknown): string => {
-	const body = (err as { body?: App.Error }).body;
-	return errorMessage(body?.code, body?.message ?? '');
-};
+const reportError = (err: unknown) => toast.error(errorText(err));
 
 const usedNames = () => canvasNames(graph.current);
 
@@ -298,7 +291,7 @@ async function beforeDelete({
 	const outcome = await runDeletes(
 		canvasId,
 		{ nodes: doomedNodes, edges: doomedEdges },
-		failureMessage
+		errorText
 	).finally(() => {
 		// This batch has settled: it stops hiding its own items, so the reconcile
 		// that follows brings back whatever the control plane refused. Any batch
@@ -474,12 +467,6 @@ $effect(() => {
 	{/if}
 
 	{#snippet failed(error)}
-		{@const body = (error as { body?: App.Error }).body}
-		<Empty.Root>
-			<Empty.Header>
-				<Empty.Title>{m.error_title()}</Empty.Title>
-				<Empty.Description>{errorMessage(body?.code, body?.message ?? '')}</Empty.Description>
-			</Empty.Header>
-		</Empty.Root>
+		<BoundaryError {error} />
 	{/snippet}
 </svelte:boundary>
