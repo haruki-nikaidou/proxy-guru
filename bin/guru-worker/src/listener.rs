@@ -44,7 +44,6 @@ pub async fn run_quic(
     mut cfg_rx: watch::Receiver<Arc<PreparedForwarding>>,
     token: CancellationToken,
 ) {
-    let mut current = cfg_rx.borrow().clone();
     let mut conns = JoinSet::new();
     // Connections outlive the accept loop only for as long as they carry a
     // stream: the dialer pools them and pings them, so a removed listener has
@@ -57,12 +56,12 @@ pub async fn run_quic(
                 if changed.is_err() {
                     break;
                 }
-                current = cfg_rx.borrow_and_update().clone();
+                let current = cfg_rx.borrow_and_update().clone();
                 endpoint.set_server_config(current.quic_server.clone());
             }
             incoming = endpoint.accept() => match incoming {
                 Some(inc) => {
-                    conns.spawn(handle_quic_connection(inc, current.clone(), drain.clone()));
+                    conns.spawn(handle_quic_connection(inc, cfg_rx.clone(), drain.clone()));
                 }
                 None => break, // endpoint closed
             }
@@ -75,10 +74,12 @@ pub async fn run_quic(
 
 /// Serves one accepted connection: a stream per proxied connection until `drain`
 /// says the listener is going away, after which the connection is closed as
-/// soon as its last stream ends.
+/// soon as its last stream ends. Each stream is served by the forwarding as it
+/// stands when the stream opens: a dialer keeps its link up for as long as it
+/// is used, so a connection accepted before a reload carries streams after it.
 async fn handle_quic_connection(
     incoming: quinn::Incoming,
-    cfg: Arc<PreparedForwarding>,
+    cfg_rx: watch::Receiver<Arc<PreparedForwarding>>,
     drain: CancellationToken,
 ) {
     let conn = match incoming.await {
@@ -100,7 +101,7 @@ async fn handle_quic_connection(
                 Ok((send, recv)) => {
                     let joined = Box::new(tokio::io::join(recv, send));
                     let guard = open.clone().enter();
-                    let cfg = cfg.clone();
+                    let cfg = cfg_rx.borrow().clone();
                     tokio::spawn(async move {
                         crate::pipe::handle_relay_quic_stream_logged(joined, remote, cfg).await;
                         drop(guard);

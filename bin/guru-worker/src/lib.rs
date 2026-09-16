@@ -14,6 +14,7 @@ pub mod certs;
 pub mod cli;
 pub mod keepalive;
 pub mod listener;
+pub mod liveness;
 pub mod pipe;
 pub mod prepared;
 pub mod quic;

@@ -25,6 +25,15 @@ use tokio::io::ReadBuf;
 /// limit before failing rather than queueing.
 const STREAM_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a handshake may take. Without it a peer that has gone away holds the
+/// link's slot until quinn's idle timeout, and every dial behind it waits too.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// How long after a failed handshake further dials to the same link fail at
+/// once instead of handshaking again, so a dead peer costs one wait, not one per
+/// connection queued behind it.
+const FAILURE_HOLD: Duration = Duration::from_secs(1);
+
 /// What makes two dials share a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
@@ -47,6 +56,8 @@ struct Live {
 #[derive(Default)]
 struct Slot {
     live: Option<Live>,
+    /// The last handshake that failed, and why.
+    failed: Option<(Instant, String)>,
 }
 
 pub struct Pool {
@@ -119,7 +130,23 @@ impl Pool {
             let live = match &slot.live {
                 Some(live) if live.conn.close_reason().is_none() => live,
                 _ => {
-                    let conn = self.connect(&key).await?;
+                    if let Some((at, error)) = &slot.failed
+                        && at.elapsed() < FAILURE_HOLD
+                    {
+                        return Err(
+                            format!("relay quic handshake failed moments ago: {error}").into()
+                        );
+                    }
+                    let conn = match self.connect(&key).await {
+                        Ok(conn) => {
+                            slot.failed = None;
+                            conn
+                        }
+                        Err(error) => {
+                            slot.failed = Some((Instant::now(), error.to_string()));
+                            return Err(error);
+                        }
+                    };
                     slot.live.insert(Live {
                         conn,
                         streams: Arc::new(AtomicUsize::new(0)),
@@ -167,10 +194,15 @@ impl Pool {
             &key.keepalive,
             Some(&key.tuning),
         ));
-        let conn = self
-            .endpoint
-            .connect_with(config, key.addr, &key.sni)?
-            .await?;
+        let connecting = self.endpoint.connect_with(config, key.addr, &key.sni)?;
+        let conn = match tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting).await {
+            Ok(conn) => conn?,
+            Err(_) => {
+                return Err(
+                    format!("relay quic handshake timed out after {HANDSHAKE_TIMEOUT:?}").into(),
+                );
+            }
+        };
         tracing::info!(addr = %key.addr, sni = %key.sni, "relay quic connection opened");
         Ok(conn)
     }
@@ -187,7 +219,11 @@ impl Pool {
                 return true;
             };
             let Some(live) = &slot.live else {
-                return false;
+                // Keep a recent failure, so the hold applies to the next dial.
+                return slot
+                    .failed
+                    .as_ref()
+                    .is_some_and(|(at, _)| at.elapsed() < FAILURE_HOLD);
             };
             if live.conn.close_reason().is_some() {
                 slot.live = None;

@@ -1,10 +1,11 @@
 use crate::BoxError;
-use crate::pipe::{Prefixed, read_proxy_header};
+use crate::pipe::{Prefixed, read_header, read_proxy_header};
 use crate::prepared::Ingest;
 use guru_worker_config::TcpProxyProtocol;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_openssl::SslStream;
 
@@ -72,23 +73,25 @@ impl AsyncWrite for IngestStream {
     }
 }
 
-/// Turns an accepted TCP-family transport stream into a `(client stream, client addr)` pair,
-/// applying receive-proxy-protocol / TLS termination / relay decode as configured.
+/// Turns an accepted TCP-family transport stream into the client stream, the client
+/// address, and — for a relay listener whose dialer asked — how long the dialer waits
+/// for a confirmation, applying receive-proxy-protocol / TLS termination / relay decode
+/// as configured.
 pub async fn ingest_tcp(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
     ingest: &Ingest,
     receive_pp: Option<TcpProxyProtocol>,
-) -> Result<(IngestStream, SocketAddr), BoxError> {
+) -> Result<(IngestStream, SocketAddr, Option<Duration>), BoxError> {
     match ingest {
         Ingest::Raw => {
             if receive_pp.is_some() {
                 let mut s = stream;
                 let (src, leftover) = read_proxy_header(&mut s).await?;
                 let s = IngestStream::PrefixedTcp(Prefixed::new(leftover, s));
-                Ok((s, src))
+                Ok((s, src, None))
             } else {
-                Ok((IngestStream::RawTcp(stream), peer))
+                Ok((IngestStream::RawTcp(stream), peer, None))
             }
         }
         Ingest::Tls(acceptor) => match receive_pp {
@@ -98,27 +101,27 @@ pub async fn ingest_tcp(
                 let base = Prefixed::new(leftover, s);
                 let tls = crate::tls::accept_tls(acceptor, base).await?;
                 let s = IngestStream::TlsPrefixed(tls);
-                Ok((s, client_addr))
+                Ok((s, client_addr, None))
             }
             None => {
                 let client_addr = peer;
                 let base = stream;
                 let tls = crate::tls::accept_tls(acceptor, base).await?;
                 let s = IngestStream::RawTls(tls);
-                Ok((s, client_addr))
+                Ok((s, client_addr, None))
             }
         },
         Ingest::RelayTcp => {
             let mut s = stream;
-            let (src, leftover) = read_proxy_header(&mut s).await?;
-            let s = IngestStream::PrefixedTcp(Prefixed::new(leftover, s));
-            Ok((s, src))
+            let header = read_header(&mut s).await?;
+            let s = IngestStream::PrefixedTcp(Prefixed::new(header.leftover, s));
+            Ok((s, header.source, header.confirm))
         }
         Ingest::RelayTls(acceptor) => {
             let mut tls = crate::tls::accept_tls(acceptor, stream).await?;
-            let (src, leftover) = read_proxy_header(&mut tls).await?;
-            let s = IngestStream::PrefixedTls(Prefixed::new(leftover, tls));
-            Ok((s, src))
+            let header = read_header(&mut tls).await?;
+            let s = IngestStream::PrefixedTls(Prefixed::new(header.leftover, tls));
+            Ok((s, header.source, header.confirm))
         }
         Ingest::RelayQuic => Err("quic ingest handled by quic listener".into()),
     }

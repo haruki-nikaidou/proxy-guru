@@ -61,6 +61,10 @@ pub struct AgentOptions {
 /// compares it against the published release to offer an update.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// What this worker reads beyond the config every worker reads; the master only
+/// sends a server what its worker reported here.
+pub const CAPABILITIES: &[&str] = &["route_table", "relay_confirm"];
+
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -172,6 +176,7 @@ async fn session(
         agent_version: VERSION.to_owned(),
         agent_arch: std::env::consts::ARCH.to_owned(),
         last_update_error: opts.last_update_error.lock().clone().unwrap_or_default(),
+        capabilities: CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
     });
     register
         .metadata_mut()

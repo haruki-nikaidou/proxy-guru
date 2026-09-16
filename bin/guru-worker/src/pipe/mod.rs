@@ -1,18 +1,19 @@
 pub mod entry;
 pub mod exit;
-pub mod load_balance;
 pub mod relay;
+pub mod route;
 
 use crate::BoxError;
 use crate::pipe::relay::RelayStream;
-use crate::prepared::{PreparedForwarding, Target};
+use crate::prepared::PreparedForwarding;
 use crate::stats::TagStats;
 use guru_worker_config::TcpProxyProtocol;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 
 /// Any owned, boxable bidirectional stream (TCP, TLS-over-TCP, or a joined QUIC bi-stream).
@@ -73,11 +74,42 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
     }
 }
 
+/// The PROXY v2 TLV type a dialer uses to ask a relay to confirm its own next hop
+/// (in the range PROXY v2 leaves to applications). The value is a version byte and
+/// the dialer's remaining patience in milliseconds, big-endian.
+pub const CONFIRM_TLV: u8 = 0xE7;
+const CONFIRM_VERSION: u8 = 1;
+/// The byte a confirming relay answers with once its next hop connected.
+pub const CONFIRM_OK: u8 = 0x00;
+/// The byte a confirming relay answers with when none of its next hops did.
+pub const CONFIRM_FAILED: u8 = 0x01;
+/// What a relay keeps of the dialer's patience for the answer to travel back.
+const CONFIRM_MARGIN: Duration = Duration::from_millis(300);
+/// The least a relay gives its own attempts, however little the dialer has left.
+const CONFIRM_FLOOR: Duration = Duration::from_millis(500);
+
+/// A PROXY protocol header, read.
+pub struct ProxyHeader {
+    /// The true client address.
+    pub source: SocketAddr,
+    /// Bytes read past the header: the start of the tunneled payload.
+    pub leftover: Vec<u8>,
+    /// How long the dialer waits for a confirmation, when it asked for one.
+    pub confirm: Option<Duration>,
+}
+
 /// Reads a PROXY protocol header (auto-detecting v1/v2), returning the source (client)
 /// address and any bytes read past the header (the start of the tunneled payload).
 pub async fn read_proxy_header<S: AsyncRead + Unpin>(
     stream: &mut S,
 ) -> Result<(SocketAddr, Vec<u8>), BoxError> {
+    let header = read_header(stream).await?;
+    Ok((header.source, header.leftover))
+}
+
+/// [`read_proxy_header`] for a relay listener, which also learns whether the dialer
+/// asked for a confirmation.
+pub async fn read_header<S: AsyncRead + Unpin>(stream: &mut S) -> Result<ProxyHeader, BoxError> {
     use ppp::{HeaderResult, PartialResult};
 
     let mut buf: Vec<u8> = Vec::with_capacity(512);
@@ -95,13 +127,31 @@ pub async fn read_proxy_header<S: AsyncRead + Unpin>(
         match result {
             HeaderResult::V2(Ok(h)) => {
                 let src = v2_source(&h.addresses).ok_or("unsupported proxy v2 address family")?;
+                let confirm = h.tlvs().filter_map(Result::ok).find_map(|tlv| {
+                    match (tlv.kind, tlv.value.as_ref()) {
+                        (CONFIRM_TLV, [CONFIRM_VERSION, a, b, c, d]) => {
+                            Some(Duration::from_millis(u64::from(u32::from_be_bytes([
+                                *a, *b, *c, *d,
+                            ]))))
+                        }
+                        _ => None,
+                    }
+                });
                 let used = h.len();
-                return Ok((crate::listener::canonical(src), buf[used..].to_vec()));
+                return Ok(ProxyHeader {
+                    source: crate::listener::canonical(src),
+                    leftover: buf[used..].to_vec(),
+                    confirm,
+                });
             }
             HeaderResult::V1(Ok(h)) => {
                 let src = v1_source(&h.addresses).ok_or("unsupported proxy v1 address")?;
                 let used = h.header.len();
-                return Ok((crate::listener::canonical(src), buf[used..].to_vec()));
+                return Ok(ProxyHeader {
+                    source: crate::listener::canonical(src),
+                    leftover: buf[used..].to_vec(),
+                    confirm: None,
+                });
             }
             _ => return Err("malformed proxy protocol header".into()),
         }
@@ -149,6 +199,31 @@ pub async fn write_proxy_header<S: AsyncWrite + Unpin>(
         TcpProxyProtocol::V1 => build_v1(src, dst),
     };
     tokio::io::AsyncWriteExt::write_all(out, &bytes).await?;
+    Ok(())
+}
+
+/// Writes the PROXY v2 header a relay hop starts with; with `confirm`, it asks the
+/// relay to confirm its own next hop and says how long this side will wait.
+pub async fn write_relay_header<S: AsyncWrite + Unpin>(
+    out: &mut S,
+    src: SocketAddr,
+    dst: SocketAddr,
+    confirm: Option<Duration>,
+) -> Result<(), BoxError> {
+    let bytes = match confirm {
+        None => build_v2(src, dst)?,
+        Some(patience) => {
+            use ppp::v2::{Builder, Command, Protocol, Version};
+            let (src, dst) = same_family(src, dst);
+            let addrs: ppp::v2::Addresses = (src, dst).into();
+            let millis = u32::try_from(patience.as_millis()).unwrap_or(u32::MAX);
+            let [a, b, c, d] = millis.to_be_bytes();
+            Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addrs)
+                .write_tlv(CONFIRM_TLV, &[CONFIRM_VERSION, a, b, c, d])?
+                .build()?
+        }
+    };
+    out.write_all(&bytes).await?;
     Ok(())
 }
 
@@ -310,48 +385,6 @@ impl AsyncWrite for TargetStream {
     }
 }
 
-/// Recursively resolves a forwarding target into one connected, framed outbound stream.
-pub async fn connect_target(t: &Target, client_addr: SocketAddr) -> Result<TargetStream, BoxError> {
-    match t {
-        Target::Exit {
-            destination,
-            ipv6_resolve,
-            send_pp,
-            keepalive,
-        } => Ok(TargetStream::Exit(
-            exit::connect_exit(destination, *ipv6_resolve, *send_pp, keepalive, client_addr)
-                .await?,
-        )),
-        Target::Relay {
-            protocol,
-            destination,
-            ipv6_resolve,
-            sni,
-            relay_ca,
-            keepalive,
-            quic,
-        } => Ok(TargetStream::Relay(
-            relay::dial_relay(
-                *protocol,
-                destination,
-                *ipv6_resolve,
-                sni.as_deref(),
-                relay_ca.as_deref(),
-                keepalive,
-                quic,
-                client_addr,
-            )
-            .await?,
-        )),
-        Target::LoadBalance {
-            members,
-            strategy,
-            next,
-            rng,
-        } => load_balance::connect_balanced(members, *strategy, next, rng, client_addr).await,
-    }
-}
-
 /// Handles a single accepted TCP-family connection, logging any error.
 pub async fn handle_tcp_connection(
     stream: tokio::net::TcpStream,
@@ -369,16 +402,45 @@ async fn handle_tcp_inner(
     cfg: &PreparedForwarding,
 ) -> Result<(), BoxError> {
     let _open = cfg.stats.open();
-    let (client, client_addr) = entry::ingest_tcp(
+    let (mut client, client_addr, confirm) = entry::ingest_tcp(
         stream,
         peer,
         &cfg.ingest,
         cfg.forwarding.receive_proxy_protocol,
     )
     .await?;
-    let out = connect_target(&cfg.target, client_addr).await?;
+    let out = connect_answering(cfg, &mut client, client_addr, confirm).await?;
     splice(Counted::new(client, cfg.stats.clone()), out).await;
     Ok(())
+}
+
+/// Connects the route; when the dialer asked for a confirmation, within the time
+/// it said it would wait, answering it either way before the payload flows.
+async fn connect_answering<S: AsyncWrite + Unpin>(
+    cfg: &PreparedForwarding,
+    client: &mut S,
+    client_addr: SocketAddr,
+    confirm: Option<Duration>,
+) -> Result<TargetStream, BoxError> {
+    let Some(patience) = confirm else {
+        return route::connect(&cfg.route, client_addr).await;
+    };
+    let now = Instant::now();
+    let budget = patience.saturating_sub(CONFIRM_MARGIN).max(CONFIRM_FLOOR);
+    let deadline = now.checked_add(budget).unwrap_or(now);
+    match route::connect_until(&cfg.route, client_addr, deadline).await {
+        Ok(out) => {
+            client.write_all(&[CONFIRM_OK]).await?;
+            client.flush().await?;
+            Ok(out)
+        }
+        Err(error) => {
+            let _ = client.write_all(&[CONFIRM_FAILED]).await;
+            let _ = client.flush().await;
+            let _ = client.shutdown().await;
+            Err(error)
+        }
+    }
 }
 
 /// Handles a single QUIC relay bi-stream, logging any error.
@@ -398,9 +460,9 @@ async fn handle_relay_quic_stream(
     cfg: &PreparedForwarding,
 ) -> Result<(), BoxError> {
     let _open = cfg.stats.open();
-    let (src, leftover) = read_proxy_header(&mut joined).await?;
-    let client = Counted::new(Prefixed::new(leftover, joined), cfg.stats.clone());
-    let out = connect_target(&cfg.target, src).await?;
+    let header = read_header(&mut joined).await?;
+    let out = connect_answering(cfg, &mut joined, header.source, header.confirm).await?;
+    let client = Counted::new(Prefixed::new(header.leftover, joined), cfg.stats.clone());
     splice(client, out).await;
     Ok(())
 }
