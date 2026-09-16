@@ -35,16 +35,16 @@ import type {
 	ExportPortKindName,
 	Ipv6ResolveName,
 	LaneDto,
-	MemberDto,
 	LoadBalanceModeName,
+	MemberDto,
 	PodDto,
 	PortDirectionName,
 	PortKindName,
 	ProxyProtocolName,
 	RelayProtocolName,
+	ServerAddressesDto,
 	ServerConfigTomlDto,
 	ServerDto,
-	ServerAddressesDto,
 	ServerHealthStatusName,
 	ServerRolloutDto,
 	StandaloneNode,
@@ -88,7 +88,12 @@ const portSchema = v.pipe(
  */
 const memberSchema = v.object({
 	slot: v.pipe(v.number(), v.integer(), v.minValue(1, 'members_invalid')),
-	name: v.pipe(v.string(), v.trim(), v.minLength(1, 'members_invalid'), v.maxLength(64, 'members_invalid'))
+	name: v.pipe(
+		v.string(),
+		v.trim(),
+		v.minLength(1, 'members_invalid'),
+		v.maxLength(64, 'members_invalid')
+	)
 });
 const membersSchema = v.pipe(
 	v.array(memberSchema),
@@ -102,7 +107,10 @@ const optionalIpSchema = v.optional(
 	v.pipe(
 		v.string(),
 		v.trim(),
-		v.check(value => value === '' || v.safeParse(v.pipe(v.string(), v.ip()), value).success, 'ip_invalid')
+		v.check(
+			value => value === '' || v.safeParse(v.pipe(v.string(), v.ip()), value).success,
+			'ip_invalid'
+		)
 	),
 	''
 );
@@ -423,7 +431,14 @@ function toStandalone(
 			const port = base.ports.find(p => p.key === memberKey(member.slot));
 			if (!port) return [];
 			const peer = peerOfPort(port.id);
-			return [{ slot: member.slot, name: member.name, port, peerName: peer === null ? null : peerName(peer) }];
+			return [
+				{
+					slot: member.slot,
+					name: member.name,
+					port,
+					peerName: peer === null ? null : peerName(peer)
+				}
+			];
 		});
 	// Collected bundles all sit at position 0: order them by the far node's name.
 	const bundlesIn = (): BundlePortDto[] =>
@@ -468,7 +483,8 @@ function toStandalone(
 		return {
 			...base,
 			kind: 'canvas_export',
-			portKind: spec.canvasExport.kind === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination',
+			portKind:
+				spec.canvasExport.kind === PortKind.DERIVE_LISTEN ? 'derive_listen' : 'derive_destination',
 			exportAs:
 				spec.canvasExport.direction === CanvasExportAs.INPUT_INTO_CANVAS
 					? 'input_into_canvas'
@@ -596,7 +612,8 @@ export const getCanvasGraph = query(
 		};
 		// The node on the far end of the edge on a port, for a member's bundle.
 		const ownerOfPort = new Map<string, string>();
-		for (const node of detail.nodes) for (const port of node.ports) ownerOfPort.set(port.id, node.id);
+		for (const node of detail.nodes)
+			for (const port of node.ports) ownerOfPort.set(port.id, node.id);
 		const peerOfPort = (portId: string): string | null => {
 			const edge = detail.edges.find(e => e.sourcePortId === portId || e.targetPortId === portId);
 			if (!edge) return null;

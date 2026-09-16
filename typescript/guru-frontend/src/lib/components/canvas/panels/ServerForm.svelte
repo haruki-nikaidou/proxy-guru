@@ -154,9 +154,7 @@ const knownAddresses = $derived([
 	)
 ]);
 /** What a pod may bind: any address the host actually has, plus the extras. */
-const bindChoices = $derived([
-	...new Set([...addresses.reportedInterfaces, ...addresses.extra])
-]);
+const bindChoices = $derived([...new Set([...addresses.reportedInterfaces, ...addresses.extra])]);
 const sourceLabel = $derived(
 	addresses.effectiveSource === 'override'
 		? m.editor_server_address_source_override()

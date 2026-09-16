@@ -4,12 +4,17 @@
 // aggregate node. Members already present keep their slots; bundles already
 // drawn are left alone. Usage:
 // bun scripts/e2e-members.ts <email> <password> <canvasId> <distribute-name> <aggregate-name> <server-name>...
-import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
+
 import { AuthDefinition, LoginResult } from 'app-protobuf/auth/auth';
 import { OrchestrationDefinition, UniversalGroup } from 'app-protobuf/orchestration/orchestration';
-const [email, password, canvasId, distributeName, aggregateName, ...serverNames] = process.argv.slice(2);
+import { ChannelCredentials, createChannel, createClient, Metadata } from 'nice-grpc';
+
+const [email, password, canvasId, distributeName, aggregateName, ...serverNames] =
+	process.argv.slice(2);
 if (!canvasId || !distributeName || !aggregateName || serverNames.length === 0) {
-	console.error('usage: e2e-members.ts <email> <password> <canvasId> <distribute> <aggregate> <server>...');
+	console.error(
+		'usage: e2e-members.ts <email> <password> <canvasId> <distribute> <aggregate> <server>...'
+	);
 	process.exit(2);
 }
 const channel = createChannel('127.0.0.1:50051', ChannelCredentials.createInsecure());
@@ -38,14 +43,18 @@ const upOf = (name: string) => {
 	if (!up) throw new Error(`no universal pod for server ${name}`);
 	return up;
 };
-const wired = (portId: string) => detail.edges.some(e => e.sourcePortId === portId || e.targetPortId === portId);
+const wired = (portId: string) =>
+	detail.edges.some(e => e.sourcePortId === portId || e.targetPortId === portId);
 
 // 1. The member lists: keep known names on their slots, append the rest.
 const withMembers = async (name: string) => {
 	const node = byName(name);
-	const current = node.spec?.loadBalanceDistribute?.members ?? node.spec?.loadBalanceAggregate?.members ?? [];
+	const current =
+		node.spec?.loadBalanceDistribute?.members ?? node.spec?.loadBalanceAggregate?.members ?? [];
 	let next = current.reduce((max, m) => Math.max(max, m.slot), 0);
-	const members = serverNames.map(server => current.find(m => m.name === server) ?? { slot: ++next, name: server });
+	const members = serverNames.map(
+		server => current.find(m => m.name === server) ?? { slot: ++next, name: server }
+	);
 	const spec = node.spec?.loadBalanceDistribute
 		? { loadBalanceDistribute: { ...node.spec.loadBalanceDistribute, members } }
 		: { loadBalanceAggregate: { members } };
@@ -63,7 +72,10 @@ for (const server of serverNames) {
 	const up = upOf(server);
 	const out = port(ud, `member_${outMembers.find(m => m.name === server)!.slot}`);
 	if (!wired(out)) {
-		await orch.connectPorts({ outputPortId: out, inputPortId: '', inputHandle: handle(up.id, UniversalGroup.BUNDLE_IN) }, opts);
+		await orch.connectPorts(
+			{ outputPortId: out, inputPortId: '', inputHandle: handle(up.id, UniversalGroup.BUNDLE_IN) },
+			opts
+		);
 	}
 	detail = await canvas();
 	const upNow = upOf(server);

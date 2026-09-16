@@ -189,7 +189,10 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 		for (const pod of server.pods) for (const p of pod.ports) port(owner, p);
 		if (server.universal) {
 			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
-			index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
+			index.set(
+				groupHandleId(owner, 'channel_out'),
+				add(owner, 'channel_out', 'derive_destination')
+			);
 			for (const p of server.universal.bundleIn) port(owner, p);
 			for (const c of server.universal.channels) {
 				index.set(c.portId, { flowNodeId: owner, kind: 'derive_destination', direction: 'output' });
@@ -204,7 +207,10 @@ export function buildPortIndex(graph: CanvasGraph): Map<string, PortIndexEntry> 
 			// A distribute node collects upstream bundles and starts channels;
 			// its members and an aggregate node's members are ordinary ports.
 			index.set(groupHandleId(owner, 'bundle_in'), add(owner, 'bundle_in', 'bundle'));
-			index.set(groupHandleId(owner, 'channel_out'), add(owner, 'channel_out', 'derive_destination'));
+			index.set(
+				groupHandleId(owner, 'channel_out'),
+				add(owner, 'channel_out', 'derive_destination')
+			);
 		}
 		for (const p of node.ports) port(owner, p);
 	}

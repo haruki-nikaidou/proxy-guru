@@ -86,7 +86,11 @@ export default defineConfig({
 					label: 'Core Concepts',
 					translations: { ja: '基本コンセプト', 'zh-CN': '核心概念' },
 					items: [
-						{ label: 'Nodes', translations: { ja: 'ノード', 'zh-CN': '节点' }, link: '/reference/nodes/' }
+						{
+							label: 'Nodes',
+							translations: { ja: 'ノード', 'zh-CN': '节点' },
+							link: '/reference/nodes/'
+						}
 					]
 				},
 				{

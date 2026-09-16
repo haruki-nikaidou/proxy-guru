@@ -16,13 +16,15 @@ const settings = JSON.parse(readFileSync(join(root, 'project.inlang/settings.jso
 
 type Catalogue = Record<string, string>;
 const load = (locale: string): Catalogue => {
-	const raw = JSON.parse(readFileSync(join(root, 'messages', `${locale}.json`), 'utf8')) as Catalogue;
+	const raw = JSON.parse(
+		readFileSync(join(root, 'messages', `${locale}.json`), 'utf8')
+	) as Catalogue;
 	delete raw.$schema;
 	return raw;
 };
 const placeholders = (text: string): string =>
 	[...text.matchAll(/\{(\w+)\}/g)]
-		.map((match) => match[1])
+		.map(match => match[1])
 		.sort()
 		.join(',');
 

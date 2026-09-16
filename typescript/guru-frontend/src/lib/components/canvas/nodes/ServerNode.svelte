@@ -46,7 +46,11 @@ const silent = $derived(
 
 /** `[::]:port` for a wildcard bind, `[v6]:port` for a literal IPv6. */
 const listenOf = (bindIp: string | null, port: number): string =>
-	bindIp === null ? `[::]:${port}` : bindIp.includes(':') ? `[${bindIp}]:${port}` : `${bindIp}:${port}`;
+	bindIp === null
+		? `[::]:${port}`
+		: bindIp.includes(':')
+			? `[${bindIp}]:${port}`
+			: `${bindIp}:${port}`;
 
 /** The channel an entry pod starts, if it is connected to a distributor. */
 const channelOf = (podId: string) => data.channels[podId];

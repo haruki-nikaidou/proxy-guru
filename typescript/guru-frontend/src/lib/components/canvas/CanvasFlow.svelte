@@ -365,7 +365,9 @@ const isValidConnection = (connection: Edge | Connection): boolean => {
  * A handle is either a port id or a bundle-capable node's group (`u:<flow>:<group>`);
  * the control plane creates the port behind a group in the same write.
  */
-function connectEnd(handle: string): { portId: string } | { nodeId: string; group: 'channel_out' | 'bundle_in' } {
+function connectEnd(
+	handle: string
+): { portId: string } | { nodeId: string; group: 'channel_out' | 'bundle_in' } {
 	const group = parseGroupHandle(handle);
 	if (!group) return { portId: handle };
 	const { kind, id } = parseFlowNodeId(group.flowId);
