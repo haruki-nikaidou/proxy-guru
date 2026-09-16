@@ -1683,6 +1683,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "guru_topology"
+version = "0.3.0-beta"
+dependencies = [
+ "guru_worker_config",
+ "serde",
+ "serde_json",
+ "smallvec",
+]
+
+[[package]]
 name = "guru_worker_config"
 version = "0.3.4-beta"
 dependencies = [

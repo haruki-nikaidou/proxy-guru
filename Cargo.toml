@@ -4,6 +4,7 @@ members = [
     "bin/guru-master",
     "bin/guru-worker",
     "bin/manage-tool",
+    "lib/guru_topology",
     "lib/guru_worker_config",
     "lib/db_types",
     "lib/rpguru_sdk",
