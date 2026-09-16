@@ -2,9 +2,8 @@
 import GlobeIcon from '@lucide/svelte/icons/globe';
 import PlusIcon from '@lucide/svelte/icons/plus';
 import { toast } from 'svelte-sonner';
-import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
@@ -13,6 +12,7 @@ import type { DnsProviderDto, DnsProviderKindName } from '#lib/dto/tls.js';
 import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import DnsProviderFormDialog from './DnsProviderFormDialog.svelte';
 import { deleteDnsProvider, listDnsProviders } from './tls.remote.js';
 
@@ -130,27 +130,11 @@ async function confirmDelete(row: DnsProviderDto) {
 	<DnsProviderFormDialog mode="edit" provider={editTarget} bind:open={editOpen} />
 {/if}
 
-<AlertDialog.Root
-	open={deleteTarget !== null}
-	onOpenChange={(next) => {
+<ConfirmDeleteDialog
+	bind:open={() => deleteTarget !== null, next => {
 		if (!next) deleteTarget = null;
 	}}
->
-	<AlertDialog.Content>
-		<AlertDialog.Header>
-			<AlertDialog.Title>{m.tls_provider_delete_title()}</AlertDialog.Title>
-			<AlertDialog.Description>
-				{m.tls_provider_delete_description({ name: deleteTarget?.name ?? '' })}
-			</AlertDialog.Description>
-		</AlertDialog.Header>
-		<AlertDialog.Footer>
-			<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
-			<AlertDialog.Action
-				class={buttonVariants({ variant: 'destructive' })}
-				onclick={() => deleteTarget && confirmDelete(deleteTarget)}
-			>
-				{m.common_delete()}
-			</AlertDialog.Action>
-		</AlertDialog.Footer>
-	</AlertDialog.Content>
-</AlertDialog.Root>
+	title={m.tls_provider_delete_title()}
+	description={m.tls_provider_delete_description({ name: deleteTarget?.name ?? '' })}
+	onconfirm={() => deleteTarget && confirmDelete(deleteTarget)}
+/>

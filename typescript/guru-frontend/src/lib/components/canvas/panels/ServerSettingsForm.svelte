@@ -17,7 +17,7 @@ import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
 import { IPV6_OPTIONS, ipv6Label } from '#lib/i18n/labels.js';
-import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
  * What an operator may change about the server itself: how it is named and

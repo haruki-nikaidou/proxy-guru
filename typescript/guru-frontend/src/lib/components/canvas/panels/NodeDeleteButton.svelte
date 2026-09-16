@@ -5,7 +5,7 @@ import { Button } from '#lib/components/ui/button/index.js';
 import type { StandaloneNode } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
-import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
  * The delete affordance every standalone node panel shares. It asks first, then

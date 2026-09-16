@@ -7,10 +7,9 @@ import {
 	getServerRollout
 } from '#lib/components/canvas/commands.js';
 import { serverHealthBadge, serverHealthLabel } from '#lib/components/canvas/graph.js';
-import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import * as Sheet from '#lib/components/ui/sheet/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
@@ -20,6 +19,7 @@ import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
  * Where this server stands between the config the control plane derived and the
@@ -286,23 +286,12 @@ const forget = () =>
 </Sheet.Root>
 
 {#if admin}
-	<AlertDialog.Root bind:open={forgetOpen}>
-		<AlertDialog.Content>
-			<AlertDialog.Header>
-				<AlertDialog.Title>{m.editor_rollout_forget_title()}</AlertDialog.Title>
-				<AlertDialog.Description>
-					{m.editor_rollout_forget_description({ name: server.name })}
-				</AlertDialog.Description>
-			</AlertDialog.Header>
-			<AlertDialog.Footer>
-				<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
-				<AlertDialog.Action
-					class={buttonVariants({ variant: 'destructive' })}
-					onclick={forget}
-				>
-					{m.editor_rollout_forget_confirm()}
-				</AlertDialog.Action>
-			</AlertDialog.Footer>
-		</AlertDialog.Content>
-	</AlertDialog.Root>
+	<ConfirmDeleteDialog
+		bind:open={forgetOpen}
+		title={m.editor_rollout_forget_title()}
+		description={m.editor_rollout_forget_description({ name: server.name })}
+		confirm={m.editor_rollout_forget_confirm()}
+		pending={writes.pending}
+		onconfirm={forget}
+	/>
 {/if}

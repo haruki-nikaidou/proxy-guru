@@ -2,9 +2,8 @@
 import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 import { toast } from 'svelte-sonner';
 import * as Alert from '#lib/components/ui/alert/index.js';
-import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
@@ -14,6 +13,7 @@ import type { CertificateDto, CertificateStatusName } from '#lib/dto/tls.js';
 import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import {
 	deleteCertificate,
 	listCertificates,
@@ -202,27 +202,11 @@ async function confirmDelete(row: CertificateDto) {
 	</Card.Content>
 </Card.Root>
 
-<AlertDialog.Root
-	open={deleteTarget !== null}
-	onOpenChange={(next) => {
+<ConfirmDeleteDialog
+	bind:open={() => deleteTarget !== null, next => {
 		if (!next) deleteTarget = null;
 	}}
->
-	<AlertDialog.Content>
-		<AlertDialog.Header>
-			<AlertDialog.Title>{m.tls_certificate_delete_title()}</AlertDialog.Title>
-			<AlertDialog.Description>
-				{m.tls_certificate_delete_description({ sni: deleteTarget?.sni ?? '' })}
-			</AlertDialog.Description>
-		</AlertDialog.Header>
-		<AlertDialog.Footer>
-			<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
-			<AlertDialog.Action
-				class={buttonVariants({ variant: 'destructive' })}
-				onclick={() => deleteTarget && confirmDelete(deleteTarget)}
-			>
-				{m.common_delete()}
-			</AlertDialog.Action>
-		</AlertDialog.Footer>
-	</AlertDialog.Content>
-</AlertDialog.Root>
+	title={m.tls_certificate_delete_title()}
+	description={m.tls_certificate_delete_description({ sni: deleteTarget?.sni ?? '' })}
+	onconfirm={() => deleteTarget && confirmDelete(deleteTarget)}
+/>

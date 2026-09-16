@@ -5,7 +5,7 @@ import type { EdgeDetail } from '#lib/components/canvas/graph.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
-import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 /**
  * The delete affordance of the edge panel. It asks first, then disconnects the

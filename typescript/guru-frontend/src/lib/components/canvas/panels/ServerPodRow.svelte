@@ -16,7 +16,7 @@ import {
 	podAdvertiseLabel,
 	podBindLabel
 } from '#lib/i18n/labels.js';
-import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 
 let {
 	canvasId,

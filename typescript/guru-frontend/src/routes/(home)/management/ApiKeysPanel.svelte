@@ -2,8 +2,7 @@
 import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 import PlusIcon from '@lucide/svelte/icons/plus';
 import { toast } from 'svelte-sonner';
-import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
@@ -12,6 +11,7 @@ import type { ApiKeyRow } from '#lib/dto/identity.js';
 import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import CreateApiKeyDialog from './CreateApiKeyDialog.svelte';
 import { listApiKeys, revokeApiKey } from './apiKeys.remote.js';
 
@@ -82,27 +82,12 @@ async function confirmRevoke(row: ApiKeyRow) {
 
 <CreateApiKeyDialog bind:open={createOpen} />
 
-<AlertDialog.Root
-	open={revokeTarget !== null}
-	onOpenChange={(next) => {
+<ConfirmDeleteDialog
+	bind:open={() => revokeTarget !== null, next => {
 		if (!next) revokeTarget = null;
 	}}
->
-	<AlertDialog.Content>
-		<AlertDialog.Header>
-			<AlertDialog.Title>{m.api_keys_revoke_title()}</AlertDialog.Title>
-			<AlertDialog.Description>
-				{m.api_keys_revoke_description({ name: revokeTarget?.name ?? '' })}
-			</AlertDialog.Description>
-		</AlertDialog.Header>
-		<AlertDialog.Footer>
-			<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
-			<AlertDialog.Action
-				class={buttonVariants({ variant: 'destructive' })}
-				onclick={() => revokeTarget && confirmRevoke(revokeTarget)}
-			>
-				{m.api_keys_revoke()}
-			</AlertDialog.Action>
-		</AlertDialog.Footer>
-	</AlertDialog.Content>
-</AlertDialog.Root>
+	title={m.api_keys_revoke_title()}
+	description={m.api_keys_revoke_description({ name: revokeTarget?.name ?? '' })}
+	confirm={m.api_keys_revoke()}
+	onconfirm={() => revokeTarget && confirmRevoke(revokeTarget)}
+/>
