@@ -1,19 +1,28 @@
 #!/bin/sh
-# Start guard for guru-worker@.service (ExecStartPre=).
+# Start guard for guru-worker@.service (ExecStartPre=), called with the
+# instance name: `guru-worker-guard %i`.
 #
-# A self-update swaps /opt/guru-worker/current and leaves a `pending` marker;
-# the new binary removes it once it has registered with the master and sent a
-# health report. This runs before every start and counts the starts a pending
-# update has had: a version that keeps failing is rolled back to `previous` and
-# the reason is left in `failed`, which the worker reports on its next
-# registration. It lives outside /opt/guru-worker on purpose — the worker never
-# writes here, so a broken update cannot take the guard down with it, and a
-# binary that does not even exec is caught the same way as one that crashes.
+# A self-update swaps /opt/guru-worker-<instance>/bin/current and leaves a
+# `pending` marker; the new binary removes it once it has registered with the
+# master and sent a health report. This runs before every start and counts the
+# starts a pending update has had: a version that keeps failing is rolled back
+# to `previous` and the reason is left in `failed`, which the worker reports on
+# its next registration. Every marker and link is the instance's own, so one
+# instance's update never counts against another's starts. The guard lives
+# outside the instance trees on purpose — the worker never writes here, so a
+# broken update cannot take the guard down with it, and a binary that does not
+# even exec is caught the same way as one that crashes.
 #
 # Both markers are `key=value` lines: `pending` carries `version` and
 # `attempts`, `failed` carries `version` and `error`.
 set -eu
-PREFIX=/opt/guru-worker
+case "${1:-}" in
+    ''|-*|*[!a-z0-9-]*)
+        echo "guru-worker-guard: no valid instance name (got '${1:-}'); not guarding this start" >&2
+        exit 0
+        ;;
+esac
+PREFIX="/opt/guru-worker-$1/bin"
 PENDING="$PREFIX/pending"
 MAX_STARTS=3
 

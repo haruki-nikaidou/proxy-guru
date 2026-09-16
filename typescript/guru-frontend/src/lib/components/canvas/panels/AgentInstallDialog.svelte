@@ -77,6 +77,9 @@ async function issue() {
 			<pre
 				class="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs">{install.command}</pre>
 			<p class="text-xs text-muted-foreground">{m.editor_agent_install_after()}</p>
+			<p class="text-xs text-muted-foreground">
+				{m.editor_agent_install_uninstall({ unit: install.unit })}
+			</p>
 			<Dialog.Footer>
 				<Button onclick={() => (open = false)}>{m.common_close()}</Button>
 			</Dialog.Footer>

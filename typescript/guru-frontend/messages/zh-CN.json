@@ -168,6 +168,7 @@
 	"editor_agent_install_once": "密钥只在此时显示一次。之后重新生成会替换它，仍持有旧密钥的 worker 下次重连会被拒绝。",
 	"editor_agent_install_replaces": "这台服务器已有密钥。生成新命令会替换它：正在用旧密钥运行的 worker 下次重连会被拒绝。",
 	"editor_agent_install_after": "参数通过环境变量传递而非命令行，但安装脚本运行期间密钥仍会短暂出现在 ps 中。",
+	"editor_agent_install_uninstall": "之后要卸载：sudo bash /opt/guru-worker-{unit}.uninstall.sh（停止服务，删除这个实例的程序、配置和状态）。",
 	"editor_agent_install_copy": "复制安装命令",
 	"editor_agent_install_generate": "生成",
 	"editor_agent_unit": "systemd 实例名",

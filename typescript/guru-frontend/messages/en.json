@@ -168,6 +168,7 @@
 	"editor_agent_install_once": "The key is shown only now. Regenerating later replaces it, and a worker still holding it is refused at its next reconnect.",
 	"editor_agent_install_replaces": "This server already has a key. A new command replaces it: the worker running with the old key is refused at its next reconnect.",
 	"editor_agent_install_after": "Settings travel in the environment, not on the command line; the key is still briefly visible in ps while the installer runs.",
+	"editor_agent_install_uninstall": "To remove it later: sudo bash /opt/guru-worker-{unit}.uninstall.sh (stops the service and deletes this instance's binaries, configuration and state).",
 	"editor_agent_install_copy": "Copy install command",
 	"editor_agent_install_generate": "Generate",
 	"editor_agent_unit": "systemd instance",

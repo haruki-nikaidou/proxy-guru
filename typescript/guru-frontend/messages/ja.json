@@ -168,6 +168,7 @@
 	"editor_agent_install_once": "キーはこの一度しか表示されません。後で再生成すると置き換わり、旧キーを持つ worker は次回の再接続で拒否されます。",
 	"editor_agent_install_replaces": "このサーバーには既にキーがあります。新しいコマンドを生成すると置き換わり、旧キーで稼働中の worker は次回の再接続で拒否されます。",
 	"editor_agent_install_after": "設定は引数ではなく環境変数で渡されますが、インストーラーの実行中は ps にキーが一時的に見えます。",
+	"editor_agent_install_uninstall": "後でアンインストールするには: sudo bash /opt/guru-worker-{unit}.uninstall.sh（サービスを停止し、このインスタンスのバイナリ・設定・状態を削除します）。",
 	"editor_agent_install_copy": "インストールコマンドをコピー",
 	"editor_agent_install_generate": "生成",
 	"editor_agent_unit": "systemd インスタンス",

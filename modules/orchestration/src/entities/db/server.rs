@@ -487,7 +487,9 @@ impl Processor<UpdateServerSettings> for Db {
 }
 
 /// Issues (or replaces) a server's own agent key — only its digest is stored —
-/// and names the systemd instance the install command carrying it targets.
+/// and names the systemd instance the install command carrying it targets. A
+/// fresh install starts the agent's history over: a pending update request and
+/// the error of an earlier attempt belong to the install it replaces.
 #[derive(Debug)]
 pub struct SetServerAgentKey {
     pub id: ServerId,
@@ -503,7 +505,8 @@ impl Processor<SetServerAgentKey> for Db {
     async fn process(&self, input: SetServerAgentKey) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as(
             "UPDATE orchestration_server
-             SET agent_key_digest = $2, agent_key_issued_at = $3, agent_unit = $4
+             SET agent_key_digest = $2, agent_key_issued_at = $3, agent_unit = $4,
+                 agent_update_requested = NULL, agent_update_error = NULL
              WHERE id = $1 RETURNING *",
         )
         .bind(input.id)

@@ -1,8 +1,9 @@
 //! Self-update, for a worker installed by `deploy/install.sh`.
 //!
-//! The installer lays out `/opt/guru-worker/<version>/guru-worker` with a
-//! `current` symlink the unit execs through, and keeps the version that was
-//! current as `previous`. Updating is: fetch the published binary the master
+//! The installer gives every instance its own tree: it lays out
+//! `/opt/guru-worker-<unit>/bin/<version>/guru-worker` with a `current` symlink
+//! the unit execs through, and keeps the version that was current as
+//! `previous`. Updating is: fetch the published binary the master
 //! points at, verify its SHA-256, install it under its version, note the swap
 //! in `pending`, repoint `current`, and let the process exit — systemd's
 //! `Restart=always` starts the new version. The start guard
@@ -51,9 +52,11 @@ const FAILED: &str = "failed";
 /// the next poll anyway.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The install prefix this binary runs under — `/opt/guru-worker` for
-/// `/opt/guru-worker/<version>/guru-worker` — or `None` when the layout is not
-/// the installer's, in which case there is nothing to update in place.
+/// The install prefix this binary runs under — `/opt/guru-worker-<unit>/bin` for
+/// `/opt/guru-worker-<unit>/bin/<version>/guru-worker` — or `None` when the layout
+/// is not the installer's, in which case there is nothing to update in place.
+/// Every instance has its own prefix, so an update here swaps no other
+/// instance's binary.
 ///
 /// The unit execs `current/guru-worker`; the kernel resolves the symlink, so
 /// `current_exe` is the versioned path. Its grandparent must hold a `current`

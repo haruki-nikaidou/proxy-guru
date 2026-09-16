@@ -94,24 +94,44 @@ What `install.sh` does, in order — and it is idempotent, so re-running the com
 repairs or upgrades that instance in place:
 
 1. Checks it runs as root, that `curl`, `sha256sum`, `useradd`, `systemctl` and `install` exist,
-   and that the host is `x86_64` (the published binary is glibc x86_64).
-2. Creates the `guru-worker` system user, `/opt/guru-worker` (owned by that user — self-update
-   writes there) and `/etc/guru-worker` (root-owned).
+   that the host is `x86_64` (the published binary is glibc x86_64), and that `/opt/guru-worker`
+   does not exist — that is the tree every instance shared before instances got their own (see
+   *Moving off the shared layout* below).
+2. Creates the `guru-worker` system user, the instance's tree `/opt/guru-worker-<unit>` (root-owned)
+   with `bin/` inside it (owned by that user — self-update writes there), and `/etc/guru-worker`
+   (root-owned).
 3. Downloads the binary, refuses it on a SHA-256 mismatch, installs it as
-   `/opt/guru-worker/<version>/guru-worker`, runs `--version` as a smoke test, and points the
-   `current` symlink at it. A version that was current before becomes `previous`.
+   `/opt/guru-worker-<unit>/bin/<version>/guru-worker`, runs `--version` as a smoke test, and points
+   the instance's `bin/current` symlink at it. A version that was current before becomes
+   `bin/previous`.
 4. Writes `/etc/guru-worker/<unit>.env` (`root:guru-worker`, mode `0640`) — the only place the
    instance's settings live: `GURU_MASTER`, `GURU_SERVER_ID`, `GURU_API_KEY`, `GURU_STATE_DIR`
    (`/var/lib/guru-worker/<unit>`), `GURU_LOG_LEVEL`.
-5. Installs the start guard at `/usr/local/libexec/guru-worker-guard` and the template unit at
-   `/etc/systemd/system/guru-worker@.service`.
-6. `systemctl daemon-reload`, `enable`, `restart guru-worker@<unit>`.
+5. Writes `/opt/guru-worker-<unit>.uninstall.sh` (root only, mode `0700`), which purges the
+   instance again (section 4).
+6. Installs the start guard at `/usr/local/libexec/guru-worker-guard` and the template unit at
+   `/etc/systemd/system/guru-worker@.service`, both shared by the instances on the host.
+7. `systemctl daemon-reload`, `enable`, `restart guru-worker@<unit>`.
+
+Every instance runs its own binary from its own tree, so two servers on one host never share a
+binary, a `current` link or an update marker: installing, updating or rolling back one instance
+leaves the other exactly as it was. For an instance `hk-1`:
+
+```
+/opt/guru-worker-hk-1/bin/0.2.0-beta/guru-worker
+/opt/guru-worker-hk-1/bin/current -> 0.2.0-beta     what the unit execs
+/opt/guru-worker-hk-1/bin/previous                  the start guard's rollback target
+/opt/guru-worker-hk-1/bin/pending, failed           update markers, this instance's alone
+/opt/guru-worker-hk-1.uninstall.sh
+/etc/guru-worker/hk-1.env
+/var/lib/guru-worker/hk-1
+```
 
 The unit runs as `guru-worker` with `CAP_NET_BIND_SERVICE` (ports below 1024 without root),
-`ProtectSystem=strict` with `/opt/guru-worker` as the only writable path outside the state
-directory, `StateDirectory=guru-worker/<unit>`, `LimitNOFILE=65535`, `Restart=always` and
-`StartLimitIntervalSec=0` — a data-plane node never stops trying to come back; a binary that cannot
-start is the guard's job (section 3), not systemd's.
+`ProtectSystem=strict` with the instance's own `/opt/guru-worker-<unit>/bin` as the only writable
+path outside the state directory, `StateDirectory=guru-worker/<unit>`, `LimitNOFILE=65535`,
+`Restart=always` and `StartLimitIntervalSec=0` — a data-plane node never stops trying to come back;
+a binary that cannot start is the guard's job (section 3), not systemd's.
 
 Then:
 
@@ -131,7 +151,8 @@ Publish the new build (section 1). Every server whose worker registered as anoth
 request on the server; the worker asks for updates every `agent_update_poll_secs` (60 s, jittered)
 over its refresh-key session, and on the next poll:
 
-1. downloads `https://<base>/agent/<version>/guru-worker` into `/opt/guru-worker/<version>/` —
+1. downloads `https://<base>/agent/<version>/guru-worker` into
+   `/opt/guru-worker-<unit>/bin/<version>/` —
    refusing any URL that is not under its own `GURU_MASTER` origin — and verifies the SHA-256 the
    master sent while streaming it;
 2. records the version that is current as `previous`, writes a `pending` marker, repoints
@@ -151,10 +172,10 @@ or `SIGTERM`. Update one server at a time and outside its busiest hour if that m
 self-update — is reported at once; the request is dropped and the reason is shown in the panel under
 *The last update failed*. Fix the cause and click again. A new binary that starts but cannot come up
 is caught by the start guard: `ExecStartPre=guru-worker-guard` counts the starts a pending version
-has had, and after three it repoints `current` at `previous`, removes the marker and leaves a
-`failed` note; the rolled-back binary reports that note at its next registration, and the panel
-shows it. A binary that does not even exec (wrong architecture, missing glibc) is caught the same
-way — the guard lives outside `/opt/guru-worker` and is never touched by an update.
+has had, and after three it repoints the instance's `current` at its `previous`, removes the marker
+and leaves a `failed` note; the rolled-back binary reports that note at its next registration, and
+the panel shows it. A binary that does not even exec (wrong architecture, missing glibc) is caught the
+same way — the guard lives outside the instance trees and is never touched by an update.
 
 A request outlived by a newer publish is not served: the worker would fetch a version whose digest
 is no longer the recorded one, so the master drops the request with a reason and you click again.
@@ -163,7 +184,39 @@ is no longer the recorded one, so the master drops the request with a reason and
 `systemctl restart guru-worker@<unit>`) makes the worker refuse offered updates and report why; the
 panel shows the refusal. Re-running the install command still upgrades such a host by hand.
 
-## 4. Troubleshooting
+## 4. Uninstall a worker
+
+Every install leaves a purge script next to the instance's tree. On the host:
+
+```sh
+sudo bash /opt/guru-worker-hk-1.uninstall.sh
+# guru-worker@hk-1: service, binaries, environment and state removed
+```
+
+It stops and disables `guru-worker@<unit>`, then deletes `/opt/guru-worker-<unit>/` (every version of
+the binary), `/etc/guru-worker/<unit>.env` (with the key) and the state directory
+`/var/lib/guru-worker/<unit>`, and finally itself. Other instances on the host keep running. When the
+instance was the last one — no `/etc/guru-worker/*.env` is left — it also removes what the instances
+shared: the template unit, the start guard, `/etc/guru-worker`, `/var/lib/guru-worker` and the
+`guru-worker` user. The server stays on the canvas and goes *Offline*; its key stays valid until you
+regenerate the install command, so regenerate it if the host is not coming back.
+
+**Moving off the shared layout.** Workers installed before instances got their own tree all ran from
+one `/opt/guru-worker`, and the installer refuses to install next to it, because the template unit it
+lays down would strand those workers at their next start. Purge the host once, then run a freshly
+generated install command for each server on it:
+
+```sh
+for unit in $(systemctl list-units --all --plain --no-legend 'guru-worker@*' | awk '{print $1}'); do
+    sudo systemctl disable --now "$unit"
+done
+sudo rm -rf /opt/guru-worker /etc/guru-worker /var/lib/guru-worker \
+    /etc/systemd/system/guru-worker@.service /usr/local/libexec/guru-worker-guard
+sudo userdel guru-worker
+sudo systemctl daemon-reload
+```
+
+## 5. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -176,3 +229,5 @@ panel shows the refusal. Re-running the install command still upgrades such a ho
 | `another worker session is live for this server` for minutes, server *Offline* | A registration whose connection died before its first report, its watch stream still held open by the proxy. The `sweep_liveness` pass revokes that session once the registration is three report intervals old; the next retry is accepted. |
 | Panel shows *The last update failed: … outside the master origin* | `agent_public_base_url` differs from what workers dial in `GURU_MASTER`; make them the same origin. |
 | Panel stays on *Updating to v…* | The worker is not polling: it is down, or too old to poll (installed before self-update existed) — re-run the install command once. |
+| `guru-worker install: /opt/guru-worker holds workers installed before instances got their own tree` | The host still has the shared layout; purge it as in section 4, then install each server again. |
+| Panel shows *The last update failed: not installed under a version directory with a `current` link* | The worker was not started from an installer's tree (a hand-run binary, or the shared layout); re-run the install command. |

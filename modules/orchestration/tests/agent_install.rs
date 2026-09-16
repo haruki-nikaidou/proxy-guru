@@ -445,3 +445,53 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
     );
     Ok(())
 }
+
+/// A fresh install starts the agent's history over: neither the error of an
+/// update that failed on the install being replaced, nor a request still pending
+/// on it, follows the server into its new install.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn reissuing_the_install_forgets_the_old_install_s_update(pool: sqlx::PgPool) -> TestResult {
+    let w = published_world(pool).await?;
+    let c = canvas(&w.db, "prod").await?;
+    let a = server(&w.db, &c, "edge").await?;
+    let agent = register_as(&w, &a.id, "0.1.0", None).await?;
+    let request = || RequestAgentUpdate {
+        actor: operator(),
+        server: a.id.clone(),
+    };
+    let issue = || IssueServerAgentInstall {
+        actor: operator(),
+        server: a.id.clone(),
+        unit: None,
+    };
+    let row = || FindServerById { id: a.id.clone() };
+
+    // An update that failed on the old install …
+    w.servers.process(request()).await?;
+    w.agents
+        .process(PollAgentUpdate {
+            agent: agent.clone(),
+            last_error: Some("not installed under a version directory".to_string()),
+        })
+        .await?;
+    let failed = w.db.process(row()).await?.expect("row");
+    assert!(failed.agent_update_error.is_some());
+    // … is not the new install's.
+    w.servers.process(issue()).await?;
+    let reinstalled = w.db.process(row()).await?.expect("row");
+    assert_eq!(reinstalled.agent_update_error, None);
+    assert_eq!(reinstalled.agent_update_requested, None);
+
+    // Nor is a request the old install never got to.
+    w.servers.process(request()).await?;
+    let pending = w.db.process(row()).await?.expect("row");
+    assert_eq!(
+        pending.agent_update_requested.as_deref(),
+        Some("0.2.0-beta")
+    );
+    w.servers.process(issue()).await?;
+    let reinstalled = w.db.process(row()).await?.expect("row");
+    assert_eq!(reinstalled.agent_update_requested, None);
+    assert_eq!(reinstalled.agent_update_error, None);
+    Ok(())
+}

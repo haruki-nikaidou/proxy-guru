@@ -168,6 +168,7 @@
 	"editor_agent_install_once": "金鑰只在此時顯示一次。之後重新產生會取代它，仍持有舊金鑰的 worker 下次重連會被拒絕。",
 	"editor_agent_install_replaces": "這台伺服器已有金鑰。產生新命令會取代它：正在用舊金鑰執行的 worker 下次重連會被拒絕。",
 	"editor_agent_install_after": "參數透過環境變數傳遞而非命令列，但安裝腳本執行期間金鑰仍會短暫出現在 ps 中。",
+	"editor_agent_install_uninstall": "之後要解除安裝：sudo bash /opt/guru-worker-{unit}.uninstall.sh（停止服務，刪除這個實例的程式、設定和狀態）。",
 	"editor_agent_install_copy": "複製安裝命令",
 	"editor_agent_install_generate": "產生",
 	"editor_agent_unit": "systemd 實例名稱",
