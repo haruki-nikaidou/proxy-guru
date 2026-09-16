@@ -14,14 +14,14 @@
 //! identifier without parsing the CA certificate.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::ca::{
+use crate::entities::db::ca::{
     CreateInternalCa, FindInternalCa, InternalCaEntity, ListRelayCertificatesByIds,
     ListRelayCertificatesByPods, RelayCertificateEntity, StoreRelayCertificate, relay_sni,
 };
-use crate::entities::surreal::canvas::CanvasId;
-use crate::entities::surreal::certificate::{ListCertificatesByIds, TouchCanvases};
-use crate::entities::surreal::node::{ListCanvasesWithRelayTls, NodeId};
-use crate::entities::surreal::view::{CertificateKind, CertificateRef};
+use crate::entities::db::canvas::CanvasId;
+use crate::entities::db::certificate::{ListCertificatesByIds, TouchCanvases};
+use crate::entities::db::node::{ListCanvasesWithRelayTls, NodeId};
+use crate::entities::db::view::{CertificateKind, CertificateRef};
 use crate::services::OrchestrationError;
 use crate::utils::ids::{self, record_key};
 use crate::utils::secret::SecretKey;
@@ -261,8 +261,8 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 }
                 // Unfenced, so the row is always written: a missing one is a bug.
                 None => {
-                    return Err(OrchestrationError::Db(surrealdb::Error::internal(
-                        "relay certificate row was not written".to_string(),
+                    return Err(OrchestrationError::Core(wakuwaku::Error::BusinessPanic(
+                        anyhow::anyhow!("relay certificate row was not written"),
                     )));
                 }
             };

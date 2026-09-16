@@ -15,7 +15,6 @@ kanau = { workspace = true }
 tokio = { workspace = true }
 
 # Persistence
-surrealdb = { workspace = true }
 redis = { workspace = true }
 
 # Messaging

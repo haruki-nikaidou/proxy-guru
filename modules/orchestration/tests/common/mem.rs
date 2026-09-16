@@ -2,15 +2,15 @@
 
 //! In-memory [`CanvasTopology`] builder for the pure topology/derive tests.
 
-use orchestration::entities::surreal::canvas::{CanvasEntity, CanvasId, CanvasUiPosition};
-use orchestration::entities::surreal::connection::{EdgeConnectionEntity, EdgeConnectionId};
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, CanvasUiPosition};
+use orchestration::entities::db::connection::{EdgeConnectionEntity, EdgeConnectionId};
+use orchestration::entities::db::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, NodeEntity, NodeId, NodeSpec,
     NodeWithPorts,
 };
-use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::surreal::server::{ServerEntity, ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::topology::CanvasTopology;
+use orchestration::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
+use orchestration::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::topology::CanvasTopology;
 use orchestration::services::node::export_port_direction;
 use orchestration::utils::ids;
 
@@ -114,12 +114,12 @@ pub fn aggregate_ports(copies: i64) -> Vec<PortSpec> {
 }
 
 /// The operator's members of a load-balance node: slots 1.., named as given.
-pub fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::LoadBalanceMember> {
+pub fn members(names: &[&str]) -> Vec<orchestration::entities::db::node::LoadBalanceMember> {
     names
         .iter()
         .enumerate()
         .map(
-            |(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+            |(i, name)| orchestration::entities::db::node::LoadBalanceMember {
                 slot: u32::try_from(i + 1).unwrap(),
                 name: (*name).to_string(),
             },
@@ -244,7 +244,7 @@ impl Builder {
             session_lease_until: None,
             last_seen_at: None,
             last_health_report_at: None,
-            health_status: orchestration::entities::surreal::health::ServerHealthStatus::Offline,
+            health_status: orchestration::entities::db::health::ServerHealthStatus::Offline,
             override_v4: None,
             override_v6: None,
             extra_addresses: Vec::new(),
@@ -330,7 +330,7 @@ impl Builder {
     }
 
     /// Tags the most recently added node as a lane.
-    pub fn lane(&mut self, lane: orchestration::entities::surreal::node::Lane) {
+    pub fn lane(&mut self, lane: orchestration::entities::db::node::Lane) {
         if let Some(n) = self.nodes.last_mut() {
             n.node.lane = Some(lane);
         }

@@ -19,16 +19,16 @@
 //! no `Resync` on the wire.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::canvas::{CanvasContents, CanvasId, CanvasTree, LoadCanvasTree};
-use crate::entities::surreal::health::{
+use crate::entities::db::canvas::{CanvasContents, CanvasId, CanvasTree, LoadCanvasTree};
+use crate::entities::db::health::{
     ListNodeHealthHistory as ListNodeHealthHistoryRows,
     ListServerHealthHistory as ListServerHealthHistoryRows, NodeHealthRecordEntity,
     ServerHealthRecordEntity,
 };
-use crate::entities::surreal::node::{FindNodeWithPorts, NodeId};
-use crate::entities::surreal::server::{FindServerById, ServerEntity, ServerId};
-use crate::entities::surreal::topology::{LoadCanvasContents, LoadCanvasTopology};
-use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::entities::db::node::{FindNodeWithPorts, NodeId};
+use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
+use crate::entities::db::topology::{LoadCanvasContents, LoadCanvasTopology};
+use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::{LiveMessage, RolloutScope};
 use crate::hooks::live::{LiveBus, LiveEvent};
 use crate::services::OrchestrationError;

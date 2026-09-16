@@ -15,8 +15,8 @@
 //! Encoding matches the AMQP events (rkyv via `kanau`), so the two halves of the
 //! fleet never disagree about a wire format.
 
-use crate::entities::surreal::certificate::CertificateStatus;
-use crate::entities::surreal::health::{
+use crate::entities::db::certificate::CertificateStatus;
+use crate::entities::db::health::{
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use crate::utils::ids::record_key;

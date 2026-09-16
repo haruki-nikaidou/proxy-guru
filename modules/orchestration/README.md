@@ -11,9 +11,9 @@ src/
 ├── lib.rs          # crate root: declares the modules below
 ├── config.rs       # `OrchestrationConfig` (key `orchestration`): health, ACME, relay
 │                   # and periodic-interval knobs
-├── utils/          # ids (record id ↔ wire string), secret (master-key encryption)
+├── utils/          # ids (wire string → typed id), secret (master-key encryption)
 ├── entities/
-│   └── surreal/    # canvas, server, node, port, connection, view, topology,
+│   └── db/         # canvas, server, node, port, connection, view, topology,
 │                   # health, dns, certificate (ACME), ca (internal CA, relay leaves)
 ├── services/       # CRUD, topology rules, derivation, convergence, rollout, agent, watch, ca
 ├── events/         # `CanvasDirty` plus the five periodic execution signals
@@ -149,8 +149,8 @@ sum exceeds `derived_view_seq`. The sum only shrinks when a view row is deleted,
 and everything that deletes one is an edit that bumps `generation`, so a
 shrinking sum never hides what a worker wrote. Keeping workers off the canvas
 row is what lets a fleet acknowledge one revision in the same instant without
-contending on it (SurrealDB aborts the losers of a write-write conflict rather
-than queueing them).
+contending on it (a writer that meets a locked row waits for it, so a hot row
+is a queue rather than an error, but the queue is still the fleet's latency).
 
 The `CanvasDirty` message is only latency: the two counters are what actually
 decide, and the periodic `derive_stale_canvases` pass acts on them, so a dropped
@@ -175,7 +175,7 @@ consumer` binds one durable queue per signal and runs the pass:
 | `renew_certificates` | `guru_orchestration_renew_certificates` | `hooks::acme::AcmeCronHook` | `acme_interval()` |
 
 Delivery is at-least-once and consumers are replicated, so every hook gates on
-`entities::surreal::job_run::ClaimJobRun::for_tick` first: one compare-and-set
+`entities::db::job_run::ClaimJobRun::for_tick` first: one compare-and-set
 on the job's `orchestration_job_run` row, fenced on both the tick the signal was
 published for and the configured interval — which is measured between ticks, not
 between runs, so a pass that takes a minute does not push the next one out.
@@ -295,8 +295,8 @@ index and one transaction fails, which the caller retries.
 - `rpc` depends on `services` (and `rpguru_sdk`); the watch hub lives in
   `services::watch` so nothing below the edge depends on the edge.
 - `services` depend on `entities`; every query is a `Processor` in
-  `entities/surreal`.
-- The schema lives in `database/schema/orchestration.surql`; the integration tests
-  apply that exact file to a `mem://` database.
+  `entities/db`.
+- The schema lives in `database/migrations`; the integration tests run the same
+  migrator against a real PostgreSQL database, one per test.
 
 See `AGENTS.md` at the workspace root for the full authoring guide.

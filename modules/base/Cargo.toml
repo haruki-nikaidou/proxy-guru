@@ -15,9 +15,8 @@ kanau = { workspace = true }
 tokio = { workspace = true }
 
 # Persistence
-newtype_record_id = { path = "../../lib/newtype_record_id" }
-surrealdb = { workspace = true }
-surrealdb-types = { workspace = true }
+db_types = { path = "../../lib/db_types" }
+sqlx = { workspace = true }
 
 # Messaging
 amqprs = { workspace = true }
@@ -46,10 +45,10 @@ tracing = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 # Algorithm
 itertools = { workspace = true }
 
 [dev-dependencies]
-surrealdb = { workspace = true, features = ["kv-mem"] }
 tokio = { workspace = true }

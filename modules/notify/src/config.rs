@@ -9,7 +9,7 @@
 //! it to a stable key with `base`'s `ConfigJson`:
 //!
 //! ```ignore
-//! use base::entities::surreal::app_config::ConfigJson;
+//! use base::entities::db::app_config::ConfigJson;
 //! use serde::{Deserialize, Serialize};
 //!
 //! // `#[serde(default)]` on the struct is load-bearing: a row written before

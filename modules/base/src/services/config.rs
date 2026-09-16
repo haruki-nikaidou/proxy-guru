@@ -1,7 +1,7 @@
 //! The configuration store: typed reads and writes over the `app_config` table.
 //!
 //! A config struct is bound to a key with
-//! [`ConfigJson`](crate::entities::surreal::app_config::ConfigJson) and stored
+//! [`ConfigJson`](crate::entities::db::app_config::ConfigJson) and stored
 //! as one JSON document. [`LoadConfig`] is a startup-time read: services keep
 //! holding their config by value, they just get it from the database instead of
 //! [`Default`], so every process in a fleet agrees without any matching
@@ -16,7 +16,7 @@
 //! keeps additive changes cheap without hiding real corruption.
 
 use crate::db::Db;
-use crate::entities::surreal::app_config::{
+use crate::entities::db::app_config::{
     ConfigJson, FindRawConfig, InsertRawConfigIfAbsent, UpsertRawConfig,
 };
 use kanau::processor::Processor;
@@ -25,7 +25,7 @@ use std::marker::PhantomData;
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error(transparent)]
-    Database(#[from] surrealdb::Error),
+    Database(#[from] crate::db::Error),
     #[error("stored config for key `{key}` does not match its type: {source}")]
     Decode {
         key: &'static str,

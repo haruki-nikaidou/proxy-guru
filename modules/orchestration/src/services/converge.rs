@@ -30,10 +30,10 @@
 //! once nothing points at it.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::node::NodeId;
-use crate::entities::surreal::server::ServerId;
-use crate::entities::surreal::topology::CanvasTopology;
-use crate::entities::surreal::view::{
+use crate::entities::db::node::NodeId;
+use crate::entities::db::server::ServerId;
+use crate::entities::db::topology::CanvasTopology;
+use crate::entities::db::view::{
     CertificateRef, ConfigSnapshot, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
     ServerConfigViewEntity,
 };
@@ -87,9 +87,6 @@ pub fn converge(
     own: &ServerConfigViewEntity,
     views: &[ServerConfigViewEntity],
 ) -> Result<Converged, ConvergeError> {
-    // `ListenerCap` holds a `RecordId`, whose key type carries interior
-    // mutability clippy cannot see through; the ids are never mutated here.
-    #[allow(clippy::mutable_key_type)]
     let mut served_now: HashSet<ListenerCap> = HashSet::new();
     for view in views {
         if let Some(applied) = &view.applied {

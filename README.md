@@ -66,8 +66,8 @@ docker build -f frontend.Dockerfile -t guru-frontend .
 ```
 
 `guru-master` is configured entirely through the environment (`GURU_WORKER_MODE`
-selects the mode; `SURREALDB_NAMESPACE`, `SURREALDB_NAME`, `AMQP_URI` and
-`REDIS_URL` have no defaults). The broker is required in every mode — periodic
+selects the mode; `GURU_DATABASE_URL`, `AMQP_URI` and `REDIS_URL` have no
+defaults). The broker is required in every mode — periodic
 work is a message, so a broker outage stalls derivation, liveness and renewal
 until it returns. `REDIS_URL` (`redis://127.0.0.1:6379/`) is required in the
 three modes that open a database connection — `dashboard_grpc`, `workers_grpc`
@@ -91,7 +91,7 @@ bun run docs:build   # static output in typescript/docs/dist
 
 Rust 2024 on Tokio, [`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau) (everything is a `Processor`), gRPC via
-Tonic, SurrealDB for storage (schema in `database/`, managed with surrealkit),
+Tonic, PostgreSQL for storage (sqlx; migrations in `database/migrations`),
 Redis pub/sub for the operator API's live `Watch*` streams, AMQP for
 inter-module events, OpenTelemetry for tracing, and a Bun workspace under
 `typescript/` sharing one generated API client.

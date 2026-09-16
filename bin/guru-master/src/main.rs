@@ -26,7 +26,7 @@ use auth::services::api_key::ApiKeyService;
 use auth::services::config::AuthConfigService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
-use base::db::Db;
+use base::db::PoolSettings;
 use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
 use kanau::message::MessageDe;
@@ -64,7 +64,6 @@ use rpguru_sdk::orchestration_agent::worker_agent_server::WorkerAgentServer;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use surrealdb::opt::auth::Root;
 use time::OffsetDateTime;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -105,25 +104,13 @@ struct Cli {
     dashboard_addr: SocketAddr,
     #[arg(long, env = "GURU_WORKERS_GRPC_ADDR", default_value = "0.0.0.0:50052")]
     workers_addr: SocketAddr,
-    // `http://` on purpose. Both remote engines are compiled in and
-    // `engine::any::connect` picks by scheme, but the WebSocket engine multiplexes
-    // every query in the process through one router task, and a lost answer there
-    // strands its caller until the bound in `base::db::Db` fires. Over HTTP each
-    // query is its own request, so there is no shared pipe to go stale.
-    #[arg(long, env = "SURREALDB_HOST", default_value = "http://127.0.0.1:8000")]
-    address: String,
-    #[arg(long, env = "SURREALDB_USER", default_value = "root")]
-    username: String,
-    #[arg(long, env = "SURREALDB_PASSWORD", default_value = "root")]
-    password: String,
+    /// PostgreSQL connection URL, e.g. `postgres://guru:secret@127.0.0.1:15432/guru`.
     // Optional at parse time, required by every mode that opens the database:
     // `cron` is a clock with a broker and nothing else, and a clock that refused
-    // to start without a namespace would still have a database dependency, just
-    // an unused one.
-    #[arg(long, env = "SURREALDB_NAMESPACE")]
-    namespace: Option<String>,
-    #[arg(long, env = "SURREALDB_NAME")]
-    database: Option<String>,
+    // to start without a database URL would still have a database dependency,
+    // just an unused one.
+    #[arg(long, env = "GURU_DATABASE_URL")]
+    database_url: Option<String>,
     #[arg(
         long,
         env = "AMQP_URI",
@@ -148,15 +135,24 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     watch_poll_ms: u64,
-    /// The bound on one database query. It cannot live in `app_config` like the operator's
-    /// other settings: reading that config goes through the very handle being configured.
+    /// The server-side bound on one database statement (`statement_timeout`). It cannot
+    /// live in `app_config` like the operator's other settings: reading that config goes
+    /// through the very connection being configured.
     #[arg(
         long,
-        env = "GURU_DB_TIMEOUT_MS",
-        default_value = "10000",
+        env = "GURU_DB_STATEMENT_TIMEOUT_MS",
+        default_value = "5000",
         value_parser = clap::value_parser!(u64).range(1..)
     )]
-    db_timeout_ms: u64,
+    db_statement_timeout_ms: u64,
+    /// Connections this process may hold at once.
+    #[arg(
+        long,
+        env = "GURU_DB_POOL_SIZE",
+        default_value = "10",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    db_pool_size: u32,
     #[arg(long, env = "GURU_LOG_LEVEL", default_value = "info")]
     log_level: String,
 }
@@ -180,35 +176,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_cron(&cli).await;
     }
 
-    // An empty value counts as unset: an exported-but-empty `SURREALDB_NAMESPACE`
-    // reaches clap as `Some("")`, and `use_ns("")` fails deep in the driver
-    // instead of here, where the message can say what to do.
-    let namespace = cli.namespace.as_deref().filter(|v| !v.is_empty());
-    let database = cli.database.as_deref().filter(|v| !v.is_empty());
-    let (Some(namespace), Some(database)) = (namespace, database) else {
-        return Err("this mode opens the database: set SURREALDB_NAMESPACE and \
-                    SURREALDB_NAME (or pass --namespace and --database)"
-            .into());
+    // An empty value counts as unset: an exported-but-empty `GURU_DATABASE_URL`
+    // reaches clap as `Some("")` and would fail deep in the driver instead of
+    // here, where the message can say what to do.
+    let Some(database_url) = cli.database_url.as_deref().filter(|v| !v.is_empty()) else {
+        return Err(
+            "this mode opens the database: set GURU_DATABASE_URL (or pass --database-url)".into(),
+        );
     };
-    // One WebSocket to the database for the whole process, and no request
-    // timeout anywhere in that client: `query_timeout` is wired into the
-    // embedded engines only, so an answer that never arrives is an await that
-    // never returns. The SDK reconnects on its own and does fail the requests
-    // that were in flight (`clear_pending_requests`), but only once the
-    // reconnect completes, only for sessions its map still holds as `Ok`, and
-    // never for a response its router cannot match to a caller — it drops those
-    // and logs, which is the hang its own `fail_all_pending_requests` comment
-    // cites (surrealdb/surrealdb#7037). So every place a worker or a dashboard
-    // waits on such a call bounds it: the auth layers, the unary agent
-    // handlers. A lost answer then costs one retried call, not a stuck worker.
-    let db = surrealdb::engine::any::connect(&cli.address).await?;
-    db.signin(Root {
-        username: cli.username.clone(),
-        password: cli.password.clone(),
-    })
+    let db = base::db::connect(
+        database_url,
+        PoolSettings {
+            statement_timeout: Duration::from_millis(cli.db_statement_timeout_ms),
+            max_connections: cli.db_pool_size,
+            application_name: "guru-master",
+        },
+    )
     .await?;
-    db.use_ns(namespace).use_db(database).await?;
-    let db = Db::new(db).with_timeout(Duration::from_millis(cli.db_timeout_ms));
+    // Every serving instance runs the migrations at startup; the migrator takes
+    // an advisory lock, so four instances starting together apply them once.
+    base::db::MIGRATOR.run(db.db()).await?;
     // Environment only, never argv: the key would otherwise be visible in process
     // listings. `manage-tool generate-master-key` prints a fresh one.
     let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;

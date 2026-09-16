@@ -5,14 +5,14 @@
 //! listings return a [`DnsProviderSummary`] without it, and only the ACME
 //! pipeline decrypts it.
 
-use crate::entities::surreal::dns::{
+use crate::entities::db::dns::{
     CountNodesUsingDnsProvider, CreateDnsProvider as CreateDnsProviderRow, DeleteDnsProviderRow,
     DnsProvider, DnsProviderEntity, DnsProviderId, FindDnsProviderById,
     ListDnsProviders as ListDnsProvidersRow, UpdateDnsProvider as UpdateDnsProviderRow,
 };
 use crate::services::OrchestrationError;
 use crate::utils::secret::SecretKey;
-use auth::entities::surreal::account::AccountRole;
+use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;

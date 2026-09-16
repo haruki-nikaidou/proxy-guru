@@ -6,13 +6,13 @@
 mod mem;
 
 use mem::*;
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::node::{
     CanvasExportAs, EntryConfig, ExitConfig, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeSpec, PodConfig, ProxyProtocolVersion,
     RelayConfig, RelayProtocol,
 };
-use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use orchestration::entities::surreal::server::ServerId;
+use orchestration::entities::db::port::{PortDirection, PortEntity, PortKind};
+use orchestration::entities::db::server::ServerId;
 use orchestration::services::topology::{
     ProblemKind, ProblemSeverity, TopologyProblem, analyze, ensure_valid,
 };
@@ -658,7 +658,7 @@ fn projection_validates_a_change_before_it_is_written() {
     assert!(ensure_valid(&projected).is_ok());
 
     // Adding a second edge into an occupied port is rejected before writing.
-    let extra = orchestration::entities::surreal::connection::EdgeConnectionEntity {
+    let extra = orchestration::entities::db::connection::EdgeConnectionEntity {
         id: ids::edge_id("pending-0"),
         source: port("exit", "destination"),
         target: port("pod", "destination"),
@@ -670,7 +670,7 @@ fn projection_validates_a_change_before_it_is_written() {
 
 // --- universal nodes -----------------------------------------------------------
 
-use orchestration::entities::surreal::node::{Lane, LaneRole, UniversalPodConfig};
+use orchestration::entities::db::node::{Lane, LaneRole, UniversalPodConfig};
 use orchestration::services::universal;
 
 fn bundle_port(key: &str, direction: PortDirection) -> (String, PortKind, PortDirection, i64) {

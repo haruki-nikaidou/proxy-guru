@@ -7,18 +7,18 @@
 //! here changes a config, so no canvas is ever dirtied.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::health::{
+use crate::entities::db::health::{
     DeleteHealthRecordsBefore, HealthWrite, InsertServerHealthRecord,
     ListNodeHealthHistory as ListNodeHealthHistoryRows,
     ListServerHealthHistory as ListServerHealthHistoryRows, ListServersForLivenessSweep,
     NewNodeHealthRecord, NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity,
     ServerHealthStatus, SetServerHealthStatus,
 };
-use crate::entities::surreal::node::NodeId;
-use crate::entities::surreal::server::{
+use crate::entities::db::node::NodeId;
+use crate::entities::db::server::{
     FindServerById, ReportedAddresses, ServerId, UpdateReportedAddresses,
 };
-use crate::entities::surreal::view::{
+use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
 };
 use crate::events::live::{CanvasChangeKind, LiveMessage};

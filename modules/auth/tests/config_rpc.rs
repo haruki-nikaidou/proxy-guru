@@ -1,41 +1,31 @@
-//! The `auth` configuration document against an in-memory SurrealDB.
+//! The `auth` configuration document against a real PostgreSQL database.
 //!
-//! These tests apply `database/schema/base.surql` (the `app_config` table lives
-//! in `base`) to a `mem://` instance and exercise `AuthConfigService` the way
-//! the RPC edge does, including the `tonic::Status` a client would see.
+//! `#[sqlx::test]` gives every test a fresh, migrated database; `AuthConfigService`
+//! is exercised the way the RPC edge does, including the `tonic::Status` a client
+//! would see.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use auth::config::AuthConfig;
-use auth::entities::surreal::account::{AccountId, AccountRole};
+use auth::entities::db::account::{AccountId, AccountRole};
 use auth::services::config::{AuthConfigService, GetModuleConfig, SetModuleConfig};
 use auth::services::identity::{Identity, IdentityKind};
 use base::db::Db;
 use base::services::config::ConfigStore;
 use kanau::processor::Processor;
 use serde_json::json;
-use surrealdb::types::RecordId;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-async fn setup() -> Result<AuthConfigService, Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let db = Db::new(db);
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/base.surql"
-    ))?;
-    // `.check()` surfaces any per-statement error from applying the schema.
-    db.raw().query(ddl).await?.check()?;
-    Ok(AuthConfigService {
-        configs: ConfigStore { db },
-    })
+fn setup(pool: sqlx::PgPool) -> AuthConfigService {
+    AuthConfigService {
+        configs: ConfigStore { db: Db::new(pool) },
+    }
 }
 
 fn actor(role: AccountRole, kind: IdentityKind) -> Identity {
     Identity {
-        account_id: AccountId(RecordId::new("auth_account", "someone")),
+        account_id: AccountId::from_key("someone"),
         role,
         kind,
     }
@@ -51,9 +41,9 @@ fn code(error: impl Into<tonic::Status>) -> tonic::Code {
 
 /// An unseeded installation is a normal state: the document says there is no
 /// row and hands back exactly what seeding would write.
-#[tokio::test]
-async fn an_unset_key_reports_its_defaults() -> TestResult {
-    let service = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_unset_key_reports_its_defaults(pool: sqlx::PgPool) -> TestResult {
+    let service = setup(pool);
     let document = service.process(GetModuleConfig { actor: admin() }).await?;
 
     assert!(!document.stored);
@@ -67,9 +57,9 @@ async fn an_unset_key_reports_its_defaults() -> TestResult {
 
 /// A write goes to the database, not to a cache: a later read sees it, and the
 /// defaults it is offered alongside are still the defaults.
-#[tokio::test]
-async fn an_admin_write_round_trips_through_the_database() -> TestResult {
-    let service = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_admin_write_round_trips_through_the_database(pool: sqlx::PgPool) -> TestResult {
+    let service = setup(pool);
     let written = service
         .process(SetModuleConfig {
             actor: admin(),
@@ -87,9 +77,9 @@ async fn an_admin_write_round_trips_through_the_database() -> TestResult {
 
 /// A payload of the wrong shape is an operator typo: it is refused with
 /// `INVALID_ARGUMENT` naming the key, and the row keeps what it had.
-#[tokio::test]
-async fn a_wrong_shaped_payload_leaves_the_row_alone() -> TestResult {
-    let service = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_wrong_shaped_payload_leaves_the_row_alone(pool: sqlx::PgPool) -> TestResult {
+    let service = setup(pool);
     service
         .process(SetModuleConfig {
             actor: admin(),
@@ -115,9 +105,9 @@ async fn a_wrong_shaped_payload_leaves_the_row_alone() -> TestResult {
 
 /// `ManageConfig` is Admin-only and human-session-only: nobody else may read
 /// the installation's settings, let alone replace them.
-#[tokio::test]
-async fn only_an_admin_session_may_touch_the_document() -> TestResult {
-    let service = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn only_an_admin_session_may_touch_the_document(pool: sqlx::PgPool) -> TestResult {
+    let service = setup(pool);
     let denied = [
         actor(AccountRole::Maintainer, IdentityKind::Session),
         actor(AccountRole::Observer, IdentityKind::Session),

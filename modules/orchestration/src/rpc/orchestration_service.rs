@@ -3,25 +3,23 @@
 //! Handlers are thin: decode ids and specs, call a service, encode the reply. All
 //! rules live in `services`.
 
-use crate::entities::surreal::canvas::{
-    CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition,
-};
-use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
-use crate::entities::surreal::connection::EdgeConnectionEntity;
-use crate::entities::surreal::dns::DnsProvider;
-use crate::entities::surreal::health::{
+use crate::entities::db::canvas::{CanvasContents, CanvasEntity, CanvasTree, CanvasUiPosition};
+use crate::entities::db::certificate::{CertificateEntity, CertificateStatus};
+use crate::entities::db::connection::EdgeConnectionEntity;
+use crate::entities::db::dns::DnsProvider;
+use crate::entities::db::health::{
     ListNodeHealthAfter, ListServerHealthHistory as ListServerHealthHistoryRows,
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use crate::entities::surreal::node::{
+use crate::entities::db::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, Lane,
     LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMember,
     LoadBalanceMode, NodeEntity, NodeSpec, NodeWithPorts, PodConfig, ProxyProtocolVersion,
     RelayConfig, RelayProtocol, TlsConfig, UniversalPodConfig,
 };
-use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use crate::entities::surreal::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
-use crate::entities::surreal::view::{ConfigSnapshot, ListenerCap};
+use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
+use crate::entities::db::server::{AddressSource, ServerEntity, ServerIpv6Resolve};
+use crate::entities::db::view::{ConfigSnapshot, ListenerCap};
 use crate::events::live::{
     CanvasChangeKind, LiveMessage, NodeHealthLive, ServerHealthLive, live_time,
 };
@@ -97,10 +95,10 @@ where
 /// One page of a node-health recovery read, retried.
 async fn refetch_node_health(
     db: &base::db::Db,
-    node: &crate::entities::surreal::node::NodeId,
+    node: &crate::entities::db::node::NodeId,
     after: DateTime<Utc>,
     after_id: Option<&str>,
-) -> Result<Vec<NodeHealthRecordEntity>, surrealdb::Error> {
+) -> Result<Vec<NodeHealthRecordEntity>, base::db::Error> {
     retry_read(|| {
         db.process(ListNodeHealthAfter {
             node: node.clone(),

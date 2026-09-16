@@ -11,19 +11,19 @@
 //! See `bin/manage-tool/README.md` for the full description.
 
 use auth::config::AuthConfig;
-use auth::entities::surreal::account::{AccountRole, CreateAccount, FindAccountByEmail};
+use auth::entities::db::account::{AccountRole, CreateAccount, FindAccountByEmail};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
-use base::db::Db;
-use base::entities::surreal::app_config::{ConfigJson, FindRawConfig};
+use base::db::{Db, PoolSettings};
+use base::entities::db::app_config::{ConfigJson, FindRawConfig};
 use base::services::config::{
     ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode, defaults,
 };
 use clap::{Parser, Subcommand};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::agent_release::PublishAgentRelease;
-use orchestration::entities::surreal::ca::{FindInternalCa, ListRelayCertificatesByPods};
-use orchestration::entities::surreal::certificate::ListCertificatesBySnis;
+use orchestration::entities::db::agent_release::PublishAgentRelease;
+use orchestration::entities::db::ca::{FindInternalCa, ListRelayCertificatesByPods};
+use orchestration::entities::db::certificate::ListCertificatesBySnis;
 use orchestration::services::OrchestrationError;
 use orchestration::services::ca::{CaService, InitInternalCa};
 use orchestration::services::derive::{
@@ -32,35 +32,15 @@ use orchestration::services::derive::{
 use orchestration::utils::secret::SecretKey;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use surrealdb::opt::auth::Root;
-use surrealdb::types::ToSql;
 
 /// Administration CLI.
 #[derive(Debug, Parser)]
 #[command(name = "manage-tool", about = "Administration tasks for the platform")]
 struct Cli {
-    /// SurrealDB address. `http://` and `ws://` both work; see the note below.
-    // `http://` on purpose. Both remote engines are compiled in and
-    // `engine::any::connect` picks by scheme, but the WebSocket engine multiplexes
-    // every query in the process through one router task, and a lost answer there
-    // strands its caller until the bound in `base::db::Db` fires. Over HTTP each
-    // query is its own request, so there is no shared pipe to go stale.
-    #[arg(long, env = "SURREALDB_HOST", default_value = "http://127.0.0.1:8000")]
-    address: String,
-    /// Root username.
-    #[arg(long, env = "SURREALDB_USER", default_value = "root")]
-    username: String,
-    /// Root password.
-    #[arg(long, env = "SURREALDB_PASSWORD", default_value = "root")]
-    password: String,
-    /// Namespace to operate in. Required by every subcommand that touches the
-    /// database.
-    #[arg(long, env = "SURREALDB_NAMESPACE")]
-    namespace: Option<String>,
-    /// Database to operate in. Required by every subcommand that touches the
-    /// database.
-    #[arg(long, env = "SURREALDB_NAME")]
-    database: Option<String>,
+    /// PostgreSQL connection URL, e.g. `postgres://guru:secret@127.0.0.1:15432/guru`.
+    /// Required by every subcommand that touches the database.
+    #[arg(long, env = "GURU_DATABASE_URL")]
+    database_url: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -79,6 +59,11 @@ enum Command {
     /// Print a fresh `GURU_MASTER_KEY` (32 random bytes, base64). Needs no
     /// database.
     GenerateMasterKey,
+    /// The database schema.
+    Db {
+        #[command(subcommand)]
+        command: DbCommand,
+    },
     /// The database-backed configuration store.
     Config {
         #[command(subcommand)]
@@ -98,10 +83,18 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+enum DbCommand {
+    /// Apply every pending migration. `guru-master` does the same at startup;
+    /// this is for applying them ahead of a deploy, or to a database no master
+    /// runs against yet.
+    Migrate,
+}
+
+#[derive(Debug, Subcommand)]
 enum ConfigCommand {
     /// Write the defaults for every registered key that has none. Idempotent:
     /// a key an operator has edited is left untouched. Run it after
-    /// `surrealkit sync`.
+    /// `db migrate`.
     Seed,
     /// Print every registered key with its stored document, or the defaults
     /// when it has none.
@@ -126,7 +119,7 @@ enum ConfigCommand {
 enum OrchestrationCommand {
     /// Print the derived guru-worker TOML for one server.
     ExportConfig {
-        /// `orchestration_server` record key.
+        /// `orchestration_server` id.
         #[arg(long)]
         server: String,
     },
@@ -162,37 +155,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let (Some(namespace), Some(database)) = (cli.namespace.as_deref(), cli.database.as_deref())
-    else {
-        return Err(
-            "--namespace (SURREALDB_NAMESPACE) and --database (SURREALDB_NAME) are \
-                    required for this subcommand"
-                .into(),
-        );
+    let Some(database_url) = cli.database_url.as_deref().filter(|v| !v.is_empty()) else {
+        return Err("--database-url (GURU_DATABASE_URL) is required for this subcommand".into());
     };
-    let db = surrealdb::engine::any::connect(&cli.address).await?;
-    db.signin(Root {
-        username: cli.username,
-        password: cli.password,
-    })
+    let db = base::db::connect(
+        database_url,
+        PoolSettings {
+            statement_timeout: std::time::Duration::from_secs(30),
+            max_connections: 2,
+            application_name: "manage-tool",
+        },
+    )
     .await?;
-    db.use_ns(namespace).use_db(database).await?;
 
     match cli.command {
-        Command::CreateAdmin { email, password } => {
-            create_admin(Db::new(db), email, password).await
-        }
+        Command::CreateAdmin { email, password } => create_admin(db, email, password).await,
         Command::GenerateMasterKey => Ok(()),
-        Command::Config { command } => config(Db::new(db), command).await,
+        Command::Db {
+            command: DbCommand::Migrate,
+        } => {
+            base::db::MIGRATOR.run(db.db()).await?;
+            eprintln!("schema is up to date");
+            Ok(())
+        }
+        Command::Config { command } => config(db, command).await,
         Command::Orchestration {
             command: OrchestrationCommand::ExportConfig { server },
-        } => export_config(Db::new(db), server).await,
+        } => export_config(db, server).await,
         Command::Orchestration {
             command: OrchestrationCommand::InitCa,
-        } => init_ca(Db::new(db)).await,
+        } => init_ca(db).await,
         Command::Agent {
             command: AgentCommand::Publish { binary, dir },
-        } => agent_publish(Db::new(db), binary, dir).await,
+        } => agent_publish(db, binary, dir).await,
     }
 }
 
@@ -371,7 +366,7 @@ async fn init_ca(db: Db) -> Result<(), Box<dyn std::error::Error>> {
 async fn export_config(db: Db, server: String) -> Result<(), Box<dyn std::error::Error>> {
     let server_id = orchestration::utils::ids::server_id(&server);
     let Some(row) = db
-        .process(orchestration::entities::surreal::server::FindServerById {
+        .process(orchestration::entities::db::server::FindServerById {
             id: server_id.clone(),
         })
         .await?
@@ -380,9 +375,7 @@ async fn export_config(db: Db, server: String) -> Result<(), Box<dyn std::error:
         std::process::exit(1);
     };
     let topology = db
-        .process(
-            orchestration::entities::surreal::topology::LoadCanvasTopology { canvas: row.canvas },
-        )
+        .process(orchestration::entities::db::topology::LoadCanvasTopology { canvas: row.canvas })
         .await?;
     let certificates = DerivationCertificates {
         acme: db
@@ -431,7 +424,7 @@ async fn create_admin(
         })
         .await?;
 
-    println!("Created admin account {}", account.id.0.to_sql());
+    println!("Created admin account {}", account.id);
     Ok(())
 }
 

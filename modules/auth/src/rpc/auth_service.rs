@@ -1,13 +1,12 @@
 //! gRPC `Auth` service implementation: a thin adapter over the services.
 
 use kanau::processor::Processor;
-use surrealdb::types::{RecordId, RecordIdKey, ToSql};
 use tonic::{Request, Response, Status};
 
 use rpguru_sdk::auth as pb;
 
-use crate::entities::surreal::account::{AccountEntity, AccountId, AccountRole, FindAccountById};
-use crate::entities::surreal::api_key::{ApiKeyId, ApiKeyOmitSecret};
+use crate::entities::db::account::{AccountEntity, AccountId, AccountRole, FindAccountById};
+use crate::entities::db::api_key::{ApiKeyId, ApiKeyOmitSecret};
 use crate::rpc::middleware::{SESSION_ID_METADATA, from_request};
 use crate::services::api_key::ListApiKeys;
 use crate::services::config::{AuthConfigService, GetModuleConfig, SetModuleConfig};
@@ -19,9 +18,6 @@ use crate::services::{
     SetAccountRole,
 };
 
-const ACCOUNT_TABLE: &str = "auth_account";
-const API_KEY_TABLE: &str = "api_key";
-
 /// The concrete gRPC `Auth` service, wiring the auth services together.
 #[derive(Clone)]
 pub struct AuthGrpc {
@@ -29,24 +25,6 @@ pub struct AuthGrpc {
     pub sessions: SessionService,
     pub api_keys: ApiKeyService,
     pub configs: AuthConfigService,
-}
-
-/// Extract the raw record key (without the table prefix) for the wire.
-fn record_key(record: &RecordId) -> String {
-    match &record.key {
-        RecordIdKey::String(s) => s.clone(),
-        RecordIdKey::Number(n) => n.to_string(),
-        RecordIdKey::Uuid(u) => u.to_string(),
-        other => other.to_sql(),
-    }
-}
-
-fn account_id_from_key(key: &str) -> AccountId {
-    AccountId(RecordId::new(ACCOUNT_TABLE, key))
-}
-
-fn api_key_id_from_key(key: &str) -> ApiKeyId {
-    ApiKeyId(RecordId::new(API_KEY_TABLE, key))
 }
 
 fn role_to_proto(role: AccountRole) -> i32 {
@@ -69,7 +47,7 @@ fn role_from_proto(role: i32) -> Result<AccountRole, Status> {
 
 fn account_to_proto(account: AccountEntity) -> pb::Account {
     pb::Account {
-        id: record_key(&account.id.0),
+        id: account.id.to_string(),
         email: account.email,
         role: role_to_proto(account.role),
     }
@@ -77,9 +55,9 @@ fn account_to_proto(account: AccountEntity) -> pb::Account {
 
 fn api_key_to_proto(key: ApiKeyOmitSecret) -> pb::ApiKeySummary {
     pb::ApiKeySummary {
-        id: record_key(&key.id.0),
+        id: key.id.to_string(),
         name: key.name,
-        owner_account_id: record_key(&key.owner.0),
+        owner_account_id: key.owner.to_string(),
         created_at: key.created_at.to_rfc3339(),
     }
 }
@@ -172,7 +150,7 @@ impl pb::auth_server::Auth for AuthGrpc {
             IdentityKind::ApiKey => pb::IdentityKind::ApiKey,
         };
         Ok(Response::new(pb::CurrentIdentityReply {
-            account_id: record_key(&account.id.0),
+            account_id: account.id.to_string(),
             email: account.email,
             role: role_to_proto(identity.role),
             kind: kind as i32,
@@ -279,7 +257,7 @@ impl pb::auth_server::Auth for AuthGrpc {
     ) -> Result<Response<pb::UpdateAccountRoleReply>, Status> {
         let actor = from_request(&request)?;
         let req = request.into_inner();
-        let target = account_id_from_key(&req.account_id);
+        let target = AccountId::from_key(&req.account_id);
         let role = role_from_proto(req.role)?;
         self.accounts
             .process(SetAccountRole {
@@ -307,7 +285,7 @@ impl pb::auth_server::Auth for AuthGrpc {
     ) -> Result<Response<pb::DeleteAccountReply>, Status> {
         let actor = from_request(&request)?;
         let req = request.into_inner();
-        let target = account_id_from_key(&req.account_id);
+        let target = AccountId::from_key(&req.account_id);
         self.accounts
             .process(DeleteAccount { actor, target })
             .await
@@ -330,7 +308,7 @@ impl pb::auth_server::Auth for AuthGrpc {
             .await
             .map_err(base::db::status_of)?;
         Ok(Response::new(pb::CreateApiKeyReply {
-            id: record_key(&created.id.0),
+            id: created.id.to_string(),
             secret: created.secret,
         }))
     }
@@ -356,7 +334,7 @@ impl pb::auth_server::Auth for AuthGrpc {
     ) -> Result<Response<pb::RevokeApiKeyReply>, Status> {
         let actor = from_request(&request)?;
         let req = request.into_inner();
-        let id = api_key_id_from_key(&req.id);
+        let id = ApiKeyId::from_key(&req.id);
         self.api_keys
             .process(RevokeApiKey { actor, id })
             .await

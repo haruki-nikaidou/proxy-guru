@@ -11,15 +11,15 @@
 
 mod common;
 
-use auth::entities::surreal::account::{AccountId, AccountRole};
+use auth::entities::db::account::{AccountId, AccountRole};
 use auth::services::identity::{Identity, IdentityKind};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::canvas::CanvasUiPosition;
-use orchestration::entities::surreal::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
-use orchestration::entities::surreal::server::ServerIpv6Resolve;
-use orchestration::entities::surreal::view::FindServerConfigView;
+use orchestration::entities::db::canvas::CanvasUiPosition;
+use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
+use orchestration::entities::db::server::ServerIpv6Resolve;
+use orchestration::entities::db::view::FindServerConfigView;
 use orchestration::events::{CanvasDirty, DeriveStaleCanvasesSignal};
 use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::services::canvas::{CanvasService, CreateCanvas};
@@ -30,14 +30,13 @@ use orchestration::services::server::{AddressOverrides, CreateServer, ServerServ
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
 use std::time::Duration;
-use surrealdb::types::RecordId;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use wakuwaku::amqp::{AmqpMessageProcessor, AmqpMessageSend, AmqpPool, setup_consumer};
 
 fn operator() -> Identity {
     Identity {
-        account_id: AccountId(RecordId::new("auth_account", "admin")),
+        account_id: AccountId::from_key("admin"),
         role: AccountRole::Admin,
         kind: IdentityKind::Session,
     }
@@ -47,8 +46,8 @@ fn pos0() -> CanvasUiPosition {
     CanvasUiPosition { x: 0, y: 0 }
 }
 
-#[tokio::test]
-async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -> TestResult {
     let broker = RabbitMq::default().start().await?;
     let uri = format!(
         "amqp://guest:guest@{}:{}",
@@ -63,7 +62,7 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
         .await?;
     let pool = AmqpPool::connect(connection.clone()).await;
 
-    let db = setup().await?;
+    let db = setup(db_pool);
     let channel = <CanvasDeriver as AmqpMessageProcessor<CanvasDirty>>::ensure_queue(&pool).await?;
     channel
         .register_callback(amqprs::callbacks::DefaultChannelCallback)
@@ -221,8 +220,10 @@ async fn an_edit_reaches_the_deriver_through_the_broker() -> TestResult {
 /// nothing else, and the sweep runs in the consumer. Only the signal queue is
 /// bound here and nothing publishes `CanvasDirty`, so the canvas can only be
 /// derived by the periodic path.
-#[tokio::test]
-async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_periodic_signal_reaches_its_hook_through_the_broker(
+    db_pool: sqlx::PgPool,
+) -> TestResult {
     let broker = RabbitMq::default().start().await?;
     let uri = format!(
         "amqp://guest:guest@{}:{}",
@@ -236,7 +237,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker() -> TestResult {
         .await?;
     let pool = AmqpPool::connect(connection.clone()).await;
 
-    let db = setup().await?;
+    let db = setup(db_pool);
     let deriver = CanvasDeriver {
         db: db.clone(),
         secrets: SecretKey::from_base64(&SecretKey::generate_base64())?,

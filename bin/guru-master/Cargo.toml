@@ -29,7 +29,7 @@ amqprs = { workspace = true }
 redis = { workspace = true }
 
 # Shared dependencies
-surrealdb = { workspace = true }
+sqlx = { workspace = true }
 # The scheduler's clock: `IntervalJob::publish` takes a `time::OffsetDateTime`.
 time = { workspace = true }
 # Built together with `guru-worker` (ring for QUIC) this binary carries two rustls

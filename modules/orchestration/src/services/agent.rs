@@ -5,16 +5,16 @@
 //! restart is visible to the master and the previous session's streams die.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::agent_release::FindAgentRelease;
-use crate::entities::surreal::health::{
+use crate::entities::db::agent_release::FindAgentRelease;
+use crate::entities::db::health::{
     InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus, ServerHealthStatus,
     SetServerHealthStatus,
 };
-use crate::entities::surreal::server::{
+use crate::entities::db::server::{
     FindServerByAgentKeyDigest, FindServerById, FindServerByRefreshKeyDigest,
     RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId, SettleAgentUpdate,
 };
-use crate::entities::surreal::view::{
+use crate::entities::db::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
 };
 use crate::events::live::{CanvasChangeKind, LiveMessage, RolloutScope};

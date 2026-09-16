@@ -7,14 +7,14 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
-use orchestration::entities::surreal::connection::FindEdgeById;
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
+use orchestration::entities::db::connection::FindEdgeById;
+use orchestration::entities::db::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig,
     FindNodeWithPorts, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
-use orchestration::entities::surreal::port::{PortDirection, PortId, PortKind};
-use orchestration::entities::surreal::server::{ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::port::{PortDirection, PortId, PortKind};
+use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve};
 use orchestration::services::OrchestrationError;
 use orchestration::services::canvas::{
     CreateCanvas, DeleteCanvas, GetCanvas, GetCanvasTree, ListCanvases,
@@ -121,8 +121,7 @@ async fn connect(
     w: &World,
     output: &PortId,
     input: &PortId,
-) -> Result<orchestration::entities::surreal::connection::EdgeConnectionEntity, OrchestrationError>
-{
+) -> Result<orchestration::entities::db::connection::EdgeConnectionEntity, OrchestrationError> {
     w.edges
         .process(Connect {
             actor: operator(),
@@ -160,9 +159,11 @@ fn problem_kind(err: &OrchestrationError) -> Option<ProblemKind> {
     }
 }
 
-#[tokio::test]
-async fn creating_and_retiring_an_export_reshapes_the_import_ports() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn creating_and_retiring_an_export_reshapes_the_import_ports(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas(&w, "root").await?;
     let sub = canvas(&w, "sub").await?;
     let (_, ip) = server(&w, &root.id, "tokyo", "203.0.113.10").await?;
@@ -230,9 +231,9 @@ async fn creating_and_retiring_an_export_reshapes_the_import_ports() -> TestResu
     Ok(())
 }
 
-#[tokio::test]
-async fn import_rules_are_enforced_by_the_service() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn import_rules_are_enforced_by_the_service(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas(&w, "root").await?;
     let sub = canvas(&w, "sub").await?;
     let third = canvas(&w, "third").await?;
@@ -277,9 +278,11 @@ async fn import_rules_are_enforced_by_the_service() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn deleting_an_imported_canvas_is_refused_until_its_import_is_retired() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleting_an_imported_canvas_is_refused_until_its_import_is_retired(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas(&w, "root").await?;
     let sub = canvas(&w, "sub").await?;
     let importer = create(&w, &root.id, "sub", import(&sub.id)).await?;
@@ -322,9 +325,9 @@ async fn three_levels(
     Ok((root, sub, subsub))
 }
 
-#[tokio::test]
-async fn deleting_a_root_deletes_its_whole_tree() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleting_a_root_deletes_its_whole_tree(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (root, _, _) = three_levels(&w).await?;
     w.canvases
         .process(DeleteCanvas {
@@ -340,20 +343,20 @@ async fn deleting_a_root_deletes_its_whole_tree() -> TestResult {
         "orchestration_server",
         "orchestration_server_config_view",
     ] {
-        let mut resp =
-            w.db.raw()
-                .query(format!("SELECT VALUE id FROM {table}"))
+        let rows: Vec<String> =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM {table}")))
+                .fetch_all(w.db.db())
                 .await?;
-        let rows: Vec<surrealdb::types::RecordId> = resp.take(0)?;
         assert!(rows.is_empty(), "{table} still holds {rows:?}");
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_crosses_it() -> TestResult
-{
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_crosses_it(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas(&w, "root").await?;
     let sub = canvas(&w, "sub").await?;
     let subsub = canvas(&w, "subsub").await?;
@@ -401,7 +404,7 @@ async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_cross
     .await?;
 
     w.derive(&root.id).await?;
-    let rev = |view: orchestration::entities::surreal::view::ServerConfigViewEntity| {
+    let rev = |view: orchestration::entities::db::view::ServerConfigViewEntity| {
         view.desired.expect("derived").revision
     };
     let a_before = rev(w.view(&a).await?);
@@ -464,9 +467,9 @@ async fn an_edit_in_the_innermost_canvas_bumps_only_the_servers_whose_path_cross
     Ok(())
 }
 
-#[tokio::test]
-async fn list_and_tree() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn list_and_tree(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (root, sub, subsub) = three_levels(&w).await?;
 
     let names = |canvases: Vec<CanvasEntity>| {

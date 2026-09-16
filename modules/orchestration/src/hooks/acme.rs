@@ -24,8 +24,8 @@
 //!   `last_attempt_at` before ordering and [`ListCertificatesDue`] holds the row
 //!   back for `acme_retry_after`.
 
-use crate::entities::surreal::certificate::{ClaimCertificateAttempt, ListCertificatesDue};
-use crate::entities::surreal::job_run::ClaimJobRun;
+use crate::entities::db::certificate::{ClaimCertificateAttempt, ListCertificatesDue};
+use crate::entities::db::job_run::ClaimJobRun;
 use crate::events::RenewCertificatesSignal;
 use crate::services::acme::{
     AcmeService, EnsureRequestedCertificates, IssueCertificate, IssueOutcome,

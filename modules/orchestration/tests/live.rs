@@ -11,19 +11,19 @@ mod common;
 use chrono::{TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::agent_release::PublishAgentRelease;
-use orchestration::entities::surreal::canvas::CanvasId;
-use orchestration::entities::surreal::health::{
+use orchestration::entities::db::agent_release::PublishAgentRelease;
+use orchestration::entities::db::canvas::CanvasId;
+use orchestration::entities::db::health::{
     InsertNodeHealthRecords, ListNodeHealthAfter, NewNodeHealthRecord, NodeHealthStatus,
     ServerHealthStatus,
 };
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::node::{
     CanvasExportAs, CanvasExportConfig, CanvasImportConfig, EntryConfig, ExitConfig, NodeSpec,
     NodeWithPorts, PodConfig,
 };
-use orchestration::entities::surreal::port::{PortId, PortKind};
-use orchestration::entities::surreal::server::{ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::view::TakeInFlight;
+use orchestration::entities::db::port::{PortId, PortKind};
+use orchestration::entities::db::server::{ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::view::TakeInFlight;
 use orchestration::events::live::{CanvasChangeKind, LiveMessage};
 use orchestration::hooks::live::LiveEvent;
 use orchestration::services::OrchestrationError;
@@ -179,11 +179,10 @@ async fn register(
             last_update_error: None,
         })
         .await?;
-    let row = w
-        .db
-        .process(orchestration::entities::surreal::server::FindServerById { id: server.clone() })
-        .await?
-        .ok_or("server vanished")?;
+    let row =
+        w.db.process(orchestration::entities::db::server::FindServerById { id: server.clone() })
+            .await?
+            .ok_or("server vanished")?;
     Ok(AgentIdentity {
         server: row.id,
         generation: row.refresh_key_generation,
@@ -198,7 +197,7 @@ async fn take_and_ack(
     error: Option<String>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let row =
-        w.db.process(orchestration::entities::surreal::server::FindServerById {
+        w.db.process(orchestration::entities::db::server::FindServerById {
             id: agent.server.clone(),
         })
         .await?
@@ -289,9 +288,9 @@ fn report(revision: i64) -> HealthReportInput {
 /// The opening snapshot has no cause, and every later edit — including a
 /// metadata-only one that does not bump the generation — produces a new full
 /// snapshot naming what changed.
-#[tokio::test]
-async fn canvas_view_snapshot_then_full_refresh() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn canvas_view_snapshot_then_full_refresh(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = canvas_named(&w, "prod").await?;
     let first = make_server(&w, &canvas, "tokyo", "203.0.113.10").await?;
 
@@ -353,9 +352,9 @@ async fn canvas_view_snapshot_then_full_refresh() -> TestResult {
 /// The agent's install and update state lives on the server row but feeds
 /// nothing derived, so only the live event can tell the panel that a key was
 /// issued, an update was requested, or the worker reported why it failed.
-#[tokio::test]
-async fn agent_state_changes_refresh_the_canvas_view() -> TestResult {
-    let mut w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn agent_state_changes_refresh_the_canvas_view(pool: sqlx::PgPool) -> TestResult {
+    let mut w = world(pool).await?;
     w.servers.config.agent_public_base_url = "https://guru.test".to_string();
     w.agents.config.agent_public_base_url = "https://guru.test".to_string();
     w.db.process(PublishAgentRelease {
@@ -465,9 +464,9 @@ async fn agent_state_changes_refresh_the_canvas_view() -> TestResult {
 
 /// An edit in a subcanvas refreshes the parent that imports it: the import
 /// node's ports are the subcanvas's exports, so the parent's picture changed.
-#[tokio::test]
-async fn subcanvas_edit_refreshes_parent_view() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn subcanvas_edit_refreshes_parent_view(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas_named(&w, "root").await?;
     let sub = canvas_named(&w, "sub").await?;
     let import = make_node(
@@ -520,9 +519,9 @@ async fn subcanvas_edit_refreshes_parent_view() -> TestResult {
 
 /// Two watchers of one canvas share a single view: the same `Arc` reaches both,
 /// and the registry drops the key once neither holds a handle.
-#[tokio::test]
-async fn views_are_shared_and_dropped_at_zero() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn views_are_shared_and_dropped_at_zero(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = canvas_named(&w, "prod").await?;
 
     let mut first = w
@@ -559,9 +558,9 @@ async fn views_are_shared_and_dropped_at_zero() -> TestResult {
 
 /// A deleted canvas becomes `Missing`, which is what turns the stream into a
 /// `NOT_FOUND` instead of a silent hang.
-#[tokio::test]
-async fn deleted_canvas_ends_with_missing() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleted_canvas_ends_with_missing(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = canvas_named(&w, "doomed").await?;
     let mut handle = w
         .live
@@ -589,9 +588,9 @@ async fn deleted_canvas_ends_with_missing() -> TestResult {
 
 /// The rollout view follows both halves of a rollout: the derivation that
 /// publishes a revision, and the ack that records it as applied.
-#[tokio::test]
-async fn rollouts_follow_derive_and_ack() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn rollouts_follow_derive_and_ack(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, server) = wired(&w).await?;
 
     let mut handle: ViewHandle<RolloutsLive> = w
@@ -649,9 +648,9 @@ async fn rollouts_follow_derive_and_ack() -> TestResult {
 
 /// A server-health watch opens with the history it was asked for, then sees one
 /// event per accepted report — including the master's own offline flip.
-#[tokio::test]
-async fn server_health_stream_dedupes_and_sees_offline() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, server) = wired(&w).await?;
     w.derive(&canvas).await?;
     let agent = register(&w, &server).await?;
@@ -729,9 +728,9 @@ async fn server_health_stream_dedupes_and_sees_offline() -> TestResult {
 
 /// A node goes `Deploying` when a revision is published and `Ready` when the
 /// worker acks it; a failed pod carries the worker's message.
-#[tokio::test]
-async fn node_health_deploying_then_ready_then_failed() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn node_health_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, server) = wired(&w).await?;
 
     let watch = w
@@ -741,11 +740,9 @@ async fn node_health_deploying_then_ready_then_failed() -> TestResult {
             node: {
                 // The pod node: its health is what a worker's verdict settles.
                 let contents =
-                    w.db.process(
-                        orchestration::entities::surreal::topology::LoadCanvasContents {
-                            canvas: canvas.clone(),
-                        },
-                    )
+                    w.db.process(orchestration::entities::db::topology::LoadCanvasContents {
+                        canvas: canvas.clone(),
+                    })
                     .await?
                     .expect("the canvas exists");
                 contents
@@ -763,11 +760,9 @@ async fn node_health_deploying_then_ready_then_failed() -> TestResult {
     let mut events = watch.events;
     let node_key = {
         let contents =
-            w.db.process(
-                orchestration::entities::surreal::topology::LoadCanvasContents {
-                    canvas: canvas.clone(),
-                },
-            )
+            w.db.process(orchestration::entities::db::topology::LoadCanvasContents {
+                canvas: canvas.clone(),
+            })
             .await?
             .expect("the canvas exists");
         record_key(
@@ -814,11 +809,9 @@ async fn node_health_deploying_then_ready_then_failed() -> TestResult {
     // metadata-only edit would leave the worker nothing to take.
     let exit_id = {
         let contents =
-            w.db.process(
-                orchestration::entities::surreal::topology::LoadCanvasContents {
-                    canvas: canvas.clone(),
-                },
-            )
+            w.db.process(orchestration::entities::db::topology::LoadCanvasContents {
+                canvas: canvas.clone(),
+            })
             .await?
             .expect("the canvas exists");
         contents
@@ -866,9 +859,9 @@ async fn node_health_deploying_then_ready_then_failed() -> TestResult {
 
 /// A canvas view answers a resync by reloading: whatever was written while the
 /// bus was down still reaches the watcher.
-#[tokio::test]
-async fn resync_reloads_a_view_that_missed_its_events() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn resync_reloads_a_view_that_missed_its_events(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = canvas_named(&w, "prod").await?;
     let mut handle: ViewHandle<CanvasLive> = w
         .live
@@ -909,9 +902,9 @@ async fn resync_reloads_a_view_that_missed_its_events() -> TestResult {
 /// imported into a tree: its own match set contains only itself, so the event
 /// published for the *parent* would never reach it and its `ancestors` would
 /// stay empty until the tab was reloaded by hand.
-#[tokio::test]
-async fn importing_a_watched_canvas_refreshes_its_own_view() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn importing_a_watched_canvas_refreshes_its_own_view(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let root = canvas_named(&w, "root").await?;
     let sub = canvas_named(&w, "sub").await?;
 
@@ -959,9 +952,9 @@ async fn importing_a_watched_canvas_refreshes_its_own_view() -> TestResult {
 /// drives it, across more rows than one page holds and with every row sharing a
 /// timestamp — the case a newest-first capped read would silently truncate and
 /// a timestamp-only cursor would collapse to a single record.
-#[tokio::test]
-async fn node_health_recovery_pages_through_identical_timestamps() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn node_health_recovery_pages_through_identical_timestamps(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = canvas_named(&w, "prod").await?;
     let server = make_server(&w, &canvas, "tokyo", "203.0.113.10").await?;
     let pod = make_node(&w, &canvas, "web", pod_on(&server, 443)).await?;

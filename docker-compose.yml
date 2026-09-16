@@ -19,6 +19,36 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
 
+  postgres:
+    image: postgres:18.6-alpine
+    container_name: guru-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: guru
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: guru
+    # Three guru-master processes x a pool of 10, the test runner's throwaway
+    # databases, and manage-tool: a hundred is plenty and is the image default,
+    # pinned so a future default cannot surprise the pools.
+    command: ["postgres", "-c", "max_connections=100"]
+    volumes:
+      # The 18-series image mounts the whole cluster at /var/lib/postgresql
+      # (earlier series used /var/lib/postgresql/data). Mounting the old path on
+      # this image leaves the data on the container's writable layer, lost on
+      # recreate.
+      - ./data/pg:/var/lib/postgresql
+      # Runs once, on first initialisation only: creates the `guru_test` database
+      # `#[sqlx::test]` needs. Never touched again.
+      - ./data/pg-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # POSTGRES_PORT moves the host side off 5432: the box's own PostgreSQL owns it.
+      - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guru -d guru"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   rabbitmq:
     image: rabbitmq:4-alpine
     container_name: guru-rabbitmq

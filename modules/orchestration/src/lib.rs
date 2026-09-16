@@ -8,7 +8,7 @@
 //! ## Module layout
 //!
 //! - [`entities`] — persistence layer. SurrealDB row types plus one `Processor` per
-//!   query in [`entities::surreal`].
+//!   query in [`entities::db`].
 //! - [`services`] — business logic: canvas/server/node/edge CRUD, the topology
 //!   checker, the config deriver, convergence and the worker agent.
 //! - [`rpc`] — the transport edge: the operator `Orchestration` service and the

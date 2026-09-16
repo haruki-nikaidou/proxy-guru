@@ -7,27 +7,27 @@ mod common;
 use base::db::Db;
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::agent_release::{FindAgentRelease, PublishAgentRelease};
-use orchestration::entities::surreal::canvas::{
+use orchestration::entities::db::agent_release::{FindAgentRelease, PublishAgentRelease};
+use orchestration::entities::db::canvas::{
     DeleteCanvasRow, FindCanvasById, ListCanvases, UpdateCanvasMeta,
 };
-use orchestration::entities::surreal::connection::{
+use orchestration::entities::db::connection::{
     ConnectPorts, DeleteEdgeRow, EdgeConnectionId, FindEdgeById,
 };
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::node::{
     CanvasImportConfig, CreateNodeRow, DeleteNodeRow, ExitConfig, FindNodeById, FindNodeWithPorts,
     NodeSpec, PodConfig, UpdateNodeMetaRow, UpdateNodeSpecRow,
 };
-use orchestration::entities::surreal::port::PortId;
-use orchestration::entities::surreal::server::{
+use orchestration::entities::db::port::PortId;
+use orchestration::entities::db::server::{
     ClaimServerWatchSession, DeleteServerRow, FindServerById, FindServerByRefreshKeyDigest,
     ListServersByCanvas, MoveServerPosition, RegisterWorkerSession, ReleaseServerWatchSession,
     RenewServerWatchSession, ServerIpv6Resolve, UpdateServerSettings,
 };
-use orchestration::entities::surreal::topology::{
+use orchestration::entities::db::topology::{
     FindCanvasOfServer, LoadCanvasContents, LoadCanvasTopology,
 };
-use orchestration::entities::surreal::view::{
+use orchestration::entities::db::view::{
     AckServerConfig, FindServerConfigView, ListServerWatchState, TakeInFlight,
 };
 use orchestration::services::OrchestrationError;
@@ -39,9 +39,9 @@ fn exit_spec(dest: &str) -> NodeSpec {
     })
 }
 
-#[tokio::test]
-async fn canvas_crud_round_trip() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn canvas_crud_round_trip(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     assert_eq!(
         sp.process(ListCanvases {
@@ -83,9 +83,9 @@ async fn canvas_crud_round_trip() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     assert_eq!(s.refresh_key_generation, 0);
@@ -154,9 +154,9 @@ async fn creating_a_server_creates_its_empty_config_view() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
 
@@ -294,26 +294,27 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time() -> TestResult
 /// Seeds a `desired` snapshot the way a derivation pass would.
 async fn seed_desired(
     sp: &Db,
-    server: &orchestration::entities::surreal::server::ServerId,
+    server: &orchestration::entities::db::server::ServerId,
     revision: i64,
-) -> Result<(), surrealdb::Error> {
-    sp.raw()
-        .query(
-            "UPDATE orchestration_server_config_view
-                 SET desired = { revision: $revision, toml: $toml, created_at: time::now(), forwardings: [] }
-                 WHERE server = $server",
-        )
-        .bind(("server", server.clone()))
-        .bind(("revision", revision))
-        .bind(("toml", format!("# revision {revision}")))
-        .await?
-        .check()?;
+) -> Result<(), base::db::Error> {
+    let snapshot = orchestration::entities::db::view::ConfigSnapshot {
+        revision,
+        toml: format!("# revision {revision}"),
+        created_at: chrono::Utc::now(),
+        forwardings: Vec::new(),
+        certificates: Vec::new(),
+    };
+    sqlx::query("UPDATE orchestration_server_config_view SET desired = $2 WHERE server = $1")
+        .bind(server)
+        .bind(sqlx::types::Json(&snapshot))
+        .execute(sp.db())
+        .await?;
     Ok(())
 }
 
-#[tokio::test]
-async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn take_in_flight_and_ack_move_the_slots(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 1).await?;
@@ -430,9 +431,11 @@ async fn take_in_flight_and_ack_move_the_slots() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_new_stream_is_offered_what_the_previous_one_never_acked() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 1).await?;
@@ -479,9 +482,9 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked() -> TestResu
     Ok(())
 }
 
-#[tokio::test]
-async fn register_promotes_a_reported_desired_revision() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
@@ -531,9 +534,9 @@ async fn register_promotes_a_reported_desired_revision() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 1).await?;
@@ -591,9 +594,9 @@ async fn register_promotes_a_reported_in_flight_revision() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn register_rejects_an_unknown_running_revision() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn register_rejects_an_unknown_running_revision(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
@@ -639,9 +642,9 @@ async fn register_rejects_an_unknown_running_revision() -> TestResult {
 /// can never end up with a pod whose server is gone. Called directly, as a
 /// racing caller would reach it: the service pre-check runs in an earlier
 /// transaction, so the invariant has to hold inside the delete itself.
-#[tokio::test]
-async fn deleting_a_server_with_a_live_pod_is_refused() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
@@ -680,13 +683,13 @@ async fn deleting_a_server_with_a_live_pod_is_refused() -> TestResult {
 }
 
 /// The pod -> server link is what lets derivation attribute a per-pod failure to
-/// a server, so the schema refuses a link that is dangling or points into another
-/// canvas. Written through the real `CreateNodeRow` path on purpose: the guard
-/// sits on `spec.config.server`, and only the actual `NodeSpec` encoding proves
-/// it guards where the rows really land.
-#[tokio::test]
-async fn a_pod_cannot_reference_a_server_outside_its_tree() -> TestResult {
-    let sp = setup().await?;
+/// a server, so the schema refuses a dangling one: `CreateNodeRow` lifts the
+/// server out of the spec into the `pod_server` foreign key. Written through the
+/// real `CreateNodeRow` path on purpose: only the actual `NodeSpec` encoding
+/// proves the lifted column guards where the rows really land.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_cannot_reference_a_server_that_does_not_exist(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let other = canvas(&sp, "staging").await?;
     let s = server(&sp, &c, "tokyo").await?;
@@ -694,14 +697,15 @@ async fn a_pod_cannot_reference_a_server_outside_its_tree() -> TestResult {
     // A sound reference is accepted...
     node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
 
-    // ...placing a pod in another canvas on this server is not: derivation loads
-    // one tree at a time, so a cross-tree link reads exactly like a missing one.
-    node(&sp, &other, "foreign-pod", pod_spec(&s, 443), pod_ports())
-        .await
-        .expect_err("a pod may not reach into another tree for its server");
+    // Placing a pod in another canvas on this server is the topology checker's
+    // to refuse (`ProblemKind::PodServerForeign`, covered in `topology.rs`):
+    // derivation loads one tree at a time, so a cross-tree link reads exactly
+    // like a missing one, but the row itself is well-formed. What the database
+    // refuses is a link to a server that does not exist...
+    let _ = other;
 
-    // ...and one pointing at a server id no row carries is refused inside
-    // `CreateNodeRow`'s transaction, so nothing is written.
+    // ...so a pod pointing at a server id no row carries fails inside
+    // `CreateNodeRow`'s transaction, and nothing is written.
     let ghost = orchestration::utils::ids::server_id("ghost");
     let spec = NodeSpec::Pod(PodConfig {
         server: ghost,
@@ -730,9 +734,9 @@ async fn a_pod_cannot_reference_a_server_outside_its_tree() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn create_node_writes_node_and_ports_together() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn create_node_writes_node_and_ports_together(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
 
@@ -811,9 +815,9 @@ async fn create_node_writes_node_and_ports_together() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleting_a_node_removes_its_ports_and_edges(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
@@ -847,13 +851,11 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
     );
     assert!(sp.process(FindEdgeById { id: edge.id }).await?.is_none());
     // Unfiltered on purpose: every canvas-scoped port or edge query reaches the
-    // canvas through `owner`/`in`, which dereferences to NONE once the node row
-    // is gone, so rows the cascade orphaned are invisible to them.
-    let mut resp = sp
-        .raw()
-        .query("SELECT VALUE id FROM orchestration_port")
+    // canvas through a join on the node row, so a row the delete left behind
+    // would be invisible to them.
+    let ports_left: Vec<PortId> = sqlx::query_scalar("SELECT id FROM orchestration_port")
+        .fetch_all(sp.db())
         .await?;
-    let ports_left = resp.take::<Vec<PortId>>(0)?;
     assert_eq!(
         ports_left.len(),
         1,
@@ -864,12 +866,12 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
         port_of(&exit, "destination").0,
         "and the port that survives is the untouched node's"
     );
-    let mut resp = sp
-        .raw()
-        .query("SELECT VALUE id FROM orchestration_edge_connection")
-        .await?;
+    let edges_left: Vec<EdgeConnectionId> =
+        sqlx::query_scalar("SELECT id FROM orchestration_edge_connection")
+            .fetch_all(sp.db())
+            .await?;
     assert!(
-        resp.take::<Vec<EdgeConnectionId>>(0)?.is_empty(),
+        edges_left.is_empty(),
         "the edge that hung off those ports is gone from the table too"
     );
     let topology = sp
@@ -889,9 +891,9 @@ async fn deleting_a_node_removes_its_ports_and_edges() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn updating_a_spec_keeps_edges_on_surviving_ports(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
@@ -956,9 +958,9 @@ async fn updating_a_spec_keeps_edges_on_surviving_ports() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_edge_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod = node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
@@ -1012,9 +1014,11 @@ async fn an_edge_write_bumps_the_canvas_generation() -> TestResult {
 /// generation bump alike, and surfaces as a `Conflict`. The end-to-end case
 /// where the pair also jointly breaks a topology invariant lives in
 /// `tests/consistency.rs`.
-#[tokio::test]
-async fn a_second_write_fenced_on_a_superseded_generation_is_rejected() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod1 = node(&sp, &c, "pod1", pod_spec(&s, 443), pod_ports()).await?;
@@ -1094,9 +1098,11 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected() -> TestR
 /// transaction. The target is claimed with a compare-and-set of its own, so an
 /// edit that landed in the target tree after it was read makes the import roll
 /// back rather than merging a stale target.
-#[tokio::test]
-async fn importing_a_target_edited_since_it_was_validated_is_rejected() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn importing_a_target_edited_since_it_was_validated_is_rejected(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let sp = setup(pool);
     let importer = canvas(&sp, "importer").await?;
     let target = canvas(&sp, "target").await?;
 
@@ -1156,9 +1162,9 @@ async fn importing_a_target_edited_since_it_was_validated_is_rejected() -> TestR
     Ok(())
 }
 
-#[tokio::test]
-async fn canvas_contents_render_the_whole_canvas() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn canvas_contents_render_the_whole_canvas(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     node(&sp, &c, "pod", pod_spec(&s, 443), pod_ports()).await?;
@@ -1185,9 +1191,11 @@ async fn canvas_contents_render_the_whole_canvas() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
@@ -1259,9 +1267,11 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn registration_records_the_worker_build_and_keeps_it_when_unreported() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     assert_eq!(s.agent_version, None);
@@ -1312,9 +1322,9 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn agent_release_publish_replaces_the_single_row() -> TestResult {
-    let sp = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn agent_release_publish_replaces_the_single_row(pool: sqlx::PgPool) -> TestResult {
+    let sp = setup(pool);
     assert!(sp.process(FindAgentRelease).await?.is_none());
 
     let first = chrono::Utc::now();

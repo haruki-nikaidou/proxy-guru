@@ -1,11 +1,11 @@
 //! The `WorkerAgent` gRPC service: registration, config streaming,
 //! acknowledgement and health reporting.
 
-use crate::entities::surreal::server::{
+use crate::entities::db::server::{
     ClaimServerWatchSession, FindServerById, ReleaseServerWatchSession, RenewServerWatchSession,
     ReportedAddresses, ServerEntity, ServerId,
 };
-use crate::entities::surreal::view::TakeInFlight;
+use crate::entities::db::view::TakeInFlight;
 use crate::events::live::RolloutScope;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
 use crate::services::agent::{

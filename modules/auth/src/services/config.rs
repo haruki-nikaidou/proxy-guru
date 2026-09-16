@@ -14,7 +14,7 @@
 use crate::config::AuthConfig;
 use crate::services::identity::Identity;
 use crate::utils::rbac::Permission;
-use base::entities::surreal::app_config::{ConfigJson, FindRawConfig};
+use base::entities::db::app_config::{ConfigJson, FindRawConfig};
 use base::services::config::{ConfigError, ConfigStore, StoreConfig, decode, defaults};
 use kanau::processor::Processor;
 
@@ -44,7 +44,7 @@ pub enum AuthConfigError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
-    Database(#[from] surrealdb::Error),
+    Database(#[from] base::db::Error),
 }
 
 impl From<AuthConfigError> for tonic::Status {

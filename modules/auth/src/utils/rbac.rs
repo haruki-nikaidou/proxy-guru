@@ -1,11 +1,11 @@
 //! Role-based access control: the permission model and capability matrix.
 //!
-//! Each [`AccountRole`](crate::entities::surreal::account::AccountRole) maps to
+//! Each [`AccountRole`](crate::entities::db::account::AccountRole) maps to
 //! a fixed set of [`Permission`]s. The mapping is the single source of truth for
 //! "who may do what" and is consulted by the services before any privileged
 //! operation.
 
-use crate::entities::surreal::account::AccountRole;
+use crate::entities::db::account::AccountRole;
 
 /// A discrete capability that a role may or may not hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

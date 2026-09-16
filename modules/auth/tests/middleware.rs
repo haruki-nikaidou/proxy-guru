@@ -3,12 +3,12 @@
 //! The dashboard's error boundary reacts to `UNAUTHENTICATED` by clearing the session cookie
 //! and redirecting to the login page. So the middleware conflating a failed credential lookup
 //! with a rejected one does not merely lose a request: it logs the operator out. That
-//! happened fifteen times in three days on the live control plane, every time the shared
-//! database connection came back from a reconnect without its namespace.
+//! happened fifteen times in three days on the live control plane, back when the shared
+//! database connection could come back from a reconnect half-configured.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
-use auth::entities::surreal::account::{AccountRole, CreateAccount};
+use auth::entities::db::account::{AccountRole, CreateAccount};
 use auth::rpc::middleware::{AuthLayer, SESSION_ID_METADATA, from_request};
 use auth::services::api_key::ApiKeyService;
 use auth::services::session::{Login, LoginResult, SessionService};
@@ -16,25 +16,11 @@ use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use base::db::Db;
 use kanau::processor::Processor;
 use std::convert::Infallible;
-use std::time::Duration;
 use tonic::codegen::Service;
 use tonic::codegen::http;
 use tower::Layer;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-/// A fresh in-memory database with the auth schema applied, bounded as given.
-async fn database(limit: Duration) -> Result<Db, Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let db = Db::new(db).with_timeout(limit);
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/auth.surql"
-    ))?;
-    db.raw().query(ddl).await?.check()?;
-    Ok(db)
-}
 
 fn services(db: &Db) -> (SessionService, ApiKeyService) {
     (
@@ -92,9 +78,9 @@ async fn login(db: &Db) -> Result<String, Box<dyn std::error::Error>> {
     }
 }
 
-#[tokio::test]
-async fn a_valid_session_resolves() -> TestResult {
-    let db = database(Duration::from_secs(10)).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_valid_session_resolves(pool: sqlx::PgPool) -> TestResult {
+    let db = Db::new(pool);
     let session_id = login(&db).await?;
     verdict(&db, &session_id)
         .await
@@ -103,9 +89,9 @@ async fn a_valid_session_resolves() -> TestResult {
 }
 
 /// The one case that may log somebody out: the credential was judged, and rejected.
-#[tokio::test]
-async fn an_unknown_session_is_unauthenticated() -> TestResult {
-    let db = database(Duration::from_secs(10)).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_unknown_session_is_unauthenticated(pool: sqlx::PgPool) -> TestResult {
+    let db = Db::new(pool);
     login(&db).await?;
     let status = verdict(&db, "nosuchsession")
         .await
@@ -116,23 +102,23 @@ async fn an_unknown_session_is_unauthenticated() -> TestResult {
 
 /// The case that must **not** log anybody out.
 ///
-/// A handle whose connection has no namespace selected answers every query with "Specify a
-/// namespace to use" — the exact error the live control plane logs when its shared
-/// connection comes back from a reconnect, and the one that was costing operators their
-/// sessions. It says nothing about whether the session is valid, so the answer is
-/// `UNAVAILABLE` and the dashboard keeps the cookie.
-///
-/// The middleware treats a lookup that times out identically. That branch is not reproduced
-/// here — a connection that accepts and then answers nothing cannot be stood up from a test
-/// without a fake server — but the bound that produces it is proven in `base`'s own tests
-/// against a query that really blocks.
-#[tokio::test]
-async fn a_database_that_fails_the_lookup_keeps_the_session() -> TestResult {
-    let db = database(Duration::from_secs(10)).await?;
+/// A pool pointed at a database that does not exist fails every lookup before it can say
+/// anything about the session, so the answer is `UNAVAILABLE` and the dashboard keeps the
+/// cookie. A statement the server cancels at `statement_timeout` takes the same path; that
+/// the cancellation is classified as unavailable is proven in `base`'s own tests.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_database_that_fails_the_lookup_keeps_the_session(pool: sqlx::PgPool) -> TestResult {
+    let db = Db::new(pool);
     let session_id = login(&db).await?;
 
-    let stateless = Db::new(surrealdb::engine::any::connect("mem://").await?);
-    let status = verdict(&stateless, &session_id)
+    let unreachable = sqlx::postgres::PgPoolOptions::new().connect_lazy_with(
+        db.db()
+            .connect_options()
+            .as_ref()
+            .clone()
+            .database("guru_no_such_database"),
+    );
+    let status = verdict(&Db::new(unreachable), &session_id)
         .await
         .expect_err("the lookup cannot succeed");
     assert_eq!(

@@ -4,8 +4,8 @@ use base::db::Db;
 use chrono::Utc;
 use kanau::processor::Processor;
 
-use crate::entities::surreal::account::{AccountRole, FindAccountById};
-use crate::entities::surreal::api_key::{
+use crate::entities::db::account::{AccountRole, FindAccountById};
+use crate::entities::db::api_key::{
     ApiKeyId, ApiKeyOmitSecret, CreateNewApiKey, DeleteApiKey, FindApiKeyByDigest, FindApiKeyById,
     ListApiKeysByOwner,
 };
@@ -93,7 +93,7 @@ impl Processor<RevokeApiKey> for ApiKeyService {
             })
             .await?
             .ok_or(wakuwaku::Error::NotFound)?;
-        let owns = key.owner.0 == input.actor.account_id.0;
+        let owns = key.owner == input.actor.account_id;
         if !owns && input.actor.role != AccountRole::Admin {
             return Err(wakuwaku::Error::PermissionsDenied);
         }

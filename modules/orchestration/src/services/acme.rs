@@ -16,19 +16,19 @@
 //! failure.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::certificate::{
+use crate::entities::db::certificate::{
     CertificateEntity, CertificateId, CertificateStatus, DeleteCertificateRow, EnsureCertificate,
     FindCertificateById, ListCanvasesUsingSni, ListCertificates as ListCertificatesRow,
     ListTlsRequests, MarkCertificateAttemptFailed, RetryCertificateRow, StoreIssuedCertificate,
     TouchCanvases,
 };
-use crate::entities::surreal::dns::{DnsProvider, DnsProviderEntity, FindDnsProviderById};
+use crate::entities::db::dns::{DnsProvider, DnsProviderEntity, FindDnsProviderById};
 use crate::events::live::LiveMessage;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
 use crate::utils::ids::record_key;
 use crate::utils::secret::{SecretError, SecretKey};
-use auth::entities::surreal::account::AccountRole;
+use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;

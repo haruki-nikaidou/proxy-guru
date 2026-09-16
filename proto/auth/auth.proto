@@ -4,7 +4,7 @@ package guru.auth;
 
 import "base/config.proto";
 
-// Account roles, mirroring `auth::entities::surreal::account::AccountRole`.
+// Account roles, mirroring `auth::entities::db::account::AccountRole`.
 enum Role {
   ROLE_UNSPECIFIED = 0;
   ADMIN = 1;

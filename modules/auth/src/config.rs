@@ -7,7 +7,7 @@
 //! '<json>'` changes them, and the new value takes effect when the masters
 //! restart.
 
-use base::entities::surreal::app_config::ConfigJson;
+use base::entities::db::app_config::ConfigJson;
 use serde::{Deserialize, Serialize};
 
 /// Tunable authentication settings.

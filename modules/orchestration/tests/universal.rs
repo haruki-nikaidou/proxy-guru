@@ -8,17 +8,17 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::canvas::CanvasId;
-use orchestration::entities::surreal::connection::EdgeConnectionEntity;
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::CanvasId;
+use orchestration::entities::db::connection::EdgeConnectionEntity;
+use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, FindNodeWithPorts, LaneRole, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeId, NodeSpec, NodeWithPorts, PodConfig,
     RelayProtocol,
 };
-use orchestration::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
-use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
-use orchestration::entities::surreal::view::{
+use orchestration::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
+use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::topology::{CanvasTopology, LoadCanvasTopology};
+use orchestration::entities::db::view::{
     AckServerConfig, ListStaleCanvases, ListenProtocol, TakeInFlight,
 };
 use orchestration::services::OrchestrationError;
@@ -205,12 +205,12 @@ fn distributor(mode: LoadBalanceMode, protocol: RelayProtocol) -> NodeSpec {
     distributor_with(mode, protocol, &["m1", "m2"])
 }
 
-fn members(names: &[&str]) -> Vec<orchestration::entities::surreal::node::LoadBalanceMember> {
+fn members(names: &[&str]) -> Vec<orchestration::entities::db::node::LoadBalanceMember> {
     names
         .iter()
         .enumerate()
         .map(
-            |(i, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+            |(i, name)| orchestration::entities::db::node::LoadBalanceMember {
                 slot: u32::try_from(i + 1).unwrap(),
                 name: (*name).to_string(),
             },
@@ -412,9 +412,9 @@ async fn disconnect(w: &World, edge: &EdgeConnectionEntity) -> Result<(), Orches
 /// fan-out and two relays per channel on the distributor's side, one landing
 /// pod per channel per transit server, and one join per channel at the
 /// aggregator. The aggregator's channel ports carry the channels' ordinals.
-#[tokio::test]
-async fn the_picture_expands_into_lanes() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn the_picture_expands_into_lanes(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let lanes = lanes(&w, &p.canvas).await;
     assert_eq!(count(&lanes, LaneRole::Distribute), 2, "{lanes:#?}");
@@ -484,9 +484,9 @@ async fn the_picture_expands_into_lanes() -> TestResult {
 
 /// Lanes are diffed by key: an edit elsewhere on the canvas, or cutting and
 /// redrawing an exit, leaves every lane row and every landing port in place.
-#[tokio::test]
-async fn unrelated_edits_keep_lane_identity() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn unrelated_edits_keep_lane_identity(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let before = lanes(&w, &p.canvas).await;
 
@@ -507,9 +507,9 @@ async fn unrelated_edits_keep_lane_identity() -> TestResult {
 /// Changing the distributor's mode rewrites the fan-out lanes in place;
 /// changing its protocol re-rolls every landing port (a listener cannot change
 /// protocol) while the lane rows keep their identity.
-#[tokio::test]
-async fn distributor_edits_flow_into_the_lanes() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn distributor_edits_flow_into_the_lanes(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let before = lanes(&w, &p.canvas).await;
 
@@ -563,9 +563,9 @@ async fn distributor_edits_flow_into_the_lanes() -> TestResult {
 }
 
 /// A landing pod's port is the operator's to change; the reconciler keeps it.
-#[tokio::test]
-async fn a_landing_port_edit_survives_reconciliation() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_landing_port_edit_survives_reconciliation(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let lanes_before = lanes(&w, &p.canvas).await;
     let (key, landing) = lanes_before
@@ -613,9 +613,9 @@ async fn a_landing_port_edit_survives_reconciliation() -> TestResult {
 /// Cutting the bundle to one transit server takes that server's landing pods and
 /// relays away and collapses each fan-out into a direct edge; cutting a channel
 /// takes every lane of that channel, and the aggregator's port for it, away.
-#[tokio::test]
-async fn disconnects_shrink_the_expansion() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn disconnects_shrink_the_expansion(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let topology = topology(&w, &p.canvas).await;
     let ud_to_hk2 = edges_touching(&topology, &p.ud)
@@ -687,9 +687,9 @@ async fn disconnects_shrink_the_expansion() -> TestResult {
 }
 
 /// Retiring an entry pod that is a channel retires the channel.
-#[tokio::test]
-async fn retiring_a_channel_pod_retires_its_lanes() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn retiring_a_channel_pod_retires_its_lanes(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     w.nodes
         .process(RetireNode {
@@ -711,9 +711,9 @@ async fn retiring_a_channel_pod_retires_its_lanes() -> TestResult {
 
 /// The generated side is not the operator's: lanes, wired universal nodes, a
 /// universal pod and a server that still lands channels all refuse.
-#[tokio::test]
-async fn managed_things_refuse_manual_edits() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn managed_things_refuse_manual_edits(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let lanes_now = lanes(&w, &p.canvas).await;
     let lane = lanes_now.values().next().unwrap();
@@ -765,9 +765,9 @@ async fn managed_things_refuse_manual_edits() -> TestResult {
 }
 
 /// A handle connect only accepts the two shapes it exists for.
-#[tokio::test]
-async fn handle_connects_are_checked() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn handle_connects_are_checked(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let invalid = |r: Result<EdgeConnectionEntity, OrchestrationError>| {
         let err = r.expect_err("refused");
@@ -851,9 +851,9 @@ async fn handle_connects_are_checked() -> TestResult {
 /// A distributor with channels but no bundle, and a universal pod with a bundle
 /// in but nothing out, are half-drawn: warnings, not errors, and no lanes past
 /// the point where the drawing stops.
-#[tokio::test]
-async fn half_drawn_pictures_warn() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn half_drawn_pictures_warn(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = w
         .canvases
         .process(orchestration::services::canvas::CreateCanvas {
@@ -912,9 +912,9 @@ async fn half_drawn_pictures_warn() -> TestResult {
 
 /// A chain of universal pods (hk1 -> hk2 -> aggregator) relays through: the
 /// second hop lands the channel again and dials back into the first.
-#[tokio::test]
-async fn universal_pods_chain() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn universal_pods_chain(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = w
         .canvases
         .process(orchestration::services::canvas::CreateCanvas {
@@ -1049,9 +1049,9 @@ async fn settle(
 /// What the workers get: the entry server load-balances each channel over both
 /// transit servers' landing pods, and each transit server serves its two landing
 /// pods straight to the exits.
-#[tokio::test]
-async fn the_picture_derives_the_flat_fabric() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn the_picture_derives_the_flat_fabric(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     settle(&w, &p.canvas, &[&p.us, &p.hk1, &p.hk2]).await?;
 
@@ -1129,9 +1129,9 @@ async fn the_picture_derives_the_flat_fabric() -> TestResult {
 /// port and changes nothing else; removing a wired one is refused; the counted
 /// layout and a bad list are refused outright. The aggregate node's members
 /// behave the same.
-#[tokio::test]
-async fn members_are_the_operators_rule() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn members_are_the_operators_rule(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     let before = lanes(&w, &p.canvas).await;
     let m1 = port_of(&p.ud, "member_1");
@@ -1144,7 +1144,7 @@ async fn members_are_the_operators_rule() -> TestResult {
             members: names
                 .into_iter()
                 .map(
-                    |(slot, name)| orchestration::entities::surreal::node::LoadBalanceMember {
+                    |(slot, name)| orchestration::entities::db::node::LoadBalanceMember {
                         slot,
                         name: name.to_string(),
                     },
@@ -1302,9 +1302,9 @@ async fn members_are_the_operators_rule() -> TestResult {
 /// An entry pod drawn straight into a server's universal pod is a raw TCP hop
 /// of its own: one landing pod and one relay, no balancing, and the channel
 /// then travels on like any bundled one.
-#[tokio::test]
-async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_thin_line_lands_a_channel_on_one_server(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = w
         .canvases
         .process(orchestration::services::canvas::CreateCanvas {
@@ -1390,9 +1390,9 @@ async fn a_thin_line_lands_a_channel_on_one_server() -> TestResult {
 /// A distribute node bundled *into* fans everything it receives out again: the
 /// second tier gets one fan-out per upstream server, and the aggregate node at
 /// the end joins every landing pod of a channel.
-#[tokio::test]
-async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_second_tier_fans_out_per_upstream_server(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     // Cut the two first-tier servers loose from the aggregate node and route
     // them through a second distribute node onto two more servers.
@@ -1517,9 +1517,9 @@ async fn a_second_tier_fans_out_per_upstream_server() -> TestResult {
 
 /// A distribute node bundled to another one nests strategies: a fallback over
 /// two round-robin groups derives as one nested load-balance tree.
-#[tokio::test]
-async fn nested_distribute_nodes_nest_strategies() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn nested_distribute_nodes_nest_strategies(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let canvas = w
         .canvases
         .process(orchestration::services::canvas::CreateCanvas {
@@ -1642,9 +1642,9 @@ async fn nested_distribute_nodes_nest_strategies() -> TestResult {
 /// The bundle out of a distribute node carries everything that came in: two
 /// channels by bundle from an upstream server plus one drawn in directly land
 /// as three pods on every server it bundles to.
-#[tokio::test]
-async fn bundles_and_thin_lines_add_up() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn bundles_and_thin_lines_add_up(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let p = picture(&w).await;
     // hk1 carries the two channels; a new distribute node takes hk1's bundle
     // plus a third entry pod, and bundles to hk2 only.

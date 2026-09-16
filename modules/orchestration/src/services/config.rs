@@ -17,7 +17,7 @@ use crate::config::OrchestrationConfig;
 use crate::services::OrchestrationError;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
-use base::entities::surreal::app_config::{ConfigJson, FindRawConfig};
+use base::entities::db::app_config::{ConfigJson, FindRawConfig};
 use base::services::config::{ConfigError, ConfigStore, StoreConfig, decode, defaults};
 use kanau::processor::Processor;
 

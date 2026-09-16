@@ -35,8 +35,7 @@ RUN cargo build --release -p guru-master && \
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 COPY --from=builder /guru-master /usr/local/bin/guru-master
 
-# Required at run time, no sane default: SURREALDB_NAMESPACE, SURREALDB_NAME,
-# and AMQP_URI. The broker is required in *every* mode — periodic work is a
+# Required at run time, no sane default: GURU_DATABASE_URL and AMQP_URI. The broker is required in *every* mode — periodic work is a
 # message, so a broker outage stalls derivation, liveness and renewal until it
 # returns.
 ENV GURU_WORKER_MODE="dashboard_grpc"

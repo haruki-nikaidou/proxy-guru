@@ -10,17 +10,17 @@ mod mem;
 use guru_worker_config::{ForwardingTo, ListenAs, RelayHost, TlsHostConfig};
 use mem::*;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::ca::{RelayCertificateEntity, relay_sni};
-use orchestration::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::ca::{RelayCertificateEntity, relay_sni};
+use orchestration::entities::db::certificate::{CertificateEntity, CertificateStatus};
+use orchestration::entities::db::node::{
     CanvasExportAs, EntryConfig, ExitConfig, LoadBalanceAggregateConfig,
     LoadBalanceDistributeConfig, LoadBalanceMode, NodeSpec, PodConfig, ProxyProtocolVersion,
     RelayConfig, RelayProtocol, TlsConfig,
 };
-use orchestration::entities::surreal::port::PortKind;
-use orchestration::entities::surreal::server::ServerId;
-use orchestration::entities::surreal::topology::CanvasTopology;
-use orchestration::entities::surreal::view::{
+use orchestration::entities::db::port::PortKind;
+use orchestration::entities::db::server::ServerId;
+use orchestration::entities::db::topology::CanvasTopology;
+use orchestration::entities::db::view::{
     CertificateKind, CertificateRef, InvalidPod, ListenProtocol,
 };
 use orchestration::services::derive::{

@@ -23,7 +23,7 @@
 //! The hub only mirrors that state so a fenced-out stream dies immediately instead
 //! of at the next poll. The database, not this process, is the source of truth.
 
-use crate::entities::surreal::view::{ListServerWatchState, ServerWatchState};
+use crate::entities::db::view::{ListServerWatchState, ServerWatchState};
 use crate::utils::ids::record_key;
 use base::db::Db;
 use kanau::processor::Processor;
@@ -197,7 +197,7 @@ impl WatchHub {
         }
     }
 
-    pub(crate) fn watched_servers(&self) -> Vec<crate::entities::surreal::server::ServerId> {
+    pub(crate) fn watched_servers(&self) -> Vec<crate::entities::db::server::ServerId> {
         let entries = match self.entries.lock() {
             Ok(entries) => entries,
             Err(poisoned) => poisoned.into_inner(),

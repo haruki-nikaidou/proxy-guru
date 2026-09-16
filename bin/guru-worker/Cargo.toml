@@ -49,7 +49,7 @@ auth = { path = "../../modules/auth" }
 base = { path = "../../modules/base" }
 wakuwaku = { workspace = true }
 kanau = { workspace = true }
-surrealdb = { workspace = true, features = ["kv-mem"] }
+sqlx = { workspace = true }
 tower = { workspace = true }
 rcgen = { workspace = true }
 chrono = { workspace = true }

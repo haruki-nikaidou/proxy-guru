@@ -5,22 +5,22 @@
 
 mod common;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, DurationRound, TimeDelta, Utc};
 use common::*;
 use guru_worker_config::{Config, ForwardingTo, Remote};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::health::{
+use orchestration::entities::db::health::{
     InsertServerHealthRecord, ListNodeHealthHistory, ListServerHealthHistory, NewNodeHealthRecord,
     NodeHealthRecordEntity, NodeHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, LoadBalanceAggregateConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig,
 };
-use orchestration::entities::surreal::server::{
+use orchestration::entities::db::server::{
     FindServerById, RenewServerWatchSession, ServerEntity, ServerId, ServerIpv6Resolve,
 };
-use orchestration::entities::surreal::view::{ListStaleCanvases, TakeInFlight};
+use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::SweepLivenessSignal;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::services::OrchestrationError;
@@ -95,8 +95,8 @@ async fn create_with(
 
 async fn connect(
     w: &World,
-    output: orchestration::entities::surreal::port::PortId,
-    input: orchestration::entities::surreal::port::PortId,
+    output: orchestration::entities::db::port::PortId,
+    input: orchestration::entities::db::port::PortId,
 ) -> Result<(), OrchestrationError> {
     w.edges
         .process(Connect {
@@ -119,10 +119,10 @@ async fn wire(
     connect(w, port_of(exit, "destination"), port_of(pod, "destination")).await
 }
 
-type CanvasId = orchestration::entities::surreal::canvas::CanvasId;
+type CanvasId = orchestration::entities::db::canvas::CanvasId;
 // Kept as a name for the third tuple element, now the server id (addresses live
 // on the server).
-type ServerIpRecordId = orchestration::entities::surreal::server::ServerId;
+type ServerIpRecordId = orchestration::entities::db::server::ServerId;
 
 /// A canvas with one server carrying one IP; the topology goes on top.
 async fn base(
@@ -355,9 +355,11 @@ fn destination_of(config: &Config, tag: &str) -> Remote {
     }
 }
 
-#[tokio::test]
-async fn a_report_records_the_server_and_every_node_the_pods_carry() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_report_records_the_server_and_every_node_the_pods_carry(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -401,9 +403,9 @@ async fn a_report_records_the_server_and_every_node_the_pods_carry() -> TestResu
 
 /// The master recorded revision 1 as applied; a worker that says it runs
 /// something else is out of sync, whatever the pods say.
-#[tokio::test]
-async fn a_report_with_a_stale_running_revision_is_degraded() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_report_with_a_stale_running_revision_is_degraded(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     let applied = take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -427,9 +429,11 @@ async fn a_report_with_a_stale_running_revision_is_degraded() -> TestResult {
 
 /// Two pods feeding one exit through an aggregate: the aggregate and the exit
 /// get exactly one row per event, carrying the worst of the two pods' verdicts.
-#[tokio::test]
-async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, server, ip) = base(&w).await?;
     let web = create(&w, &canvas, "web", pod_spec_on(&ip, 443)).await?;
     let web_in = create(&w, &canvas, "web-in", entry_spec()).await?;
@@ -437,14 +441,14 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
     let api_in = create(&w, &canvas, "api-in", entry_spec()).await?;
     // A thin aggregate, laid out the way the expansion lays out its lanes (an
     // operator's aggregate node takes bundles on named members instead).
-    let thin = |key: &str, direction, position| orchestration::entities::surreal::node::NewPort {
-        kind: orchestration::entities::surreal::port::PortKind::DeriveDestination,
+    let thin = |key: &str, direction, position| orchestration::entities::db::node::NewPort {
+        kind: orchestration::entities::db::port::PortKind::DeriveDestination,
         direction,
         key: key.to_string(),
         position,
     };
     let agg =
-        w.db.process(orchestration::entities::surreal::node::CreateNodeRow {
+        w.db.process(orchestration::entities::db::node::CreateNodeRow {
             canvas: canvas.clone(),
             name: "agg".to_string(),
             comment: String::new(),
@@ -453,17 +457,17 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
             ports: vec![
                 thin(
                     "source",
-                    orchestration::entities::surreal::port::PortDirection::Input,
+                    orchestration::entities::db::port::PortDirection::Input,
                     0,
                 ),
                 thin(
                     "copy_0",
-                    orchestration::entities::surreal::port::PortDirection::Output,
+                    orchestration::entities::db::port::PortDirection::Output,
                     1,
                 ),
                 thin(
                     "copy_1",
-                    orchestration::entities::surreal::port::PortDirection::Output,
+                    orchestration::entities::db::port::PortDirection::Output,
                     2,
                 ),
             ],
@@ -516,9 +520,11 @@ async fn a_node_shared_by_two_pods_gets_one_row_with_the_worst_verdict() -> Test
     Ok(())
 }
 
-#[tokio::test]
-async fn a_revision_refused_as_a_whole_fails_every_pod_at_ack_time() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_revision_refused_as_a_whole_fails_every_pod_at_ack_time(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     let row = server_row(&w, &f.server).await;
@@ -559,9 +565,11 @@ async fn a_revision_refused_as_a_whole_fails_every_pod_at_ack_time() -> TestResu
     Ok(())
 }
 
-#[tokio::test]
-async fn a_report_from_a_superseded_session_is_refused_and_records_nothing() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_report_from_a_superseded_session_is_refused_and_records_nothing(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     let stale = AgentIdentity {
@@ -589,9 +597,11 @@ async fn a_report_from_a_superseded_session_is_refused_and_records_nothing() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn a_pod_whose_desired_entry_changed_is_deploying_until_applied() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_whose_desired_entry_changed_is_deploying_until_applied(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -634,9 +644,11 @@ async fn a_pod_whose_desired_entry_changed_is_deploying_until_applied() -> TestR
     Ok(())
 }
 
-#[tokio::test]
-async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -775,9 +787,9 @@ async fn a_partial_apply_keeps_the_failed_pods_old_shape_and_degrades_the_server
     Ok(())
 }
 
-#[tokio::test]
-async fn an_ack_must_name_every_pod_of_the_revision_exactly_once() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_ack_must_name_every_pod_of_the_revision_exactly_once(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     let row = server_row(&w, &f.server).await;
@@ -819,9 +831,9 @@ async fn an_ack_must_name_every_pod_of_the_revision_exactly_once() -> TestResult
     Ok(())
 }
 
-#[tokio::test]
-async fn silence_past_the_threshold_marks_the_server_offline() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -902,9 +914,11 @@ async fn silence_past_the_threshold_marks_the_server_offline() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
@@ -950,12 +964,13 @@ async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn retention_deletes_only_records_older_than_their_ttl() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
-    let now = Utc::now();
+    // `timestamptz` keeps microseconds; a nanosecond `now` would not round-trip.
+    let now = Utc::now().duration_trunc(TimeDelta::microseconds(1))?;
     let insert = async |report_time: DateTime<Utc>| {
         w.db.process(InsertServerHealthRecord {
             server: f.server.clone(),
@@ -1038,10 +1053,11 @@ fn signal(tick: DateTime<Utc>) -> SweepLivenessSignal {
 /// the same pass reaches the consumers repeatedly. Both fences of the run claim
 /// are load-bearing, and this is the only place the pass is observed through the
 /// hook rather than the service.
-#[tokio::test]
-async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_tick() -> TestResult
-{
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_tick(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     backdate_report(&w, &f, agent.generation).await;
@@ -1110,9 +1126,9 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
 /// Two consumers handed the same signal at the same moment: one runs, the other
 /// finds the run claimed. Without this, a horizontally scaled consumer would run
 /// every pass as many times as it has instances.
-#[tokio::test]
-async fn two_consumers_handed_one_signal_run_the_pass_once() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_consumers_handed_one_signal_run_the_pass_once(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     backdate_report(&w, &f, agent.generation).await;
@@ -1195,7 +1211,7 @@ async fn five_servers(
 }
 
 async fn canvas_generation(w: &World, canvas: &CanvasId) -> i64 {
-    w.db.process(orchestration::entities::surreal::canvas::FindCanvasById { id: canvas.clone() })
+    w.db.process(orchestration::entities::db::canvas::FindCanvasById { id: canvas.clone() })
         .await
         .unwrap()
         .unwrap()
@@ -1209,9 +1225,9 @@ async fn is_stale(w: &World, canvas: &CanvasId) -> Result<bool, Box<dyn std::err
 /// Workers apply one revision within the same instant and all acknowledge at
 /// once. Every ack must land: an ack writes only its own server's rows, so
 /// there is no shared row for five of them to collide on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn five_workers_acking_at_once_all_land() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn five_workers_acking_at_once_all_land(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, servers) = five_servers(&w).await?;
     let mut acks = Vec::new();
     for (server, pod) in &servers {
@@ -1273,9 +1289,9 @@ async fn five_workers_acking_at_once_all_land() -> TestResult {
 
 /// Five workers registering in the same instant all get their session: like an
 /// ack, a registration writes only its own server's rows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn five_workers_registering_at_once_all_land() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn five_workers_registering_at_once_all_land(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (_canvas, servers) = five_servers(&w).await?;
     let mut handles = Vec::new();
     for (server, _) in &servers {
@@ -1308,9 +1324,9 @@ async fn five_workers_registering_at_once_all_land() -> TestResult {
 /// A deleted server takes its view row, and its share of the staleness
 /// counter, with it. The canvas still reads as stale, because deleting a server
 /// is an edit and edits bump the generation: nothing a worker did is hidden.
-#[tokio::test]
-async fn deleting_a_server_after_an_ack_keeps_the_canvas_stale() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn deleting_a_server_after_an_ack_keeps_the_canvas_stale(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let (canvas, servers) = five_servers(&w).await?;
     let mut agents = Vec::new();
     for (server, pod) in &servers {

@@ -21,11 +21,11 @@
 //! the operator draws; anything that a later edit can complete belongs in the
 //! per-pod report instead.
 
-use crate::entities::surreal::connection::{EdgeConnectionEntity, EdgeConnectionId};
-use crate::entities::surreal::node::{NodeEntity, NodeId, NodeSpec, NodeWithPorts, RelayProtocol};
-use crate::entities::surreal::port::{PortDirection, PortEntity, PortId, PortKind};
-use crate::entities::surreal::server::{ServerEntity, ServerId, ServerIpv6Resolve};
-use crate::entities::surreal::topology::CanvasTopology;
+use crate::entities::db::connection::{EdgeConnectionEntity, EdgeConnectionId};
+use crate::entities::db::node::{NodeEntity, NodeId, NodeSpec, NodeWithPorts, RelayProtocol};
+use crate::entities::db::port::{PortDirection, PortEntity, PortId, PortKind};
+use crate::entities::db::server::{ServerEntity, ServerId, ServerIpv6Resolve};
+use crate::entities::db::topology::CanvasTopology;
 use crate::services::node::{export_port_direction, import_port_layout};
 use crate::services::universal::{self, UniversalPort};
 use crate::utils::ids::record_key;
@@ -733,7 +733,7 @@ fn bundle_edge_problem(
 /// Whether the hand-drawn ports of a load-balance node are exactly its declared
 /// members: one bundle port per member, keyed by slot, in the order listed.
 fn members_shape_ok(
-    members: &[crate::entities::surreal::node::LoadBalanceMember],
+    members: &[crate::entities::db::node::LoadBalanceMember],
     ports: &[&PortEntity],
     direction: PortDirection,
 ) -> bool {
@@ -1203,7 +1203,7 @@ fn iphash_reachable(index: &Index<'_>, node: &NodeWithPorts, depth: usize) -> bo
     }
     match &node.node.spec {
         NodeSpec::LoadBalanceDistribute(cfg) => {
-            if cfg.mode == crate::entities::surreal::node::LoadBalanceMode::IpHash {
+            if cfg.mode == crate::entities::db::node::LoadBalanceMode::IpHash {
                 return true;
             }
             manual_inputs(node)

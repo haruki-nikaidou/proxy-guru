@@ -1,6 +1,6 @@
 //! The authenticated principal shared across services and the transport edge.
 
-use crate::entities::surreal::account::{AccountId, AccountRole};
+use crate::entities::db::account::{AccountId, AccountRole};
 use crate::utils::rbac::Permission;
 
 /// An authenticated caller: which account, its current role, and how it proved

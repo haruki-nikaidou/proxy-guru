@@ -1,13 +1,13 @@
-//! End-to-end authentication + RBAC flow against an in-memory SurrealDB.
+//! End-to-end authentication + RBAC flow against a real PostgreSQL database.
 //!
-//! These tests apply the module's real schema (`database/schema/auth.surql`) to
-//! a `mem://` instance, then exercise the services exactly as the RPC edge would.
+//! `#[sqlx::test]` gives every test a fresh, migrated database; the services are
+//! then exercised exactly as the RPC edge would.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use auth::config::AuthConfig;
-use auth::entities::surreal::account::{AccountRole, CreateAccount};
-use auth::entities::surreal::session::FindSessionById;
+use auth::entities::db::account::{AccountRole, CreateAccount};
+use auth::entities::db::session::FindSessionById;
 use auth::services::account::{
     AccountService, ChangeOwnPassword, ChangePasswordResult, RegisterAccount, RegisterResult,
     SetAccountRole,
@@ -22,20 +22,9 @@ use kanau::processor::Processor;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// Connect to a fresh in-memory database, apply the schema, and build services.
-async fn setup()
--> Result<(Db, AccountService, SessionService, ApiKeyService), Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let sp = Db::new(db);
-
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/auth.surql"
-    ))?;
-    // `.check()` surfaces any per-statement error from applying the schema.
-    sp.raw().query(ddl).await?.check()?;
-
+/// Build the services over the test's database.
+fn setup(pool: sqlx::PgPool) -> (Db, AccountService, SessionService, ApiKeyService) {
+    let sp = Db::new(pool);
     let hasher = Argon2PasswordAlgorithm::default();
     let accounts = AccountService {
         db: sp.clone(),
@@ -48,11 +37,11 @@ async fn setup()
     };
     let api_keys = ApiKeyService { db: sp.clone() };
 
-    Ok((sp, accounts, sessions, api_keys))
+    (sp, accounts, sessions, api_keys)
 }
 
 fn session_identity(
-    account_id: auth::entities::surreal::account::AccountId,
+    account_id: auth::entities::db::account::AccountId,
     role: AccountRole,
 ) -> Identity {
     Identity {
@@ -62,9 +51,9 @@ fn session_identity(
     }
 }
 
-#[tokio::test]
-async fn full_auth_flow() -> TestResult {
-    let (sp, accounts, sessions, api_keys) = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
+    let (sp, accounts, sessions, api_keys) = setup(pool);
     let hasher = Argon2PasswordAlgorithm::default();
 
     // 1. Bootstrap an admin directly via the entity layer.
@@ -270,9 +259,11 @@ async fn full_auth_flow() -> TestResult {
 /// Authenticating slides the idle deadline, but records the slide only once it
 /// is stale: a burst of requests on one session must not be a burst of writes
 /// to one row.
-#[tokio::test]
-async fn activity_is_recorded_once_per_slack_not_once_per_request() -> TestResult {
-    let (sp, _accounts, sessions, _api_keys) = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn activity_is_recorded_once_per_slack_not_once_per_request(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let (sp, _accounts, sessions, _api_keys) = setup(pool);
     let hasher = Argon2PasswordAlgorithm::default();
     sp.process(CreateAccount {
         email: "op@example.com".to_string(),
@@ -316,12 +307,11 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request() -> TestResul
 
     // Stale record: the next authentication brings it forward.
     let backdated = at_login - chrono::Duration::minutes(5);
-    sp.raw()
-        .query("UPDATE type::record('auth_session', $id) SET last_active_at = $at")
-        .bind(("id", token.clone()))
-        .bind(("at", backdated))
-        .await?
-        .check()?;
+    sqlx::query("UPDATE auth_session SET last_active_at = $2 WHERE id = $1")
+        .bind(&token)
+        .bind(backdated)
+        .execute(sp.db())
+        .await?;
     assert!(
         sessions
             .process(AuthenticateSession {
@@ -335,12 +325,11 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request() -> TestResul
     // Idle past the deadline: rejected, and the row is gone.
     let expired =
         at_login - chrono::Duration::seconds(AuthConfig::default().session_idle_ttl_secs + 1);
-    sp.raw()
-        .query("UPDATE type::record('auth_session', $id) SET last_active_at = $at")
-        .bind(("id", token.clone()))
-        .bind(("at", expired))
-        .await?
-        .check()?;
+    sqlx::query("UPDATE auth_session SET last_active_at = $2 WHERE id = $1")
+        .bind(&token)
+        .bind(expired)
+        .execute(sp.db())
+        .await?;
     assert!(
         sessions
             .process(AuthenticateSession {

@@ -21,9 +21,6 @@ use crate::services::{ApiKeyService, AuthenticateApiKey, AuthenticateSession, Se
 pub const SESSION_ID_METADATA: &str = "x-session-id";
 /// Metadata key carrying a machine API-key secret.
 pub const API_KEY_METADATA: &str = "x-api-key";
-/// The backstop on resolving a credential. The bound inside `base::db::Db` is far tighter
-/// and normally fires first; this only catches a stall outside the query itself.
-const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Tower layer that authenticates requests and injects an [`Identity`] extension.
 #[derive(Clone)]
@@ -79,30 +76,14 @@ where
         let sessions = self.sessions.clone();
         let api_keys = self.api_keys.clone();
         Box::pin(async move {
-            let session_id = header(&req, SESSION_ID_METADATA);
-            let api_key = header(&req, API_KEY_METADATA);
-            let resolve = || {
-                let (sessions, api_keys) = (sessions.clone(), api_keys.clone());
-                let (session_id, api_key) = (session_id.clone(), api_key.clone());
-                async move {
-                    if let Some(session_id) = session_id {
-                        sessions.process(AuthenticateSession { session_id }).await
-                    } else if let Some(secret) = api_key {
-                        api_keys.process(AuthenticateApiKey { secret }).await
-                    } else {
-                        Ok(None)
-                    }
-                }
+            let lookup = if let Some(session_id) = header(&req, SESSION_ID_METADATA) {
+                sessions.process(AuthenticateSession { session_id }).await
+            } else if let Some(secret) = header(&req, API_KEY_METADATA) {
+                api_keys.process(AuthenticateApiKey { secret }).await
+            } else {
+                Ok(None)
             };
-            // One retry. `base::db::Db` deliberately does not retry, because it cannot
-            // know whether the query it bounded was a write that already committed; this
-            // lookup is a pure read, so here it is safe and it is the difference between a
-            // blip nobody notices and a visible error.
-            let mut outcome = bounded(resolve()).await;
-            if matches!(outcome, Resolved::Unavailable) {
-                outcome = bounded(resolve()).await;
-            }
-            match outcome {
+            match judge(lookup) {
                 Resolved::Identity(identity) => {
                     req.extensions_mut().insert(identity);
                 }
@@ -129,9 +110,9 @@ fn header<B>(req: &http::Request<B>, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Marks a request whose credential could not be judged because the database did not
-/// answer. Distinct from carrying no identity, which means the credential *was* judged and
-/// found wanting.
+/// Marks a request whose credential could not be judged because the database failed.
+/// Distinct from carrying no identity, which means the credential *was* judged and found
+/// wanting.
 #[derive(Debug, Clone, Copy)]
 pub struct AuthUnavailable;
 
@@ -140,24 +121,17 @@ enum Resolved {
     Identity(Identity),
     /// The credential was judged: absent, unknown, or expired.
     Anonymous,
-    /// The credential was not judged: the database failed or did not answer in time.
+    /// The credential was not judged: the database failed.
     Unavailable,
 }
 
-/// Resolves a credential under [`AUTH_TIMEOUT`], keeping "not judged" separate from
-/// "judged and rejected".
-async fn bounded(
-    lookup: impl Future<Output = Result<Option<Identity>, wakuwaku::Error>>,
-) -> Resolved {
-    match tokio::time::timeout(AUTH_TIMEOUT, lookup).await {
-        Ok(Ok(Some(identity))) => Resolved::Identity(identity),
-        Ok(Ok(None)) => Resolved::Anonymous,
-        Ok(Err(error)) => {
+/// Keeps "not judged" separate from "judged and rejected".
+fn judge(lookup: Result<Option<Identity>, wakuwaku::Error>) -> Resolved {
+    match lookup {
+        Ok(Some(identity)) => Resolved::Identity(identity),
+        Ok(None) => Resolved::Anonymous,
+        Err(error) => {
             tracing::warn!(%error, "resolving a credential failed");
-            Resolved::Unavailable
-        }
-        Err(_) => {
-            tracing::warn!("resolving a credential timed out");
             Resolved::Unavailable
         }
     }
@@ -166,7 +140,7 @@ async fn bounded(
 /// Extract the authenticated [`Identity`] a handler requires.
 ///
 /// `UNAUTHENTICATED` only when the credential was actually judged and rejected. A database
-/// that failed or timed out answers `UNAVAILABLE` instead: the dashboard's error boundary
+/// that failed answers `UNAVAILABLE` instead: the dashboard's error boundary
 /// logs the operator out on `UNAUTHENTICATED`, so blurring the two costs a session every
 /// time the database blips.
 pub fn from_request<T>(req: &tonic::Request<T>) -> Result<Identity, Status> {

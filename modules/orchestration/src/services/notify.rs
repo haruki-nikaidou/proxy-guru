@@ -6,7 +6,7 @@
 //! bundling them keeps a service's dependency list from growing a second
 //! messaging field.
 
-use crate::entities::surreal::canvas::CanvasId;
+use crate::entities::db::canvas::CanvasId;
 use crate::events::CanvasDirty;
 use crate::events::live::{CanvasChangeKind, LIVE_CHANNEL, LiveMessage, RolloutScope};
 use crate::hooks::live::LiveBus;

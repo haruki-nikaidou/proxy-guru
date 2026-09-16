@@ -9,5 +9,5 @@
 //! Each query or command is a small input struct with a `Processor`
 //! implementation, so persistence logic stays testable and composable.
 
+pub mod db;
 pub mod redis;
-pub mod surreal;

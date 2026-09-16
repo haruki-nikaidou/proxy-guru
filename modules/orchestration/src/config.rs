@@ -7,7 +7,7 @@
 //! defaults, `manage-tool config set orchestration '<json>'` changes them, and
 //! the new values take effect when the masters restart.
 
-use base::entities::surreal::app_config::ConfigJson;
+use base::entities::db::app_config::ConfigJson;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

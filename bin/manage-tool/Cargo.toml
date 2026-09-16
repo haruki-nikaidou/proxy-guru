@@ -22,7 +22,7 @@ kanau = { workspace = true }
 clap = { workspace = true }
 
 # Persistence
-surrealdb = { workspace = true }
+sqlx = { workspace = true }
 redis = { workspace = true }
 
 # Configuration

@@ -1,13 +1,13 @@
 //! End-to-end worker ↔ master config sync against an in-process master.
 //!
-//! The master here is the real thing: `mem://` SurrealDB with both schemas, the
-//! real auth services and middleware, the real `WorkerAgent` service, the real
+//! The master here is the real thing: a PostgreSQL database with the workspace
+//! schema, the real auth services and middleware, the real `WorkerAgent` service, the real
 //! config-view poller and the real derivation sweep. The worker side is
 //! `guru_worker::agent`, driving a real `Supervisor` that binds real sockets.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
-use auth::entities::surreal::account::{AccountRole, CreateAccount};
+use auth::entities::db::account::{AccountRole, CreateAccount};
 use auth::rpc::AuthLayer;
 use auth::services::api_key::{ApiKeyService, CreateApiKey};
 use auth::services::identity::{Identity, IdentityKind};
@@ -23,11 +23,11 @@ use guru_worker_config::{
 };
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::canvas::CanvasUiPosition;
-use orchestration::entities::surreal::health::{ListServerHealthHistory, ServerHealthStatus};
-use orchestration::entities::surreal::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
-use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::view::{FindServerConfigView, ServerConfigViewEntity};
+use orchestration::entities::db::canvas::CanvasUiPosition;
+use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
+use orchestration::entities::db::node::{EntryConfig, ExitConfig, NodeSpec, PodConfig};
+use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{self, CanvasDeriver};
 use orchestration::rpc::WorkerAgentGrpc;
 use orchestration::rpc::agent_middleware::AgentLayer;
@@ -74,10 +74,7 @@ async fn within<F: Future>(what: &str, fut: F) -> F::Output {
 
 fn operator() -> Identity {
     Identity {
-        account_id: auth::entities::surreal::account::AccountId(surrealdb::types::RecordId::new(
-            "auth_account",
-            "bootstrap",
-        )),
+        account_id: auth::entities::db::account::AccountId::from_key("bootstrap"),
         role: AccountRole::Admin,
         kind: IdentityKind::Session,
     }
@@ -109,19 +106,13 @@ struct Master {
     shutdown: CancellationToken,
 }
 
-/// Boots a master process image: schemas, an operator API key, the worker gRPC
-/// service and the revision poller.
-async fn boot_master(lease: SessionLease) -> Result<(Master, String), Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let sp = Db::new(db);
-    for schema in ["auth", "orchestration"] {
-        let ddl = std::fs::read_to_string(format!(
-            "{}/../../database/schema/{schema}.surql",
-            env!("CARGO_MANIFEST_DIR")
-        ))?;
-        sp.raw().query(ddl).await?.check()?;
-    }
+/// Boots a master process image over the test's database: an operator API key,
+/// the worker gRPC service and the revision poller.
+async fn boot_master(
+    pool: sqlx::PgPool,
+    lease: SessionLease,
+) -> Result<(Master, String), Box<dyn std::error::Error>> {
+    let sp = Db::new(pool);
 
     let hasher = Argon2PasswordAlgorithm::default();
     let account = sp
@@ -250,7 +241,7 @@ async fn serve(
 
 struct Canvas {
     server: ServerId,
-    pod: orchestration::entities::surreal::node::NodeId,
+    pod: orchestration::entities::db::node::NodeId,
     listen: SocketAddr,
 }
 
@@ -345,7 +336,7 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
             item_count: 0,
         })
         .await?;
-    let port_of = |node: &orchestration::entities::surreal::node::NodeWithPorts, key: &str| {
+    let port_of = |node: &orchestration::entities::db::node::NodeWithPorts, key: &str| {
         node.ports
             .iter()
             .find(|p| p.key == key)
@@ -404,9 +395,11 @@ where
     }
 }
 
-#[tokio::test]
-async fn worker_applies_config_reports_health_and_survives_a_bad_pod() -> TestResult {
-    let (master, api_key) = boot_master(SessionLease::default()).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
     let state_dir = std::env::temp_dir().join(format!("guru-worker-test-{}", free_port()));
     let _ = std::fs::remove_dir_all(&state_dir);
@@ -630,8 +623,10 @@ fn ack_all_applied(revision: &ConfigRevision) -> AckConfigRequest {
     }
 }
 
-#[tokio::test]
-async fn a_heartbeating_stream_keeps_its_session_against_a_second_worker() -> TestResult {
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_heartbeating_stream_keeps_its_session_against_a_second_worker(
+    pool: sqlx::PgPool,
+) -> TestResult {
     // A lease far shorter than the window this test keeps the stream open for: once
     // the first grant's deadline has passed, only the heartbeat can still hold it.
     let ttl = Duration::from_secs(3);
@@ -639,7 +634,7 @@ async fn a_heartbeating_stream_keeps_its_session_against_a_second_worker() -> Te
         ttl,
         heartbeat: Duration::from_millis(250),
     };
-    let (master, api_key) = boot_master(lease).await?;
+    let (master, api_key) = boot_master(pool, lease).await?;
     let canvas = build_canvas(&master.db).await?;
     let server_key = ids::record_key(&canvas.server.0);
 
@@ -682,12 +677,12 @@ async fn a_heartbeating_stream_keeps_its_session_against_a_second_worker() -> Te
     Ok(())
 }
 
-#[tokio::test]
-async fn an_ended_stream_hands_the_session_back_at_once() -> TestResult {
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_ended_stream_hands_the_session_back_at_once(pool: sqlx::PgPool) -> TestResult {
     // The default lease is far longer than this test waits, so a successful
     // handover can only come from an explicit release, never from expiry.
     let lease = SessionLease::default();
-    let (master, api_key) = boot_master(lease).await?;
+    let (master, api_key) = boot_master(pool, lease).await?;
     let canvas = build_canvas(&master.db).await?;
     let server_key = ids::record_key(&canvas.server.0);
 
@@ -738,9 +733,9 @@ async fn an_ended_stream_hands_the_session_back_at_once() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_newer_stream_fences_the_previous_one() -> TestResult {
-    let (master, api_key) = boot_master(SessionLease::default()).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_newer_stream_fences_the_previous_one(pool: sqlx::PgPool) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
     let server_key = ids::record_key(&canvas.server.0);
 
@@ -771,9 +766,9 @@ async fn a_newer_stream_fences_the_previous_one() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_rotated_refresh_key_ends_an_open_stream() -> TestResult {
-    let (master, api_key) = boot_master(SessionLease::default()).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
     let server_key = ids::record_key(&canvas.server.0);
 
@@ -787,14 +782,11 @@ async fn a_rotated_refresh_key_ends_an_open_stream() -> TestResult {
 
     // Simulate the incumbent going silent: its lease lapses, so a replacement worker
     // is allowed to take the server over.
-    master
-        .db
-        .raw()
-        .query("UPDATE $server SET session_lease_until = $past")
-        .bind(("server", canvas.server.clone()))
-        .bind(("past", chrono::Utc::now() - chrono::TimeDelta::seconds(60)))
-        .await?
-        .check()?;
+    sqlx::query("UPDATE orchestration_server SET session_lease_until = $2 WHERE id = $1")
+        .bind(&canvas.server)
+        .bind(chrono::Utc::now() - chrono::TimeDelta::seconds(60))
+        .execute(master.db.db())
+        .await?;
     let second_key = register(&mut client, &server_key, &api_key).await?;
     assert_ne!(first_key, second_key);
 
@@ -807,9 +799,9 @@ async fn a_rotated_refresh_key_ends_an_open_stream() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_refresh_key_survives_a_master_restart() -> TestResult {
-    let (master, api_key) = boot_master(SessionLease::default()).await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_refresh_key_survives_a_master_restart(pool: sqlx::PgPool) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
     let canvas = build_canvas(&master.db).await?;
     let server_key = ids::record_key(&canvas.server.0);
 

@@ -3,13 +3,11 @@
 use base::db::Db;
 use kanau::processor::Processor;
 
-use crate::entities::surreal::account::{
+use crate::entities::db::account::{
     AccountEntity, AccountId, AccountRole, CreateAccount, DeleteAccount as DeleteAccountEntity,
     FindAccountByEmail, FindAccountById, ListAccounts as ListAccountsEntity, UpdateAccountEmail,
     UpdateAccountPassword, UpdateAccountRole,
 };
-use crate::entities::surreal::api_key::DeleteApiKeysByOwner;
-use crate::entities::surreal::session::DeleteSessionsByAccount;
 use crate::services::identity::Identity;
 use crate::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use crate::utils::rbac::Permission;
@@ -111,7 +109,7 @@ impl Processor<SetAccountRole> for AccountService {
     }
 }
 
-/// Delete an account and cascade-remove its sessions and API keys (admin-only).
+/// Delete an account; its sessions and API keys go with it (admin-only).
 pub struct DeleteAccount {
     pub actor: Identity,
     pub target: AccountId,
@@ -123,16 +121,6 @@ impl Processor<DeleteAccount> for AccountService {
     #[tracing::instrument(name = "Service:DeleteAccount", skip_all, err)]
     async fn process(&self, input: DeleteAccount) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
-        self.db
-            .process(DeleteSessionsByAccount {
-                account_id: input.target.clone(),
-            })
-            .await?;
-        self.db
-            .process(DeleteApiKeysByOwner {
-                owner: input.target.clone(),
-            })
-            .await?;
         self.db
             .process(DeleteAccountEntity { id: input.target })
             .await?;
@@ -224,7 +212,7 @@ impl Processor<ChangeOwnEmail> for AccountService {
             .db
             .process(FindAccountByEmail { email: &new_email })
             .await?
-            && existing.id.0 != account.id.0
+            && existing.id != account.id
         {
             return Ok(ChangeEmailResult::EmailTaken);
         }

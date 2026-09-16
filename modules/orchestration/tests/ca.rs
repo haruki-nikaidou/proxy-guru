@@ -8,20 +8,20 @@ mod common;
 use chrono::Utc;
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::ca::{
+use orchestration::entities::db::ca::{
     FindInternalCa, ListRelayCertificatesByPods, RelayCertificateEntity, StoreRelayCertificate,
     relay_sni,
 };
-use orchestration::entities::surreal::canvas::CanvasId;
-use orchestration::entities::surreal::certificate::{EnsureCertificate, StoreIssuedCertificate};
-use orchestration::entities::surreal::dns::{CreateDnsProvider, DnsProvider};
-use orchestration::entities::surreal::health::{ListNodeHealthHistory, NodeHealthStatus};
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::CanvasId;
+use orchestration::entities::db::certificate::{EnsureCertificate, StoreIssuedCertificate};
+use orchestration::entities::db::dns::{CreateDnsProvider, DnsProvider};
+use orchestration::entities::db::health::{ListNodeHealthHistory, NodeHealthStatus};
+use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig,
     RelayProtocol, TlsConfig,
 };
-use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::view::{
+use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::view::{
     AckServerConfig, CertificateKind, CertificateRef, TakeInFlight,
 };
 use orchestration::hooks::derive::rotate_expiring_relay_certificates;
@@ -85,9 +85,9 @@ fn assert_leaf_signed_by(leaf_pem: &str, ca_pem: &str, sni: &str) {
     );
 }
 
-#[tokio::test]
-async fn init_ca_refuses_a_second_init() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn init_ca_refuses_a_second_init(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     assert!(w.db.process(FindInternalCa).await?.is_none());
 
     let initialized = w.ca.process(InitInternalCa).await?;
@@ -113,10 +113,27 @@ async fn init_ca_refuses_a_second_init() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn relay_leaves_are_issued_stable_and_rotated_when_expiring() -> TestResult {
-    let w = world().await?;
-    let pod = orchestration::utils::ids::node_id("pod_a");
+/// A real pod row for a leaf to hang off: `relay_certificate.pod` is a foreign key.
+async fn some_pod(w: &World) -> Result<NodeId, Box<dyn std::error::Error>> {
+    let canvas = canvas(&w.db, "leaves").await?;
+    let server = server(&w.db, &canvas, "host").await?;
+    let pod = node(
+        &w.db,
+        &canvas,
+        "pod-a",
+        pod_spec(&server, 10800),
+        pod_ports(),
+    )
+    .await?;
+    Ok(pod.node.id)
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn relay_leaves_are_issued_stable_and_rotated_when_expiring(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let pod = some_pod(&w).await?;
 
     let missing =
         w.ca.process(EnsureRelayCertificates {
@@ -191,11 +208,11 @@ async fn relay_leaves_are_issued_stable_and_rotated_when_expiring() -> TestResul
     Ok(())
 }
 
-#[tokio::test]
-async fn bundles_carry_decrypted_keys_at_the_worker_paths() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let ca = w.ca.process(InitInternalCa).await?;
-    let pod = orchestration::utils::ids::node_id("pod_a");
+    let pod = some_pod(&w).await?;
     let leaf =
         w.ca.process(EnsureRelayCertificates {
             pods: vec![pod.clone()],
@@ -265,11 +282,11 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths() -> TestResult {
             pem: "ACME KEY PEM".to_string(),
         },
         CertificateFile {
-            path: "certs/relay/pod_a/full_chain.pem".to_string(),
+            path: format!("certs/relay/{pod}/full_chain.pem"),
             pem: leaf.certificate_pem.clone(),
         },
         CertificateFile {
-            path: "certs/relay/pod_a/key.pem".to_string(),
+            path: format!("certs/relay/{pod}/key.pem"),
             pem: w.secrets.decrypt_str(&leaf.private_key_pem)?,
         },
         CertificateFile {
@@ -484,9 +501,11 @@ async fn ack_current(w: &World, server: &ServerId) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[tokio::test]
-async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w, RelayProtocol::TcpTls, None).await?;
 
     // Without a CA both ends are invalid and nothing is published.
@@ -573,11 +592,9 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert!(osaka.invalid_pods.is_empty() && tokyo.invalid_pods.is_empty());
 
     // A pass with nothing changed publishes nothing new.
-    w.db.process(
-        orchestration::entities::surreal::certificate::TouchCanvases {
-            canvases: vec![f.canvas.clone()],
-        },
-    )
+    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+        canvases: vec![f.canvas.clone()],
+    })
     .await?;
     w.derive(&f.canvas).await?;
     assert_eq!(w.view(&f.osaka).await?.desired.unwrap().revision, 2);
@@ -636,9 +653,9 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     Ok(())
 }
 
-#[tokio::test]
-async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn publishing_a_tls_entry_marks_its_nodes_deploying(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let dns =
         w.db.process(CreateDnsProvider {
             name: "cf".to_string(),
@@ -708,11 +725,9 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
         now: Utc::now(),
     })
     .await?;
-    w.db.process(
-        orchestration::entities::surreal::certificate::TouchCanvases {
-            canvases: vec![f.canvas.clone()],
-        },
-    )
+    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+        canvases: vec![f.canvas.clone()],
+    })
     .await?;
     w.derive(&f.canvas).await?;
     let tokyo = w.view(&f.tokyo).await?;
@@ -757,11 +772,9 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
     );
 
     // A pass that changes nothing adds no records.
-    w.db.process(
-        orchestration::entities::surreal::certificate::TouchCanvases {
-            canvases: vec![f.canvas.clone()],
-        },
-    )
+    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+        canvases: vec![f.canvas.clone()],
+    })
     .await?;
     w.derive(&f.canvas).await?;
     assert_eq!(history(&f.ingress.node.id).await?.len(), 1);
@@ -779,11 +792,11 @@ async fn publishing_a_tls_entry_marks_its_nodes_deploying() -> TestResult {
 /// expiring left to select. Both orders end with one rotation, which is what is
 /// asserted here; `two_stores_fenced_on_the_same_version_write_once` pins the
 /// fence itself with no scheduling assumption at all.
-#[tokio::test]
-async fn two_overlapping_rotation_passes_rotate_a_leaf_once() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_overlapping_rotation_passes_rotate_a_leaf_once(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     w.ca.process(InitInternalCa).await?;
-    let pod = orchestration::utils::ids::node_id("pod_a");
+    let pod = some_pod(&w).await?;
     let leaf =
         w.ca.process(EnsureRelayCertificates {
             pods: vec![pod.clone()],
@@ -833,11 +846,11 @@ async fn two_overlapping_rotation_passes_rotate_a_leaf_once() -> TestResult {
 /// lands, and the version is the witness. (The service turns that abort back
 /// into a refusal, which is what `two_overlapping_ensures_replace_an_expiring_leaf_once`
 /// pins.)
-#[tokio::test]
-async fn two_stores_fenced_on_the_same_version_write_once() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_stores_fenced_on_the_same_version_write_once(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     w.ca.process(InitInternalCa).await?;
-    let pod = orchestration::utils::ids::node_id("pod_a");
+    let pod = some_pod(&w).await?;
     let leaf =
         w.ca.process(EnsureRelayCertificates {
             pods: vec![pod.clone()],
@@ -895,11 +908,11 @@ async fn two_stores_fenced_on_the_same_version_write_once() -> TestResult {
 /// letting its `WHERE` match nothing, so the service translates that abort back
 /// into a lost race by re-reading the row: an overlap it is built to absorb must
 /// not surface as a failed derivation pass.
-#[tokio::test]
-async fn two_overlapping_ensures_replace_an_expiring_leaf_once() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_overlapping_ensures_replace_an_expiring_leaf_once(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let ca = w.ca.process(InitInternalCa).await?;
-    let pod = orchestration::utils::ids::node_id("pod_a");
+    let pod = some_pod(&w).await?;
     let leaf =
         w.ca.process(EnsureRelayCertificates {
             pods: vec![pod.clone()],

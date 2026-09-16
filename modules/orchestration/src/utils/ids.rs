@@ -1,58 +1,42 @@
-//! Record id ↔ wire string conversion.
+//! Row id ↔ wire string conversion.
 //!
-//! Ids cross the gRPC boundary as the bare record **key** (no `table:` prefix), so
-//! every encode/decode in this module funnels through here instead of being
-//! reinvented per handler.
+//! Ids cross the gRPC boundary as the bare key, so every decode in the RPC layer
+//! funnels through here instead of being reinvented per handler.
 
-use crate::entities::surreal::ca::RelayCertificateId;
-use crate::entities::surreal::canvas::CanvasId;
-use crate::entities::surreal::certificate::CertificateId;
-use crate::entities::surreal::connection::EdgeConnectionId;
-use crate::entities::surreal::dns::DnsProviderId;
-use crate::entities::surreal::health::{NodeHealthRecordId, ServerHealthRecordId};
-use crate::entities::surreal::node::NodeId;
-use crate::entities::surreal::port::PortId;
-use crate::entities::surreal::server::ServerId;
-use surrealdb::types::{RecordId, RecordIdKey};
-use surrealdb_types::ToSql;
+use crate::entities::db::ca::RelayCertificateId;
+use crate::entities::db::canvas::CanvasId;
+use crate::entities::db::certificate::CertificateId;
+use crate::entities::db::connection::EdgeConnectionId;
+use crate::entities::db::dns::DnsProviderId;
+use crate::entities::db::health::{NodeHealthRecordId, ServerHealthRecordId};
+use crate::entities::db::node::NodeId;
+use crate::entities::db::port::PortId;
+use crate::entities::db::server::ServerId;
 
-/// The bare key of a record id, as sent on the wire.
-pub fn record_key(record: &RecordId) -> String {
-    match &record.key {
-        RecordIdKey::String(s) => s.clone(),
-        RecordIdKey::Number(n) => n.to_string(),
-        RecordIdKey::Uuid(u) => u.to_string(),
-        other => other.to_sql(),
-    }
+/// The bare key of an id, as sent on the wire.
+///
+/// Transitional: with text ids this is an identity copy of `id.0`, and new code
+/// writes `id.to_string()` or compares ids directly. Kept so the call sites that
+/// predate the PostgreSQL move compile unchanged until they are swept.
+pub fn record_key(key: &str) -> String {
+    key.to_owned()
 }
 
 macro_rules! decoder {
-    ($name:ident, $ty:ident, $table:literal) => {
+    ($name:ident, $ty:ident) => {
         pub fn $name(key: &str) -> $ty {
-            $ty(RecordId::new($table, key))
+            $ty::from_key(key)
         }
     };
 }
 
-decoder!(canvas_id, CanvasId, "orchestration_canvas");
-decoder!(server_id, ServerId, "orchestration_server");
-decoder!(node_id, NodeId, "orchestration_node");
-decoder!(port_id, PortId, "orchestration_port");
-decoder!(edge_id, EdgeConnectionId, "orchestration_edge_connection");
-decoder!(dns_provider_id, DnsProviderId, "dns_provider");
-decoder!(certificate_id, CertificateId, "certificate");
-decoder!(
-    relay_certificate_id,
-    RelayCertificateId,
-    "relay_certificate"
-);
-decoder!(
-    server_health_record_id,
-    ServerHealthRecordId,
-    "server_health_record"
-);
-decoder!(
-    node_health_record_id,
-    NodeHealthRecordId,
-    "node_health_record"
-);
+decoder!(canvas_id, CanvasId);
+decoder!(server_id, ServerId);
+decoder!(node_id, NodeId);
+decoder!(port_id, PortId);
+decoder!(edge_id, EdgeConnectionId);
+decoder!(dns_provider_id, DnsProviderId);
+decoder!(certificate_id, CertificateId);
+decoder!(relay_certificate_id, RelayCertificateId);
+decoder!(server_health_record_id, ServerHealthRecordId);
+decoder!(node_health_record_id, NodeHealthRecordId);

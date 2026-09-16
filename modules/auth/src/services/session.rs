@@ -7,10 +7,8 @@ use chrono::{Duration, Utc};
 use kanau::processor::Processor;
 
 use crate::config::AuthConfig;
-use crate::entities::surreal::account::FindAccountByEmail;
-use crate::entities::surreal::session::{
-    CreateSession, DeleteSession, FindSessionById, UpdateSession,
-};
+use crate::entities::db::account::FindAccountByEmail;
+use crate::entities::db::session::{CreateSession, DeleteSession, FindSessionById, UpdateSession};
 use crate::services::identity::{Identity, IdentityKind};
 use crate::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use crate::utils::token::generate_session_token;
@@ -132,7 +130,7 @@ impl Processor<AuthenticateSession> for SessionService {
         }
         let account = match self
             .db
-            .process(crate::entities::surreal::account::FindAccountById {
+            .process(crate::entities::db::account::FindAccountById {
                 id: session.account_id.clone(),
             })
             .await?

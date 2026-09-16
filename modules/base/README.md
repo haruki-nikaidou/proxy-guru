@@ -18,7 +18,7 @@ src/
 ├── config.rs       # how a module declares typed configuration (`base` owns no key)
 ├── utils/          # small, dependency-light helpers
 ├── entities/       # persistence layer
-│   └── surreal/    # SurrealDB rows + queries (`app_config`); add `redis/` when a module caches
+│   └── db/         # PostgreSQL rows + queries (`app_config`); add `redis/` when a module caches
 ├── services/       # business logic (stateful Processors)
 ├── events/         # AMQP message payloads + routing
 ├── hooks/          # background reactors: consumers, cron, event loggers
@@ -37,8 +37,8 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 A processor is a `Clone`-able struct that owns its dependencies and implements
 `Processor<Input>` once per operation. The same abstraction is used everywhere:
 
-- **Entities** implement `Processor` on `wakuwaku::surreal::SurrealProcessor`
-  (for database work) or on their own type (for Redis).
+- **Entities** implement `Processor` on `base::db::Db` (for database work) or
+  on their own type (for Redis).
 - **Services** implement `Processor` on a service struct that owns the database,
   Redis, message queue, and any collaborating services.
 - **Hooks** implement `Processor` (plus `AmqpMessageProcessor`) to consume
@@ -49,7 +49,7 @@ This keeps each unit small, individually testable, and trivially composable.
 ## Data flow
 
 ```
-gRPC request ──► rpc ──► services ──► entities ──► SurrealDB / Redis
+gRPC request ──► rpc ──► services ──► entities ──► PostgreSQL / Redis
                             │
                             └─► events ──► AMQP ──► hooks (this or another module)
 ```

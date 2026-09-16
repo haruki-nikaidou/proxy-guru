@@ -16,9 +16,8 @@ kanau = { workspace = true }
 tokio = { workspace = true }
 
 # Persistence
-newtype_record_id = { path = "../../lib/newtype_record_id" }
-surrealdb = { workspace = true }
-surrealdb-types = { workspace = true }
+db_types = { path = "../../lib/db_types" }
+sqlx = { workspace = true }
 
 # gRPC / transport
 tonic = { workspace = true }
@@ -39,6 +38,7 @@ thiserror = { workspace = true }
 
 # Auth & Security
 argon2 = { workspace = true }
+password-hash = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 
@@ -46,4 +46,3 @@ sha2 = { workspace = true }
 tower = { workspace = true }
 
 [dev-dependencies]
-surrealdb = { workspace = true, features = ["kv-mem"] }

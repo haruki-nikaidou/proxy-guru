@@ -1,9 +1,9 @@
 //! Rollout status and config reads.
 
-use crate::entities::surreal::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
-use crate::entities::surreal::server::{FindServerById, ServerEntity, ServerId};
-use crate::entities::surreal::topology::FindCanvasOfServer;
-use crate::entities::surreal::view::{
+use crate::entities::db::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
+use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
+use crate::entities::db::topology::FindCanvasOfServer;
+use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, InvalidPod,
     ServerConfigViewEntity,
 };
@@ -11,7 +11,7 @@ use crate::events::live::RolloutScope;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
 use crate::utils::ids::record_key;
-use auth::entities::surreal::account::AccountRole;
+use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;

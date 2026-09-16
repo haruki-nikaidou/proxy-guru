@@ -4,7 +4,7 @@
 //!
 //! 1. authorize the actor,
 //! 2. resolve the canvas it targets,
-//! 3. load the current [`CanvasTopology`](crate::entities::surreal::topology::CanvasTopology),
+//! 3. load the current [`CanvasTopology`](crate::entities::db::topology::CanvasTopology),
 //! 4. validate the topology the change *would* produce and reject it before writing,
 //! 5. reject it as well if it would break a listener the fabric still depends on
 //!    ([`converge::ensure_switch_safe`]),
@@ -42,7 +42,7 @@ pub enum OrchestrationError {
     #[error(transparent)]
     Core(#[from] wakuwaku::Error),
     #[error(transparent)]
-    Db(surrealdb::Error),
+    Db(base::db::Error),
     #[error("topology: {0}")]
     Topology(#[from] Box<TopologyError>),
     #[error("derive: {0}")]
@@ -64,20 +64,22 @@ pub enum OrchestrationError {
     PermissionDenied,
 }
 
-use crate::entities::surreal::fence::STALE_GENERATION;
+use crate::entities::db::fence::STALE_GENERATION;
 
-impl From<surrealdb::Error> for OrchestrationError {
-    fn from(error: surrealdb::Error) -> Self {
-        // A fenced write that lost the race is not a database fault: the edit
-        // was validated against a topology a concurrent edit has since moved, so
-        // the write rolled itself back. Surface it as a retryable conflict, not
-        // an opaque internal error.
-        if error.to_string().contains(STALE_GENERATION) {
-            OrchestrationError::Conflict(
+impl From<base::db::Error> for OrchestrationError {
+    fn from(error: base::db::Error) -> Self {
+        match error {
+            // A fenced write that lost the race is not a database fault: the edit
+            // was validated against a topology a concurrent edit has since moved,
+            // so the write rolled itself back. Surface it as a retryable conflict,
+            // not an opaque internal error.
+            base::db::Error::Conflict(STALE_GENERATION) => OrchestrationError::Conflict(
                 "canvas changed since it was validated; reload and retry".into(),
-            )
-        } else {
-            OrchestrationError::Db(error)
+            ),
+            // Every other conflict names what was refused; the transaction did
+            // not commit and the caller may retry from a fresh read.
+            base::db::Error::Conflict(token) => OrchestrationError::Conflict(token.into()),
+            other => OrchestrationError::Db(other),
         }
     }
 }

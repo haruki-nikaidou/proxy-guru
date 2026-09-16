@@ -18,7 +18,7 @@
 //! it; the retry is the next scheduled tick, not the redelivery, because the
 //! claim has already recorded this one.
 
-use crate::entities::surreal::job_run::ClaimJobRun;
+use crate::entities::db::job_run::ClaimJobRun;
 use crate::events::{SweepLivenessSignal, TrimHealthHistorySignal};
 use crate::services::health::{HealthService, SweepLiveness, TrimHealthHistory};
 use chrono::Utc;

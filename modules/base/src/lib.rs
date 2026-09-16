@@ -10,7 +10,7 @@
 //!
 //! - [`entities`] — persistence layer. Plain data types plus the
 //!   `Processor` implementations that read and write them. In this crate that
-//!   is [`entities::surreal`], which owns the shared `app_config` table.
+//!   is [`entities::db`], which owns the shared `app_config` table.
 //! - [`services`] — business logic. Stateful `Processor`s that own their
 //!   dependencies (database, Redis, message queue, other services) and
 //!   orchestrate entities to fulfil a use case.
@@ -36,8 +36,8 @@
 #![warn(clippy::arithmetic_side_effects)]
 
 pub mod config;
-/// Base-only: the bounded database handle every module's services hold. Feature modules
-/// mirror the layout below, but none of them declares a `db` module of its own.
+/// Base-only: the database handle every module's services hold and the error their queries
+/// return. Feature modules mirror the layout below, but none of them declares a `db` module.
 pub mod db;
 pub mod entities;
 pub mod events;

@@ -66,9 +66,9 @@ async fn create_canvas(api: &OrchestrationGrpc, name: &str) -> pb::Canvas {
 /// `Node.import_target` is set on every reply that carries an import node, not
 /// only on `GetCanvas`: a client must not need a second round trip to label the
 /// node it just created or moved.
-#[tokio::test]
-async fn mutation_replies_carry_the_import_target() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn mutation_replies_carry_the_import_target(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let api = grpc(&w);
     let root = create_canvas(&api, "root").await;
     let sub = create_canvas(&api, "sub").await;
@@ -139,9 +139,9 @@ async fn mutation_replies_carry_the_import_target() -> TestResult {
 
 /// `ConnectPorts` takes a universal handle in place of a port id; the reply's
 /// edge starts on the port the handle created.
-#[tokio::test]
-async fn connect_ports_accepts_universal_handles() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn connect_ports_accepts_universal_handles(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let api = grpc(&w);
     let root = create_canvas(&api, "root").await;
     let server = api
@@ -285,12 +285,15 @@ async fn next_item<T>(
 
 /// The three transport contracts of a live stream: it needs a session, it
 /// keeps itself alive, and it ends the moment that session does.
-#[tokio::test]
-async fn watch_canvas_stream_keepalive_and_session_cut() -> TestResult {
-    let w = world_with(OrchestrationConfig {
-        stream_keepalive_secs: 1,
-        ..OrchestrationConfig::default()
-    })
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn watch_canvas_stream_keepalive_and_session_cut(pool: sqlx::PgPool) -> TestResult {
+    let w = world_with(
+        pool,
+        OrchestrationConfig {
+            stream_keepalive_secs: 1,
+            ..OrchestrationConfig::default()
+        },
+    )
     .await?;
     let api = grpc(&w);
     let canvas = create_canvas(&api, "prod").await;
@@ -359,9 +362,9 @@ async fn watch_canvas_stream_keepalive_and_session_cut() -> TestResult {
 /// A watcher that stops reading is not owed a backlog: the bounded channel plus
 /// the coalescing view mean it receives fewer, newer snapshots — and the last
 /// one it can read is the current state.
-#[tokio::test]
-async fn paused_client_gets_newest_not_backlog() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn paused_client_gets_newest_not_backlog(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let api = grpc(&w);
     let canvas = create_canvas(&api, "prod").await;
     let token = w.login().await?;
@@ -434,9 +437,9 @@ async fn paused_client_gets_newest_not_backlog() -> TestResult {
 }
 
 /// The rollout snapshot covers the whole tree, not just the canvas asked about.
-#[tokio::test]
-async fn watch_rollouts_covers_the_whole_tree() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn watch_rollouts_covers_the_whole_tree(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let api = grpc(&w);
     let root = create_canvas(&api, "root").await;
     let sub = create_canvas(&api, "sub").await;
@@ -502,9 +505,9 @@ async fn watch_rollouts_covers_the_whole_tree() -> TestResult {
 }
 
 /// An unknown canvas is a `NOT_FOUND` on the stream, not a silent wait.
-#[tokio::test]
-async fn watch_canvas_reports_a_missing_canvas() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn watch_canvas_reports_a_missing_canvas(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let api = grpc(&w);
     let token = w.login().await?;
     let mut stream = api

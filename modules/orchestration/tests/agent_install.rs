@@ -7,10 +7,8 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::agent_release::PublishAgentRelease;
-use orchestration::entities::surreal::server::{
-    FindServerById, ReleaseServerWatchSession, ServerId,
-};
+use orchestration::entities::db::agent_release::PublishAgentRelease;
+use orchestration::entities::db::server::{FindServerById, ReleaseServerWatchSession, ServerId};
 use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{
     AgentIdentity, AgentUpdate, PollAgentUpdate, RegisterCredential, RegisterWorker,
@@ -21,8 +19,8 @@ use orchestration::services::server::{
 use orchestration::utils::ids::record_key;
 
 /// A world whose config knows the public origin, with one published release.
-async fn published_world() -> Result<World, Box<dyn std::error::Error>> {
-    let mut w = world().await?;
+async fn published_world(pool: sqlx::PgPool) -> Result<World, Box<dyn std::error::Error>> {
+    let mut w = world(pool).await?;
     w.servers.config.agent_public_base_url = "https://guru.test".to_string();
     w.agents.config.agent_public_base_url = "https://guru.test".to_string();
     w.db.process(PublishAgentRelease {
@@ -57,9 +55,11 @@ fn key_in(command: &str) -> String {
         .to_string()
 }
 
-#[tokio::test]
-async fn the_install_command_carries_a_key_that_registers_only_its_server() -> TestResult {
-    let w = published_world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn the_install_command_carries_a_key_that_registers_only_its_server(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = published_world(pool).await?;
     let c = canvas(&w.db, "prod").await?;
     let a = server(&w.db, &c, "HK Edge 1").await?;
     let b = server(&w.db, &c, "tokyo").await?;
@@ -137,9 +137,9 @@ async fn the_install_command_carries_a_key_that_registers_only_its_server() -> T
     Ok(())
 }
 
-#[tokio::test]
-async fn reissuing_replaces_the_key_and_keeps_the_stored_unit() -> TestResult {
-    let w = published_world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn reissuing_replaces_the_key_and_keeps_the_stored_unit(pool: sqlx::PgPool) -> TestResult {
+    let w = published_world(pool).await?;
     let c = canvas(&w.db, "prod").await?;
     // A name with nothing a slug can keep falls back to the record key …
     let a = server(&w.db, &c, "東京").await?;
@@ -178,9 +178,9 @@ async fn reissuing_replaces_the_key_and_keeps_the_stored_unit() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn issuing_needs_an_origin_a_release_and_a_key_manager() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn issuing_needs_an_origin_a_release_and_a_key_manager(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let c = canvas(&w.db, "prod").await?;
     let a = server(&w.db, &c, "x").await?;
     let issue = |unit: Option<&str>| IssueServerAgentInstall {
@@ -279,10 +279,11 @@ async fn register_as(
     })
 }
 
-#[tokio::test]
-async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_reports() -> TestResult
-{
-    let w = published_world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_reports(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = published_world(pool).await?;
     let c = canvas(&w.db, "prod").await?;
     let a = server(&w.db, &c, "edge").await?;
     let row = |w: &World| {

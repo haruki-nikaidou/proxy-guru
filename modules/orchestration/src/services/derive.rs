@@ -15,15 +15,15 @@
 //! pods claiming one socket — can fail the whole server.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::ca::{RelayCertificateEntity, relay_sni};
-use crate::entities::surreal::certificate::{CertificateEntity, CertificateStatus};
-use crate::entities::surreal::node::{
+use crate::entities::db::ca::{RelayCertificateEntity, relay_sni};
+use crate::entities::db::certificate::{CertificateEntity, CertificateStatus};
+use crate::entities::db::node::{
     NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayProtocol as EntityRelayProtocol,
 };
-use crate::entities::surreal::port::PortEntity;
-use crate::entities::surreal::server::ServerId;
-use crate::entities::surreal::topology::CanvasTopology;
-use crate::entities::surreal::view::{
+use crate::entities::db::port::PortEntity;
+use crate::entities::db::server::ServerId;
+use crate::entities::db::topology::CanvasTopology;
+use crate::entities::db::view::{
     CertificateKind, CertificateRef, ForwardingDeps, InvalidPod, ListenProtocol, ListenerCap,
 };
 use crate::services::ca::{CA_FILE, acme_cert_paths, relay_cert_paths};

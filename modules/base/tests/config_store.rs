@@ -1,12 +1,12 @@
-//! The configuration store against an in-memory SurrealDB.
+//! The configuration store against a real PostgreSQL database.
 //!
-//! These tests apply the module's real schema (`database/schema/base.surql`) to
-//! a `mem://` instance and exercise `ConfigStore` the way the binaries do.
+//! `#[sqlx::test]` gives every test a fresh database, migrated with the
+//! workspace schema, so `ConfigStore` is exercised the way the binaries use it.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use base::db::Db;
-use base::entities::surreal::app_config::{ConfigJson, FindRawConfig, UpsertRawConfig};
+use base::entities::db::app_config::{ConfigJson, FindRawConfig, UpsertRawConfig};
 use base::services::config::{
     ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode,
 };
@@ -55,23 +55,14 @@ impl ConfigJson for SampleConfig {
     const KEY: &'static str = "sample";
 }
 
-async fn setup() -> Result<ConfigStore, Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let db = Db::new(db);
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/base.surql"
-    ))?;
-    // `.check()` surfaces any per-statement error from applying the schema.
-    db.raw().query(ddl).await?.check()?;
-    Ok(ConfigStore { db })
+fn setup(pool: sqlx::PgPool) -> ConfigStore {
+    ConfigStore { db: Db::new(pool) }
 }
 
 /// An unseeded installation is a normal state, not an error.
-#[tokio::test]
-async fn absent_key_loads_defaults() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn absent_key_loads_defaults(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     let loaded: SampleConfig = store.process(LoadConfig::new()).await?;
     assert_eq!(loaded, SampleConfig::default());
     Ok(())
@@ -79,9 +70,9 @@ async fn absent_key_loads_defaults() -> TestResult {
 
 /// Seeding is idempotent and never clobbers an operator's edit — the whole
 /// point of running it after every schema sync.
-#[tokio::test]
-async fn seeding_is_idempotent_and_preserves_edits() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn seeding_is_idempotent_and_preserves_edits(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     assert!(store.process(SeedConfig::<SampleConfig>::new()).await?);
     assert!(!store.process(SeedConfig::<SampleConfig>::new()).await?);
 
@@ -98,10 +89,10 @@ async fn seeding_is_idempotent_and_preserves_edits() -> TestResult {
 }
 
 /// Nested structs, an enum with a payload and a collection survive the trip
-/// through SurrealDB's own value model, not just `serde_json`.
-#[tokio::test]
-async fn nested_config_round_trips_through_the_database() -> TestResult {
-    let store = setup().await?;
+/// through `jsonb`, not just `serde_json`.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn nested_config_round_trips_through_the_database(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     let written = SampleConfig {
         enabled: false,
         strategy: Strategy::IpHash {
@@ -131,9 +122,9 @@ async fn nested_config_round_trips_through_the_database() -> TestResult {
 /// A payload that does not match its type fails the read, naming the key.
 /// Substituting defaults here would silently replace an operator's whole
 /// config.
-#[tokio::test]
-async fn undeserializable_payload_fails_the_read() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn undeserializable_payload_fails_the_read(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     store
         .db
         .process(UpsertRawConfig {
@@ -155,9 +146,9 @@ async fn undeserializable_payload_fails_the_read() -> TestResult {
 
 /// A row written before a field was added still loads: the missing field falls
 /// back to `Default`, which is what makes additive config changes cheap.
-#[tokio::test]
-async fn row_missing_an_added_field_loads_with_its_default() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn row_missing_an_added_field_loads_with_its_default(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     store
         .db
         .process(UpsertRawConfig {
@@ -175,9 +166,9 @@ async fn row_missing_an_added_field_loads_with_its_default() -> TestResult {
 
 /// An operator payload is decoded before it is stored, so a wrong-shaped one
 /// cannot land in the row.
-#[tokio::test]
-async fn a_payload_that_is_not_the_config_never_reaches_the_row() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_payload_that_is_not_the_config_never_reaches_the_row(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     let error = decode::<SampleConfig>(serde_json::json!({ "limits": 3 }))
         .expect_err("an invalid payload must be rejected");
     assert!(matches!(error, ConfigError::Decode { key: "sample", .. }));
@@ -196,9 +187,9 @@ async fn a_payload_that_is_not_the_config_never_reaches_the_row() -> TestResult 
 /// A row an operator has to repair must stay readable: `stored` never decodes,
 /// so `manage-tool config get` works on exactly the document that fails the
 /// typed startup read.
-#[tokio::test]
-async fn a_corrupt_row_is_still_readable_untyped() -> TestResult {
-    let store = setup().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_corrupt_row_is_still_readable_untyped(pool: sqlx::PgPool) -> TestResult {
+    let store = setup(pool);
     let corrupt = serde_json::json!({ "limits": "unbounded" });
     store
         .db

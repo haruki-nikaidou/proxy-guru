@@ -3,17 +3,17 @@
 //! Put the strongly typed configuration for this module here. Configuration
 //! lives in the database: one `app_config` row per key, holding the whole
 //! struct as a JSON document (see
-//! [`crate::entities::surreal::app_config`]). The database is the only source
+//! [`crate::entities::db::app_config`]). The database is the only source
 //! of truth, so every process in a fleet loads the same values without any
 //! matching environment; `manage-tool config seed` writes the defaults and
 //! `manage-tool config set` replaces them.
 //!
 //! Define a `serde`-(de)serializable struct that implements [`Default`] and
 //! bind it to a stable key with
-//! [`ConfigJson`](crate::entities::surreal::app_config::ConfigJson):
+//! [`ConfigJson`](crate::entities::db::app_config::ConfigJson):
 //!
 //! ```
-//! use base::entities::surreal::app_config::ConfigJson;
+//! use base::entities::db::app_config::ConfigJson;
 //! use serde::{Deserialize, Serialize};
 //!
 //! // `#[serde(default)]` on the struct is load-bearing: a row written before

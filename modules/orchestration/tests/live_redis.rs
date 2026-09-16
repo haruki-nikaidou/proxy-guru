@@ -34,8 +34,8 @@ async fn first_event(events: &mut broadcast::Receiver<LiveEvent>) -> LiveEvent {
         .expect("the bus is alive")
 }
 
-#[tokio::test]
-async fn a_change_on_one_replica_refreshes_a_view_on_another() -> TestResult {
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool) -> TestResult {
     let server = Redis::default().start().await?;
     let url = format!(
         "redis://{}:{}/",
@@ -73,7 +73,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another() -> TestResult {
     );
 
     // The world's services publish to Redis, not to either bus directly.
-    let w = world().await?;
+    let w = world(pool).await?;
     let publisher = Notifier {
         amqp: None,
         live: Some(LivePublisher::Redis(
@@ -126,7 +126,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another() -> TestResult {
             icon: String::new(),
             comment: String::new(),
             position: pos0(),
-            ipv6_resolve: orchestration::entities::surreal::server::ServerIpv6Resolve::Tolerated,
+            ipv6_resolve: orchestration::entities::db::server::ServerIpv6Resolve::Tolerated,
             log_level: "info".to_string(),
             addresses: AddressOverrides {
                 override_v4: Some("203.0.113.10".to_string()),

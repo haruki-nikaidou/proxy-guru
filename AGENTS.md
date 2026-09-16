@@ -29,7 +29,7 @@ lib/
 modules/          # business logic, one crate per feature
   base/           # foundational + template module
 proto/            # protobuf definitions (grouped by module) — the single API source
-database/         # SurrealDB schema + seed + tests (managed by surrealkit)
+database/         # PostgreSQL schema: sqlx migrations (database/migrations)
 typescript/       # Bun workspace: all frontend / TypeScript packages
   app-protobuf/   # generated gRPC/protobuf TypeScript code (shared)
 package.json      # root of the Bun workspace (workspaces: ["typescript/*"])
@@ -50,7 +50,7 @@ src/
 ├── config.rs     # typed configuration (one `app_config` row, JSON document)
 ├── utils/        # small, dependency-light helpers
 ├── entities/     # persistence layer
-│   ├── surreal/  # SurrealDB row types + SurrealProcessor queries
+│   ├── db/       # PostgreSQL row types + sqlx queries
 │   └── redis/    # Redis key/value types (rkyv-encoded)
 ├── services/     # business logic (stateful Processors)
 ├── events/       # AMQP payloads + routing
@@ -62,7 +62,7 @@ src/
 
 | You are writing…                                    | Put it in…      |
 | --------------------------------------------------- | --------------- |
-| A SurrealDB query or a table row type               | `entities/surreal`|
+| A PostgreSQL query or a table row type              | `entities/db`   |
 | A Redis-cached value or ephemeral token             | `entities/redis`|
 | A use case that combines queries and rules          | `services`      |
 | A message other modules react to                    | `events`        |
@@ -73,22 +73,31 @@ src/
 
 ## Layer rules
 
-### `entities/surreal`
+### `entities/db`
 
 - One submodule per table or aggregate.
-- Define a row struct deriving `surrealdb_types::SurrealValue`, and wrap the
-  table's record id in a newtype with `table_record!(NameId, "table")` from
-  `lib/newtype_record_id` (this generates the `RecordId` newtype plus its
-  `SurrealValue` impl).
-- Implement `Processor<Input>` for `wakuwaku::surreal::SurrealProcessor`, one
-  impl per query/command, with `Error = surrealdb::Error`. The raw processor, not
-  `base::db::Db`: services hold the bounded handle and it forwards to these. Run statements with
-  `self.db().query(SQL).bind(("k", v)).await?` then `resp.take::<T>(0)?`; use
-  `.check()?` on write-only commands to surface per-statement errors.
-- Queries are validated at runtime, not compile time, so cover them with the
-  module's integration tests against an in-memory (`mem://`) database.
-- SurrealDB 3.x gotchas: use `type::record(tb, id)` (the old `type::thing` was
-  removed), and never bind a variable named `token` (it is reserved).
+- Define a row struct deriving `sqlx::FromRow`, and wrap the table's id in a
+  newtype with `table_record!(NameId, "table")` from `lib/db_types`: a `String`
+  newtype transparent to sqlx and serde, so foreign-key columns and ids inside
+  `jsonb` documents are typed too (`canvas: CanvasId`, never `String`). An enum
+  stored as text gets its one spelling from `text_enum!`; a document whose shape
+  varies per row is `jsonb` (`#[sqlx(json)]` on the field, serde on the type).
+- Implement `Processor<Input>` for `base::db::Db`, one impl per query/command,
+  with `Error = base::db::Error`. Run statements with
+  `sqlx::query_as(SQL).bind(v).fetch_one(self.db())`. A multi-statement write is
+  one `self.db().begin()` transaction with the statements in Rust order; a fence
+  that loses returns `Error::Conflict(<token>)` and rolls the transaction back,
+  while a refused conditional write (`UPDATE … WHERE <fence> RETURNING …` that
+  matches nothing) is an empty result, never an error.
+- Queries are checked at runtime, not at compile time (no `query!` macros), so
+  cover them with the module's integration tests, which run against a real
+  database: `#[sqlx::test(migrator = "base::db::MIGRATOR")]` gives each test a
+  fresh, migrated one from `DATABASE_URL` (the `guru_test` database, never the
+  production one).
+- PostgreSQL gotchas: compare a nullable column with `IS DISTINCT FROM`, not
+  `<>`; a JSON `null` inside `jsonb` is not SQL `NULL` (`jsonb_typeof`); the
+  `sqlx::query*` functions take `&'static str`, so a formatted statement needs
+  `sqlx::AssertSqlSafe` (tests only).
 - Annotate every impl with the named tracing span described under *Tracing*.
 
 ### `entities/redis`
@@ -100,10 +109,9 @@ src/
 
 ### `services`
 
-- The database dependency is `base::db::Db`, never `SurrealProcessor`. It bounds every
-  query, so a client that never answers costs one retryable error instead of an await that
-  never returns. Reach for `Db::raw()` only to build a statement by hand, and know that
-  nothing awaited through it is bounded.
+- The database dependency is `base::db::Db`, the pool handle every entity query
+  is implemented on. Statements are bounded by the server (`statement_timeout`,
+  set by `base::db::connect`), so nothing here needs a timer of its own.
 - A service is a `Clone` struct owning its dependencies (database, Redis, AMQP,
   loaded config, other services).
 - One `Processor` impl per operation; return domain types, not protobuf types.
@@ -139,7 +147,7 @@ src/
 ### `config`
 
 - A `serde`-(de)serializable struct implementing `Default`, bound to a stable
-  string key with `base::entities::surreal::app_config::ConfigJson`.
+  string key with `base::entities::db::app_config::ConfigJson`.
 - Stored as JSON in one `app_config` row (no cache, no second copy), seeded by
   `manage-tool config seed` and loaded once at startup with
   `base::services::config::LoadConfig`; services hold the value.
@@ -155,8 +163,10 @@ src/
 ## Cross-cutting conventions
 
 - **Errors:** use `wakuwaku::Error` at the service/hook boundary. Inside
-  `entities/surreal` return `surrealdb::Error`; it converts into
-  `wakuwaku::Error` via `?` at the service layer (needs `wakuwaku` ≥ 0.2.3).
+  `entities/db` return `base::db::Error`; it converts into `wakuwaku::Error`
+  via `?` at the service layer. `base::db::is_unavailable` tells "the database
+  did not answer" (`UNAVAILABLE`) from a refusal, and `Error::Conflict` is a
+  transaction that definitely did not commit.
   Define module-specific error enums with `thiserror` when a layer needs richer
   variants.
 - **Lints:** keep the crate-level `#![deny(clippy::unwrap_used)]`,
@@ -165,9 +175,9 @@ src/
   `#[tracing::instrument(skip_all, err)]`, and **always give the span an
   explicit `name`** — a bare attribute on `Processor::process` produces an
   indistinguishable `process` span for every impl. Naming convention:
-  - `entities/surreal` queries → `name = "Query:<Input>"` (e.g.
-    `"Query:FindAccountByEmail"`); if the impl drives a SurrealDB transaction,
-    use `name = "Query-Transaction:<Input>"` instead.
+  - `entities/db` queries → `name = "Query:<Input>"` (e.g.
+    `"Query:FindAccountByEmail"`); if the impl drives a transaction, use
+    `name = "Query-Transaction:<Input>"` instead.
   - `services` operations → `name = "Service:<Input>"` (e.g.
     `"Service:RegisterAccount"`).
   - gRPC handlers need no `name`: the trait-method name already labels the span.
@@ -179,16 +189,17 @@ src/
   files there, register them in `rpguru_sdk`'s `build.rs` (Rust side), and
   regenerate the TypeScript side with `bun run generate:proto`. Never hand-edit
   or duplicate generated code.
-- **Schema:** SurrealDB schema lives in `database/schema/*.surql`, managed with
-  **surrealkit** (`surrealkit sync` in development; `surrealkit rollout` for
-  shared/production databases). Keep each module's tables in its own
-  `<module>.surql` file; the module's integration tests apply that same file.
+- **Schema:** the PostgreSQL schema lives in `database/migrations/*.sql`,
+  embedded by `sqlx::migrate!` as `base::db::MIGRATOR` and applied by
+  `guru-master` at startup (advisory-locked, so replicas may start together) and
+  by `manage-tool db migrate`. Every change is a new migration file; an applied
+  one is never edited. The integration tests run the same migrator.
 
 ## Adding a new module (checklist)
 
 1. Copy the `modules/base` directory layout into `modules/<name>`.
 2. Add the crate to the workspace `members` in the root `Cargo.toml`.
-3. Define the schema in `database/schema/<name>.surql` (surrealkit) and the API
+3. Add the tables in a new `database/migrations/<n>_<name>.sql` and the API
    in `proto/` (register it in `rpguru_sdk`).
 4. Implement, from the inside out: `entities` → `services` → `rpc`/`hooks`.
 5. Wire the new services/hooks into `bin/guru-master`'s workers.

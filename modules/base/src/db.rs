@@ -1,177 +1,215 @@
-//! The database handle every service holds: a `SurrealProcessor` that cannot wait forever.
+//! The database handle every service holds, and the error every query returns.
 //!
-//! # Why this exists
+//! [`Db`] is `wakuwaku`'s thin wrapper over a `PgPool`; entity queries are
+//! `Processor` impls on it, services hold a clone of it. There is no second
+//! layer: bounding a query is the server's job (`statement_timeout`, set on
+//! every connection by [`connect`]) and cancels the statement itself rather than
+//! abandoning it, so a client-side timer would only add a second clock that
+//! could disagree with the first.
 //!
-//! The SurrealDB client has **no request timeout of its own**, on any remote engine:
-//! `query_timeout` on the SDK's config object reaches the embedded engines only. A request
-//! whose answer is lost is therefore an `.await` that never returns.
-//!
-//! That is not a hypothetical. Two workers hung on it on 2026-09-16, one inside an update
-//! poll and one inside a config acknowledgement, and neither recovered until the master was
-//! restarted an hour later. The engine they were on multiplexes every query in a process
-//! through one WebSocket and one router task; when that router cannot match a response to a
-//! caller it drops the response and logs, and its recovery on reconnect only covers sessions
-//! its map still holds as `Ok` (the SDK's own `fail_all_pending_requests` comment says as
-//! much, citing surrealdb/surrealdb#7037).
-//!
-//! The control plane has since moved to `http://`, where each query is an independent request
-//! and there is no shared pipe to lose answers in. This bound stays regardless: it is what
-//! keeps any future engine, or any network, from turning one lost answer into a process that
-//! waits for it forever.
-//!
-//! # What it fixes
-//!
-//! Nothing, on its own. It turns an await that never returns into an ordinary error, and
-//! almost every caller already knows what to do with one: a worker session ends and
-//! reconnects, an AMQP hook nacks and the broker redelivers, the config poller logs and takes
-//! the next tick, a live view retries. That recovery code was always correct; it simply never
-//! ran, because the future it waited on never resolved.
-//!
-//! # What it does not do
-//!
-//! A timeout is not a cancellation. The statement keeps running on the server, so a write
-//! that timed out may still commit, and the client keeps one entry in its pending map until
-//! an answer arrives or the connection resets.
-//!
-//! **It therefore does not retry.** Retrying here would retry writes as well as reads, and a
-//! `CREATE` whose answer was lost after it committed would be applied twice. Only a caller
-//! knows whether its operation is idempotent, so the retry lives with the callers that are:
-//! the two authentication middlewares, whose lookups are pure reads.
+//! Nothing here retries. Only a caller knows whether its operation is
+//! idempotent, and the one class of failure that is safe to retry blind is
+//! named as such: [`Error::Conflict`] means the transaction definitely did not
+//! commit.
 
-use kanau::processor::Processor;
+use sqlx::migrate::Migrator;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
-use surrealdb::Surreal;
-use surrealdb::engine::any::Any;
-use surrealdb_types::ConnectionError;
-use wakuwaku::surreal::SurrealProcessor;
 
-/// How long one query may take before it is called lost.
-///
-/// Measured against the live database while the fleet was running, the queries that actually
-/// lose their answers return in 28-81 ms. Three seconds is more than thirty times the honest
-/// worst case and still well under the thirty second watch session lease, so a stuck lease
-/// renewal fails in time for its stream to end cleanly. It is a backstop, not a latency
-/// budget: a caller that needs a tighter bound puts one at its own edge.
-///
-/// It started at ten seconds. That was long enough that a caller which retried once waited
-/// twenty seconds before answering, which is what a lost answer felt like from the dashboard.
-pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+pub use wakuwaku::sqlx::DatabaseProcessor as Db;
 
-/// A [`SurrealProcessor`] whose queries are bounded.
+/// The schema, applied by `guru-master` at startup and by `manage-tool db migrate`.
 ///
-/// Every service holds one of these rather than the raw processor, so that every query in
-/// the workspace is bounded by construction — including queries written after this type was.
-/// The query implementations themselves are untouched: they are still written for
-/// `SurrealProcessor`, and the blanket [`Processor`] implementation below forwards to them.
-///
-/// A legitimately slow call does not need [`Self::raw`]; it can widen its own bound:
-///
-/// ```ignore
-/// self.db.clone().with_timeout(Duration::from_secs(60)).process(BigBatch { .. }).await
-/// ```
+/// Declared once, here, so the path to `database/migrations` is spelled in one
+/// place; `#[sqlx::test(migrator = "base::db::MIGRATOR")]` reuses it.
+pub static MIGRATOR: Migrator = sqlx::migrate!("../../database/migrations");
+
+/// How a process opens the database.
 #[derive(Debug, Clone)]
-pub struct Db {
-    /// Deliberately private, and deliberately not exposed by a `Deref`. A `Deref` to the
-    /// inner processor would compile and behave correctly today, then silently start
-    /// resolving `process` to the *unbounded* implementation the first time somebody writes
-    /// a query whose error type is not `surrealdb::Error`.
-    inner: SurrealProcessor,
-    limit: Duration,
+pub struct PoolSettings {
+    /// The server-side bound on one statement. A statement that runs past it is
+    /// cancelled by the server (SQLSTATE `57014`, which [`is_unavailable`]
+    /// classifies as retryable) and the connection stays usable.
+    pub statement_timeout: Duration,
+    /// Connections this process may hold at once.
+    pub max_connections: u32,
+    /// Shown in `pg_stat_activity`, so a stuck statement can be traced to a process.
+    pub application_name: &'static str,
 }
 
-impl Db {
-    /// Wraps a connected handle with [`DEFAULT_QUERY_TIMEOUT`].
-    pub fn new(executor: Surreal<Any>) -> Self {
-        Self {
-            inner: SurrealProcessor::new(executor),
-            limit: DEFAULT_QUERY_TIMEOUT,
+/// Opens a pool and returns the handle services hold.
+pub async fn connect(url: &str, settings: PoolSettings) -> Result<Db, sqlx::Error> {
+    let millis = settings.statement_timeout.as_millis().to_string();
+    let options = url
+        .parse::<PgConnectOptions>()?
+        .application_name(settings.application_name)
+        // Session settings ride in the startup packet, so every connection the
+        // pool opens has them from its first statement.
+        .options([
+            ("statement_timeout", millis.as_str()),
+            ("lock_timeout", millis.as_str()),
+            // A transaction whose future was dropped mid-way (a client hung up)
+            // would otherwise keep its row locks until the pool recycled the
+            // connection; the canvas root row is exactly the lock that must not
+            // be held by a ghost.
+            ("idle_in_transaction_session_timeout", "30000"),
+        ]);
+    let pool = PgPoolOptions::new()
+        .max_connections(settings.max_connections)
+        .min_connections(1)
+        .acquire_timeout(settings.statement_timeout)
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
+        .connect_with(options)
+        .await?;
+    Ok(Db::new(pool))
+}
+
+/// What an entity query can fail with.
+///
+/// Every `Processor` on [`Db`] uses this as its error; `?` on a sqlx call
+/// converts through [`From<sqlx::Error>`], which is where the one
+/// classification this workspace cares about is made.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The driver or the server answered with a failure.
+    #[error(transparent)]
+    Query(sqlx::Error),
+    /// The transaction definitely did not commit, and a retry from a fresh read
+    /// may succeed: a generation fence lost, a unique constraint the write raced
+    /// on, a serialisation failure or a deadlock. The token names which.
+    ///
+    /// This is the class the old store never distinguished from a fault.
+    #[error("conflict: {0}")]
+    Conflict(&'static str),
+}
+
+/// SQLSTATE `40001`.
+pub const SERIALIZATION_FAILURE: &str = "serialization_failure";
+/// SQLSTATE `40P01`.
+pub const DEADLOCK: &str = "deadlock_detected";
+
+impl From<sqlx::Error> for Error {
+    fn from(error: sqlx::Error) -> Self {
+        match sqlstate(&error) {
+            Some("40001") => Error::Conflict(SERIALIZATION_FAILURE),
+            Some("40P01") => Error::Conflict(DEADLOCK),
+            _ => Error::Query(error),
+        }
+    }
+}
+
+impl Error {
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Error::Conflict(_))
+    }
+
+    /// The constraint a unique violation (`23505`) hit, when this is one.
+    pub fn unique_violation(&self) -> Option<&str> {
+        match self {
+            Error::Query(sqlx::Error::Database(e)) if e.is_unique_violation() => e.constraint(),
+            _ => None,
         }
     }
 
-    /// The same handle with a different bound.
+    /// The constraint a foreign-key violation (`23503`) hit, when this is one.
+    pub fn fk_violation(&self) -> Option<&str> {
+        match self {
+            Error::Query(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+                e.constraint()
+            }
+            _ => None,
+        }
+    }
+
+    /// Names a unique violation on `constraint` as the conflict `token`; any
+    /// other error passes through unchanged. For the writes whose race the
+    /// schema refuses on the caller's behalf.
     #[must_use]
-    pub fn with_timeout(self, limit: Duration) -> Self {
-        Self { limit, ..self }
-    }
-
-    /// The bound one query gets.
-    pub fn timeout(&self) -> Duration {
-        self.limit
-    }
-
-    /// The raw executor, for the few callers that must build a statement by hand.
-    ///
-    /// **Anything awaited through this is not bounded.** Named so that `grep raw()` finds
-    /// every such place in one pass.
-    pub fn raw(&self) -> &Surreal<Any> {
-        // Through the inner processor, not the field: that accessor is what emits the
-        // `monotonic_counter.sql` metric, and reading the field directly would stop the
-        // remaining hand-written statements from being counted.
-        self.inner.db()
+    pub fn conflict_on(self, constraint: &str, token: &'static str) -> Self {
+        if self.unique_violation() == Some(constraint) {
+            Error::Conflict(token)
+        } else {
+            self
+        }
     }
 }
 
-/// The error a lost query produces, naming the query that was lost.
-///
-/// A connection-class error on purpose: `Error::connection_details()` is what the gRPC edge
-/// reads to answer `UNAVAILABLE` rather than `INTERNAL`, so a caller can tell "try again"
-/// from "this is a bug".
-fn timed_out<I>(limit: Duration) -> surrealdb::Error {
-    surrealdb_types::Error::connection(
-        format!(
-            "{} did not answer within {limit:?}",
-            std::any::type_name::<I>()
+fn sqlstate(error: &sqlx::Error) -> Option<&str> {
+    match error {
+        sqlx::Error::Database(e) => match e.code() {
+            Some(std::borrow::Cow::Borrowed(code)) => Some(code),
+            // The Postgres driver hands the code out borrowed; an owned one
+            // cannot be returned by reference, and no code we classify is
+            // produced owned.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether the failure is the database being unreachable, saturated or slow
+/// rather than an answer: the pool had no connection, the connection dropped,
+/// the server cancelled the statement at `statement_timeout`, or it is shutting
+/// down. A gRPC edge answers `UNAVAILABLE` for these and `INTERNAL` for the
+/// rest, so a client can tell "try again" from "this is a bug".
+pub fn is_unavailable(error: &Error) -> bool {
+    match error {
+        Error::Conflict(_) => false,
+        Error::Query(error) => query_is_unavailable(error),
+    }
+}
+
+fn query_is_unavailable(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::Io(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::WorkerCrashed => true,
+        sqlx::Error::Database(_) => matches!(
+            sqlstate(error),
+            Some(code)
+                if code.starts_with("08")          // connection_exception
+                    || code == "57014"             // query_canceled: statement_timeout
+                    || code.starts_with("57P")     // admin_shutdown, crash_shutdown, cannot_connect_now
+                    || code == "53300"             // too_many_connections
+                    || code == "55P03"             // lock_not_available: lock_timeout
         ),
-        ConnectionError::ConnectionFailed,
-    )
+        _ => false,
+    }
 }
 
-/// Whether a database error means "the query never got an answer" rather than "the query was
-/// answered, with a refusal".
-///
-/// True for a timeout from [`Db`] and for a genuine transport failure, both of which the
-/// caller should retry. A gRPC edge answers `UNAVAILABLE` for these and `INTERNAL` for the
-/// rest, so a client can tell the two apart; before this existed every database failure
-/// looked like a bug in the control plane.
-pub fn is_unavailable(error: &surrealdb::Error) -> bool {
-    error.connection_details().is_some()
+impl From<Error> for wakuwaku::Error {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Query(e) => wakuwaku::Error::DatabaseError(e),
+            // `Io` is the variant wakuwaku documents as "solved by retrying",
+            // which is what a conflict is. `status_of` reads it back.
+            conflict @ Error::Conflict(_) => wakuwaku::Error::Io(anyhow::Error::new(conflict)),
+        }
+    }
 }
 
-/// The gRPC status a service error deserves, with connection failures told apart from faults.
+/// The gRPC status a service error deserves.
 ///
-/// `wakuwaku`'s own conversion answers `INTERNAL` for every database error, so anything that
-/// wants the distinction goes through here instead of through `?`.
+/// `wakuwaku`'s own conversion answers `INTERNAL` for every database error, so
+/// anything that wants "try again" told apart from "this is a bug" goes through
+/// here instead of through `?`.
 pub fn status_of(error: wakuwaku::Error) -> tonic::Status {
     match &error {
-        wakuwaku::Error::SurrealDbError(e) if is_unavailable(e) => {
+        wakuwaku::Error::DatabaseError(e) if query_is_unavailable(e) => {
             tracing::warn!(error = %e, "database unavailable");
             tonic::Status::unavailable("Database unavailable")
         }
-        _ => tonic::Status::from(error),
-    }
-}
-
-impl<I: Send> Processor<I> for Db
-where
-    SurrealProcessor: Processor<I, Error = surrealdb::Error>,
-{
-    type Output = <SurrealProcessor as Processor<I>>::Output;
-    /// Pinned to `surrealdb::Error` rather than projected from the inner processor: the
-    /// timeout arm has to produce a value of this type, which only the equality constraint
-    /// in the `where` clause makes provable.
-    type Error = surrealdb::Error;
-
-    fn process(&self, input: I) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        let limit = self.limit;
-        let inner = self.inner.process(input);
-        // The timer is created inside the block so the clock starts when the future is first
-        // polled, not when `process` was called.
-        async move {
-            match tokio::time::timeout(limit, inner).await {
-                Ok(result) => result,
-                Err(_) => Err(timed_out::<I>(limit)),
+        wakuwaku::Error::Io(e) => match e.downcast_ref::<Error>() {
+            Some(Error::Conflict(token)) => {
+                tonic::Status::aborted(format!("Write conflicted ({token}); retry"))
             }
-        }
+            _ => tonic::Status::from(error),
+        },
+        _ => tonic::Status::from(error),
     }
 }
 
@@ -181,71 +219,46 @@ mod tests {
 
     use super::*;
 
-    /// A query that really blocks, so the bound is tested against the thing it exists for
-    /// rather than against a mock. `sleep()` is a SurrealQL builtin and is permitted by the
-    /// default capabilities of an in-memory instance.
-    struct Sleep {
-        seconds: u32,
-    }
-
-    impl Processor<Sleep> for SurrealProcessor {
-        type Output = ();
-        type Error = surrealdb::Error;
-        async fn process(&self, input: Sleep) -> Result<Self::Output, Self::Error> {
-            // No `TIMEOUT` clause: the engine clamps `sleep()` to the statement timeout,
-            // which would defeat the point.
-            self.db()
-                .query(format!("RETURN sleep({}s)", input.seconds))
-                .await?
-                .check()?;
-            Ok(())
-        }
-    }
-
-    /// Answers immediately; proves the wrapper is a pass-through when nothing is wrong.
-    struct Ping;
-
-    impl Processor<Ping> for SurrealProcessor {
-        type Output = i64;
-        type Error = surrealdb::Error;
-        async fn process(&self, _: Ping) -> Result<Self::Output, Self::Error> {
-            let mut resp = self.db().query("RETURN 7").await?;
-            Ok(resp.take::<Option<i64>>(0)?.unwrap_or_default())
-        }
-    }
-
-    async fn memory() -> Surreal<Any> {
-        let db = surrealdb::engine::any::connect("mem://").await.unwrap();
-        db.use_ns("test").use_db("test").await.unwrap();
-        db
-    }
-
-    #[tokio::test]
-    async fn a_query_that_does_not_answer_in_time_becomes_an_error() {
-        let db = Db::new(memory().await).with_timeout(Duration::from_millis(100));
-        let started = std::time::Instant::now();
-        let error = db
-            .process(Sleep { seconds: 5 })
+    /// The server bound is the one that matters: the statement is cancelled
+    /// there, the error is classified as unavailable, and the connection is
+    /// still good for the next query.
+    #[sqlx::test(migrations = false)]
+    async fn a_statement_past_the_bound_is_cancelled_and_classified(
+        pool_options: PgPoolOptions,
+        connect_options: PgConnectOptions,
+    ) {
+        let connect_options = connect_options.options([("statement_timeout", "200")]);
+        let pool = pool_options
+            .max_connections(1)
+            .connect_with(connect_options)
             .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let error: Error = sqlx::query("SELECT pg_sleep(5)")
+            .execute(&pool)
+            .await
+            .map_err(Error::from)
             .expect_err("the bound fires");
         assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "gave up on the query instead of waiting it out, took {:?}",
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
             started.elapsed()
         );
-        assert!(
-            error.to_string().contains("Sleep"),
-            "the error names the query that was lost: {error}"
-        );
-        assert!(
-            error.connection_details().is_some(),
-            "a connection-class error, so the edge can answer UNAVAILABLE: {error}"
-        );
+        assert!(is_unavailable(&error), "{error}");
+        let seven: i64 = sqlx::query_scalar("SELECT 7::bigint")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(seven, 7, "the connection survived the cancellation");
     }
 
-    #[tokio::test]
-    async fn a_query_that_answers_passes_straight_through() {
-        let db = Db::new(memory().await);
-        assert_eq!(db.process(Ping).await.unwrap(), 7);
+    #[test]
+    fn a_conflict_reaches_the_edge_as_aborted() {
+        let status = status_of(Error::Conflict("stale").into());
+        assert_eq!(status.code(), tonic::Code::Aborted);
+        let status = status_of(Error::Query(sqlx::Error::PoolTimedOut).into());
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        let status = status_of(Error::Query(sqlx::Error::RowNotFound).into());
+        assert_eq!(status.code(), tonic::Code::Internal);
     }
 }

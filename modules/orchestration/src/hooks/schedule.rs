@@ -6,7 +6,7 @@
 //! scans while an hourly one fires on one in 720.
 //!
 //! The other half of periodic execution lives in
-//! [`crate::entities::surreal::job_run::ClaimJobRun`]: every hook claims its run
+//! [`crate::entities::db::job_run::ClaimJobRun`]: every hook claims its run
 //! before doing any work, because AMQP is at-least-once and the consumer is
 //! horizontally scaled, so the same pass can be delivered twice, to two
 //! consumers, or late after a backlog.

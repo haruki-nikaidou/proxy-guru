@@ -26,19 +26,17 @@
 //! the new material ships as a new revision.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::ca::{
+use crate::entities::db::ca::{
     FindInternalCa, ListRelayCertificatesByPods, ListRelayCertificatesExpiringBefore,
 };
-use crate::entities::surreal::canvas::CanvasId;
-use crate::entities::surreal::certificate::{ListCertificatesBySnis, TouchCanvases};
-use crate::entities::surreal::health::{
-    InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus,
-};
-use crate::entities::surreal::job_run::ClaimJobRun;
-use crate::entities::surreal::node::{ListCanvasesOfNodes, NodeId};
-use crate::entities::surreal::server::ServerId;
-use crate::entities::surreal::topology::CanvasTopology;
-use crate::entities::surreal::view::{
+use crate::entities::db::canvas::CanvasId;
+use crate::entities::db::certificate::{ListCertificatesBySnis, TouchCanvases};
+use crate::entities::db::health::{InsertNodeHealthRecords, NewNodeHealthRecord, NodeHealthStatus};
+use crate::entities::db::job_run::ClaimJobRun;
+use crate::entities::db::node::{ListCanvasesOfNodes, NodeId};
+use crate::entities::db::server::ServerId;
+use crate::entities::db::topology::CanvasTopology;
+use crate::entities::db::view::{
     CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };

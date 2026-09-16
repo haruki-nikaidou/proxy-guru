@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 # Internal
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }
-newtype_record_id = { path = "../../lib/newtype_record_id" }
+db_types = { path = "../../lib/db_types" }
 guru_worker_config = { path = "../../lib/guru_worker_config" }
 auth = { path = "../auth" }
 base = { path = "../base" }
@@ -19,8 +19,7 @@ kanau = { workspace = true }
 tokio = { workspace = true }
 
 # Persistence
-surrealdb = { workspace = true }
-surrealdb-types = { workspace = true }
+sqlx = { workspace = true }
 
 # Messaging
 amqprs = { workspace = true }
@@ -62,7 +61,6 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
-surrealdb = { workspace = true, features = ["kv-mem"] }
 testcontainers-modules = { version = "0.15.0", features = ["rabbitmq", "redis"] }
 x509-parser = { workspace = true, features = ["verify-aws"] }
 tokio = { workspace = true }

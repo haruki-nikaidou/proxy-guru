@@ -8,15 +8,15 @@
 //! any port of a lane node) are never edited by hand.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::batch::{ApplyTopologyBatch, BatchEdge, PortRef, PortReshape};
-use crate::entities::surreal::connection::{
+use crate::entities::db::batch::{ApplyTopologyBatch, BatchEdge, PortRef, PortReshape};
+use crate::entities::db::connection::{
     ConnectPorts, DeleteEdgeRow, EdgeConnectionEntity, EdgeConnectionId, FindEdgeByEnds,
     FindEdgeById,
 };
-use crate::entities::surreal::node::{FindNodeById, NewPort, NodeId, NodeSpec, NodeWithPorts};
-use crate::entities::surreal::port::{FindPortById, PortDirection, PortEntity, PortId, PortKind};
-use crate::entities::surreal::topology::{CanvasTopology, LoadCanvasTopology};
-use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::entities::db::node::{FindNodeById, NewPort, NodeId, NodeSpec, NodeWithPorts};
+use crate::entities::db::port::{FindPortById, PortDirection, PortEntity, PortId, PortKind};
+use crate::entities::db::topology::{CanvasTopology, LoadCanvasTopology};
+use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::converge::ensure_switch_safe;
@@ -26,7 +26,7 @@ use crate::services::topology::{TopologyEdit, ensure_valid};
 use crate::services::universal;
 use crate::utils::ids;
 use crate::utils::ids::record_key;
-use auth::entities::surreal::account::AccountRole;
+use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
@@ -43,7 +43,7 @@ pub struct EdgeService {
 async fn canvas_of_port(
     db: &Db,
     port: &PortId,
-) -> Result<crate::entities::surreal::canvas::CanvasId, OrchestrationError> {
+) -> Result<crate::entities::db::canvas::CanvasId, OrchestrationError> {
     let row = db
         .process(FindPortById { id: port.clone() })
         .await?
@@ -232,7 +232,7 @@ impl ConnectEnd {
     async fn canvas(
         &self,
         db: &Db,
-    ) -> Result<crate::entities::surreal::canvas::CanvasId, OrchestrationError> {
+    ) -> Result<crate::entities::db::canvas::CanvasId, OrchestrationError> {
         match self {
             ConnectEnd::Port(port) => canvas_of_port(db, port).await,
             ConnectEnd::Handle { node, .. } => Ok(db

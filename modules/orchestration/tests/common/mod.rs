@@ -1,24 +1,22 @@
 #![allow(dead_code)]
 
 use auth::config::AuthConfig;
-use auth::entities::surreal::account::{AccountId, AccountRole, CreateAccount};
+use auth::entities::db::account::{AccountId, AccountRole, CreateAccount};
 use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::{Login, LoginResult, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::surreal::canvas::{
-    CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas,
-};
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas};
+use orchestration::entities::db::node::{
     CreateNodeRow, NewPort, NodeSpec, NodeWithPorts, PodConfig,
 };
-use orchestration::entities::surreal::port::{PortDirection, PortKind};
-use orchestration::entities::surreal::server::{
+use orchestration::entities::db::port::{PortDirection, PortKind};
+use orchestration::entities::db::server::{
     CreateServer, ServerEntity, ServerId, ServerIpv6Resolve,
 };
-use orchestration::entities::surreal::view::{FindServerConfigView, ServerConfigViewEntity};
+use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
 use orchestration::hooks::live::LiveBus;
 use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
@@ -35,35 +33,20 @@ use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
-use surrealdb::types::RecordId;
 
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// A fresh in-memory database with the module's real schema applied.
-pub async fn setup() -> Result<Db, Box<dyn std::error::Error>> {
-    let db = surrealdb::engine::any::connect("mem://").await?;
-    db.use_ns("test").use_db("test").await?;
-    let sp = Db::new(db);
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/orchestration.surql"
-    ))?;
-    sp.raw().query(ddl).await?.check()?;
-    // The live streams re-validate their session on every keep-alive tick, so
-    // the gRPC-level tests need real `account` and `session` tables.
-    let auth_ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../database/schema/auth.surql"
-    ))?;
-    sp.raw().query(auth_ddl).await?.check()?;
-    Ok(sp)
+/// The database `#[sqlx::test]` created for this test, migrated with the
+/// workspace schema, wrapped in the handle services hold.
+pub fn setup(pool: sqlx::PgPool) -> Db {
+    Db::new(pool)
 }
 
 pub fn pos(x: i64, y: i64) -> CanvasUiPosition {
     CanvasUiPosition { x, y }
 }
 
-pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, surrealdb::Error> {
+pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, base::db::Error> {
     sp.process(CreateCanvas {
         name: name.to_string(),
         description: String::new(),
@@ -75,7 +58,7 @@ pub async fn server(
     sp: &Db,
     canvas: &CanvasEntity,
     name: &str,
-) -> Result<ServerEntity, surrealdb::Error> {
+) -> Result<ServerEntity, base::db::Error> {
     server_at(sp, canvas, name, "203.0.113.10").await
 }
 
@@ -86,7 +69,7 @@ pub async fn server_at(
     canvas: &CanvasEntity,
     name: &str,
     address: &str,
-) -> Result<ServerEntity, surrealdb::Error> {
+) -> Result<ServerEntity, base::db::Error> {
     sp.process(CreateServer {
         canvas: canvas.id.clone(),
         name: name.to_string(),
@@ -143,7 +126,7 @@ pub async fn node(
     name: &str,
     spec: NodeSpec,
     ports: Vec<NewPort>,
-) -> Result<NodeWithPorts, surrealdb::Error> {
+) -> Result<NodeWithPorts, base::db::Error> {
     sp.process(CreateNodeRow {
         canvas: canvas.id.clone(),
         name: name.to_string(),
@@ -168,7 +151,7 @@ pub fn pod_spec(server: &ServerEntity, port: u16) -> NodeSpec {
 }
 
 /// The id of the port with the given key.
-pub fn port_of(node: &NodeWithPorts, key: &str) -> orchestration::entities::surreal::port::PortId {
+pub fn port_of(node: &NodeWithPorts, key: &str) -> orchestration::entities::db::port::PortId {
     node.ports
         .iter()
         .find(|p| p.key == key)
@@ -180,7 +163,7 @@ pub fn port_of(node: &NodeWithPorts, key: &str) -> orchestration::entities::surr
 
 pub fn operator() -> Identity {
     Identity {
-        account_id: AccountId(RecordId::new("auth_account", "admin")),
+        account_id: AccountId::from_key("admin"),
         role: AccountRole::Admin,
         kind: IdentityKind::Session,
     }
@@ -188,7 +171,7 @@ pub fn operator() -> Identity {
 
 pub fn machine() -> Identity {
     Identity {
-        account_id: AccountId(RecordId::new("auth_account", "admin")),
+        account_id: AccountId::from_key("admin"),
         role: AccountRole::Maintainer,
         kind: IdentityKind::ApiKey,
     }
@@ -198,7 +181,7 @@ pub fn machine() -> Identity {
 /// refusal can only come from the role check itself.
 pub fn maintainer() -> Identity {
     Identity {
-        account_id: AccountId(RecordId::new("auth_account", "ops")),
+        account_id: AccountId::from_key("ops"),
         role: AccountRole::Maintainer,
         kind: IdentityKind::Session,
     }
@@ -208,7 +191,7 @@ pub fn pos0() -> CanvasUiPosition {
     CanvasUiPosition { x: 0, y: 0 }
 }
 
-/// Every service over one in-memory database, plus the derivation hook.
+/// Every service over one database, plus the derivation hook.
 pub struct World {
     pub db: Db,
     pub secrets: SecretKey,
@@ -231,14 +214,17 @@ pub struct World {
     pub sessions: SessionService,
 }
 
-pub async fn world() -> Result<World, Box<dyn std::error::Error>> {
-    world_with(OrchestrationConfig::default()).await
+pub async fn world(pool: sqlx::PgPool) -> Result<World, Box<dyn std::error::Error>> {
+    world_with(pool, OrchestrationConfig::default()).await
 }
 
 /// A world whose services carry `config`; the gRPC stream tests shorten the
 /// keep-alive so a test does not have to wait fifteen seconds for one.
-pub async fn world_with(config: OrchestrationConfig) -> Result<World, Box<dyn std::error::Error>> {
-    let db = setup().await?;
+pub async fn world_with(
+    pool: sqlx::PgPool,
+    config: OrchestrationConfig,
+) -> Result<World, Box<dyn std::error::Error>> {
+    let db = setup(pool);
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let bus = LiveBus::new();
     // No broker, but a real bus: `amqp: None` keeps the derivation hook driven

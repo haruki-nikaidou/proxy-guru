@@ -1,12 +1,12 @@
 //! Canvas CRUD and validation.
 
-use crate::entities::surreal::canvas::{
+use crate::entities::db::canvas::{
     CanvasContents, CanvasEntity, CanvasId, CanvasTree, CreateCanvas as CreateCanvasRow,
     DeleteCanvasRow, FindCanvasById, ListCanvases as ListCanvasesRow, LoadCanvasTree,
     UpdateCanvasMeta,
 };
-use crate::entities::surreal::node::FindImporterOf;
-use crate::entities::surreal::topology::{LoadCanvasContents, LoadCanvasTopology};
+use crate::entities::db::node::FindImporterOf;
+use crate::entities::db::topology::{LoadCanvasContents, LoadCanvasTopology};
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
@@ -247,7 +247,7 @@ impl Processor<ValidateCanvas> for CanvasService {
             .await?;
         // A problem on a generated lane is shown on the universal node that
         // generated it: the lane itself is not on the canvas.
-        let group_of: std::collections::HashMap<String, crate::entities::surreal::node::NodeId> =
+        let group_of: std::collections::HashMap<String, crate::entities::db::node::NodeId> =
             topology
                 .nodes
                 .iter()

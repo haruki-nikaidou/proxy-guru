@@ -8,13 +8,13 @@ mod common;
 use chrono::{DateTime, TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::canvas::{CanvasEntity, FindCanvasById};
-use orchestration::entities::surreal::certificate::{
+use orchestration::entities::db::canvas::{CanvasEntity, FindCanvasById};
+use orchestration::entities::db::certificate::{
     CertificateEntity, CertificateStatus, ClaimCertificateAttempt, EnsureCertificate,
     FindCertificateById, ListCertificatesDue, MarkCertificateAttemptFailed, StoreIssuedCertificate,
 };
-use orchestration::entities::surreal::dns::{DnsProvider, FindDnsProviderById};
-use orchestration::entities::surreal::node::{DeleteNodeRow, EntryConfig, NodeSpec, TlsConfig};
+use orchestration::entities::db::dns::{DnsProvider, FindDnsProviderById};
+use orchestration::entities::db::node::{DeleteNodeRow, EntryConfig, NodeSpec, TlsConfig};
 use orchestration::hooks::acme::renew_due;
 use orchestration::services::OrchestrationError;
 use orchestration::services::acme::{
@@ -126,9 +126,9 @@ async fn generation(w: &World, canvas: &CanvasEntity) -> i64 {
     .generation
 }
 
-#[tokio::test]
-async fn dns_provider_crud_encrypts_and_hides_the_secret() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn dns_provider_crud_encrypts_and_hides_the_secret(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
 
     let denied = w
         .dns
@@ -247,9 +247,9 @@ async fn dns_provider_crud_encrypts_and_hides_the_secret() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn dns_provider_delete_is_refused_while_an_entry_uses_it() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn dns_provider_delete_is_refused_while_an_entry_uses_it(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let c = canvas(&w.db, "prod").await?;
     let entry = node(
@@ -332,9 +332,9 @@ async fn dns_provider_delete_is_refused_while_an_entry_uses_it() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn ensure_certificate_is_idempotent_per_sni_and_directory() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn ensure_certificate_is_idempotent_per_sni_and_directory(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let other = create_provider(&w, "cf2", "tok2").await;
 
@@ -370,9 +370,9 @@ async fn ensure_certificate_is_idempotent_per_sni_and_directory() -> TestResult 
     Ok(())
 }
 
-#[tokio::test]
-async fn list_certificates_due_picks_the_right_rows() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let now = Utc::now();
     let renew_before = now + TimeDelta::days(30);
@@ -457,9 +457,9 @@ async fn list_certificates_due_picks_the_right_rows() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn store_issued_bumps_version_and_clears_the_failure() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn store_issued_bumps_version_and_clears_the_failure(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let cert = ensure(&w, &provider, "a.example.com", DIRECTORY).await;
 
@@ -488,9 +488,11 @@ async fn store_issued_bumps_version_and_clears_the_failure() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn retry_and_delete_are_admin_only_and_delete_respects_entries() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn retry_and_delete_are_admin_only_and_delete_respects_entries(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let c = canvas(&w.db, "prod").await?;
     // The Entry leaves the directory empty: it resolves to the default, which is
@@ -643,9 +645,11 @@ fn with_issuer(w: &World, issuer: Arc<dyn AcmeIssuer>) -> AcmeService {
     }
 }
 
-#[tokio::test]
-async fn issue_certificate_stores_encrypted_material_and_touches_canvases() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn issue_certificate_stores_encrypted_material_and_touches_canvases(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
     node(
@@ -750,9 +754,11 @@ async fn issue_certificate_stores_encrypted_material_and_touches_canvases() -> T
     Ok(())
 }
 
-#[tokio::test]
-async fn issue_certificate_records_a_failure_without_touching_anything() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn issue_certificate_records_a_failure_without_touching_anything(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
     node(
@@ -868,9 +874,11 @@ impl AcmeIssuer for GatedIssuer {
 /// reaches the row while A holds it. Drop the row claim (and the attempt stamp it
 /// writes) and B lists the row as due and hands the CA a second order for the
 /// same name — the assertion below counts orders, so the test fails.
-#[tokio::test]
-async fn two_overlapping_renewal_passes_order_one_certificate_per_row() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_overlapping_renewal_passes_order_one_certificate_per_row(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "cf-token").await;
     let c = canvas(&w.db, "prod").await?;
     node(
@@ -921,9 +929,11 @@ async fn two_overlapping_renewal_passes_order_one_certificate_per_row() -> TestR
 /// on the `last_attempt_at` the pass observed, so two passes holding the same
 /// observation produce exactly one claim, and an observation that the row has
 /// moved past is worthless however old it is.
-#[tokio::test]
-async fn claiming_an_attempt_compares_and_sets_the_observed_value() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn claiming_an_attempt_compares_and_sets_the_observed_value(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
     let cert = ensure(&w, &provider, "a.example.com", DIRECTORY).await;
     assert!(cert.last_attempt_at.is_none());

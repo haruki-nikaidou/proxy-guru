@@ -8,12 +8,12 @@ mod common;
 use common::*;
 use guru_worker_config::Config;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::canvas::{CanvasId, FindCanvasById};
-use orchestration::entities::surreal::node::{
+use orchestration::entities::db::canvas::{CanvasId, FindCanvasById};
+use orchestration::entities::db::node::{
     EntryConfig, ExitConfig, NodeSpec, NodeWithPorts, PodConfig, RelayConfig, RelayProtocol,
 };
-use orchestration::entities::surreal::server::{FindServerById, ServerId, ServerIpv6Resolve};
-use orchestration::entities::surreal::view::{
+use orchestration::entities::db::server::{FindServerById, ServerId, ServerIpv6Resolve};
+use orchestration::entities::db::view::{
     AckServerConfig, ListStaleCanvases, ListenProtocol, ListenerCap, ServerConfigViewEntity,
     TakeInFlight,
 };
@@ -108,7 +108,7 @@ fn cap(server: &ServerId, port: i64, protocol: ListenProtocol) -> ListenerCap {
 
 fn serves(
     view: &ServerConfigViewEntity,
-    slot: &Option<orchestration::entities::surreal::view::ConfigSnapshot>,
+    slot: &Option<orchestration::entities::db::view::ConfigSnapshot>,
 ) -> Vec<ListenerCap> {
     let _ = view;
     slot.as_ref()
@@ -116,9 +116,7 @@ fn serves(
         .unwrap_or_default()
 }
 
-fn points_at(
-    slot: &Option<orchestration::entities::surreal::view::ConfigSnapshot>,
-) -> Vec<ListenerCap> {
+fn points_at(slot: &Option<orchestration::entities::db::view::ConfigSnapshot>) -> Vec<ListenerCap> {
     slot.as_ref()
         .map(|s| {
             s.forwardings
@@ -136,8 +134,8 @@ struct Fixture {
     tokyo: ServerId,
     osaka: ServerId,
     osaka_hop: NodeWithPorts,
-    osaka_hop_listen: orchestration::entities::surreal::port::PortId,
-    to_osaka_listen: orchestration::entities::surreal::port::PortId,
+    osaka_hop_listen: orchestration::entities::db::port::PortId,
+    to_osaka_listen: orchestration::entities::db::port::PortId,
 }
 
 async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
@@ -268,9 +266,11 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     })
 }
 
-#[tokio::test]
-async fn a_relay_switches_only_after_its_target_serves_the_new_listener() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_relay_switches_only_after_its_target_serves_the_new_listener(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w).await?;
 
     // 1. The cold start converges and both workers adopt what they are given.
@@ -428,9 +428,11 @@ fn tags_by_port(config: &Config) -> Vec<(String, u16)> {
 /// exactly once, so the two listeners a moved pod serves during the switch need
 /// tags of their own — and the held one must keep its tag from pass to pass, or
 /// every pass would be a new revision.
-#[tokio::test]
-async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w).await?;
     settle(&w, &f).await?;
 
@@ -505,24 +507,23 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     Ok(())
 }
 
-#[tokio::test]
-async fn a_protocol_change_on_a_referenced_listener_is_rejected() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_protocol_change_on_a_referenced_listener_is_rejected(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w).await?;
     settle(&w, &f).await?;
 
     // Feed osaka's pod from an Entry instead of the relay: same ip:port, but it
     // would become a raw listener while tokyo's running config still dials it as a
     // relay. The two cannot coexist on one worker, so there is no seamless path.
-    let mut resp =
-        w.db.raw()
-            .query("SELECT * FROM orchestration_edge_connection")
-            .await?;
-    let edge = resp
-        .take::<Vec<orchestration::entities::surreal::connection::EdgeConnectionEntity>>(0)?
-        .into_iter()
-        .find(|e| e.source.0 == f.osaka_hop_listen.0 && e.target.0 == f.to_osaka_listen.0)
-        .expect("the relay feeds the osaka pod");
+    let edge = sqlx::query_as::<_, orchestration::entities::db::connection::EdgeConnectionEntity>(
+        "SELECT * FROM orchestration_edge_connection",
+    )
+    .fetch_all(w.db.db())
+    .await?
+    .into_iter()
+    .find(|e| e.source.0 == f.osaka_hop_listen.0 && e.target.0 == f.to_osaka_listen.0)
+    .expect("the relay feeds the osaka pod");
     w.edges
         .process(Disconnect {
             actor: operator(),
@@ -566,9 +567,9 @@ async fn a_protocol_change_on_a_referenced_listener_is_rejected() -> TestResult 
     Ok(())
 }
 
-#[tokio::test]
-async fn forgetting_what_a_server_runs_is_admin_only() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn forgetting_what_a_server_runs_is_admin_only(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w).await?;
     settle(&w, &f).await?;
 
@@ -604,9 +605,9 @@ async fn forgetting_what_a_server_runs_is_admin_only() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let err = w
         .canvases
         .process(canvas_service::CreateCanvas {
@@ -666,9 +667,9 @@ async fn a_worker_credential_cannot_edit_the_workspace() -> TestResult {
 /// A pod that stops deriving keeps carrying what it already serves: the listener
 /// stays in `desired`, the reason lands in `invalid_pods`, and the server is not
 /// failed as a whole.
-#[tokio::test]
-async fn a_pod_that_stops_deriving_keeps_serving_its_listener() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_that_stops_deriving_keeps_serving_its_listener(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
     let f = relay_chain(&w).await?;
     settle(&w, &f).await?;
 
@@ -683,20 +684,19 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener() -> TestResult {
 
     // Cut the relay off from the pod feeding its listen side. Tokyo's ingress pod
     // dials that relay, so the pod alone stops deriving.
-    let mut resp =
-        w.db.raw()
-            .query("SELECT * FROM orchestration_edge_connection")
-            .await?;
-    let edge = resp
-        .take::<Vec<orchestration::entities::surreal::connection::EdgeConnectionEntity>>(0)?
-        .into_iter()
-        .find(|e| {
-            [&e.source, &e.target].iter().any(|p| {
-                orchestration::utils::ids::record_key(&p.0)
-                    == orchestration::utils::ids::record_key(&f.to_osaka_listen.0)
-            })
+    let edge = sqlx::query_as::<_, orchestration::entities::db::connection::EdgeConnectionEntity>(
+        "SELECT * FROM orchestration_edge_connection",
+    )
+    .fetch_all(w.db.db())
+    .await?
+    .into_iter()
+    .find(|e| {
+        [&e.source, &e.target].iter().any(|p| {
+            orchestration::utils::ids::record_key(&p.0)
+                == orchestration::utils::ids::record_key(&f.to_osaka_listen.0)
         })
-        .ok_or("the relay listen edge must exist")?;
+    })
+    .ok_or("the relay listen edge must exist")?;
     w.edges
         .process(Disconnect {
             actor: operator(),

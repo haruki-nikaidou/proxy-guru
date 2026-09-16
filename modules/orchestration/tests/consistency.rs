@@ -10,9 +10,9 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::surreal::connection::EdgeConnectionEntity;
-use orchestration::entities::surreal::node::{NodeSpec, NodeWithPorts, RelayConfig, RelayProtocol};
-use orchestration::entities::surreal::topology::LoadCanvasTopology;
+use orchestration::entities::db::connection::EdgeConnectionEntity;
+use orchestration::entities::db::node::{NodeSpec, NodeWithPorts, RelayConfig, RelayProtocol};
+use orchestration::entities::db::topology::LoadCanvasTopology;
 use orchestration::services::edge::Connect;
 use orchestration::services::node::CreateNode;
 use orchestration::services::topology::{ProblemKind, ProblemSeverity, TopologyEdit, analyze};
@@ -28,7 +28,7 @@ fn relay_spec() -> NodeSpec {
 
 async fn create(
     w: &World,
-    canvas: &orchestration::entities::surreal::canvas::CanvasId,
+    canvas: &orchestration::entities::db::canvas::CanvasId,
     name: &str,
     spec: NodeSpec,
 ) -> NodeWithPorts {
@@ -47,8 +47,8 @@ async fn create(
 }
 
 fn add_edge(
-    source: &orchestration::entities::surreal::port::PortId,
-    target: &orchestration::entities::surreal::port::PortId,
+    source: &orchestration::entities::db::port::PortId,
+    target: &orchestration::entities::db::port::PortId,
 ) -> TopologyEdit {
     TopologyEdit::AddEdge {
         edge: EdgeConnectionEntity {
@@ -71,9 +71,11 @@ fn has_cycle(problems: &[orchestration::services::topology::TopologyProblem]) ->
 /// fence, both commit, leaving a stored cycle no single request would accept.
 /// The generation fence forces sequential consistency: exactly one lands, and
 /// the stored canvas stays acyclic.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit() -> TestResult {
-    let w = world().await?;
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
     let c = canvas(&w.db, "prod").await?;
     let s = server(&w.db, &c, "tokyo").await?;
     let pod = create(&w, &c.id, "pod", pod_spec(&s, 443)).await;

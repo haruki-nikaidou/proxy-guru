@@ -37,20 +37,20 @@
 //! nothing: they are the expansion's input, not a traffic path.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::batch::{
+use crate::entities::db::batch::{
     ApplyTopologyBatch, BatchEdge, NewLaneNode, PortRef, PortReshape, SpecUpdate,
 };
-use crate::entities::surreal::canvas::CanvasUiPosition;
-use crate::entities::surreal::connection::EdgeConnectionEntity;
-use crate::entities::surreal::node::{
+use crate::entities::db::canvas::CanvasUiPosition;
+use crate::entities::db::connection::EdgeConnectionEntity;
+use crate::entities::db::node::{
     Lane, LaneRole, LoadBalanceAggregateConfig, LoadBalanceDistributeConfig, LoadBalanceMode,
     MEMBER_PREFIX, NewPort, NodeEntity, NodeId, NodeSpec, NodeWithPorts, PodConfig, RelayConfig,
     RelayProtocol,
 };
-use crate::entities::surreal::port::{PortDirection, PortEntity, PortKind};
-use crate::entities::surreal::server::ServerId;
-use crate::entities::surreal::topology::CanvasTopology;
-use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::entities::db::port::{PortDirection, PortEntity, PortKind};
+use crate::entities::db::server::ServerId;
+use crate::entities::db::topology::CanvasTopology;
+use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::converge::ensure_switch_safe;
@@ -298,7 +298,7 @@ pub enum LaneShape {
 #[derive(Debug, Clone)]
 pub struct DesiredLane {
     pub lane: Lane,
-    pub canvas: crate::entities::surreal::canvas::CanvasId,
+    pub canvas: crate::entities::db::canvas::CanvasId,
     pub name: String,
     pub position: CanvasUiPosition,
     pub shape: LaneShape,
@@ -1344,7 +1344,7 @@ pub struct Prepared {
     /// Whether the expansion changed anything beyond the primary edit. When it
     /// did not, a caller may write its edit through its usual query instead.
     pub reconciled: bool,
-    pub root: crate::entities::surreal::canvas::CanvasId,
+    pub root: crate::entities::db::canvas::CanvasId,
 }
 
 /// Projects the primary edit, expands the result, diffs, and validates the

@@ -5,7 +5,7 @@ members = [
     "bin/guru-worker",
     "bin/manage-tool",
     "lib/guru_worker_config",
-    "lib/newtype_record_id",
+    "lib/db_types",
     "lib/rpguru_sdk",
     "modules/auth",
     "modules/base",
@@ -15,7 +15,7 @@ members = [
 
 [workspace.package]
 # Versions are decoupled per component group; each crate declares its own:
-#   master side — bin/guru-master, bin/manage-tool, modules/*, lib/newtype_record_id
+#   master side — bin/guru-master, bin/manage-tool, modules/*, lib/db_types
 #   API         — lib/rpguru_sdk, typescript/app-protobuf
 #   worker side — bin/guru-worker, lib/guru_worker_config
 #   frontend    — typescript/guru-frontend
@@ -28,7 +28,7 @@ license = "MIT"
 tokio = { version = "1.49", features = ["full"] }
 
 # Framework
-wakuwaku = { version = "0.2.3", features = ["tracing-otel", "tonic", "surreal"] }
+wakuwaku = { version = "0.2.3", features = ["tracing-otel", "tonic", "sqlx"] }
 kanau = { version = "0.5", features = [
     "message",
     "rkyv",
@@ -36,11 +36,19 @@ kanau = { version = "0.5", features = [
     "serde_json",
 ] }
 amqprs = { version = "2.1", features = ["uriparse", "urispec"] }
-# Both remote engines compile in, so the scheme in SURREALDB_HOST picks one and a
-# rollback between them needs no rebuild. `protocol-http` only pulls in reqwest,
-# which this workspace already depends on.
-surrealdb = { version = "3.2", features = ["protocol-ws", "protocol-http"] }
-surrealdb-types = "3.2"
+# PostgreSQL. Queries are checked at runtime and covered by the modules' integration
+# tests, so no `query!` macros and no offline query data; `macros` is what
+# `sqlx::migrate!` and `#[sqlx::test]` need.
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "chrono",
+    "json",
+    "derive",
+    "macros",
+    "migrate",
+] }
 redis = { version = "1.0", features = [
     "tokio-comp",
     "uuid",
@@ -88,6 +96,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 # Auth & Security
 rand = "0.9.1"
 argon2 = "0.5"
+# `SaltString::generate(OsRng)` needs `rand_core/getrandom`; nothing else in the tree turns it on.
+password-hash = { version = "0.5", features = ["getrandom"] }
 validator = "0.20.0"
 jsonwebtoken = "9.2.0"
 sha2 = "0.10"

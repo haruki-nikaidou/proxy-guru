@@ -11,16 +11,16 @@
 //! receives on a generated pod of this server.
 
 use crate::config::OrchestrationConfig;
-use crate::entities::surreal::agent_release::{AgentReleaseEntity, FindAgentRelease};
-use crate::entities::surreal::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
-use crate::entities::surreal::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
-use crate::entities::surreal::server::{
+use crate::entities::db::agent_release::{AgentReleaseEntity, FindAgentRelease};
+use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
+use crate::entities::db::node::{CreateNodeRow, NodeSpec, UniversalPodConfig};
+use crate::entities::db::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
     ServerEntity, ServerId, ServerIpv6Resolve, SetAgentUpdateRequested, SetServerAgentKey,
     UpdateServerSettings,
 };
-use crate::entities::surreal::topology::LoadCanvasTopology;
-use crate::entities::surreal::view::ListServerConfigViewsByCanvases;
+use crate::entities::db::topology::LoadCanvasTopology;
+use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::CanvasChangeKind;
 use crate::services::converge::ensure_switch_safe;
 use crate::services::node::port_layout;
@@ -590,7 +590,7 @@ impl Processor<DeleteServer> for ServerService {
             })
             .await?;
         let server_key = record_key(&input.server.0);
-        let mine: Vec<&crate::entities::surreal::node::NodeWithPorts> = topology
+        let mine: Vec<&crate::entities::db::node::NodeWithPorts> = topology
             .nodes
             .iter()
             .filter(|node| match &node.node.spec {
