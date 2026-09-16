@@ -26,6 +26,7 @@ use orchestration::entities::db::ca::{FindInternalCa, ListRelayCertificatesByPod
 use orchestration::entities::db::certificate::ListCertificatesBySnis;
 use orchestration::services::OrchestrationError;
 use orchestration::services::ca::{CaService, InitInternalCa};
+use orchestration::services::convert::{ConvertNodeModel, ConvertService};
 use orchestration::services::derive::{
     DerivationCertificates, derive_server_config, relay_tls_pods, tls_snis,
 };
@@ -127,6 +128,24 @@ enum OrchestrationCommand {
     /// its certificate. Refuses to replace an existing CA. Needs
     /// `GURU_MASTER_KEY`.
     InitCa,
+    /// Convert the node model (nodes, ports and their edges) into the pod
+    /// graph, in one transaction. The converted graph is compiled and compared
+    /// with what the node model derives, pod by pod, before anything is written.
+    ConvertGraph {
+        /// Report what the conversion would do and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Discard an earlier conversion (pods, exits, edges, groups, pod health
+        /// history, canvas parents) and convert again.
+        #[arg(long)]
+        replace: bool,
+        /// Write even where the converted graph compiles differently.
+        #[arg(long)]
+        accept_differences: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,6 +204,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Orchestration {
             command: OrchestrationCommand::InitCa,
         } => init_ca(db).await,
+        Command::Orchestration {
+            command:
+                OrchestrationCommand::ConvertGraph {
+                    dry_run,
+                    replace,
+                    accept_differences,
+                    json,
+                },
+        } => {
+            convert_graph(
+                db,
+                ConvertNodeModel {
+                    dry_run,
+                    replace,
+                    accept_differences,
+                },
+                json,
+            )
+            .await
+        }
         Command::Agent {
             command: AgentCommand::Publish { binary, dir },
         } => agent_publish(db, binary, dir).await,
@@ -352,6 +391,57 @@ async fn init_ca(db: Db) -> Result<(), Box<dyn std::error::Error>> {
     print!("{}", init.certificate_pem);
     for canvas in &init.touched_canvases {
         eprintln!("canvas {} marked for re-derivation", canvas);
+    }
+    Ok(())
+}
+
+/// Converts the node model into the pod graph and prints what happened.
+async fn convert_graph(
+    db: Db,
+    input: ConvertNodeModel,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = orchestration_config(&db).await?;
+    let report = ConvertService { db, config }.process(input).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for tree in &report.trees {
+            println!(
+                "tree {} ({}): {} canvases, {} pods, {} exits, {} edges, {} groups",
+                tree.name,
+                tree.root,
+                tree.canvases,
+                tree.pods,
+                tree.exits,
+                tree.edges,
+                tree.groups
+            );
+            for (title, lines) in [
+                ("notes", &tree.notes),
+                ("warnings", &tree.warnings),
+                ("differences", &tree.differences),
+            ] {
+                if lines.is_empty() {
+                    continue;
+                }
+                println!("  {title}:");
+                for line in lines {
+                    println!("    {line}");
+                }
+            }
+        }
+    }
+    let differences = report.differences();
+    if report.written {
+        eprintln!("converted; {differences} differences accepted");
+    } else if input.dry_run {
+        eprintln!("dry run: nothing written; {differences} differences");
+    } else {
+        eprintln!(
+            "not written: {differences} differences (compare them, then pass --accept-differences)"
+        );
+        std::process::exit(1);
     }
     Ok(())
 }

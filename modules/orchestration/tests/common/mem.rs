@@ -261,6 +261,7 @@ impl Builder {
             country: None,
             country_address: None,
             country_checked_at: None,
+            capabilities: Vec::new(),
         });
         id
     }

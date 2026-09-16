@@ -1,6 +1,7 @@
 use crate::entities::db::canvas::{CanvasFence, CanvasId, CanvasUiPosition};
 use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::fence;
+pub use crate::entities::db::pod::{ProxyProtocolVersion, TlsConfig};
 use crate::entities::db::port::{
     PortDirection, PortEntity, PortKind, insert_ports, ports_of, reshape_ports,
 };
@@ -407,42 +408,6 @@ fn parse_optional_ip(value: &Option<String>) -> Result<Option<std::net::IpAddr>,
 pub struct EntryConfig {
     pub receive_proxy_protocol: Option<ProxyProtocolVersion>,
     pub tls: Option<TlsConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// By setting this, the master node will acquire a TLS certificate and send it to worker nodes.
-pub struct TlsConfig {
-    /// The SNI of the TLS certificate
-    pub sni: String,
-
-    /// Which DNS provider to use for the TLS certificate
-    pub dns_provider: DnsProviderId,
-
-    /// The identifier of the domain
-    /// - Cloudflare: zone ID
-    /// - vercel: domain SLD
-    pub domain_id: String,
-
-    /// The URL of the ACME directory.
-    ///
-    /// eg. <https://acme-staging-v02.api.letsencrypt.org/directory>
-    pub acme_directory: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyProtocolVersion {
-    V1,
-    V2,
-}
-
-impl From<ProxyProtocolVersion> for guru_worker_config::TcpProxyProtocol {
-    fn from(value: ProxyProtocolVersion) -> Self {
-        match value {
-            ProxyProtocolVersion::V1 => guru_worker_config::TcpProxyProtocol::V1,
-            ProxyProtocolVersion::V2 => guru_worker_config::TcpProxyProtocol::V2,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
