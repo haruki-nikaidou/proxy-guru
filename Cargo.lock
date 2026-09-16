@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "guru-worker"
-version = "0.2.2-beta"
+version = "0.3.0-beta"
 dependencies = [
  "auth",
  "base",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "guru_worker_config"
-version = "0.2.1-beta"
+version = "0.3.0-beta"
 dependencies = [
  "compact_str",
  "serde",
