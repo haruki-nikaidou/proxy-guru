@@ -25,6 +25,7 @@ import {
 	moveNode,
 	moveServerNode
 } from '#lib/components/canvas/commands.js';
+import { setEdgeOpener } from '#lib/components/canvas/edges/open.svelte.js';
 import { setFocusedNode } from '#lib/components/canvas/focus.svelte.js';
 import {
 	buildBackendIndex,
@@ -118,12 +119,19 @@ const nodeTypes = {
 
 const edgeTypes = { bundle: BundleEdge };
 
-// The node cards read this to ring the one the panel is editing.
+// The node cards read this to ring the one the panel is editing; an edge in
+// the panel rings nothing, Svelte Flow's own selection marks it.
 setFocusedNode({
 	get current() {
-		return panelTarget ? flowNodeId(panelTarget.kind, panelTarget.id) : null;
+		return panelTarget && panelTarget.kind !== 'edge'
+			? flowNodeId(panelTarget.kind, panelTarget.id)
+			: null;
 	}
 });
+
+// A bundle's count pill opens its edge; the edge path itself goes through
+// `onedgeclick` below.
+setEdgeOpener({ open: id => (panelTarget = { kind: 'edge', id }) });
 
 // The server owns the graph, but a refresh is merged into the local mirror
 // instead of replacing it: untouched nodes keep their object identity, so they
@@ -562,6 +570,7 @@ $effect(() => {
 						onconnect={connect}
 						onbeforedelete={beforeDelete}
 						onnodeclick={({ node }) => selectNode(node)}
+						onedgeclick={({ edge }) => (panelTarget = { kind: 'edge', id: edge.id })}
 						onnodedragstop={({ nodes: dragged }) => persistMove(dragged)}
 						onmove={(_, viewport) => (zoom = viewport.zoom)}
 						deleteKey={editable && interactive ? 'Delete' : null}

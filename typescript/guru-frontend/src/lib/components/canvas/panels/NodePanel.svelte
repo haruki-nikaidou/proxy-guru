@@ -1,12 +1,13 @@
 <script lang="ts">
 import XIcon from '@lucide/svelte/icons/x';
-import type { PanelTarget } from '#lib/components/canvas/graph.js';
+import { describeEdge, type PanelTarget } from '#lib/components/canvas/graph.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import type { CanvasGraph } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
 import CanvasExportForm from './CanvasExportForm.svelte';
 import CanvasImportForm from './CanvasImportForm.svelte';
+import EdgeForm from './EdgeForm.svelte';
 import EntryForm from './EntryForm.svelte';
 import ExitForm from './ExitForm.svelte';
 import LoadBalanceForm from './LoadBalanceForm.svelte';
@@ -37,6 +38,7 @@ const server = $derived(
 const node = $derived(
 	target?.kind === 'node' ? graph?.nodes.find(entry => entry.id === target?.id) : undefined
 );
+const edge = $derived(target?.kind === 'edge' && graph ? describeEdge(graph, target.id) : null);
 
 // A rollout names the servers it waits for by id; only this canvas's servers can
 // be resolved to a name here, which is what the panel shows.
@@ -44,28 +46,34 @@ const serverNames = $derived(new Map((graph?.servers ?? []).map(entry => [entry.
 
 // A deleted entity closes its own panel.
 $effect(() => {
-	if (target && graph && !server && !node) target = null;
+	if (target && graph && !server && !node && !edge) target = null;
 });
 
-const title = $derived(server?.name ?? node?.name ?? '');
+const title = $derived(
+	server?.name ?? node?.name ?? (edge ? `${edge.source.node} → ${edge.target.node}` : '')
+);
 const kindLabel = $derived(
-	server
-		? m.editor_kind_server()
-		: node?.kind === 'entry'
-			? m.editor_kind_entry()
-			: node?.kind === 'relay'
-				? m.editor_kind_relay()
-				: node?.kind === 'exit'
-					? m.editor_kind_exit()
-					: node?.kind === 'canvas_import'
-						? m.editor_kind_subcanvas()
-						: node?.kind === 'canvas_export'
-							? m.editor_kind_export()
-							: node?.kind === 'load_balance'
-								? node.mode === 'distribute'
-									? m.editor_kind_lb_distribute()
-									: m.editor_kind_lb_aggregate()
-								: ''
+	edge
+		? edge.kind === 'bundle'
+			? m.editor_kind_bundle()
+			: m.editor_kind_edge()
+		: server
+			? m.editor_kind_server()
+			: node?.kind === 'entry'
+				? m.editor_kind_entry()
+				: node?.kind === 'relay'
+					? m.editor_kind_relay()
+					: node?.kind === 'exit'
+						? m.editor_kind_exit()
+						: node?.kind === 'canvas_import'
+							? m.editor_kind_subcanvas()
+							: node?.kind === 'canvas_export'
+								? m.editor_kind_export()
+								: node?.kind === 'load_balance'
+									? node.mode === 'distribute'
+										? m.editor_kind_lb_distribute()
+										: m.editor_kind_lb_aggregate()
+									: ''
 );
 </script>
 
@@ -100,6 +108,8 @@ const kindLabel = $derived(
 			<CanvasImportForm {canvasId} {node} {editable} />
 		{:else if node?.kind === 'canvas_export'}
 			<CanvasExportForm {canvasId} {node} {editable} />
+		{:else if edge}
+			<EdgeForm {canvasId} detail={edge} {editable} />
 		{/if}
 		{#if node}
 			<NodeDeleteButton {canvasId} {node} {editable} />

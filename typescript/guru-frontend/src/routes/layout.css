@@ -203,3 +203,9 @@
 	--xy-minimap-background-color-default: var(--color-card);
 	--xy-node-boxshadow-selected-default: 0 0 0 2px var(--color-ring);
 }
+
+/* A thin edge sets its stroke inline, which beats Svelte Flow's selected
+   stroke; the glow marks the edge the panel is showing. */
+.svelte-flow .svelte-flow__edge.selected .svelte-flow__edge-path {
+	filter: drop-shadow(0 0 3px var(--color-ring));
+}

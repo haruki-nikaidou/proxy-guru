@@ -44,3 +44,7 @@ database/snapshots/
 
 # `surreal sql` CLI history, written into the working directory
 history.txt
+
+# Worktrees Claude Code creates for isolated sessions; each carries the repo's own biome.json,
+# which Biome refuses as a nested root.
+.claude/worktrees/
