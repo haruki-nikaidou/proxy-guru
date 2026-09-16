@@ -10,6 +10,7 @@ license.workspace = true
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }
 db_types = { path = "../../lib/db_types" }
 guru_worker_config = { path = "../../lib/guru_worker_config" }
+guru_topology = { path = "../../lib/guru_topology" }
 auth = { path = "../auth" }
 base = { path = "../base" }
 

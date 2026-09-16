@@ -89,6 +89,9 @@ pub struct ServerEntity {
     pub country_address: Option<String>,
     /// The last lookup for `country_address`, successful or not.
     pub country_checked_at: Option<DateTime<Utc>>,
+    /// What the server's worker reads beyond the config every worker reads, as
+    /// it reported on its last registration (`route_table`, `relay_confirm`).
+    pub capabilities: Vec<String>,
 }
 
 /// The address set a worker discovers about itself and sends with `Register`
