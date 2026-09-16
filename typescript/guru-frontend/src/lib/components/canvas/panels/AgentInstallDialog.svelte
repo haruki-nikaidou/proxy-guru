@@ -1,5 +1,4 @@
 <script lang="ts">
-import { toast } from 'svelte-sonner';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import { issueServerAgentInstall } from '#lib/components/canvas/commands.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
@@ -9,8 +8,8 @@ import * as Field from '#lib/components/ui/field/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { AgentInstallDto } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 let {
 	open = $bindable(false),
@@ -32,7 +31,7 @@ let {
 const UNIT_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 let unit = $state('');
-let pending = $state(false);
+const writes = panelWrites();
 // The command carries the key, which is returned exactly once; it lives only in
 // this component's state and is dropped when the dialog closes.
 let install = $state<AgentInstallDto | null>(null);
@@ -48,15 +47,10 @@ $effect(() => {
 const unitValid = $derived(UNIT_PATTERN.test(unit));
 
 async function issue() {
-	pending = true;
-	try {
+	// No success message: the command itself is the answer, rendered below.
+	await writes.run(async () => {
 		install = await issueServerAgentInstall({ canvasId, serverId, unit });
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	});
 }
 </script>
 
@@ -106,8 +100,8 @@ async function issue() {
 				<Button type="button" variant="outline" onclick={() => (open = false)}>
 					{m.common_cancel()}
 				</Button>
-				<Button type="button" disabled={pending || !unitValid} onclick={issue}>
-					{#if pending}<Spinner data-icon="inline-start" />{/if}
+				<Button type="button" disabled={writes.pending || !unitValid} onclick={issue}>
+					{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 					{m.editor_agent_install_generate()}
 				</Button>
 			</Dialog.Footer>

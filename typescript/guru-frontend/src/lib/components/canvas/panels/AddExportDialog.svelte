@@ -1,5 +1,4 @@
 <script lang="ts">
-import { toast } from 'svelte-sonner';
 import { createExportNode } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Dialog from '#lib/components/ui/dialog/index.js';
@@ -8,8 +7,8 @@ import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { CanvasExportAsName, ExportPortKindName } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 /**
  * Adds a boundary port to this canvas. Kind and direction are asked up front
@@ -40,7 +39,7 @@ const directionLabel = (value: CanvasExportAsName): string =>
 let name = $state('');
 let portKind = $state<ExportPortKindName>('derive_listen');
 let exportAs = $state<CanvasExportAsName>('input_into_canvas');
-let pending = $state(false);
+const writes = panelWrites();
 
 let seeded = $state(false);
 $effect(() => {
@@ -54,18 +53,11 @@ $effect(() => {
 });
 
 async function submit() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		const { x, y } = place();
 		await createExportNode({ canvasId, name, portKind, exportAs, x, y });
 		open = false;
-		toast.success(m.editor_export_created());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_export_created());
 }
 </script>
 
@@ -129,8 +121,8 @@ async function submit() {
 
 		<Dialog.Footer class="mt-6">
 			<Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
-			<Button disabled={pending || name.trim() === ''} onclick={submit}>
-				{#if pending}<Spinner data-icon="inline-start" />{/if}
+			<Button disabled={writes.pending || name.trim() === ''} onclick={submit}>
+				{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 				{m.common_create()}
 			</Button>
 		</Dialog.Footer>

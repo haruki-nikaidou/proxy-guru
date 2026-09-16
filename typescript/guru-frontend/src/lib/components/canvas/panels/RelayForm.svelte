@@ -1,6 +1,5 @@
 <script lang="ts">
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import { replaceRelaySpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -9,8 +8,8 @@ import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
 import type { RelayNodeDto, RelayProtocolName } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 let { canvasId, node, editable }: { canvasId: string; node: RelayNodeDto; editable: boolean } =
 	$props();
@@ -29,7 +28,7 @@ let protocol = $state<RelayProtocolName>('tcp_raw');
 let overrideIpAddress = $state('');
 // `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
 let overridePort = $state('0');
-let pending = $state(false);
+const writes = panelWrites();
 
 let seededFor = $state('');
 $effect(() => {
@@ -46,8 +45,7 @@ $effect(() => {
 });
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await updateNodeText({ canvasId, nodeId: node.id, name, comment });
 		await replaceRelaySpec({
 			canvasId,
@@ -56,13 +54,7 @@ async function save() {
 			overrideIpAddress,
 			overridePort: Number(overridePort)
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 </script>
 
@@ -117,7 +109,7 @@ async function save() {
 	</Field.Field>
 </Field.FieldGroup>
 
-<Button class="mt-6 w-full" disabled={!editable || pending} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
+<Button class="mt-6 w-full" disabled={!editable || writes.pending} onclick={save}>
+	{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>

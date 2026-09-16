@@ -6,7 +6,6 @@ import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import {
 	createPodNode,
@@ -41,6 +40,7 @@ import type { ConfigSnapshotDto, Ipv6ResolveName, ServerDto } from '#lib/dto/top
 import { errorMessage } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 import AgentInstallDialog from './AgentInstallDialog.svelte';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 import ServerLaneRow from './ServerLaneRow.svelte';
@@ -83,7 +83,7 @@ let pinV4 = $state('');
 let pinV6 = $state('');
 let extraAddresses = $state<string[]>([]);
 let newExtra = $state('');
-let pending = $state(false);
+const writes = panelWrites();
 let deleteOpen = $state(false);
 let installOpen = $state(false);
 
@@ -179,22 +179,8 @@ const removeExtra = (value: string) => {
 	extraAddresses = extraAddresses.filter(entry => entry !== value);
 };
 
-/** Every mutation here reports the control plane's own text on failure. */
-async function run(action: () => Promise<unknown>, success: string) {
-	pending = true;
-	try {
-		await action();
-		toast.success(success);
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
-}
-
 const save = () =>
-	run(
+	writes.run(
 		() =>
 			updateServerNode({
 				canvasId,
@@ -214,7 +200,7 @@ const save = () =>
 	);
 
 const updateAgent = () =>
-	run(
+	writes.run(
 		() => requestAgentUpdate({ canvasId, serverId: server.id }),
 		m.editor_agent_update_requested()
 	);
@@ -222,7 +208,7 @@ const updateAgent = () =>
 // A pod is placed on exactly one server, so pods are created here. Their stored
 // position is unused: they render inside the server node.
 const addPod = () =>
-	run(async () => {
+	writes.run(async () => {
 		await createPodNode({
 			canvasId,
 			name: newPodName,
@@ -240,7 +226,7 @@ const addPod = () =>
 // The command retires the server's pods first; the panel closes on its own once
 // the refreshed graph no longer holds the server.
 const removeServer = () =>
-	run(async () => {
+	writes.run(async () => {
 		await deleteServerNode({ canvasId, serverId: server.id, force: false });
 		deleteOpen = false;
 	}, m.editor_deleted());
@@ -320,7 +306,7 @@ const revisions = $derived([
 const waitingName = (id: string): string => serverNames.get(id) ?? id;
 
 const forget = () =>
-	run(async () => {
+	writes.run(async () => {
 		await forgetServerApplied({ canvasId, serverId: server.id });
 		forgetOpen = false;
 	}, m.editor_rollout_forgotten());
@@ -443,7 +429,7 @@ const forget = () =>
 				<Button
 					size="sm"
 					variant="ghost"
-					disabled={!editable || pending}
+					disabled={!editable || writes.pending}
 					onclick={() => removeExtra(extra)}
 					aria-label={m.common_delete()}
 				>
@@ -495,14 +481,14 @@ const forget = () =>
 	</div>
 {/if}
 
-<Button class="mt-4 w-full" disabled={!editable || pending} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
+<Button class="mt-4 w-full" disabled={!editable || writes.pending} onclick={save}>
+	{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>
 <Button
 	class="mt-2 w-full"
 	variant="outline"
-	disabled={!editable || pending}
+	disabled={!editable || writes.pending}
 	onclick={() => (deleteOpen = true)}
 >
 	<Trash2Icon />
@@ -598,7 +584,7 @@ const forget = () =>
 		<Button
 			size="sm"
 			variant="secondary"
-			disabled={!editable || pending || newPodName.trim() === '' || newPodPort === ''}
+			disabled={!editable || writes.pending || newPodName.trim() === '' || newPodPort === ''}
 			onclick={addPod}
 		>
 			<PlusIcon />
@@ -626,7 +612,7 @@ const forget = () =>
 	bind:open={deleteOpen}
 	title={m.editor_server_delete()}
 	description={m.editor_server_delete_description({ name: server.name, count: server.pods.length })}
-	{pending}
+	pending={writes.pending}
 	onconfirm={removeServer}
 />
 
@@ -690,7 +676,7 @@ const forget = () =>
 		{#if editable}
 			<div class="mt-3 flex flex-wrap gap-2">
 				{#if behind && !server.agentUpdateRequested}
-					<Button size="sm" disabled={!installReady || pending} onclick={updateAgent}>
+					<Button size="sm" disabled={!installReady || writes.pending} onclick={updateAgent}>
 						<RefreshCwIcon />
 						{m.editor_agent_update({ version: published.version })}
 					</Button>
@@ -698,7 +684,7 @@ const forget = () =>
 				<Button
 					size="sm"
 					variant={server.agentKeyIssuedAt ? 'outline' : 'secondary'}
-					disabled={!installReady || pending}
+					disabled={!installReady || writes.pending}
 					onclick={() => (installOpen = true)}
 				>
 					<TerminalIcon />
@@ -846,7 +832,7 @@ const forget = () =>
 		{m.editor_rollout_show_toml()}
 	</Button>
 	{#if admin}
-		<Button size="sm" variant="outline" disabled={pending} onclick={() => (forgetOpen = true)}>
+		<Button size="sm" variant="outline" disabled={writes.pending} onclick={() => (forgetOpen = true)}>
 			{m.editor_rollout_forget()}
 		</Button>
 	{/if}

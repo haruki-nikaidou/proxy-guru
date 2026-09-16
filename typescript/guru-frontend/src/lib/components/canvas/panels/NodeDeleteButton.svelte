@@ -1,11 +1,10 @@
 <script lang="ts">
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
-import { toast } from 'svelte-sonner';
 import { deleteNode } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import type { StandaloneNode } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 
 /**
@@ -18,11 +17,10 @@ let { canvasId, node, editable }: { canvasId: string; node: StandaloneNode; edit
 	$props();
 
 let open = $state(false);
-let pending = $state(false);
+const writes = panelWrites();
 
 async function remove() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await deleteNode({
 			canvasId,
 			nodeId: node.id,
@@ -33,17 +31,11 @@ async function remove() {
 			boundary: node.kind === 'canvas_export'
 		});
 		open = false;
-		toast.success(m.editor_deleted());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_deleted());
 }
 </script>
 
-<Button class="mt-2 w-full" variant="outline" disabled={!editable || pending} onclick={() => (open = true)}>
+<Button class="mt-2 w-full" variant="outline" disabled={!editable || writes.pending} onclick={() => (open = true)}>
 	<Trash2Icon />
 	{m.editor_node_delete()}
 </Button>
@@ -52,6 +44,6 @@ async function remove() {
 	bind:open
 	title={m.editor_node_delete()}
 	description={m.editor_node_delete_description({ name: node.name })}
-	{pending}
+	pending={writes.pending}
 	onconfirm={remove}
 />

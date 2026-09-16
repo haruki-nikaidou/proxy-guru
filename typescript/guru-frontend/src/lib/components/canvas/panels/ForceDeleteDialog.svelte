@@ -1,22 +1,20 @@
 <script lang="ts">
-import { toast } from 'svelte-sonner';
 import { deleteNode, deleteServerNode, disconnectEdge } from '#lib/components/canvas/commands.js';
 import type { ForceTarget } from '#lib/components/canvas/graph.js';
 import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 // Admin-only: the force RPCs skip validation and the control plane rejects them
 // for every other role anyway.
 let { targets = $bindable([]), canvasId }: { targets?: ForceTarget[]; canvasId: string } = $props();
 
-let pending = $state(false);
+const writes = panelWrites();
 
 async function force() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		for (const target of targets) {
 			if (target.kind === 'edge') {
 				await disconnectEdge({ canvasId, edgeId: target.id, force: true });
@@ -33,13 +31,7 @@ async function force() {
 			}
 		}
 		targets = [];
-		toast.success(m.editor_deleted());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_deleted());
 }
 </script>
 
@@ -68,10 +60,10 @@ async function force() {
 			<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
 			<AlertDialog.Action
 				class={buttonVariants({ variant: 'destructive' })}
-				disabled={pending}
+				disabled={writes.pending}
 				onclick={force}
 			>
-				{#if pending}<Spinner data-icon="inline-start" />{/if}
+				{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 				{m.editor_force_confirm()}
 			</AlertDialog.Action>
 		</AlertDialog.Footer>

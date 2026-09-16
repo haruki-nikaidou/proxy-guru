@@ -1,13 +1,12 @@
 <script lang="ts">
-import { toast } from 'svelte-sonner';
 import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { CanvasOption, CanvasSummary } from '#lib/dto/canvas.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 import { deleteCanvas } from './canvases.remote.js';
 
 let {
@@ -24,25 +23,18 @@ let {
 } = $props();
 
 let confirmName = $state('');
-let pending = $state(false);
+const writes = panelWrites();
 
 $effect(() => {
 	if (!open) confirmName = '';
 });
 
 async function confirm() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await deleteCanvas({ canvasId: canvas.id });
 		open = false;
-		toast.success(m.canvas_deleted());
 		ondeleted?.();
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.canvas_deleted());
 }
 </script>
 
@@ -74,10 +66,10 @@ async function confirm() {
 			<AlertDialog.Cancel>{m.common_cancel()}</AlertDialog.Cancel>
 			<AlertDialog.Action
 				class={buttonVariants({ variant: 'destructive' })}
-				disabled={confirmName.trim() !== canvas.name || pending}
+				disabled={confirmName.trim() !== canvas.name || writes.pending}
 				onclick={confirm}
 			>
-				{#if pending}<Spinner data-icon="inline-start" />{/if}
+				{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 				{m.common_delete()}
 			</AlertDialog.Action>
 		</AlertDialog.Footer>

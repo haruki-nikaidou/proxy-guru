@@ -1,15 +1,14 @@
 <script lang="ts">
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import { deleteNode, replacePodSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { PodDto } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
 
 let {
@@ -38,7 +37,7 @@ let bindIp = $state(BIND_ALL);
 let advertiseIp = $state(ADVERTISE_AUTO);
 // `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
 let port = $state('1');
-let pending = $state(false);
+const writes = panelWrites();
 let confirmOpen = $state(false);
 
 let seededFor = $state('');
@@ -72,8 +71,7 @@ const advertiseOptions = $derived([
 ]);
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await updateNodeText({ canvasId, nodeId: pod.id, name, comment: pod.comment });
 		await replacePodSpec({
 			canvasId,
@@ -83,27 +81,14 @@ async function save() {
 			bindIp,
 			advertiseIp
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 
 async function remove() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await deleteNode({ canvasId, nodeId: pod.id, force: false });
 		confirmOpen = false;
-		toast.success(m.editor_deleted());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_deleted());
 }
 </script>
 
@@ -168,14 +153,14 @@ async function remove() {
 		</div>
 	</div>
 	<div class="grid gap-2">
-		<Button size="sm" variant="secondary" disabled={!editable || pending} onclick={save}>
-			{#if pending}<Spinner data-icon="inline-start" />{/if}
+		<Button size="sm" variant="secondary" disabled={!editable || writes.pending} onclick={save}>
+			{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 			{m.common_save()}
 		</Button>
 		<Button
 			size="sm"
 			variant="ghost"
-			disabled={!editable || pending}
+			disabled={!editable || writes.pending}
 			onclick={() => (confirmOpen = true)}
 			aria-label={m.common_delete()}
 		>
@@ -188,6 +173,6 @@ async function remove() {
 	bind:open={confirmOpen}
 	title={m.editor_pod_delete_title()}
 	description={m.editor_pod_delete_description({ name: pod.name, port: pod.port })}
-	{pending}
+	pending={writes.pending}
 	onconfirm={remove}
 />

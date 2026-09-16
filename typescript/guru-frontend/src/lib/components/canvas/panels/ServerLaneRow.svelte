@@ -1,15 +1,14 @@
 <script lang="ts">
 import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import { replacePodSpec } from '#lib/components/canvas/commands.js';
 import { channelColor } from '#lib/components/canvas/graph.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { LaneDto } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 /**
  * One generated landing pod. The row belongs to the bundle that made it; only
@@ -19,7 +18,7 @@ import { m } from '#lib/paraglide/messages.js';
 let { canvasId, lane, editable }: { canvasId: string; lane: LaneDto; editable: boolean } = $props();
 
 let port = $state('1');
-let pending = $state(false);
+const writes = panelWrites();
 let seededFor = $state('');
 $effect(() => {
 	if (seededFor === lane.nodeId) return;
@@ -31,8 +30,7 @@ $effect(() => {
 });
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await replacePodSpec({
 			canvasId,
 			nodeId: lane.nodeId,
@@ -41,13 +39,7 @@ async function save() {
 			bindIp: lane.bindIp ?? '',
 			advertiseIp: lane.advertiseIp ?? ''
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 </script>
 
@@ -77,10 +69,10 @@ async function save() {
 	<Button
 		size="sm"
 		variant="secondary"
-		disabled={!editable || pending || Number(port) === lane.port}
+		disabled={!editable || writes.pending || Number(port) === lane.port}
 		onclick={save}
 	>
-		{#if pending}<Spinner data-icon="inline-start" />{/if}
+		{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 		{m.common_save()}
 	</Button>
 </div>

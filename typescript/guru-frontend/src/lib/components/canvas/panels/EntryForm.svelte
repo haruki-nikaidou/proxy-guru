@@ -1,7 +1,6 @@
 <script lang="ts">
 import ShieldOffIcon from '@lucide/svelte/icons/shield-off';
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import { replaceEntrySpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
@@ -15,6 +14,7 @@ import type { DnsProviderDto } from '#lib/dto/tls.js';
 import type { EntryNodeDto, ProxyProtocolName } from '#lib/dto/topology.js';
 import { errorMessage, issueMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 import { listDnsProviders } from '../../../../routes/(home)/tls/tls.remote.js';
 
 let {
@@ -35,7 +35,7 @@ const proxyLabel = (value: ProxyProtocolName): string =>
 let name = $state('');
 let comment = $state('');
 let proxy = $state<ProxyProtocolName>('none');
-let pending = $state(false);
+const writes = panelWrites();
 
 // TLS termination. Disabling the switch sends `tls: null`, which clears it; the
 // drafts stay so a toggle round-trip does not lose what was typed.
@@ -110,8 +110,7 @@ const invalid = $derived(
 );
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await updateNodeText({ canvasId, nodeId: node.id, name, comment });
 		// The certificate is never created here: the derivation pass turns this
 		// config into a certificate row, which is managed on `/tls`.
@@ -121,13 +120,7 @@ async function save() {
 			receiveProxyProtocol: proxy,
 			tls: tlsEnabled ? { sni, dnsProviderId, domainId, acmeDirectory } : null
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 </script>
 
@@ -271,7 +264,7 @@ async function save() {
 	</Field.FieldGroup>
 </Field.FieldSet>
 
-<Button class="mt-6 w-full" disabled={!editable || pending || invalid} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
+<Button class="mt-6 w-full" disabled={!editable || writes.pending || invalid} onclick={save}>
+	{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>

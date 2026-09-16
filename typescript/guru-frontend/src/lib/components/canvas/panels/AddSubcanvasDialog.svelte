@@ -1,5 +1,4 @@
 <script lang="ts">
-import { toast } from 'svelte-sonner';
 import {
 	createSubcanvas,
 	importCanvas,
@@ -11,8 +10,8 @@ import * as Field from '#lib/components/ui/field/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 /**
  * Attaches a subcanvas: either a brand-new canvas created together with the
@@ -42,7 +41,7 @@ let name = $state('');
 /** The last name this dialog filled in; an operator edit makes it stale. */
 let autoName = $state('');
 let targetCanvasId = $state('');
-let pending = $state(false);
+const writes = panelWrites();
 
 // Seeded on every open: the suggested name is drawn against the names already
 // on the canvas, which change between openings.
@@ -72,19 +71,15 @@ function pickTarget(id: string) {
 }
 
 async function submit() {
-	pending = true;
-	try {
-		const { x, y } = place();
-		if (mode === 'create') await createSubcanvas({ canvasId, name, x, y });
-		else await importCanvas({ canvasId, targetCanvasId, name, x, y });
-		open = false;
-		toast.success(mode === 'create' ? m.editor_subcanvas_created() : m.editor_subcanvas_imported());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	await writes.run(
+		async () => {
+			const { x, y } = place();
+			if (mode === 'create') await createSubcanvas({ canvasId, name, x, y });
+			else await importCanvas({ canvasId, targetCanvasId, name, x, y });
+			open = false;
+		},
+		mode === 'create' ? m.editor_subcanvas_created() : m.editor_subcanvas_imported()
+	);
 }
 </script>
 
@@ -142,10 +137,10 @@ async function submit() {
 		<Dialog.Footer class="mt-6">
 			<Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
 			<Button
-				disabled={pending || name.trim() === '' || (mode === 'import' && targetCanvasId === '')}
+				disabled={writes.pending || name.trim() === '' || (mode === 'import' && targetCanvasId === '')}
 				onclick={submit}
 			>
-				{#if pending}<Spinner data-icon="inline-start" />{/if}
+				{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 				{m.common_create()}
 			</Button>
 		</Dialog.Footer>

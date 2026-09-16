@@ -17,8 +17,8 @@ import type {
 	LoadBalanceNodeDto,
 	RelayProtocolName
 } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 let {
 	canvasId,
@@ -61,7 +61,7 @@ let protocol = $state<RelayProtocolName>('tcp_raw');
  * the control plane refuses while a bundle is still drawn on it.
  */
 let members = $state<{ slot: number; name: string }[]>([]);
-let pending = $state(false);
+const writes = panelWrites();
 
 let seededFor = $state('');
 $effect(() => {
@@ -97,8 +97,7 @@ const valid = $derived(
 );
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await updateNodeText({ canvasId, nodeId: node.id, name, comment });
 		// Dropping a wired member is refused by the control plane; that
 		// `Conflict` text surfaces in the toast below.
@@ -110,13 +109,7 @@ async function save() {
 			protocol,
 			members: members.map(member => ({ slot: member.slot, name: member.name.trim() }))
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 
 /** Exit node name by the `chan:` port id an edge into this node ends at. */
@@ -205,7 +198,7 @@ const exitOf = (portId: string | undefined): string | null => {
 			<Button
 				size="sm"
 				variant="ghost"
-				disabled={!editable || pending || members.length === 1}
+				disabled={!editable || writes.pending || members.length === 1}
 				onclick={() => removeMember(member.slot)}
 				aria-label={m.common_delete()}
 			>
@@ -218,15 +211,15 @@ const exitOf = (portId: string | undefined): string | null => {
 	class="mt-2"
 	size="sm"
 	variant="outline"
-	disabled={!editable || pending || members.length >= 256}
+	disabled={!editable || writes.pending || members.length >= 256}
 	onclick={addMember}
 >
 	<PlusIcon />
 	{m.editor_member_add()}
 </Button>
 
-<Button class="mt-6 w-full" disabled={!editable || pending || !valid} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
+<Button class="mt-6 w-full" disabled={!editable || writes.pending || !valid} onclick={save}>
+	{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>
 

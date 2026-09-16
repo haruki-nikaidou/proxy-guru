@@ -1,6 +1,5 @@
 <script lang="ts">
 import { untrack } from 'svelte';
-import { toast } from 'svelte-sonner';
 import { replaceExitSpec, updateNodeText } from '#lib/components/canvas/commands.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -9,8 +8,8 @@ import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
 import type { ExitNodeDto, ProxyProtocolName } from '#lib/dto/topology.js';
-import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { panelWrites } from '#lib/writes.svelte.js';
 
 let { canvasId, node, editable }: { canvasId: string; node: ExitNodeDto; editable: boolean } =
 	$props();
@@ -27,7 +26,7 @@ let name = $state('');
 let comment = $state('');
 let destination = $state('');
 let proxy = $state<ProxyProtocolName>('none');
-let pending = $state(false);
+const writes = panelWrites();
 
 let seededFor = $state('');
 $effect(() => {
@@ -43,8 +42,7 @@ $effect(() => {
 });
 
 async function save() {
-	pending = true;
-	try {
+	await writes.run(async () => {
 		await updateNodeText({ canvasId, nodeId: node.id, name, comment });
 		await replaceExitSpec({
 			canvasId,
@@ -52,13 +50,7 @@ async function save() {
 			destination,
 			passProxyProtocol: proxy
 		});
-		toast.success(m.editor_saved());
-	} catch (err) {
-		const body = (err as { body?: App.Error }).body;
-		toast.error(errorMessage(body?.code, body?.message ?? ''));
-	} finally {
-		pending = false;
-	}
+	}, m.editor_saved());
 }
 </script>
 
@@ -98,7 +90,7 @@ async function save() {
 	</Field.Field>
 </Field.FieldGroup>
 
-<Button class="mt-6 w-full" disabled={!editable || pending} onclick={save}>
-	{#if pending}<Spinner data-icon="inline-start" />{/if}
+<Button class="mt-6 w-full" disabled={!editable || writes.pending} onclick={save}>
+	{#if writes.pending}<Spinner data-icon="inline-start" />{/if}
 	{m.common_save()}
 </Button>
