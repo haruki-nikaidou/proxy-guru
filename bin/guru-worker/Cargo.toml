@@ -1,6 +1,6 @@
 [package]
 name = "guru-worker"
-version = "0.3.3-beta"  # worker side
+version = "0.3.4-beta"  # worker side
 edition = "2024"
 
 [lib]
