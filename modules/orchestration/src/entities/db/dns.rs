@@ -166,15 +166,14 @@ impl Processor<CountPodsUsingDnsProvider> for Db {
     type Output = i64;
     type Error = Error;
     #[tracing::instrument(name = "Query:CountPodsUsingDnsProvider", skip_all, err)]
-    async fn process(
-        &self,
-        input: CountPodsUsingDnsProvider,
-    ) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar(
-            "SELECT count(*) FROM orchestration_pod WHERE tls_dns_provider = $1",
+    async fn process(&self, input: CountPodsUsingDnsProvider) -> Result<Self::Output, Self::Error> {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT count(*) FROM orchestration_pod WHERE tls_dns_provider = $1",
+            )
+            .bind(input.id)
+            .fetch_one(self.db())
+            .await?,
         )
-        .bind(input.id)
-        .fetch_one(self.db())
-        .await?)
     }
 }

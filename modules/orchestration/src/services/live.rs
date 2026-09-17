@@ -22,13 +22,16 @@ use crate::config::OrchestrationConfig;
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::graph::LoadCanvasGraph;
 use crate::entities::db::health::{
-    ListServerHealthHistory as ListServerHealthHistoryRows, ServerHealthRecordEntity,
+    ListPodHealthSince, ListServerHealthHistory as ListServerHealthHistoryRows,
+    PodHealthRecordEntity, ServerHealthRecordEntity,
 };
+use crate::entities::db::pod::{FindPodById, PodId};
 use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
 use crate::entities::db::view::ListServerConfigViewsByCanvases;
 use crate::events::live::{LiveMessage, RolloutScope};
 use crate::hooks::live::{LiveBus, LiveEvent};
 use crate::services::OrchestrationError;
+use crate::services::graph;
 use crate::services::rollout::{RolloutStatus, rollout_status};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
@@ -346,6 +349,61 @@ impl LiveView for RolloutsView {
     }
 }
 
+// --- the graph view ----------------------------------------------------------
+
+/// The graph of one canvas tree, as `GetGraph` answers it.
+pub struct GraphLiveView {
+    pub canvas: CanvasId,
+    pub config: OrchestrationConfig,
+}
+
+#[derive(Clone)]
+pub struct GraphLive {
+    /// The canvas ids of the tree.
+    pub tree: HashSet<String>,
+    /// The server ids of the tree.
+    pub servers: HashSet<String>,
+    pub view: graph::GraphView,
+}
+
+impl LiveView for GraphLiveView {
+    type State = GraphLive;
+
+    fn matches(state: &Self::State, message: &LiveMessage) -> bool {
+        match message {
+            LiveMessage::CanvasChanged { canvas, .. } => state.tree.contains(canvas),
+            // A routine report changes nothing the graph shows; only a status
+            // flip moves a server's badge.
+            LiveMessage::ServerHealth {
+                server,
+                status_changed: true,
+                ..
+            } => state.servers.contains(server),
+            _ => false,
+        }
+    }
+
+    async fn load(&self, db: &Db) -> Result<Option<GraphLive>, OrchestrationError> {
+        let rows = db
+            .process(LoadCanvasGraph {
+                canvas: self.canvas.clone(),
+            })
+            .await?;
+        // An empty graph is how the query reports a canvas that is not there.
+        if rows.canvases.is_empty() {
+            return Ok(None);
+        }
+        let tree = rows.canvases.iter().map(|c| c.id.to_string()).collect();
+        let servers = rows.servers.iter().map(|s| s.id.to_string()).collect();
+        let diagnostics = graph::check_graph(&rows, &self.config);
+        Ok(Some(GraphLive {
+            tree,
+            servers,
+            view: graph::GraphView { rows, diagnostics },
+        }))
+    }
+}
+
 // --- the service -------------------------------------------------------------
 
 #[derive(Clone)]
@@ -353,8 +411,10 @@ pub struct LiveService {
     pub db: Db,
     pub bus: LiveBus,
     pub rollouts: ViewRegistry<RolloutsView>,
-    /// Read by the gRPC layer for the stream keep-alive cadence; the views
-    /// themselves are event-driven and have no tunables.
+    pub graph: ViewRegistry<GraphLiveView>,
+    /// Read by the gRPC layer for the stream keep-alive cadence and by the
+    /// graph view for its diagnostics; the views themselves are event-driven
+    /// and have no tunables.
     pub config: OrchestrationConfig,
 }
 
@@ -362,6 +422,7 @@ impl LiveService {
     pub fn new(db: Db, bus: LiveBus, config: OrchestrationConfig) -> Self {
         Self {
             rollouts: ViewRegistry::new(db.clone(), bus.clone()),
+            graph: ViewRegistry::new(db.clone(), bus.clone()),
             db,
             bus,
             config,
@@ -384,6 +445,27 @@ impl Processor<WatchRollouts> for LiveService {
             input.canvas.to_string(),
             RolloutsView {
                 canvas: input.canvas,
+            },
+        ))
+    }
+}
+
+pub struct WatchGraph {
+    pub actor: Identity,
+    pub canvas: CanvasId,
+}
+
+impl Processor<WatchGraph> for LiveService {
+    type Output = ViewHandle<GraphLive>;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:WatchGraph", skip_all, err)]
+    async fn process(&self, input: WatchGraph) -> Result<Self::Output, Self::Error> {
+        input.actor.ensure(Permission::ViewWorkspace)?;
+        Ok(self.graph.subscribe(
+            input.canvas.to_string(),
+            GraphLiveView {
+                canvas: input.canvas,
+                config: self.config.clone(),
             },
         ))
     }
@@ -432,5 +514,45 @@ impl Processor<WatchServerHealth> for LiveService {
             records,
             events,
         })
+    }
+}
+
+/// The opening snapshot of a pod-health stream, plus its feed.
+pub struct PodHealthWatch {
+    /// Oldest first.
+    pub records: Vec<PodHealthRecordEntity>,
+    pub events: broadcast::Receiver<LiveEvent>,
+}
+
+pub struct WatchPodHealth {
+    pub actor: Identity,
+    pub pod: PodId,
+    pub since: DateTime<Utc>,
+}
+
+impl Processor<WatchPodHealth> for LiveService {
+    type Output = PodHealthWatch;
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Service:WatchPodHealth", skip_all, err)]
+    async fn process(&self, input: WatchPodHealth) -> Result<Self::Output, Self::Error> {
+        input.actor.ensure(Permission::ViewWorkspace)?;
+        // Subscribe first: a record written between the read and the subscribe
+        // would otherwise be in neither, and a log stream cannot afford a hole.
+        let events = self.bus.subscribe();
+        self.db
+            .process(FindPodById {
+                id: input.pod.clone(),
+            })
+            .await?
+            .ok_or(OrchestrationError::NotFound)?;
+        let records = self
+            .db
+            .process(ListPodHealthSince {
+                pod: input.pod,
+                start: input.since,
+                end: Utc::now(),
+            })
+            .await?;
+        Ok(PodHealthWatch { records, events })
     }
 }

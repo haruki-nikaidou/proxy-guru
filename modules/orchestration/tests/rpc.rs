@@ -11,6 +11,7 @@ use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::rpc::OrchestrationGrpc;
 use orchestration::services::config::OrchestrationConfigService;
+use orchestration::services::graph::GraphChange;
 use rpguru_sdk::orchestration as pb;
 use rpguru_sdk::orchestration::orchestration_server::Orchestration;
 use tonic::Request;
@@ -68,7 +69,12 @@ async fn create_subcanvas(api: &OrchestrationGrpc, name: &str, parent: &str) -> 
     .unwrap()
 }
 
-async fn create_server(api: &OrchestrationGrpc, canvas: &str, name: &str, address: &str) -> pb::Server {
+async fn create_server(
+    api: &OrchestrationGrpc,
+    canvas: &str,
+    name: &str,
+    address: &str,
+) -> pb::Server {
     api.create_server(as_operator(pb::CreateServerRequest {
         canvas_id: canvas.to_string(),
         name: name.to_string(),
@@ -224,7 +230,11 @@ async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult 
         .into_inner();
     assert_eq!(graph.generation, applied.generation);
     assert_eq!(
-        graph.canvases.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        graph
+            .canvases
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
         vec![root.id.clone(), sub.id.clone()],
         "the whole tree, root first"
     );
@@ -244,7 +254,10 @@ async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult 
     );
     let got_hop = find_pod(&key("hop"));
     assert_eq!(got_hop.port, picked);
-    assert_eq!(got_hop.advertise_ip, "2001:db8::10", "an IP is stored canonically");
+    assert_eq!(
+        got_hop.advertise_ip, "2001:db8::10",
+        "an IP is stored canonically"
+    );
     assert_eq!(graph.exits, vec![origin]);
     let mut edges = graph.edges.clone();
     edges.sort_by(|a, b| a.id.cmp(&b.id));
@@ -334,7 +347,10 @@ async fn a_bad_graph_change_is_refused_with_what_is_wrong(pool: sqlx::PgPool) ->
         }))
         .await?
         .into_inner();
-    assert!(graph.pods.is_empty(), "nothing of a refused batch is written");
+    assert!(
+        graph.pods.is_empty(),
+        "nothing of a refused batch is written"
+    );
 
     // A change computed against a generation the tree has moved past.
     let err = api
@@ -629,5 +645,147 @@ async fn watch_rollouts_reports_a_missing_canvas(pool: sqlx::PgPool) -> TestResu
         .expect("an item")
         .expect_err("a missing canvas");
     assert_eq!(status.code(), tonic::Code::NotFound);
+    Ok(())
+}
+
+/// The graph stream opens with the tree and sends a new snapshot per edit;
+/// an unknown canvas is a `NOT_FOUND`.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn watch_graph_snapshots_each_edit_and_reports_a_missing_canvas(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let api = grpc(&w);
+    let token = w.login().await?;
+    let canvas = create_canvas(&api, "prod").await;
+    let mut stream = api
+        .watch_graph(as_session(
+            pb::WatchGraphRequest {
+                canvas_id: canvas.id.clone(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let first = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an opening item")?;
+    let Some(pb::graph_event::Event::Snapshot(snapshot)) = first.event else {
+        panic!("a stream opens with a snapshot, got {first:?}");
+    };
+    assert!(
+        snapshot.servers.is_empty(),
+        "an empty canvas has no servers"
+    );
+    assert_eq!(snapshot.canvases.len(), 1, "the tree is the one canvas");
+
+    let server = create_server(&api, &canvas.id, "tokyo", "203.0.113.10").await;
+    let next = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("a snapshot follows the edit")?;
+    let Some(pb::graph_event::Event::Snapshot(snapshot)) = next.event else {
+        panic!("an edit sends a snapshot, got {next:?}");
+    };
+    assert_eq!(
+        snapshot
+            .servers
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![server.id.as_str()],
+        "the new server is in the next snapshot"
+    );
+
+    let mut stream = api
+        .watch_graph(as_session(
+            pb::WatchGraphRequest {
+                canvas_id: "nope".to_string(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let status = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an item")
+        .expect_err("a missing canvas");
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    Ok(())
+}
+
+/// A pod-health stream opens with the pod's history and then forwards each
+/// deployment event; an unknown pod is a `NOT_FOUND` on the stream.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn watch_pod_health_opens_with_history_then_follows_deploys(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let api = grpc(&w);
+    let token = w.login().await?;
+    let canvas = canvas(&w.db, "prod").await?;
+    let tokyo = server_at(&w.db, &canvas, "tokyo", "203.0.113.10").await?;
+    let web = client(&canvas, &tokyo, "web", 443, None);
+    let out = exit(&canvas, "web-out", "10.0.0.5:8080");
+    let edge = edge_to_exit("web-edge", &web, &out);
+    w.apply(
+        &canvas,
+        GraphChange {
+            put_pods: vec![routed(web, via(&edge))],
+            put_exits: vec![out],
+            put_edges: vec![edge],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
+
+    let mut stream = api
+        .watch_pod_health(as_session(
+            pb::WatchPodHealthRequest {
+                pod_id: key("web"),
+                since: String::new(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let first = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an opening item")?;
+    let Some(pb::pod_health_event::Event::Snapshot(snapshot)) = first.event else {
+        panic!("a stream opens with a snapshot, got {first:?}");
+    };
+    assert!(snapshot.records.is_empty(), "nothing deployed yet");
+
+    w.derive(&canvas.id).await?;
+    let next = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("a record follows the derivation")?;
+    let Some(pb::pod_health_event::Event::Record(record)) = next.event else {
+        panic!("a derivation sends a record, got {next:?}");
+    };
+    assert_eq!(record.pod_id, key("web"));
+    assert_eq!(record.status, pb::PodHealthStatus::PodDeploying as i32);
+
+    let mut stream = api
+        .watch_pod_health(as_session(
+            pb::WatchPodHealthRequest {
+                pod_id: "nope".to_string(),
+                since: String::new(),
+            },
+            &token,
+        ))
+        .await?
+        .into_inner();
+    let status = next_item(&mut stream, std::time::Duration::from_secs(5))
+        .await
+        .expect("an item")
+        .expect_err("a missing pod");
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    assert!(
+        next_item(&mut stream, std::time::Duration::from_millis(200))
+            .await
+            .is_none(),
+        "the stream is over"
+    );
     Ok(())
 }

@@ -90,10 +90,25 @@ async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
                 .unwrap()
         }
     };
-    assert!(!dry(forward.clone()).await.diagnostics.iter().any(|d| d.error));
-    assert!(!dry(backward.clone()).await.diagnostics.iter().any(|d| d.error));
+    assert!(
+        !dry(forward.clone())
+            .await
+            .diagnostics
+            .iter()
+            .any(|d| d.error)
+    );
+    assert!(
+        !dry(backward.clone())
+            .await
+            .diagnostics
+            .iter()
+            .any(|d| d.error)
+    );
     let both = GraphChange {
-        put_pods: vec![routed(a.clone(), via(&a_to_b)), routed(b.clone(), via(&b_to_a))],
+        put_pods: vec![
+            routed(a.clone(), via(&a_to_b)),
+            routed(b.clone(), via(&b_to_a)),
+        ],
         put_edges: vec![a_to_b, b_to_a],
         ..GraphChange::default()
     };
@@ -124,7 +139,10 @@ async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
     };
     let (first, second) = tokio::join!(spawn(forward), spawn(backward));
     let applied = |result: &Result<_, _>| {
-        matches!(result, Ok(orchestration::services::graph::ApplyOutcome { applied: true, .. }))
+        matches!(
+            result,
+            Ok(orchestration::services::graph::ApplyOutcome { applied: true, .. })
+        )
     };
     let (first, second) = (first.unwrap(), second.unwrap());
     // Exactly one edit commits. The loser is refused — by the fence (it checked
@@ -135,9 +153,8 @@ async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
         "exactly one of the jointly-invalid pair may commit: {first:?} {second:?}"
     );
 
-    let after = w
-        .db
-        .process(LoadCanvasGraph {
+    let after =
+        w.db.process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;

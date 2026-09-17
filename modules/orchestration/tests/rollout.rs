@@ -172,7 +172,13 @@ async fn relay_chain(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
         servers.push(server);
     }
     let ingress = client(&canvas, &servers[0], "ingress", 443, None);
-    let osaka_hop = pod(&canvas, &servers[1], "osaka-hop", 9443, PodIngress::RelayTcp);
+    let osaka_hop = pod(
+        &canvas,
+        &servers[1],
+        "osaka-hop",
+        9443,
+        PodIngress::RelayTcp,
+    );
     let origin = exit(&canvas, "exit", "10.0.0.5:8080");
     let to_osaka = edge_to_pod("to-osaka", &ingress, &osaka_hop);
     let out = edge_to_exit("out", &osaka_hop, &origin);
@@ -410,10 +416,7 @@ async fn a_moved_listener_is_held_under_its_own_tag_until_its_dependant_switches
     ack_current(&w, &f.tokyo).await?;
     w.derive(&f.canvas).await?;
     let settled = Config::from_toml_str(&w.view(&f.osaka).await?.desired.unwrap().toml)?;
-    assert_eq!(
-        tags_by_port(&settled),
-        vec![(key("osaka-hop"), 9444)]
-    );
+    assert_eq!(tags_by_port(&settled), vec![(key("osaka-hop"), 9444)]);
     Ok(())
 }
 
@@ -438,7 +441,10 @@ async fn a_protocol_change_on_a_referenced_listener_is_rejected(pool: sqlx::PgPo
             },
         )
         .await?;
-    assert!(!outcome.applied, "a protocol switch under a live dependant must be refused");
+    assert!(
+        !outcome.applied,
+        "a protocol switch under a live dependant must be refused"
+    );
     let refusal = outcome
         .diagnostics
         .iter()
@@ -574,9 +580,8 @@ async fn a_pod_that_stops_deriving_keeps_serving_its_listener(pool: sqlx::PgPool
 
     // Osaka loses the only address tokyo could dial it on, so tokyo's ingress
     // pod alone stops compiling.
-    let osaka = w
-        .db
-        .process(FindServerById {
+    let osaka =
+        w.db.process(FindServerById {
             id: f.osaka.clone(),
         })
         .await?

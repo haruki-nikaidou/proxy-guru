@@ -242,7 +242,9 @@ impl GraphDiagnostic {
                 .subjects
                 .iter()
                 .map(|subject| match subject {
-                    topo::Subject::Server(id) => GraphSubject::Server(ServerId::from_key(id.as_str())),
+                    topo::Subject::Server(id) => {
+                        GraphSubject::Server(ServerId::from_key(id.as_str()))
+                    }
                     topo::Subject::Pod(id) => GraphSubject::Pod(PodId::from_key(id.as_str())),
                     topo::Subject::Exit(id) => GraphSubject::Exit(ExitId::from_key(id.as_str())),
                     topo::Subject::Edge(id) => GraphSubject::Edge(EdgeId::from_key(id.as_str())),
@@ -258,6 +260,22 @@ impl GraphDiagnostic {
 pub struct GraphView {
     pub rows: GraphRows,
     pub diagnostics: Vec<GraphDiagnostic>,
+}
+
+/// The diagnostics of a loaded tree, as `GetGraph` and the live graph view
+/// report them.
+pub fn check_graph(rows: &GraphRows, config: &OrchestrationConfig) -> Vec<GraphDiagnostic> {
+    topo::check(&topology_graph(
+        &rows.servers,
+        &rows.pods,
+        &rows.exits,
+        &rows.edges,
+        config,
+    ))
+    .diagnostics
+    .iter()
+    .map(GraphDiagnostic::from_topology)
+    .collect()
 }
 
 /// The whole tree containing `canvas`.
@@ -281,18 +299,7 @@ impl Processor<GetGraph> for GraphService {
         if rows.canvases.is_empty() {
             return Err(OrchestrationError::NotFound);
         }
-        let report = topo::check(&topology_graph(
-            &rows.servers,
-            &rows.pods,
-            &rows.exits,
-            &rows.edges,
-            &self.config,
-        ));
-        let diagnostics = report
-            .diagnostics
-            .iter()
-            .map(GraphDiagnostic::from_topology)
-            .collect();
+        let diagnostics = check_graph(&rows, &self.config);
         Ok(GraphView { rows, diagnostics })
     }
 }
@@ -382,9 +389,24 @@ impl Processor<ApplyGraph> for GraphService {
             .db
             .process(FindTakenIds {
                 pods: input.change.put_pods.iter().map(|p| p.id.clone()).collect(),
-                exits: input.change.put_exits.iter().map(|e| e.id.clone()).collect(),
-                edges: input.change.put_edges.iter().map(|e| e.id.clone()).collect(),
-                groups: input.change.put_groups.iter().map(|g| g.id.clone()).collect(),
+                exits: input
+                    .change
+                    .put_exits
+                    .iter()
+                    .map(|e| e.id.clone())
+                    .collect(),
+                edges: input
+                    .change
+                    .put_edges
+                    .iter()
+                    .map(|e| e.id.clone())
+                    .collect(),
+                groups: input
+                    .change
+                    .put_groups
+                    .iter()
+                    .map(|g| g.id.clone())
+                    .collect(),
             })
             .await?;
         let mut change = input.change;
@@ -407,7 +429,12 @@ impl Processor<ApplyGraph> for GraphService {
             &result.edges,
             &self.config,
         ));
-        diagnostics.extend(report.diagnostics.iter().map(GraphDiagnostic::from_topology));
+        diagnostics.extend(
+            report
+                .diagnostics
+                .iter()
+                .map(GraphDiagnostic::from_topology),
+        );
         if !report.has_errors() {
             diagnostics.extend(self.switch_diagnostics(&result, &views));
         }
@@ -588,37 +615,46 @@ impl GraphService {
 
 /// Applies a change to a copy of the rows, returning what is wrong with the
 /// change itself (the graph it produces is checked afterwards).
-fn apply_change(rows: &mut GraphRows, change: &GraphChange, taken: &TakenIds) -> Vec<GraphDiagnostic> {
+fn apply_change(
+    rows: &mut GraphRows,
+    change: &GraphChange,
+    taken: &TakenIds,
+) -> Vec<GraphDiagnostic> {
     let mut out = Vec::new();
     let tree: HashSet<&str> = rows.canvases.iter().map(|c| c.id.as_str()).collect();
     let tree: HashSet<String> = tree.into_iter().map(str::to_string).collect();
     let servers: HashSet<String> = rows.servers.iter().map(|s| s.id.to_string()).collect();
 
     let mut seen: HashSet<String> = HashSet::new();
-    let mut check_id = |kind: &str, id: &str, subject: GraphSubject, out: &mut Vec<GraphDiagnostic>| {
-        if !ids::is_record_key(id) {
-            out.push(GraphDiagnostic::error(
-                "invalid_id",
-                vec![subject],
-                format!("{kind} id {id:?} is not 20 characters of a-z and 0-9"),
-            ));
-            return false;
-        }
-        if !seen.insert(format!("{kind}:{id}")) {
-            out.push(GraphDiagnostic::error(
-                "duplicate_change",
-                vec![subject],
-                format!("{kind} {id} is changed twice in one batch"),
-            ));
-            return false;
-        }
-        true
-    };
+    let mut check_id =
+        |kind: &str, id: &str, subject: GraphSubject, out: &mut Vec<GraphDiagnostic>| {
+            if !ids::is_record_key(id) {
+                out.push(GraphDiagnostic::error(
+                    "invalid_id",
+                    vec![subject],
+                    format!("{kind} id {id:?} is not 20 characters of a-z and 0-9"),
+                ));
+                return false;
+            }
+            if !seen.insert(format!("{kind}:{id}")) {
+                out.push(GraphDiagnostic::error(
+                    "duplicate_change",
+                    vec![subject],
+                    format!("{kind} {id} is changed twice in one batch"),
+                ));
+                return false;
+            }
+            true
+        };
 
     // Deletes first, of rows that are this tree's.
     for id in &change.delete_edges {
-        if check_id("edge", id.as_str(), GraphSubject::Edge(id.clone()), &mut out)
-            && !rows.edges.iter().any(|e| e.id == *id)
+        if check_id(
+            "edge",
+            id.as_str(),
+            GraphSubject::Edge(id.clone()),
+            &mut out,
+        ) && !rows.edges.iter().any(|e| e.id == *id)
         {
             out.push(unknown("edge", GraphSubject::Edge(id.clone())));
         }
@@ -631,15 +667,23 @@ fn apply_change(rows: &mut GraphRows, change: &GraphChange, taken: &TakenIds) ->
         }
     }
     for id in &change.delete_exits {
-        if check_id("exit", id.as_str(), GraphSubject::Exit(id.clone()), &mut out)
-            && !rows.exits.iter().any(|e| e.id == *id)
+        if check_id(
+            "exit",
+            id.as_str(),
+            GraphSubject::Exit(id.clone()),
+            &mut out,
+        ) && !rows.exits.iter().any(|e| e.id == *id)
         {
             out.push(unknown("exit", GraphSubject::Exit(id.clone())));
         }
     }
     for id in &change.delete_groups {
-        if check_id("group", id.as_str(), GraphSubject::Group(id.clone()), &mut out)
-            && !rows.groups.iter().any(|g| g.id == *id)
+        if check_id(
+            "group",
+            id.as_str(),
+            GraphSubject::Group(id.clone()),
+            &mut out,
+        ) && !rows.groups.iter().any(|g| g.id == *id)
         {
             out.push(unknown("group", GraphSubject::Group(id.clone())));
         }
@@ -647,7 +691,8 @@ fn apply_change(rows: &mut GraphRows, change: &GraphChange, taken: &TakenIds) ->
     rows.edges.retain(|e| !change.delete_edges.contains(&e.id));
     rows.pods.retain(|p| !change.delete_pods.contains(&p.id));
     rows.exits.retain(|e| !change.delete_exits.contains(&e.id));
-    rows.groups.retain(|g| !change.delete_groups.contains(&g.id));
+    rows.groups
+        .retain(|g| !change.delete_groups.contains(&g.id));
 
     for pod in &change.put_pods {
         let subject = GraphSubject::Pod(pod.id.clone());
@@ -671,7 +716,10 @@ fn apply_change(rows: &mut GraphRows, change: &GraphChange, taken: &TakenIds) ->
             out.push(GraphDiagnostic::error(
                 "unknown_server",
                 vec![subject],
-                format!("pod {}: its server is not part of this canvas tree", pod.name),
+                format!(
+                    "pod {}: its server is not part of this canvas tree",
+                    pod.name
+                ),
             ));
             continue;
         }
@@ -715,7 +763,9 @@ fn apply_change(rows: &mut GraphRows, change: &GraphChange, taken: &TakenIds) ->
         }
         match rows.edges.iter().position(|e| e.id == edge.id) {
             Some(index) => {
-                if rows.edges[index].source != edge.source || rows.edges[index].target != edge.target {
+                if rows.edges[index].source != edge.source
+                    || rows.edges[index].target != edge.target
+                {
                     out.push(GraphDiagnostic::error(
                         "edge_ends_changed",
                         vec![subject],
@@ -857,7 +907,10 @@ fn allocate_ports(
             out.push(GraphDiagnostic::error(
                 "no_free_port",
                 vec![GraphSubject::Pod(id.clone())],
-                format!("pod {}: its server has no free port left", rows.pods[index].name),
+                format!(
+                    "pod {}: its server has no free port left",
+                    rows.pods[index].name
+                ),
             ));
             continue;
         };

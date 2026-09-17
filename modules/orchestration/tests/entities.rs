@@ -17,8 +17,8 @@ use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion, TlsConf
 use orchestration::entities::db::server::{
     ClaimServerWatchSession, DeleteServerRow, FindCanvasOfServer, FindServerById,
     FindServerByRefreshKeyDigest, ListServersByCanvas, MoveServerPosition, QuicCongestion,
-    RegisterWorkerSession, ReleaseServerWatchSession, RenewServerWatchSession,
-    ServerIpv6Resolve, ServerLogLevel, ServerQuic, UpdateServerSettings,
+    RegisterWorkerSession, ReleaseServerWatchSession, RenewServerWatchSession, ServerIpv6Resolve,
+    ServerLogLevel, ServerQuic, UpdateServerSettings,
 };
 use orchestration::entities::db::view::{
     AckServerConfig, FindServerConfigView, ListServerWatchState, TakeInFlight,
@@ -840,7 +840,12 @@ async fn a_graph_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestRe
     let out = edge_to_exit("out", &entry, &origin);
     let entry = routed(entry, via(&out));
     let generation = sp
-        .process(inserting(&c, vec![entry.clone()], vec![origin], vec![out.clone()]))
+        .process(inserting(
+            &c,
+            vec![entry.clone()],
+            vec![origin],
+            vec![out.clone()],
+        ))
         .await?;
     assert_eq!(generation, before + 1);
     let after = sp
@@ -919,12 +924,22 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         .fence()
         .expect("a loaded canvas has a root");
 
-    let mut first = inserting(&c, vec![client(&c, &s, "pod1", 443, None)], Vec::new(), Vec::new());
+    let mut first = inserting(
+        &c,
+        vec![client(&c, &s, "pod1", 443, None)],
+        Vec::new(),
+        Vec::new(),
+    );
     first.fence = Some(fence.clone());
     let bumped = sp.process(first).await?;
     assert_eq!(bumped, fence.generation + 1);
 
-    let mut second = inserting(&c, vec![client(&c, &s, "pod2", 444, None)], Vec::new(), Vec::new());
+    let mut second = inserting(
+        &c,
+        vec![client(&c, &s, "pod2", 444, None)],
+        Vec::new(),
+        Vec::new(),
+    );
     second.fence = Some(fence);
     let err = sp.process(second).await.expect_err("the loser is rejected");
     assert!(
@@ -1005,10 +1020,20 @@ async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
             canvas: sub.id.clone(),
         })
         .await?;
-    assert_eq!(graph.root, root.id, "any canvas of the tree reads the whole tree");
+    assert_eq!(
+        graph.root, root.id,
+        "any canvas of the tree reads the whole tree"
+    );
     assert_eq!(graph.canvases.len(), 3);
-    assert_eq!((graph.pods.len(), graph.exits.len(), graph.edges.len()), (1, 1, 1));
-    assert_eq!(graph.generation(), before + 1, "the root is what an edit bumps");
+    assert_eq!(
+        (graph.pods.len(), graph.exits.len(), graph.edges.len()),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        graph.generation(),
+        before + 1,
+        "the root is what an edit bumps"
+    );
 
     sp.process(DeleteCanvasRow { id: sub.id.clone() }).await?;
     let graph = sp

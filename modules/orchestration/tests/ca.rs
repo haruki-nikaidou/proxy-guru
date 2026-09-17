@@ -17,7 +17,6 @@ use orchestration::entities::db::certificate::{EnsureCertificate, StoreIssuedCer
 use orchestration::entities::db::dns::{CreateDnsProvider, DnsProvider};
 use orchestration::entities::db::health::{ListPodHealthHistory, PodHealthStatus};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, TlsConfig};
-use orchestration::services::graph::GraphChange;
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -32,6 +31,7 @@ use orchestration::services::ca::{
     InitInternalCa,
 };
 use orchestration::services::canvas as canvas_service;
+use orchestration::services::graph::GraphChange;
 use orchestration::services::server::{AddressOverrides, CreateServer};
 use x509_parser::prelude::*;
 

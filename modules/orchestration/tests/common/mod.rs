@@ -107,7 +107,13 @@ pub fn key(name: &str) -> String {
     let mut out: String = name
         .chars()
         .flat_map(char::to_lowercase)
-        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '0' })
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                c
+            } else {
+                '0'
+            }
+        })
         .take(20)
         .collect();
     while out.len() < 20 {
@@ -129,7 +135,13 @@ pub fn edge_id(name: &str) -> EdgeId {
 }
 
 /// A pod named `name` (its id is [`key`] of it) with no route.
-pub fn pod(canvas: &CanvasEntity, server: &ServerEntity, name: &str, port: u16, ingress: PodIngress) -> PodEntity {
+pub fn pod(
+    canvas: &CanvasEntity,
+    server: &ServerEntity,
+    name: &str,
+    port: u16,
+    ingress: PodIngress,
+) -> PodEntity {
     PodEntity {
         id: pod_id(name),
         canvas: canvas.id.clone(),
@@ -145,7 +157,13 @@ pub fn pod(canvas: &CanvasEntity, server: &ServerEntity, name: &str, port: u16, 
 }
 
 /// A raw client pod, reading PROXY headers when `proxy` is set.
-pub fn client(canvas: &CanvasEntity, server: &ServerEntity, name: &str, port: u16, proxy: Option<ProxyProtocolVersion>) -> PodEntity {
+pub fn client(
+    canvas: &CanvasEntity,
+    server: &ServerEntity,
+    name: &str,
+    port: u16,
+    proxy: Option<ProxyProtocolVersion>,
+) -> PodEntity {
     pod(
         canvas,
         server,

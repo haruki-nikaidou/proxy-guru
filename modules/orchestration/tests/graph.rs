@@ -46,9 +46,8 @@ async fn a_pod_put_with_port_zero_gets_a_free_port(pool: sqlx::PgPool) -> TestRe
     let ports: std::collections::HashSet<u16> = outcome.pods.iter().map(|p| p.port).collect();
     assert_eq!(ports.len(), 20, "no two pods share a port: {ports:?}");
     assert!(ports.iter().all(|p| DEFAULT_POD_PORTS.contains(p)));
-    let graph = w
-        .db
-        .process(LoadCanvasGraph {
+    let graph =
+        w.db.process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
@@ -113,13 +112,15 @@ async fn ids_must_be_well_formed_unique_and_this_trees(pool: sqlx::PgPool) -> Te
         .find(|d| d.problem == "id_in_use")
         .unwrap();
     assert_eq!(taken.subjects, vec![GraphSubject::Pod(pod_id("taken"))]);
-    let graph = w
-        .db
-        .process(LoadCanvasGraph {
+    let graph =
+        w.db.process(LoadCanvasGraph {
             canvas: prod.id.clone(),
         })
         .await?;
-    assert!(graph.pods.is_empty(), "nothing of a refused batch is written");
+    assert!(
+        graph.pods.is_empty(),
+        "nothing of a refused batch is written"
+    );
     Ok(())
 }
 
@@ -170,9 +171,8 @@ async fn an_edge_keeps_its_ends(pool: sqlx::PgPool) -> TestResult {
         )
         .await?;
     assert_eq!(problems(&refused), ["edge_ends_changed"]);
-    let graph = w
-        .db
-        .process(LoadCanvasGraph {
+    let graph =
+        w.db.process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
@@ -217,7 +217,10 @@ async fn groups_follow_their_members(pool: sqlx::PgPool) -> TestResult {
         kind: "rule".to_string(),
         name: "both".to_string(),
         props: serde_json::json!({"color": "#f80"}),
-        members: vec![GroupMember::Pod(a.id.clone()), GroupMember::Pod(b.id.clone())],
+        members: vec![
+            GroupMember::Pod(a.id.clone()),
+            GroupMember::Pod(b.id.clone()),
+        ],
     };
     w.apply(
         &c,
@@ -251,9 +254,8 @@ async fn groups_follow_their_members(pool: sqlx::PgPool) -> TestResult {
         },
     )
     .await?;
-    let graph = w
-        .db
-        .process(LoadCanvasGraph {
+    let graph =
+        w.db.process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
@@ -307,7 +309,15 @@ async fn a_tls_pod_must_name_a_provider_and_agree_on_its_certificate(
         .apply(
             &c,
             GraphChange {
-                put_pods: vec![tls_client(&c, &s, "edge", 443, &provider.id, "A.Example.com", "")],
+                put_pods: vec![tls_client(
+                    &c,
+                    &s,
+                    "edge",
+                    443,
+                    &provider.id,
+                    "A.Example.com",
+                    "",
+                )],
                 ..GraphChange::default()
             },
         )
@@ -316,19 +326,29 @@ async fn a_tls_pod_must_name_a_provider_and_agree_on_its_certificate(
         &outcome.pods[0].ingress,
         PodIngress::ClientTls { tls, .. } if tls.sni == "a.example.com"
     ));
-    w.db.process(orchestration::entities::db::certificate::EnsureCertificate {
-        sni: "a.example.com".to_string(),
-        dns_provider: provider.id.clone(),
-        domain_id: "zone".to_string(),
-        acme_directory: w.config.default_acme_directory.clone(),
-        now: chrono::Utc::now(),
-    })
+    w.db.process(
+        orchestration::entities::db::certificate::EnsureCertificate {
+            sni: "a.example.com".to_string(),
+            dns_provider: provider.id.clone(),
+            domain_id: "zone".to_string(),
+            acme_directory: w.config.default_acme_directory.clone(),
+            now: chrono::Utc::now(),
+        },
+    )
     .await?;
     let refused = w
         .try_apply(
             &c,
             GraphChange {
-                put_pods: vec![tls_client(&c, &s, "second", 8443, &other.id, "a.example.com", "")],
+                put_pods: vec![tls_client(
+                    &c,
+                    &s,
+                    "second",
+                    8443,
+                    &other.id,
+                    "a.example.com",
+                    "",
+                )],
                 ..GraphChange::default()
             },
         )
@@ -354,7 +374,10 @@ async fn deletes_refuse_to_strand_what_depends_on_them(pool: sqlx::PgPool) -> Te
     w.apply(
         &root,
         GraphChange {
-            put_pods: vec![routed(entry.clone(), via(&dial)), routed(hop.clone(), via(&out))],
+            put_pods: vec![
+                routed(entry.clone(), via(&dial)),
+                routed(hop.clone(), via(&out)),
+            ],
             put_exits: vec![origin],
             put_edges: vec![dial.clone(), out],
             ..GraphChange::default()
@@ -445,9 +468,8 @@ async fn items_move_without_touching_the_topology(pool: sqlx::PgPool) -> TestRes
         },
     )
     .await?;
-    let before = w
-        .db
-        .process(LoadCanvasGraph {
+    let before =
+        w.db.process(LoadCanvasGraph {
             canvas: root.id.clone(),
         })
         .await?;
@@ -455,14 +477,16 @@ async fn items_move_without_touching_the_topology(pool: sqlx::PgPool) -> TestRes
         .process(MoveItems {
             actor: operator(),
             canvas: sub.id.clone(),
-            servers: vec![(tokyo.id.clone(), pos(1, 2)), (foreign.id.clone(), pos(9, 9))],
+            servers: vec![
+                (tokyo.id.clone(), pos(1, 2)),
+                (foreign.id.clone(), pos(9, 9)),
+            ],
             exits: vec![(origin.id.clone(), pos(3, 4))],
             canvases: vec![(sub.id.clone(), pos(5, 6))],
         })
         .await?;
-    let after = w
-        .db
-        .process(LoadCanvasGraph {
+    let after =
+        w.db.process(LoadCanvasGraph {
             canvas: root.id.clone(),
         })
         .await?;
@@ -470,7 +494,12 @@ async fn items_move_without_touching_the_topology(pool: sqlx::PgPool) -> TestRes
     assert_eq!(after.servers[0].position, pos(1, 2));
     assert_eq!(after.exits[0].position, pos(3, 4));
     assert_eq!(
-        after.canvases.iter().find(|c| c.id == sub.id).unwrap().position,
+        after
+            .canvases
+            .iter()
+            .find(|c| c.id == sub.id)
+            .unwrap()
+            .position,
         pos(5, 6)
     );
     assert_eq!(
