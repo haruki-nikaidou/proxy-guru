@@ -76,7 +76,9 @@ A splitter is a group of a route — a balance or a failover. Groups that choose
 the same cards are drawn as **one** splitter however many pods they belong to: two rules fanned out
 over the same five servers are one splitter standing for two routes. Each row is one member, with
 its weight (`×2`) or its tier (`#1`) and where it leads; a member that is itself a group leads to a
-nested splitter. The **+ member** handle adds a member to every route the splitter stands for. Its panel changes the policy, stickiness, weights and order of all of them at once.
+nested splitter. The **+ member** handle adds a member to every route the splitter stands for, and
+a drag from a member's row gives that member of every route a way on. Its panel changes the policy,
+stickiness, weights and order of all of them at once.
 
 ### Aggregators
 
@@ -84,7 +86,8 @@ nested splitter. The **+ member** handle adds a member to every route the splitt
 
 Where buses from two or more servers meet in front of the same splitter or exit, an aggregator
 gathers them, with one way out per card it hands on to. It is only drawing: nothing about it is
-stored, and it cannot be edited or deleted.
+stored, and it cannot be edited or deleted. A drag from one of its ways out, though, gives every pod
+on that way a way on at once (see *Connecting* below).
 
 ### Buses and rules
 
@@ -145,6 +148,23 @@ Drag from the blue handle on the right of a pod row and drop it on a red one:
 A new way on joins the pod's route: the first one is the route, a second one makes a balance of the
 two, and a group gains a member. Dragging from a splitter's **+ member** handle does the same for
 every route the splitter stands for.
+
+The rows of drawn cards can be dragged from too, and one drop reaches every pod behind the row:
+
+| Drag from | What gains a way on |
+|---|---|
+| a splitter's member row | that member of each route the splitter stands for |
+| an aggregator's way out | each pod whose line runs through that way |
+
+A row takes the drops a pod row takes, except a splitter, a place it already leads to and its own
+pods. As with one pod, a single edge becomes a balance of the old and the new, and a group gains a
+member; make it a failover in the splitter's panel. Dropped on a server's header from a row or from
+**+ member**, the pods of one rule share the one new relay pod made there: an aggregator's way out
+dragged to a new exit or server connects five relay pods of a rule in one go, and one splitter
+appears.
+
+Connecting a relay pod that had no way on, when the other relay pods its group landed have none
+either, shows a notice with a button that connects them the same way.
 
 ### Editing a pod
 
