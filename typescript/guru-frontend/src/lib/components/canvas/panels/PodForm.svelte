@@ -53,7 +53,8 @@ let name = $state('');
 let comment = $state('');
 let kind = $state<IngressKind>('client_raw');
 let proxy = $state<ProxyProtocolName>('none');
-// `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
+// A text field, not `type="number"`: Svelte binds a number input as a number,
+// and as null for anything it cannot parse (`80e`), which would read as auto.
 let port = $state('');
 let bindIp = $state(BIND_ALL);
 let advertiseIp = $state(ADVERTISE_AUTO);
@@ -253,9 +254,7 @@ function remove() {
 		<Field.FieldLabel for="pod-port">{m.editor_pod_port()}</Field.FieldLabel>
 		<Input
 			id="pod-port"
-			type="number"
-			min={0}
-			max={65535}
+			inputmode="numeric"
 			placeholder={m.editor_pod_port_auto()}
 			bind:value={port}
 			disabled={!editor.editable}

@@ -34,7 +34,8 @@ const NEW_INGRESS: NewIngress[] = ['client_raw', 'relay_quic', 'relay_tls', 'rel
 
 let name = $state('');
 let ingress = $state<NewIngress>('client_raw');
-// `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
+// A text field, not `type="number"`: Svelte binds a number input as a number,
+// and as null for anything it cannot parse (`80e`), which would read as auto.
 let port = $state('');
 let pending = $state(false);
 
@@ -106,9 +107,7 @@ async function add() {
 		<div class="flex gap-2">
 			<Input class="flex-1" placeholder={m.editor_node_name()} bind:value={name} />
 			<Input
-				type="number"
-				min={0}
-				max={65535}
+				inputmode="numeric"
 				class="w-28"
 				placeholder={m.editor_pod_port_auto()}
 				bind:value={port}
