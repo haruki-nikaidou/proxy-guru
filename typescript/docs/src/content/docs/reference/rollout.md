@@ -21,20 +21,7 @@ worker reporting the desired or in-flight revision has it recorded as `applied`,
 reporting revision `0` — a fresh install, a wiped state directory — has `applied` forgotten, so the
 stream hands the desired revision out again rather than treating the server as converged.
 
-```text
-graph edit ───────▶ CanvasDirty ──┐
-                                  ├──▶ derivation hook (--mode consumer)
-cron: derive_stale_canvases ──────┘
-                                       │
-                                       ▼
-                             config view: desired
-                                       │ worker stream
-                                       ▼
-                                   in_flight
-                                       │ AckConfig
-                                       ▼
-                                    applied
-```
+![A graph edit publishes CanvasDirty and cron publishes derive_stale_canvases; both reach the derivation hook running in consumer mode, which writes the desired snapshot of a server's config view. A worker stream promotes desired to in_flight, and AckConfig promotes in_flight to applied, what the worker confirmed it runs](/img/rollout/edit-to-applied.svg)
 
 ## Convergence
 

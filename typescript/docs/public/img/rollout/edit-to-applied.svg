@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 452" width="640" height="452" role="img"
+     font-family="system-ui, sans-serif">
+  <title>A graph edit publishes CanvasDirty and the cron job publishes derive_stale_canvases; both
+    are consumed by the derivation hook, which writes the desired snapshot of a server's config
+    view. A worker stream promotes it to in_flight, and AckConfig promotes that to applied.</title>
+
+  <!--
+    Drawn at the docs content width (640px) so it renders 1:1 and the 11px labels stay at 11px.
+
+    Fixed light panel, no `prefers-color-scheme`: loaded through an <img>, this file cannot see the
+    theme Starlight sets on <html>, so a media query would invert it whenever the site theme and the
+    OS preference disagree. Same palette as img/canvas/graph-vs-drawing.svg, so both diagrams read
+    the same on either site theme. Legend: violet is a broker message (a trigger that can be lost),
+    slate is state the master owns, teal is the converged end state.
+  -->
+  <style>
+    .panel     { fill: #ffffff; }
+    .box       { fill: none; stroke: #475569; stroke-width: 1.2; }
+    .label     { font-size: 13px; font-weight: 600; fill: #0f172a; }
+    .note      { font-size: 11px; fill: #4b5563; }
+    .hint      { font-size: 11px; font-style: italic; fill: #4b5563; }
+    .frame     { fill: none; stroke: #cbd5e1; stroke-width: 1; }
+    .edge      { fill: none; stroke: #475569; stroke-width: 1.2; }
+    .code      { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    /* a message published on the broker */
+    .msg-box   { fill: none; stroke: #6d28d9; stroke-width: 1.2; }
+    .msg-name  { font-size: 13px; font-weight: 600; fill: #6d28d9; }
+    .msg-edge  { fill: none; stroke: #6d28d9; stroke-width: 1.2; }
+
+    /* the converged snapshot */
+    .final-box  { fill: none; stroke: #0f766e; stroke-width: 1.2; }
+    .final-name { font-size: 13px; font-weight: 600; fill: #0f766e; }
+    .final-note { font-size: 11px; font-style: italic; fill: #0f766e; }
+  </style>
+
+  <rect class="panel" x="0" y="0" width="640" height="452" rx="10" />
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+            orient="auto-start-reverse">
+      <path d="M0,0.8 L9,5 L0,9.2 Z" fill="#475569" />
+    </marker>
+    <marker id="arrow-msg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+            orient="auto-start-reverse">
+      <path d="M0,0.8 L9,5 L0,9.2 Z" fill="#6d28d9" />
+    </marker>
+  </defs>
+
+  <!-- ===================== triggers: two broker messages ===================== -->
+  <rect class="msg-box" x="40" y="22" width="240" height="54" rx="6" />
+  <text class="msg-name code" x="160" y="45" text-anchor="middle">CanvasDirty</text>
+  <text class="note" x="160" y="63" text-anchor="middle">published by a graph edit</text>
+
+  <rect class="msg-box" x="360" y="22" width="240" height="54" rx="6" />
+  <text class="msg-name code" x="480" y="45" text-anchor="middle">derive_stale_canvases</text>
+  <text class="note" x="480" y="63" text-anchor="middle">published by cron</text>
+
+  <line class="msg-edge" x1="160" y1="76" x2="160" y2="100" />
+  <line class="msg-edge" x1="480" y1="76" x2="480" y2="100" />
+  <line class="msg-edge" x1="160" y1="100" x2="480" y2="100" />
+  <line class="msg-edge" x1="320" y1="100" x2="320" y2="116" marker-end="url(#arrow-msg)" />
+
+  <!-- ===================== the consumer that derives ===================== -->
+  <rect class="box" x="180" y="118" width="280" height="56" rx="6" />
+  <text class="label" x="320" y="141" text-anchor="middle">derivation hook</text>
+  <text class="note code" x="320" y="159" text-anchor="middle">--mode consumer</text>
+
+  <line class="edge" x1="320" y1="174" x2="320" y2="218" marker-end="url(#arrow)" />
+
+  <!-- ===================== the config view, broken open for that arrow ===================== -->
+  <path class="frame" d="M300,190 H160 a10,10 0 0 0 -10,10 V430 a10,10 0 0 0 10,10 H480
+                         a10,10 0 0 0 10,-10 V200 a10,10 0 0 0 -10,-10 H340" />
+  <text class="note" x="164" y="210">config view, one per server</text>
+
+  <rect class="box" x="220" y="222" width="200" height="40" rx="6" />
+  <text class="label code" x="320" y="247" text-anchor="middle">desired</text>
+
+  <line class="edge" x1="320" y1="262" x2="320" y2="294" marker-end="url(#arrow)" />
+  <text class="hint" x="334" y="283">worker stream</text>
+
+  <rect class="box" x="220" y="294" width="200" height="40" rx="6" />
+  <text class="label code" x="320" y="319" text-anchor="middle">in_flight</text>
+
+  <line class="edge" x1="320" y1="334" x2="320" y2="366" marker-end="url(#arrow)" />
+  <text class="note code" x="334" y="355">AckConfig</text>
+
+  <rect class="final-box" x="220" y="366" width="200" height="40" rx="6" />
+  <text class="final-name code" x="320" y="391" text-anchor="middle">applied</text>
+  <text class="final-note" x="320" y="426" text-anchor="middle">what the worker confirmed it runs</text>
+</svg>

@@ -14,20 +14,7 @@ master 根本不会派生任何东西。
 每台服务器都有**一份配置视图**，其中保存三个快照 —— `desired`、`in_flight` 和 `applied`。Worker 的流
 会把 `desired` 提升为 `in_flight`，而它的 `AckConfig` 会把 `in_flight` 提升为 `applied`。
 
-```text
-graph edit ───────▶ CanvasDirty ──┐
-                                  ├──▶ derivation hook (--mode consumer)
-cron: derive_stale_canvases ──────┘
-                                       │
-                                       ▼
-                             config view: desired
-                                       │ worker stream
-                                       ▼
-                                   in_flight
-                                       │ AckConfig
-                                       ▼
-                                    applied
-```
+![图的编辑发布 CanvasDirty，cron 发布 derive_stale_canvases；两者都到达以 consumer 模式运行的派生钩子，由它写入某台服务器配置视图的 desired 快照。Worker 的流把 desired 提升为 in_flight，AckConfig 再把 in_flight 提升为 applied —— 也就是 Worker 确认自己正在跑的东西](/img/rollout/edit-to-applied.svg)
 
 ## 收敛
 

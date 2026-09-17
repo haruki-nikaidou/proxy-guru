@@ -18,20 +18,7 @@ generation を進め、`CanvasDirty` を publish します。ワーカーの ack
 入ります。ワーカーのストリームが `desired` → `in_flight` を昇格させ、その `AckConfig` が `in_flight` → `applied` を
 昇格させます。
 
-```text
-graph edit ───────▶ CanvasDirty ──┐
-                                  ├──▶ derivation hook (--mode consumer)
-cron: derive_stale_canvases ──────┘
-                                       │
-                                       ▼
-                             config view: desired
-                                       │ worker stream
-                                       ▼
-                                   in_flight
-                                       │ AckConfig
-                                       ▼
-                                    applied
-```
+![グラフの編集が CanvasDirty を publish し、cron が derive_stale_canvases を publish する。どちらも consumer モードで動く導出フックに届き、フックがサーバーの設定ビューの desired スナップショットを書く。ワーカーのストリームが desired を in_flight に昇格させ、AckConfig が in_flight を applied — ワーカーが実際に動かしていると確認したもの — に昇格させる](/img/rollout/edit-to-applied.svg)
 
 ## 収束
 
