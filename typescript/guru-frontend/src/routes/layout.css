@@ -48,9 +48,13 @@
 	--canvas-import: oklch(0.9 0.04 220.62);
 	--canvas-export: oklch(0.9 0.04 130.41);
 	--canvas-universal: oklch(0.9 0.04 60);
-	/* Port colours are mode-independent: `.dark` deliberately does not repeat them. */
-	--canvas-port-listen: oklch(0.5 0.07 260.56);
-	--canvas-port-destination: oklch(0.5 0.07 90);
+	/*
+	 * Handle colours, by direction: a line leaves a card at a blue handle and
+	 * lands at a red one, and a drag goes the same way. Mode-independent: `.dark`
+	 * deliberately does not repeat them.
+	 */
+	--canvas-handle-in: oklch(0.6 0.21 27);
+	--canvas-handle-out: oklch(0.58 0.16 255);
 	--canvas-bundle: oklch(0.55 0.02 60);
 	/*
 	 * The channel palette: one hue every 30°, chosen by a channel's ordinal.
@@ -167,8 +171,8 @@
 	--color-canvas-export: var(--canvas-export);
 	--color-canvas-universal: var(--canvas-universal);
 	--color-canvas-bundle: var(--canvas-bundle);
-	--color-canvas-port-listen: var(--canvas-port-listen);
-	--color-canvas-port-destination: var(--canvas-port-destination);
+	--color-canvas-handle-in: var(--canvas-handle-in);
+	--color-canvas-handle-out: var(--canvas-handle-out);
 	--radius-sm: calc(var(--radius) * 0.6);
 	--radius-md: calc(var(--radius) * 0.8);
 	--radius-lg: var(--radius);

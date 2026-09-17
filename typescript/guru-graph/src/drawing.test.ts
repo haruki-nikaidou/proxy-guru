@@ -20,21 +20,38 @@ describe('drawing the production fan-out', () => {
 		expect(splitter?.rules).toEqual(['api', 'web']);
 	});
 
-	test('one bus per way, carrying every rule that takes it', () => {
+	test('each pod draws its own line, from its own dot to the relay pods it dials', () => {
 		const splitter = splitters[0] as SplitterCard;
+		const byHandle = (a: { handle: string }, b: { handle: string }) =>
+			a.handle.localeCompare(b.handle);
 		const into = drawing.buses.filter(b => b.target.node === splitter.id);
-		expect(into).toHaveLength(1);
-		expect(into[0]?.source).toEqual({ node: 'server:mobile', handle: 'out' });
-		expect(into[0]?.edges).toHaveLength(10);
+		expect(into.map(b => b.source).sort(byHandle)).toEqual([
+			{ node: 'server:mobile', handle: 'pod-out:api' },
+			{ node: 'server:mobile', handle: 'pod-out:web' }
+		]);
+		for (const bus of into) {
+			expect(bus.target.handle).toBe('in');
+			expect(bus.edges).toHaveLength(5);
+		}
 		for (let i = 0; i < 5; i += 1) {
 			const out = drawing.buses.filter(
 				b => b.source.node === splitter.id && b.source.handle === `out:${i}`
 			);
-			expect(out).toHaveLength(1);
-			expect(out[0]?.target).toEqual({ node: `server:gcore${i + 1}`, handle: 'in' });
-			expect([...(out[0]?.edges ?? [])].sort()).toEqual([`api>g${i + 1}`, `web>g${i + 1}`]);
-			expect(out[0]?.rules).toEqual(['api', 'web']);
+			expect(out.map(b => b.target).sort(byHandle)).toEqual([
+				{ node: `server:gcore${i + 1}`, handle: `pod-in:api-g${i + 1}` },
+				{ node: `server:gcore${i + 1}`, handle: `pod-in:web-g${i + 1}` }
+			]);
+			expect(out.map(b => b.edges).sort()).toEqual([[`api>g${i + 1}`], [`web>g${i + 1}`]]);
+			expect(out.map(b => b.rules).sort()).toEqual([['api'], ['web']]);
 		}
+		// Nothing is drawn from or to a server card's own handles.
+		expect(
+			drawing.buses.some(
+				b =>
+					(b.source.node.startsWith('server:') && !b.source.handle.startsWith('pod-out:')) ||
+					(b.target.node.startsWith('server:') && !b.target.handle.startsWith('pod-in:'))
+			)
+		).toBe(false);
 	});
 
 	test('five servers handing on to two exits meet in one aggregator', () => {
@@ -47,6 +64,13 @@ describe('drawing the production fan-out', () => {
 		);
 		expect(toA?.edges).toHaveLength(5);
 		expect(toA?.rules).toEqual(['web']);
+		// Into it, one line per relay pod, each from the pod's own dot.
+		const inward = drawing.buses.filter(b => b.target.node === aggregator?.id);
+		expect(inward).toHaveLength(10);
+		for (const bus of inward) {
+			expect(bus.source.handle.startsWith('pod-out:')).toBe(true);
+			expect(bus.edges).toHaveLength(1);
+		}
 		// No server bus bypasses it.
 		expect(
 			drawing.buses.some(
@@ -109,7 +133,7 @@ describe('drawing across canvases', () => {
 				`${splitter?.id}#out:0>canvas:sub`,
 				`${splitter?.id}#out:1>exit:origin`,
 				'canvas:sub#out>exit:origin',
-				`server:a#out>${splitter?.id}`
+				`server:a#pod-out:entry>${splitter?.id}`
 			].sort()
 		);
 
@@ -119,6 +143,44 @@ describe('drawing across canvases', () => {
 		const portal = deep.cards.find(c => c.id === 'portal:root');
 		expect(portal?.kind === 'portal' && portal.exits.map(e => e.id)).toEqual(['origin']);
 		expect(portal?.kind === 'portal' && portal.pods.map(p => p.id)).toEqual(['entry']);
+	});
+});
+
+describe('where a line lands', () => {
+	test('an edge into a client pod, which the check refuses, lands on its server card', () => {
+		const graph: Graph = {
+			canvases: [{ id: 'root', name: 'root', description: '', parentId: null, x: 0, y: 0 }],
+			servers: [server('a'), server('b')],
+			pods: [pod('x', 'a', 'client_raw', leaf('bad')), pod('y', 'b', 'client_raw')],
+			exits: [],
+			edges: [toPod('bad', 'x', 'y')],
+			groups: [],
+			generation: 1
+		};
+		const bus = draw(graph, 'root').buses.find(b => b.edges.includes('bad'));
+		expect(bus?.source).toEqual({ node: 'server:a', handle: 'pod-out:x' });
+		expect(bus?.target).toEqual({ node: 'server:b', handle: 'in' });
+	});
+
+	test('two pods of one server into one relay pod are two lines', () => {
+		const graph: Graph = {
+			canvases: [{ id: 'root', name: 'root', description: '', parentId: null, x: 0, y: 0 }],
+			servers: [server('a'), server('b')],
+			pods: [
+				pod('p', 'a', 'client_raw', leaf('p>hop')),
+				pod('q', 'a', 'client_raw', leaf('q>hop')),
+				pod('hop', 'b', 'relay_tcp')
+			],
+			exits: [],
+			edges: [toPod('p>hop', 'p', 'hop'), toPod('q>hop', 'q', 'hop')],
+			groups: [],
+			generation: 1
+		};
+		const buses = draw(graph, 'root').buses;
+		expect(buses.map(b => b.id).sort()).toEqual([
+			'server:a#pod-out:p>server:b#pod-in:hop',
+			'server:a#pod-out:q>server:b#pod-in:hop'
+		]);
 	});
 });
 
