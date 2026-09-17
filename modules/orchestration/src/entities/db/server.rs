@@ -313,8 +313,10 @@ impl Processor<CreateServer> for Db {
     #[tracing::instrument(name = "Query-Transaction:CreateServer", skip_all, err, fields(canvas = %input.canvas))]
     async fn process(&self, input: CreateServer) -> Result<Self::Output, Self::Error> {
         // The server and its (empty) config view are one write: no code path may
-        // ever observe a server without the row its rollout is tracked in.
+        // ever observe a server without the row its rollout is tracked in. The
+        // tree's root comes first (`fence`'s lock order).
         let mut tx = self.db().begin().await?;
+        fence::touch(&mut tx, &input.canvas).await?;
         let server: ServerEntity = sqlx::query_as(
             "INSERT INTO orchestration_server
                  (id, canvas, name, icon, comment, position_x, position_y, ipv6_resolve,
@@ -341,7 +343,6 @@ impl Processor<CreateServer> for Db {
             .bind(&server.id)
             .execute(&mut *tx)
             .await?;
-        fence::touch(&mut tx, &input.canvas).await?;
         tx.commit().await?;
         Ok(server)
     }
@@ -460,6 +461,9 @@ impl Processor<UpdateServerSettings> for Db {
     #[tracing::instrument(name = "Query-Transaction:UpdateServerSettings", skip_all, err, fields(id = %input.id))]
     async fn process(&self, input: UpdateServerSettings) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
+        // The root before the server row (`fence`'s lock order), the order a
+        // server delete takes them in.
+        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
         let server: ServerEntity = sqlx::query_as(
             "UPDATE orchestration_server
              SET name = $2, icon = $3, comment = $4, ipv6_resolve = $5, log_level = $6,
@@ -480,7 +484,6 @@ impl Processor<UpdateServerSettings> for Db {
         .bind(Json(input.quic))
         .fetch_one(&mut *tx)
         .await?;
-        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
         tx.commit().await?;
         Ok(server)
     }
@@ -630,6 +633,12 @@ impl Processor<MoveServerPosition> for Db {
 /// publish nor report it. The service pre-checks the same thing and phrases the
 /// message; this is the race guard, and the pod's `server` foreign key is the
 /// guard behind the guard.
+///
+/// The root is bumped before anything else (`fence`'s lock order). The delete
+/// cascades to the server's view row, which a derivation commit rewrites while
+/// it holds the root: bumping the root after the cascade made each wait on the
+/// other until PostgreSQL aborted one. Holding the root also makes the pod count
+/// exact, since every write that places a pod takes the root first.
 #[derive(Debug)]
 pub struct DeleteServerRow {
     pub id: ServerId,
@@ -644,6 +653,7 @@ impl Processor<DeleteServerRow> for Db {
     #[tracing::instrument(name = "Query-Transaction:DeleteServerRow", skip_all, err)]
     async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
+        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
         let pods: i64 =
             sqlx::query_scalar("SELECT count(*) FROM orchestration_pod WHERE server = $1")
                 .bind(&input.id)
@@ -657,7 +667,6 @@ impl Processor<DeleteServerRow> for Db {
             .bind(&input.id)
             .execute(&mut *tx)
             .await?;
-        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
         tx.commit().await?;
         Ok(())
     }

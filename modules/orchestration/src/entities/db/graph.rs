@@ -224,9 +224,13 @@ impl Processor<ApplyGraphBatch> for Db {
         let mut tx = self.db().begin().await?;
         // The fence first: a batch that lost the race writes nothing at all. A
         // batch of groups alone changes nothing a worker runs and takes no fence:
-        // the dashboard's drawing is last-write-wins.
+        // the dashboard's drawing is last-write-wins. It still takes the root
+        // before its first row (`fence`'s lock order), since its membership rows
+        // reference servers a delete may be holding.
         if input.derives {
             fence::touch_checked(&mut tx, &canvas, input.fence.as_ref()).await?;
+        } else {
+            fence::lock_root(&mut tx, &canvas).await?;
         }
         sqlx::query("DELETE FROM orchestration_group WHERE id = ANY($1)")
             .bind(&input.delete_groups)
@@ -306,7 +310,9 @@ impl Processor<FindGraphState> for Db {
 }
 
 /// Positions only: nothing a worker reads, so no fence and no bump. Rows that
-/// are not on the given tree are left alone.
+/// are not on the given tree are left alone. The tree's root is still locked
+/// first (`fence`'s lock order): the server and subcanvas rows a move writes are
+/// rows that edits and deletes lock after the root.
 #[derive(Debug, Default)]
 pub struct MoveGraphItems {
     /// The canvases of the tree the items must belong to.
@@ -322,6 +328,9 @@ impl Processor<MoveGraphItems> for Db {
     #[tracing::instrument(name = "Query-Transaction:MoveGraphItems", skip_all, err)]
     async fn process(&self, input: MoveGraphItems) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
+        if let Some(canvas) = input.tree.first() {
+            fence::lock_root(&mut tx, canvas).await?;
+        }
         for (server, position) in &input.servers {
             sqlx::query(
                 "UPDATE orchestration_server SET position_x = $2, position_y = $3

@@ -379,6 +379,9 @@ impl Processor<ForgetServerAppliedRow> for Db {
     #[tracing::instrument(name = "Query-Transaction:ForgetServerAppliedRow", skip_all, err)]
     async fn process(&self, input: ForgetServerAppliedRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
+        // The root before the view row (`fence`'s lock order), the order a
+        // derivation commit takes them in.
+        fence::touch(&mut tx, &input.canvas).await?;
         sqlx::query(
             "UPDATE orchestration_server_config_view
              SET applied = NULL, in_flight = NULL, apply_error = NULL, failed_revision = NULL,
@@ -388,7 +391,6 @@ impl Processor<ForgetServerAppliedRow> for Db {
         .bind(&input.server)
         .execute(&mut *tx)
         .await?;
-        fence::touch(&mut tx, &input.canvas).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -540,46 +542,29 @@ impl Processor<CommitCanvasDerivation> for Db {
             return Ok(false);
         }
         for update in &input.updates {
-            // `invalid_pods` is written on every branch: a pod breaking or being
-            // fixed must be visible even when the served config is byte-identical.
-            match &update.desired {
-                Some(desired) => {
-                    sqlx::query(
-                        "UPDATE orchestration_server_config_view
-                         SET desired = $2, derive_error = $3, invalid_pods = $4, waiting_for = $5
-                         WHERE server = $1",
-                    )
-                    .bind(&update.server)
-                    .bind(Json(desired))
-                    .bind(&update.derive_error)
-                    .bind(Json(&update.invalid_pods))
-                    .bind(&update.waiting_for)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-                None => {
-                    sqlx::query(
-                        "UPDATE orchestration_server_config_view
-                         SET derive_error = $2, invalid_pods = $3, waiting_for = $4
-                         WHERE server = $1",
-                    )
-                    .bind(&update.server)
-                    .bind(&update.derive_error)
-                    .bind(Json(&update.invalid_pods))
-                    .bind(&update.waiting_for)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
-            if update.clear_failure {
-                sqlx::query(
-                    "UPDATE orchestration_server_config_view
-                     SET failed_revision = NULL, apply_error = NULL WHERE server = $1",
-                )
-                .bind(&update.server)
-                .execute(&mut *tx)
-                .await?;
-            }
+            // One statement per view row. PostgreSQL re-checks a row's foreign
+            // key when the transaction updates that row a second time, and the
+            // check takes KEY SHARE on the server row: a lock after the view row,
+            // where a worker's address report locks the server row first.
+            // `desired` is left alone when the pass has no new revision;
+            // `invalid_pods` is written either way: a pod breaking or being fixed
+            // must be visible even when the served config is byte-identical.
+            sqlx::query(
+                "UPDATE orchestration_server_config_view
+                 SET desired = COALESCE($2, desired), derive_error = $3, invalid_pods = $4,
+                     waiting_for = $5,
+                     failed_revision = CASE WHEN $6 THEN NULL ELSE failed_revision END,
+                     apply_error = CASE WHEN $6 THEN NULL ELSE apply_error END
+                 WHERE server = $1",
+            )
+            .bind(&update.server)
+            .bind(update.desired.as_ref().map(Json))
+            .bind(&update.derive_error)
+            .bind(Json(&update.invalid_pods))
+            .bind(&update.waiting_for)
+            .bind(update.clear_failure)
+            .execute(&mut *tx)
+            .await?;
         }
         // Subcanvas rows carry no generation of their own; keep them level so a
         // canvas that was imported mid-edit can never look stale on its own.

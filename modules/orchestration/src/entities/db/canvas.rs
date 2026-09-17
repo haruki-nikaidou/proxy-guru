@@ -277,14 +277,19 @@ impl Processor<DeleteCanvasRow> for Db {
     #[tracing::instrument(name = "Query-Transaction:DeleteCanvasRow", skip_all, err, fields(canvas_id = %input.id))]
     async fn process(&self, input: DeleteCanvasRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
-        let parent: Option<Option<CanvasId>> =
-            sqlx::query_scalar("SELECT parent FROM orchestration_canvas WHERE id = $1")
+        let exists: Option<CanvasId> =
+            sqlx::query_scalar("SELECT id FROM orchestration_canvas WHERE id = $1")
                 .bind(&input.id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some(parent) = parent else {
+        if exists.is_none() {
             return Ok(());
-        };
+        }
+        // The tree's root before any of its rows (`fence`'s lock order): the
+        // subtree's view rows are what a derivation commit holding the root
+        // rewrites. Deleting a subcanvas is an edit of the tree it leaves; a
+        // deleted root takes its bump with it.
+        crate::entities::db::fence::touch(&mut tx, &input.id).await?;
         let ids = tree::tree_of(&mut tx, &input.id).await?;
         // Edges do not cascade from their pods: a route names them, and a route
         // is only ever rewritten together with its edges. The subtree's own
@@ -300,9 +305,6 @@ impl Processor<DeleteCanvasRow> for Db {
             .bind(&ids)
             .execute(&mut *tx)
             .await?;
-        if let Some(parent) = parent {
-            crate::entities::db::fence::touch(&mut tx, &parent).await?;
-        }
         tx.commit().await?;
         Ok(())
     }

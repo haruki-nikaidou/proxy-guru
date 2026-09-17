@@ -90,7 +90,10 @@ src/
   one `self.db().begin()` transaction with the statements in Rust order; a fence
   that loses returns `Error::Conflict(<token>)` and rolls the transaction back,
   while a refused conditional write (`UPDATE … WHERE <fence> RETURNING …` that
-  matches nothing) is an empty result, never an error.
+  matches nothing) is an empty result, never an error. Transactions that write
+  the same rows lock them in one order, or two of them deadlock: in
+  `orchestration`, a write to a canvas tree takes the tree's root row first
+  (`entities::db::fence`).
 - Queries are checked at runtime, not at compile time (no `query!` macros), so
   cover them with the module's integration tests, which run against a real
   database: `#[sqlx::test(migrator = "base::db::MIGRATOR")]` gives each test a

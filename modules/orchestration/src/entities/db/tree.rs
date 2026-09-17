@@ -2,7 +2,7 @@
 //!
 //! A canvas names its `parent`; a canvas without one is a root. The root, the
 //! ancestors and the tree are computed, inside the caller's transaction, so a
-//! mutating transaction bumps the root it belongs to at commit time rather than
+//! mutating transaction bumps the root it belongs to as it writes rather than
 //! the root a service read a moment earlier.
 
 use crate::entities::db::canvas::CanvasId;
