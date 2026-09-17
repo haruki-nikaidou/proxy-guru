@@ -13,13 +13,11 @@ import { panelWrites } from '#lib/writes.svelte.js';
 
 let {
 	open = $bindable(false),
-	canvasId,
 	serverId,
 	unit: initialUnit,
 	replacing
 }: {
 	open?: boolean;
-	canvasId: string;
 	serverId: string;
 	/** The stored instance name, or the one suggested from the server name. */
 	unit: string;
@@ -49,7 +47,7 @@ const unitValid = $derived(UNIT_PATTERN.test(unit));
 async function issue() {
 	// No success message: the command itself is the answer, rendered below.
 	await writes.run(async () => {
-		install = await issueServerAgentInstall({ canvasId, serverId, unit });
+		install = await issueServerAgentInstall({ serverId, unit });
 	});
 }
 </script>

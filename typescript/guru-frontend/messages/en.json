@@ -329,6 +329,8 @@
 	"error_reload": "Reload page",
 	"error_reference": "Reference {id}",
 	"error_stale_title": "What is shown may be out of date",
+	"live_connected": "Live",
+	"live_reconnecting": "Reconnecting…",
 	"result_invalid_credentials": "Wrong email or password.",
 	"result_email_taken": "That email is already in use.",
 	"result_wrong_password": "Wrong password.",

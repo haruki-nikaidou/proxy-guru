@@ -35,7 +35,7 @@ const serverNames = $derived(new Map(editor.graph.servers.map(entry => [entry.id
 	/>
 </div>
 
-<ServerSettingsForm canvasId={editor.canvasId} {server} editable={editor.editable} />
+<ServerSettingsForm {server} editable={editor.editable} />
 
 <Separator class="my-6" />
 
@@ -43,8 +43,8 @@ const serverNames = $derived(new Map(editor.graph.servers.map(entry => [entry.id
 
 <Separator class="my-6" />
 
-<ServerAgentSection canvasId={editor.canvasId} {server} editable={editor.editable} />
+<ServerAgentSection {server} editable={editor.editable} />
 
 <Separator class="my-6" />
 
-<ServerRolloutSection canvasId={editor.canvasId} {server} admin={editor.admin} {serverNames} />
+<ServerRolloutSection {server} admin={editor.admin} {serverNames} />

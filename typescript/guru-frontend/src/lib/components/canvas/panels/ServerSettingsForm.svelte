@@ -38,8 +38,7 @@ import {
  * field is a draft until Save; the panel reseeds them when it is pointed at
  * another server.
  */
-let { canvasId, server, editable }: { canvasId: string; server: ServerDto; editable: boolean } =
-	$props();
+let { server, editable }: { server: ServerDto; editable: boolean } = $props();
 
 const writes = panelWrites();
 const editor = useEditor();
@@ -108,7 +107,6 @@ const save = () =>
 	writes.run(
 		() =>
 			updateServerNode({
-				canvasId,
 				serverId: server.id,
 				name,
 				icon,
@@ -145,7 +143,7 @@ function removeServer() {
 		prunable: true,
 		build: prune => removeAll(graph, editor.drawing, { podIds }, prune),
 		alsoDeletes: { servers: [server.name], canvases: [] },
-		after: () => deleteServerNode({ canvasId, serverId: server.id }),
+		after: () => deleteServerNode({ serverId: server.id }),
 		success: m.editor_deleted()
 	});
 }

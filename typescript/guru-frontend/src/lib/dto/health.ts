@@ -14,7 +14,7 @@ export type PodHealthStatusName = 'unknown' | 'ready' | 'deploying' | 'failed';
 
 /**
  * How far back the dashboard may look, in minutes: one hour, six hours, a day,
- * a week. `listServerHealth` validates against this list and defaults to the
+ * a week. `watchServerHealth` validates against this list and defaults to the
  * first entry.
  */
 export const HEALTH_WINDOWS = [60, 360, 1440, 10080] as const;
@@ -24,7 +24,7 @@ export type HealthWindowMinutes = (typeof HEALTH_WINDOWS)[number];
  * One report a worker uploaded. `uploadBytes` / `downloadBytes` /
  * `currentConnections` / `maxConnections` are protobuf `int64`, so they decode
  * as `bigint` (`forceLong=bigint`) and are narrowed to `number` by
- * `listServerHealth`: the byte counters are per-report deltas, not lifetime
+ * `watchServerHealth`: the byte counters are per-report deltas, not lifetime
  * totals, so a double holds them exactly at any plausible interval.
  */
 export type ServerHealthPoint = {
@@ -58,3 +58,6 @@ export type ServerHealthSeries = {
 	status: ServerHealthStatusName;
 	points: ServerHealthPoint[];
 };
+
+/** One pod's deployment events as the health page lists them: newest first. */
+export type PodEventFeed = { podId: string; podName: string; points: PodHealthPoint[] };

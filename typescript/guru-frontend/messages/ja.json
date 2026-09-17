@@ -329,6 +329,8 @@
 	"error_reload": "ページを再読み込み",
 	"error_reference": "参照番号 {id}",
 	"error_stale_title": "表示中の内容は古い可能性があります",
+	"live_connected": "ライブ",
+	"live_reconnecting": "再接続中…",
 	"result_invalid_credentials": "メールアドレスまたはパスワードが違います。",
 	"result_email_taken": "このメールアドレスは既に使われています。",
 	"result_wrong_password": "パスワードが違います。",

@@ -9,14 +9,15 @@ import { HEALTH_WINDOWS, type HealthWindowMinutes } from '#lib/dto/health.js';
 import { errorMessage } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import BoundaryError from '#lib/components/BoundaryError.svelte';
+import LiveBadge from '#lib/components/LiveBadge.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
 import { formatCount, windowLabel } from './format.js';
 import { serverHealthLabel } from '#lib/i18n/labels.js';
-import { listServerHealth } from './health.remote.js';
+import { watchServerHealth } from './health.remote.js';
 
 const canvasId = $derived(page.params.canvasId ?? '');
 let windowMinutes = $state<HealthWindowMinutes>(60);
-const health = $derived(listServerHealth({ canvasId, windowMinutes }));
+const health = $derived(watchServerHealth({ canvasId, windowMinutes }));
 const servers = $derived(health.current);
 
 /** Every count the strip shows, walked once. */
@@ -46,18 +47,21 @@ function pickWindow(value: string) {
 			<h1 class="text-2xl font-semibold">{m.health_title()}</h1>
 			<p class="text-sm text-muted-foreground">{m.health_description()}</p>
 		</div>
-		<ToggleGroup.Root
-			type="single"
-			variant="outline"
-			size="sm"
-			value={String(windowMinutes)}
-			onValueChange={pickWindow}
-			aria-label={m.health_window_label()}
-		>
-			{#each HEALTH_WINDOWS as minutes (minutes)}
-				<ToggleGroup.Item value={String(minutes)}>{windowLabel(minutes)}</ToggleGroup.Item>
-			{/each}
-		</ToggleGroup.Root>
+		<div class="flex items-center gap-3">
+			<LiveBadge query={health} />
+			<ToggleGroup.Root
+				type="single"
+				variant="outline"
+				size="sm"
+				value={String(windowMinutes)}
+				onValueChange={pickWindow}
+				aria-label={m.health_window_label()}
+			>
+				{#each HEALTH_WINDOWS as minutes (minutes)}
+					<ToggleGroup.Item value={String(minutes)}>{windowLabel(minutes)}</ToggleGroup.Item>
+				{/each}
+			</ToggleGroup.Root>
+		</div>
 	</div>
 
 	<svelte:boundary>

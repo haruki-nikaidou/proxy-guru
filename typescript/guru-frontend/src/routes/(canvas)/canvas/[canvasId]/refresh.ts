@@ -8,15 +8,13 @@ import {
 	listCanvases,
 	listCanvasOptions
 } from '../../../(home)/canvases.remote.js';
-import { getCanvasGraph } from './graph.remote.js';
 
 /**
  * A subcanvas coming or going changes the tree, so the shell's listings and the
- * breadcrumb go stale with the graph.
+ * breadcrumb go stale; the graph itself arrives on its own live stream.
  */
 export const refreshTreeViews = (canvasId: string) =>
 	Promise.all([
-		getCanvasGraph({ canvasId }).refresh(),
 		getCanvasTrail({ canvasId }).refresh(),
 		listCanvases({ includeSubcanvases: false }).refresh(),
 		listCanvases({ includeSubcanvases: true }).refresh(),
