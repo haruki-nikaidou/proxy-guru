@@ -1,5 +1,6 @@
 <script lang="ts">
 import FileTextIcon from '@lucide/svelte/icons/file-text';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import {
 	forgetServerApplied,
@@ -15,7 +16,6 @@ import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import type { ConfigSnapshotDto, ServerDto } from '#lib/dto/topology.js';
-import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
@@ -145,7 +145,16 @@ const forget = () =>
 		</span>
 	</div>
 
-	{#if rollout.current === undefined}
+	{#if rollout.current === undefined && rollout.error}
+		<div class="mt-3">
+			<BoundaryError
+				error={rollout.error}
+				retry
+				variant="inline"
+				title={m.editor_rollout_unavailable()}
+			/>
+		</div>
+	{:else if rollout.current === undefined}
 		<Skeleton class="mt-3 h-28 w-full" />
 	{:else}
 		{@const status = rollout.current}
@@ -227,12 +236,11 @@ const forget = () =>
 		{/if}
 	{/if}
 
-	{#snippet failed(error)}
+	{#snippet failed(error, reset)}
 		<h3 class="text-sm font-medium">{m.editor_rollout_title()}</h3>
-		<Alert.Root variant="destructive" class="mt-2">
-			<Alert.Title>{m.editor_rollout_unavailable()}</Alert.Title>
-			<Alert.Description>{errorText(error)}</Alert.Description>
-		</Alert.Root>
+		<div class="mt-2">
+			<BoundaryError {error} {reset} variant="inline" title={m.editor_rollout_unavailable()} />
+		</div>
 	{/snippet}
 </svelte:boundary>
 
@@ -256,7 +264,9 @@ const forget = () =>
 		</Sheet.Header>
 		<div class="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-4">
 			<svelte:boundary>
-				{#if config === undefined || config.current === undefined}
+				{#if config?.current === undefined && config?.error}
+					<BoundaryError error={config.error} retry variant="inline" />
+				{:else if config === undefined || config.current === undefined}
 					<Skeleton class="h-64 w-full" />
 				{:else}
 					{@const rendered = config.current}
@@ -275,10 +285,8 @@ const forget = () =>
 						class="min-h-0 flex-1 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs">{rendered.toml}</pre>
 				{/if}
 
-				{#snippet failed(error)}
-					<Alert.Root variant="destructive">
-						<Alert.Description>{errorText(error)}</Alert.Description>
-					</Alert.Root>
+				{#snippet failed(error, reset)}
+					<BoundaryError {error} {reset} variant="inline" />
 				{/snippet}
 			</svelte:boundary>
 		</div>

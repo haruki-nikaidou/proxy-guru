@@ -41,7 +41,11 @@ export const createAccount = form(
 			return { error: 'email_taken' as const };
 		}
 		if (reply.result !== CreateAccountResult.CREATED) {
-			error(500, { message: 'Unexpected CreateAccount result', code: 'internal' });
+			error(500, {
+				message: 'Internal Error',
+				code: 'internal',
+				detail: 'Unexpected CreateAccount result'
+			});
 		}
 
 		await listAccounts().refresh();

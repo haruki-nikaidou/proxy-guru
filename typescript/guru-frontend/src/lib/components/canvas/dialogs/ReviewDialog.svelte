@@ -18,6 +18,7 @@ import { Switch } from '#lib/components/ui/switch/index.js';
 import type { ApplyOutcomeDto, CanvasGraph } from '#lib/dto/topology.js';
 import { errorText } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
+import { reportError } from '#lib/report.js';
 
 /**
  * A batch shown before it is applied: how much it takes away, and what the
@@ -94,7 +95,7 @@ async function confirm() {
 		toast.success(current.success);
 		request = null;
 	} catch (err) {
-		toast.error(errorText(err));
+		reportError(err);
 	} finally {
 		pending = false;
 	}

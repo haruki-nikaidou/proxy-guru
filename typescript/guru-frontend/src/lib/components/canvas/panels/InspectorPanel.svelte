@@ -1,5 +1,7 @@
 <script lang="ts">
 import XIcon from '@lucide/svelte/icons/x';
+import { untrack } from 'svelte';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import { type PanelTarget, refind } from '#lib/components/canvas/flow/nodes.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
@@ -53,6 +55,20 @@ $effect(() => {
 	target = refind(drawing, target);
 });
 
+/**
+ * A form that throws is fenced in the panel, so the canvas beside it stays
+ * usable. Opening something else — or the same thing again — tries again.
+ */
+let resetForm: (() => void) | null = null;
+$effect(() => {
+	void target?.kind;
+	void target?.id;
+	untrack(() => {
+		resetForm?.();
+		resetForm = null;
+	});
+});
+
 const title = $derived(
 	server?.name ??
 		pod?.name ??
@@ -104,22 +120,28 @@ const kindLabel = $derived(
 	</div>
 
 	<div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-		{#if server}
-			<ServerForm {server} />
-		{:else if pod}
-			<PodForm {pod} />
-		{:else if exit}
-			<ExitForm {exit} />
-		{:else if canvas}
-			<SubcanvasForm {canvas} />
-		{:else if card?.kind === 'splitter'}
-			<SplitterForm {card} />
-		{:else if card?.kind === 'aggregator'}
-			<AggregatorForm {card} />
-		{:else if card?.kind === 'portal'}
-			<PortalForm {card} />
-		{:else if bus}
-			<BusForm {bus} />
-		{/if}
+		<svelte:boundary onerror={(_, reset) => (resetForm = reset)}>
+			{#if server}
+				<ServerForm {server} />
+			{:else if pod}
+				<PodForm {pod} />
+			{:else if exit}
+				<ExitForm {exit} />
+			{:else if canvas}
+				<SubcanvasForm {canvas} />
+			{:else if card?.kind === 'splitter'}
+				<SplitterForm {card} />
+			{:else if card?.kind === 'aggregator'}
+				<AggregatorForm {card} />
+			{:else if card?.kind === 'portal'}
+				<PortalForm {card} />
+			{:else if bus}
+				<BusForm {bus} />
+			{/if}
+
+			{#snippet failed(error, reset)}
+				<BoundaryError {error} {reset} variant="inline" />
+			{/snippet}
+		</svelte:boundary>
 	</div>
 </div>

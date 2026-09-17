@@ -6,6 +6,14 @@ declare global {
 			message: string;
 			/** Stable lookup key for `#lib/i18n/codes.ts`; `server_message` = show `message`. */
 			code?: string;
+			/**
+			 * What actually failed, in the words of whatever failed — a gRPC status and
+			 * its details, an exception's name and message. Shown under "Details",
+			 * never translated.
+			 */
+			detail?: string;
+			/** Names the line the dashboard server logged for this error. */
+			id?: string;
 		}
 		// interface Locals {}
 		// interface PageData {}

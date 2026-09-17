@@ -4,6 +4,7 @@ import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 import SaveIcon from '@lucide/svelte/icons/save';
 import Undo2Icon from '@lucide/svelte/icons/undo-2';
 import { toast } from 'svelte-sonner';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import JsonDocumentEditor from '#lib/components/JsonDocumentEditor.svelte';
 import * as Alert from '#lib/components/ui/alert/index.js';
@@ -79,7 +80,9 @@ async function save() {
 }
 </script>
 
-{#if docs === undefined}
+{#if docs === undefined && documents.error}
+	<BoundaryError error={documents.error} retry />
+{:else if docs === undefined}
 	<Skeleton class="h-128 w-full" />
 {:else if active !== undefined}
 	<Card.Root>

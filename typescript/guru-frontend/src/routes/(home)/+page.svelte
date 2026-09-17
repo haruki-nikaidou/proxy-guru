@@ -47,7 +47,9 @@ const canvases = $derived(listCanvases({ includeSubcanvases: showSubcanvases }))
 </div>
 
 <svelte:boundary>
-	{#if canvases.loading}
+	{#if canvases.current === undefined && canvases.error}
+		<BoundaryError error={canvases.error} retry />
+	{:else if canvases.loading}
 		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
 			{#each { length: 3 }}
 				<Skeleton class="h-40 w-full rounded-xl" />
@@ -77,8 +79,8 @@ const canvases = $derived(listCanvases({ includeSubcanvases: showSubcanvases }))
 		</div>
 	{/if}
 
-	{#snippet failed(error)}
-		<BoundaryError {error} />
+	{#snippet failed(error, reset)}
+		<BoundaryError {error} {reset} />
 	{/snippet}
 </svelte:boundary>
 
