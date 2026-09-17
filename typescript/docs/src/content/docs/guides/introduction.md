@@ -48,7 +48,8 @@ A canvas tree holds one **pod graph**:
 Say ten rules enter on one box and should spread over four transit servers: that is ten client pods,
 each with four edges to a relay pod of its own on every transit server, whose edges lead to the
 exits. The canvas draws the four balances that choose alike as one splitter and the forty edges as
-a handful of buses; see [Canvas](/reference/canvas/) for how it is drawn and edited.
+a handful of buses; see [Nodes](/reference/nodes/) for every card and [Canvas](/reference/canvas/)
+for how the graph is drawn and edited.
 
 A pod binds every address of the host by default; it can be restricted to IPv4 or pinned to one
 interface, and a pod saved without a port gets a free one between 40000 and 59999.
@@ -83,7 +84,8 @@ under `typescript/` sharing one generated API client.
 - [Local Development](/guides/local-development/) — bring up the whole stack on one
   machine.
 - [Canvas](/reference/canvas/) — the pod graph, how the canvas draws it, and every edit gesture.
+- [Nodes](/reference/nodes/) — servers, pods, exits, splitters and aggregators, card by card.
 - [Architecture](/reference/architecture/) — crate roles and layer rules.
-- [Rollout Model](/reference/rollout/) — how an edit reaches a worker.
+- [Rollout](/reference/rollout/) — how an edit reaches a worker.
 - [Independent Worker Deployment](/guides/independent-worker/) — run a worker from a
   TOML file, without a master.

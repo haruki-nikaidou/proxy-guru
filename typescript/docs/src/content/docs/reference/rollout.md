@@ -1,5 +1,5 @@
 ---
-title: Rollout Model
+title: Rollout
 description: How an edit of the pod graph becomes a config revision applied by a worker.
 ---
 

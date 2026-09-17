@@ -643,4 +643,4 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 | 周期任务不再发生（没有节点变 `Offline`，没有续期） | RabbitMQ 挂了，或者 `cron` 挂了。两者都是必需的：时钟发布信号，consumer 执行它们。 |
 
 关于所有参数和变量，参见[配置](/zh-cn/reference/configuration/)；关于"派生"到底做了什么，参见
-[发布模型](/zh-cn/reference/rollout/)。
+[发布](/zh-cn/reference/rollout/)。

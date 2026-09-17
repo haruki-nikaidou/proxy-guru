@@ -90,6 +90,16 @@ export default defineConfig({
 							label: 'Canvas',
 							translations: { ja: 'キャンバス', 'zh-CN': '画布' },
 							link: '/reference/canvas/'
+						},
+						{
+							label: 'Nodes',
+							translations: { ja: 'ノード', 'zh-CN': '节点' },
+							link: '/reference/nodes/'
+						},
+						{
+							label: 'Rollout',
+							translations: { ja: 'ロールアウト', 'zh-CN': '发布' },
+							link: '/reference/rollout/'
 						}
 					]
 				},
@@ -117,11 +127,6 @@ export default defineConfig({
 							label: 'Architecture',
 							translations: { ja: 'アーキテクチャ', 'zh-CN': '架构' },
 							link: '/reference/architecture/'
-						},
-						{
-							label: 'Rollout Model',
-							translations: { ja: 'ロールアウトモデル', 'zh-CN': '发布模型' },
-							link: '/reference/rollout/'
 						},
 						{
 							label: 'Workspace Layout',

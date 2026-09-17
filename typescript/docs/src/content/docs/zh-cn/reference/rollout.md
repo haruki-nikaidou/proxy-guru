@@ -1,5 +1,5 @@
 ---
-title: 发布模型
+title: 发布
 description: 一次 Pod 图编辑如何变成由 Worker 应用的配置修订版本。
 ---
 

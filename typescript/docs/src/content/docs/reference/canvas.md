@@ -1,95 +1,29 @@
 ---
 title: Canvas
-description: The pod graph a canvas draws — pods, exits, edges and routes — how to read it, and every gesture that edits it.
+description: The pod graph a canvas holds, how the canvas draws it, and how every edit is batched and checked.
 ---
 
 A canvas tree holds one **pod graph**: a directed acyclic graph whose vertices are listeners on your
 servers and whose sinks are destinations outside the fabric. The control plane checks the whole
-graph on every edit and derives one config per server from it (see
-[Rollout Model](/reference/rollout/)). Everything else the canvas shows — splitters, aggregators,
-buses — is how that graph is *drawn*, computed from it on the fly.
+graph on every edit and derives one config per server from it (see [Rollout](/reference/rollout/)).
+The canvas is how that graph is drawn and the only place it is edited; the cards it draws are
+described in [Nodes](/reference/nodes/).
 
 ![The main canvas: three client pods on a Singapore server; two of them send their own line into one splitter, which balances between a relay pod on a US server and the exit itself, while the third goes straight to the exit; an aggregator gathers the lines from both servers into the exit example.com](/img/canvas/canvas-overview.avif)
 
-## The model
+## Stored and drawn
 
-| Thing | What it is |
-|---|---|
-| **Server** | A machine running `guru-worker`, and the set of pods that run on it. It forwards nothing itself. |
-| **Pod** | One listener on one server: a port, an optional bind address, an optional advertise address, and its **ingress**. Every pod is its own vertex. |
-| **Ingress** | How traffic arrives at a pod. *Client* pods take connections from clients directly — raw TCP, or TLS terminated with an ACME certificate — and may receive a PROXY header. *Relay* pods take traffic other pods relay to them, over TCP, TLS or QUIC. |
-| **Exit** | A `host:port` outside the fabric where traffic leaves, optionally with a PROXY header. Any number of pods may lead to one exit. |
-| **Edge** | One way a pod's traffic goes on: to a relay pod or to an exit. Two pods may be joined by several edges (to dial different addresses, say). |
-| **Route** | Each pod's own tree over exactly its out-edges: a **balance** spreads connections over its members by weight, a **failover** uses the first member that is alive. Either may hold the other, to any depth. |
+What the control plane keeps is small: servers with their pods, exits, subcanvases, one edge per way
+on, one route tree per pod, and where each card sits. Everything else in the picture is computed
+from that graph while it is drawn, so that a fabric of forty edges stays a handful of cards.
 
-A few rules follow from the model:
+![Two panels showing the same topology. Left, what is stored: a Singapore server with the client pods plain, web and direct, a US server with the relay pods plain and web, the exit example.com:80, seven edges between them, and a balance route on each of the two pods that have two ways on. Right, what is drawn: the same servers and exit, but the lines out of plain and web enter one Balance splitter standing for 2 routes, and the lines in front of the exit meet in one aggregator over 2 servers](/img/canvas/graph-vs-drawing.svg)
 
-- **The protocol of a hop is the target's ingress.** An edge into a `relay_quic` pod is a QUIC hop;
-  change the pod's ingress and every pod leading to it dials the new way.
-- **The address of a hop** is the edge's override address, else the target pod's advertise
-  address, else its server's effective address (learned from the worker: pinned, reported or
-  observed). The port is the edge's override port, else the target pod's port.
-- **A client pod cannot be led into**, and a pod may never be reached again by traffic that has
-  already passed it: the graph stays acyclic.
-- **Ports are picked for you.** A pod saved with no port gets a free one between 40000 and 59999 on
-  its server; two pods of one server may not claim the same socket (a wildcard bind overlaps every
-  address on that port and transport).
-- **Sticky balancing** (by client address) needs a pod that knows the client address: a relay pod,
-  or a client pod that receives PROXY.
-- **Half-drawn work is legal.** A pod with no way on, a relay pod nothing leads into and an exit no
-  edge reaches are warnings; such a pod is simply not deployed, and nothing else is affected.
+Splitters stand for route groups, aggregators for lines that meet, buses for edges that run the same
+way. None of them has a row of its own: they appear, merge and vanish as the graph changes, which is
+why they cannot be deleted and why one splitter card may belong to many pods at once.
 
-## Reading the canvas
-
-### Servers
-
-![A server card for guru-test-sg: a Singapore flag, a green Online badge, its IPv4 address, the last report and the worker version, and three client pods — direct and plain over raw TCP, web terminating TLS — with their listen addresses and a blue handle each](/img/canvas/card-server-client.avif)
-
-A server card shows its health badge, the addresses other servers dial it at, the time of its last
-health report and the worker version, then one row per pod drawn on this canvas: the colours of the
-rules that pass through it, its name, how it listens (a client pod carries an arrow into a box) and
-its listen address.
-
-![A server card for guru-test-us-1 with two QUIC relay pods, plain and web, each with a red handle on the left and a blue one on the right](/img/canvas/card-server-relay.avif)
-
-Every pod row has a blue handle on the **right**: the pod's lines leave from it, and dragging from it
-gives the pod a new way on. A relay pod's row also has a red handle on the **left**, where the lines
-into the pod land and where a way on may be dropped. The red handle in the card's header lands a way
-on as a new relay pod of this server. A server of another canvas whose pods are drawn here appears
-with a dashed border.
-
-The server's panel holds its settings (name, icon, log level, IPv6 policy, QUIC rates, pinned and
-extra addresses), the list of its pods with a row to add one, the agent that runs on it and where it
-stands in a rollout.
-
-### Exits
-
-![An exit card: example.com, destination example.com:80, five edges lead here](/img/canvas/card-exit.avif)
-
-An exit card shows its destination, the rules that reach it and how many edges lead there.
-
-### Splitters
-
-![A splitter card: Balance, 2 routes, two members — guru-test-us-1 and example.com — with their weights, and a + member handle](/img/canvas/card-splitter.avif)
-
-A splitter is a group of a route — a balance or a failover. Groups that choose the same way between
-the same cards are drawn as **one** splitter however many pods they belong to: two rules balanced
-over the same relay server and the same exit are one splitter standing for two routes. Each row is
-one member, with its weight (`×2`) or its tier (`#1`) and where it leads; a member that is itself a
-group leads to a nested splitter. The **+ member** handle adds a member to every route the splitter
-stands for, and a drag from a member's row gives that member of every route a way on. Its panel
-changes the policy, stickiness, weights and order of all of them at once.
-
-### Aggregators
-
-![An aggregator card: 2 servers, one way out, to example.com](/img/canvas/card-aggregator.avif)
-
-Where buses from two or more servers meet in front of the same splitter or exit, an aggregator
-gathers them, with one way out per card it hands on to. It is only drawing: nothing about it is
-stored, and it cannot be edited or deleted. A drag from one of its ways out, though, gives every pod
-on that way a way on at once (see *Connecting* below).
-
-### Buses and rules
+## Buses and rules
 
 A **bus** is every edge that takes the same way between two handles, drawn as one cable with a thin
 line inside it per **rule** in the rule's colour, and a count when it stands for several edges. Lines
@@ -107,14 +41,15 @@ leads and the address it dials.
 
 ![The panel of the line from plain into the splitter: from plain · guru-test-sg to Balance, one rule riding 2 edges, and the two edges — to the relay pod plain on guru-test-us-1 and to example.com — each with its edge ID](/img/canvas/panel-bus.avif)
 
-### Subcanvases and portals
+## Canvas trees
 
-A subcanvas is a canvas drawn inside another; double-click it to go inside. Nesting only organises
-the drawing: edges cross canvas boundaries freely. A connection dropped on a subcanvas card asks
-which relay pod, exit or server inside it is meant, and a **portal** card stands for another canvas
-of the tree that edges of this one lead into or come from.
+A canvas may be drawn inside another as a subcanvas card; double-click it to go inside. Nesting only
+organises the drawing: edges cross canvas boundaries freely, and the graph the control plane checks
+and derives from is the whole tree, not one canvas. A connection dropped on a subcanvas card asks
+which relay pod, exit or server inside it is meant, and a canvas reached from elsewhere in the tree
+appears as a portal card.
 
-### Problems
+## Problems
 
 The corner at the bottom left lists what the control plane finds wrong with the tree's graph —
 problems concerning this canvas first, the rest of the tree after. Click one to open what it is
@@ -166,24 +101,8 @@ appears.
 Connecting a relay pod that had no way on, when the other relay pods its group landed have none
 either, shows a notice with a button that connects them the same way.
 
-### Editing a pod
-
-![The pod panel of plain: port, bind and advertise address, and the route editor showing a balance over the relay pod on guru-test-us-1 and the exit example.com](/img/canvas/panel-route.avif)
-
-Click a pod row to open its panel: its name and comment, how it listens, whether it receives
-PROXY, its TLS certificate (SNI, DNS provider, zone or domain id, ACME directory) for a TLS client
-pod, its port, bind and advertise address. Below that is its route, as a tree:
-
-- each group has a policy (balance or failover), and a balance may stick to the client address;
-- each member of a balance has a weight, each member of a failover its tier;
-- the arrows reorder members; tick two or more members of a group to **nest** them as a balance or a
-  failover of their own, and **Ungroup** a nested group back into its parent;
-- **Add way on** adds a member to that group (the target dialog of *Connecting*);
-- a way on's menu edits the edge's **dial address** — an override address or port — or removes it.
-
-The shape of the route is a draft until you save it. Adding or removing a way on changes edges and
-is written at once, so it waits until the draft is saved or reset. The panel also lists the pods
-that lead into a relay pod.
+A pod's own route — the shape of the groups its ways on hang in, their weights and their dial
+addresses — is edited in [the pod's panel](/reference/nodes/#a-pods-panel-and-its-route).
 
 ### Removing
 
@@ -226,11 +145,5 @@ These refuse a batch:
 These are only warnings: `single_tier_failover`, `pod_without_edges`, `relay_pod_not_dialed`,
 `exit_not_reached`.
 
-## What a worker runs
-
-Each pod becomes one `[[forwarding]]` in its server's config, tagged with the pod's id. A worker
-that reports the `route_table` capability receives the route as a table of groups and upstreams and
-chooses between members by what is alive; a relay hop toward such a worker asks the relay to
-confirm that its own next hop answered, so a dead exit behind a live relay moves the choice on at
-the dialer. An older worker receives the route in the tree form. See the
-[configuration reference](/reference/configuration/#forwardingto) for both.
+An accepted batch bumps the tree's generation, and the control plane derives a new config for every
+server the change touches — what happens next is [Rollout](/reference/rollout/).

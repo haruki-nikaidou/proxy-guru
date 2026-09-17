@@ -42,7 +42,8 @@ Worker 的配置模型本身位于 `lib/guru_worker_config`，由两个平面共
 
 比如十条规则从一台机器进来，要分散到四台中转服务器上：那就是十个客户端 Pod，每个都有四条边，分别连到它在
 每台中转服务器上自己的中继 Pod，而这些中继 Pod 的边再通往出口。画布会把选法相同的四个负载均衡画成一个分流器，
-把四十条边画成几条总线；画法和编辑方式见[画布](/zh-cn/reference/canvas/)。
+把四十条边画成几条总线；每一种卡片见[节点](/zh-cn/reference/nodes/)，图的画法和编辑方式见
+[画布](/zh-cn/reference/canvas/)。
 
 Pod 默认绑定主机的所有地址；也可以限制为仅 IPv4，或固定到某一个网卡。保存时不填端口的 Pod 会分配到
 40000–59999 之间的一个空闲端口。
@@ -75,7 +76,8 @@ Redis pub/sub、用于模块间事件的 AMQP、用于链路追踪的 OpenTeleme
 
 - [本地开发](/zh-cn/guides/local-development/) —— 在一台机器上启动整套技术栈。
 - [画布](/zh-cn/reference/canvas/) —— Pod 图、画布如何画它，以及每一种编辑操作。
+- [节点](/zh-cn/reference/nodes/) —— 服务器、Pod、出口、分流器和聚合器，逐张卡片讲解。
 - [架构](/zh-cn/reference/architecture/) —— crate 的职责与分层规则。
-- [发布模型](/zh-cn/reference/rollout/) —— 一次编辑如何抵达 Worker。
+- [发布](/zh-cn/reference/rollout/) —— 一次编辑如何抵达 Worker。
 - [独立 Worker 部署](/zh-cn/guides/independent-worker/) —— 不依赖 master，仅用 TOML 文件运行
   一个 Worker。

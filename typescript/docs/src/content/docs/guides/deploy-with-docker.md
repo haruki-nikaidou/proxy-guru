@@ -681,4 +681,4 @@ usual Docker log driver.
 | Periodic jobs stop happening (nothing goes `Offline`, no renewals) | RabbitMQ is down, or `cron` is. Both are required: the clock publishes the signals, the consumer runs them. |
 
 See [Configuration](/reference/configuration/) for every flag and variable, and
-[Rollout Model](/reference/rollout/) for what "derivation" actually does.
+[Rollout](/reference/rollout/) for what "derivation" actually does.
