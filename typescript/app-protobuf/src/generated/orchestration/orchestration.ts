@@ -1187,6 +1187,38 @@ export interface RolloutEvent {
   keepAlive?: KeepAlive | undefined;
 }
 
+/**
+ * Any canvas of a tree may be given; the snapshot is the whole tree, exactly as
+ * GetGraph answers it. A snapshot follows every graph edit of the tree and every
+ * health *status* change of one of its servers; a routine report that changes
+ * nothing sends none.
+ */
+export interface WatchGraphRequest {
+  canvasId: string;
+}
+
+export interface GraphEvent {
+  snapshot?: GetGraphReply | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
+/** `since` is RFC 3339; empty means one hour ago. */
+export interface WatchPodHealthRequest {
+  podId: string;
+  since: string;
+}
+
+export interface PodHealthSnapshot {
+  /** oldest first */
+  records: PodHealthRecord[];
+}
+
+export interface PodHealthEvent {
+  snapshot?: PodHealthSnapshot | undefined;
+  record?: PodHealthRecord | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
 function createBaseQuicSettings(): QuicSettings {
   return { congestion: 0, upMbps: 0, downMbps: 0, streamReceiveWindow: 0n, connReceiveWindow: 0n };
 }
@@ -10403,6 +10435,398 @@ export const RolloutEvent: MessageFns<RolloutEvent> = {
   },
 };
 
+function createBaseWatchGraphRequest(): WatchGraphRequest {
+  return { canvasId: "" };
+}
+
+export const WatchGraphRequest: MessageFns<WatchGraphRequest> = {
+  encode(message: WatchGraphRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.canvasId !== "") {
+      writer.uint32(10).string(message.canvasId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchGraphRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchGraphRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.canvasId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchGraphRequest {
+    return {
+      canvasId: isSet(object.canvasId)
+        ? globalThis.String(object.canvasId)
+        : isSet(object.canvas_id)
+        ? globalThis.String(object.canvas_id)
+        : "",
+    };
+  },
+
+  toJSON(message: WatchGraphRequest): unknown {
+    const obj: any = {};
+    if (message.canvasId !== "") {
+      obj.canvasId = message.canvasId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchGraphRequest>): WatchGraphRequest {
+    return WatchGraphRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchGraphRequest>): WatchGraphRequest {
+    const message = createBaseWatchGraphRequest();
+    message.canvasId = object.canvasId ?? "";
+    return message;
+  },
+};
+
+function createBaseGraphEvent(): GraphEvent {
+  return { snapshot: undefined, keepAlive: undefined };
+}
+
+export const GraphEvent: MessageFns<GraphEvent> = {
+  encode(message: GraphEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      GetGraphReply.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GraphEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGraphEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = GetGraphReply.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GraphEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? GetGraphReply.fromJSON(object.snapshot) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: GraphEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = GetGraphReply.toJSON(message.snapshot);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GraphEvent>): GraphEvent {
+    return GraphEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GraphEvent>): GraphEvent {
+    const message = createBaseGraphEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? GetGraphReply.fromPartial(object.snapshot)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseWatchPodHealthRequest(): WatchPodHealthRequest {
+  return { podId: "", since: "" };
+}
+
+export const WatchPodHealthRequest: MessageFns<WatchPodHealthRequest> = {
+  encode(message: WatchPodHealthRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.podId !== "") {
+      writer.uint32(10).string(message.podId);
+    }
+    if (message.since !== "") {
+      writer.uint32(18).string(message.since);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchPodHealthRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchPodHealthRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.podId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.since = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchPodHealthRequest {
+    return {
+      podId: isSet(object.podId)
+        ? globalThis.String(object.podId)
+        : isSet(object.pod_id)
+        ? globalThis.String(object.pod_id)
+        : "",
+      since: isSet(object.since) ? globalThis.String(object.since) : "",
+    };
+  },
+
+  toJSON(message: WatchPodHealthRequest): unknown {
+    const obj: any = {};
+    if (message.podId !== "") {
+      obj.podId = message.podId;
+    }
+    if (message.since !== "") {
+      obj.since = message.since;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchPodHealthRequest>): WatchPodHealthRequest {
+    return WatchPodHealthRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchPodHealthRequest>): WatchPodHealthRequest {
+    const message = createBaseWatchPodHealthRequest();
+    message.podId = object.podId ?? "";
+    message.since = object.since ?? "";
+    return message;
+  },
+};
+
+function createBasePodHealthSnapshot(): PodHealthSnapshot {
+  return { records: [] };
+}
+
+export const PodHealthSnapshot: MessageFns<PodHealthSnapshot> = {
+  encode(message: PodHealthSnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.records) {
+      PodHealthRecord.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PodHealthSnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePodHealthSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.records.push(PodHealthRecord.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PodHealthSnapshot {
+    return {
+      records: globalThis.Array.isArray(object?.records)
+        ? object.records.map((e: any) => PodHealthRecord.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: PodHealthSnapshot): unknown {
+    const obj: any = {};
+    if (message.records?.length) {
+      obj.records = message.records.map((e) => PodHealthRecord.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<PodHealthSnapshot>): PodHealthSnapshot {
+    return PodHealthSnapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<PodHealthSnapshot>): PodHealthSnapshot {
+    const message = createBasePodHealthSnapshot();
+    message.records = object.records?.map((e) => PodHealthRecord.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBasePodHealthEvent(): PodHealthEvent {
+  return { snapshot: undefined, record: undefined, keepAlive: undefined };
+}
+
+export const PodHealthEvent: MessageFns<PodHealthEvent> = {
+  encode(message: PodHealthEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      PodHealthSnapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.record !== undefined) {
+      PodHealthRecord.encode(message.record, writer.uint32(18).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PodHealthEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePodHealthEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = PodHealthSnapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.record = PodHealthRecord.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PodHealthEvent {
+    return {
+      snapshot: isSet(object.snapshot) ? PodHealthSnapshot.fromJSON(object.snapshot) : undefined,
+      record: isSet(object.record) ? PodHealthRecord.fromJSON(object.record) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: PodHealthEvent): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = PodHealthSnapshot.toJSON(message.snapshot);
+    }
+    if (message.record !== undefined) {
+      obj.record = PodHealthRecord.toJSON(message.record);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<PodHealthEvent>): PodHealthEvent {
+    return PodHealthEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<PodHealthEvent>): PodHealthEvent {
+    const message = createBasePodHealthEvent();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? PodHealthSnapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.record = (object.record !== undefined && object.record !== null)
+      ? PodHealthRecord.fromPartial(object.record)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
 export type OrchestrationDefinition = typeof OrchestrationDefinition;
 export const OrchestrationDefinition = {
   name: "Orchestration",
@@ -10584,6 +11008,22 @@ export const OrchestrationDefinition = {
       responseStream: true,
       options: {},
     },
+    watchGraph: {
+      name: "WatchGraph",
+      requestType: WatchGraphRequest as typeof WatchGraphRequest,
+      requestStream: false,
+      responseType: GraphEvent as typeof GraphEvent,
+      responseStream: true,
+      options: {},
+    },
+    watchPodHealth: {
+      name: "WatchPodHealth",
+      requestType: WatchPodHealthRequest as typeof WatchPodHealthRequest,
+      requestStream: false,
+      responseType: PodHealthEvent as typeof PodHealthEvent,
+      responseStream: true,
+      options: {},
+    },
     createDnsProvider: {
       name: "CreateDnsProvider",
       requestType: CreateDnsProviderRequest as typeof CreateDnsProviderRequest,
@@ -10736,6 +11176,14 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: WatchRolloutsRequest,
     context: CallContext & CallContextExt,
   ): ServerStreamingMethodResult<DeepPartial<RolloutEvent>>;
+  watchGraph(
+    request: WatchGraphRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<GraphEvent>>;
+  watchPodHealth(
+    request: WatchPodHealthRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<PodHealthEvent>>;
   createDnsProvider(
     request: CreateDnsProviderRequest,
     context: CallContext & CallContextExt,
@@ -10851,6 +11299,14 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<WatchRolloutsRequest>,
     options?: CallOptions & CallOptionsExt,
   ): AsyncIterable<RolloutEvent>;
+  watchGraph(
+    request: DeepPartial<WatchGraphRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<GraphEvent>;
+  watchPodHealth(
+    request: DeepPartial<WatchPodHealthRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<PodHealthEvent>;
   createDnsProvider(
     request: DeepPartial<CreateDnsProviderRequest>,
     options?: CallOptions & CallOptionsExt,
