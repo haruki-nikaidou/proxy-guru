@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://guru.plr.moe/"><b>Documentation → guru.plr.moe</b></a>
+  <a href="https://guru.plr.moe/"><b>Documentation</b></a>
 </p>
 
 <p align="center">
