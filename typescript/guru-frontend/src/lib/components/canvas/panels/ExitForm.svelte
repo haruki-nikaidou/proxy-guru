@@ -27,8 +27,13 @@ let destination = $state('');
 let proxy = $state<ProxyProtocolName>('none');
 let pending = $state(false);
 
+// Reseeded when the stored exit changes too, so a save never sends back values
+// the form no longer shows the operator.
+const stored = $derived(
+	JSON.stringify([exit.name, exit.comment, exit.destination, exit.sendProxyProtocol])
+);
 seedOn(
-	() => exit.id,
+	() => `${exit.id}#${stored}`,
 	() => {
 		name = exit.name;
 		comment = exit.comment;
@@ -60,12 +65,11 @@ const serverName = (id: string) => graph.servers.find(entry => entry.id === id)?
 const rules = $derived(editor.drawing.rules.exits.get(exit.id) ?? []);
 
 function remove() {
-	const current = editor.graph;
 	editor.review({
 		title: m.editor_exit_delete(),
 		description: m.editor_exit_delete_description({ name: exit.name, count: dialedBy.length }),
 		prunable: true,
-		build: prune => removeAll(current, editor.drawing, { exitIds: [exit.id] }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { exitIds: [exit.id] }, prune),
 		success: m.editor_deleted()
 	});
 }

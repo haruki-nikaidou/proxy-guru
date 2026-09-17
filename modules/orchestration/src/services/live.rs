@@ -32,15 +32,17 @@ use crate::events::live::{LiveMessage, RolloutScope};
 use crate::hooks::live::{LiveBus, LiveEvent};
 use crate::services::OrchestrationError;
 use crate::services::graph;
+use crate::services::health::DEFAULT_POD_HISTORY_LIMIT;
 use crate::services::rollout::{RolloutStatus, rollout_status};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
 use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{Notify, broadcast, watch};
 use tokio::task::AbortHandle;
 
 /// How long a view waits before retrying a failed load. The watcher is already
@@ -84,6 +86,8 @@ struct ViewEntry<T> {
     tx: watch::Sender<ViewValue<T>>,
     subscribers: usize,
     task: AbortHandle,
+    /// Asks the view task for one reload outside any bus message.
+    reload: Arc<Notify>,
 }
 
 type Entries<T> = Arc<Mutex<HashMap<String, ViewEntry<T>>>>;
@@ -151,20 +155,38 @@ impl<V: LiveView> ViewRegistry<V> {
             Ok(entries) => entries,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let entry = entries.entry(key.clone()).or_insert_with(|| {
-            let (tx, _) = watch::channel(ViewValue::Loading);
-            let task = tokio::spawn(run_view(
-                view,
-                self.db.clone(),
-                self.bus.clone(),
-                tx.clone(),
-            ));
-            ViewEntry {
-                tx,
-                subscribers: 0,
-                task: task.abort_handle(),
+        let entry = match entries.entry(key.clone()) {
+            Entry::Occupied(occupied) => {
+                let entry = occupied.into_mut();
+                // A joiner is handed what the view last loaded, and that can be
+                // older than the database in ways no message announced: fields a
+                // routine report moves, a write the view does not match. One
+                // re-read per join keeps an open as fresh as a `GetGraph` was, and
+                // makes a client's reconnect an actual re-read. A view still
+                // loading is about to publish a fresh value anyway.
+                if !matches!(*entry.tx.borrow(), ViewValue::Loading) {
+                    entry.reload.notify_one();
+                }
+                entry
             }
-        });
+            Entry::Vacant(vacant) => {
+                let (tx, _) = watch::channel(ViewValue::Loading);
+                let reload = Arc::new(Notify::new());
+                let task = tokio::spawn(run_view(
+                    view,
+                    self.db.clone(),
+                    self.bus.clone(),
+                    tx.clone(),
+                    reload.clone(),
+                ));
+                vacant.insert(ViewEntry {
+                    tx,
+                    subscribers: 0,
+                    task: task.abort_handle(),
+                    reload,
+                })
+            }
+        };
         entry.subscribers = entry.subscribers.saturating_add(1);
         let mut rx = entry.tx.subscribe();
         // The stream's first `changed()` must return whatever the view holds
@@ -195,6 +217,7 @@ async fn run_view<V: LiveView>(
     db: Db,
     bus: LiveBus,
     tx: watch::Sender<ViewValue<V::State>>,
+    reload: Arc<Notify>,
 ) {
     // Subscribed *before* the first load: a change committed while the snapshot
     // is being read still lands in the queue, so the opening value can be stale
@@ -216,8 +239,14 @@ async fn run_view<V: LiveView>(
 
         // Wait for something that concerns us.
         loop {
-            match events.recv().await {
-                Ok(LiveEvent::Message(message)) => {
+            let received = tokio::select! {
+                received = events.recv() => Some(received),
+                () = reload.notified() => None,
+            };
+            match received {
+                // A subscriber joined (`ViewRegistry::subscribe`).
+                None => cause = None,
+                Some(Ok(LiveEvent::Message(message))) => {
                     // An unreadable (`Missing`) view reloads on anything: the
                     // canvas it watches may have been recreated, and the cost is
                     // one query per fleet-wide change while a dashboard sits on
@@ -233,8 +262,10 @@ async fn run_view<V: LiveView>(
                 }
                 // Both mean "you may have missed something": reload without
                 // claiming to know why.
-                Ok(LiveEvent::Resync) | Err(broadcast::error::RecvError::Lagged(_)) => cause = None,
-                Err(broadcast::error::RecvError::Closed) => return,
+                Some(Ok(LiveEvent::Resync) | Err(broadcast::error::RecvError::Lagged(_))) => {
+                    cause = None
+                }
+                Some(Err(broadcast::error::RecvError::Closed)) => return,
             }
             // Collapse a burst into one reload. The latest matching message wins
             // as the cause; a non-matching one is simply dropped.
@@ -372,6 +403,15 @@ impl LiveView for GraphLiveView {
     fn matches(state: &Self::State, message: &LiveMessage) -> bool {
         match message {
             LiveMessage::CanvasChanged { canvas, .. } => state.tree.contains(canvas),
+            // Not every write that moves the tree's generation announces a
+            // canvas change: `ForgetServerApplied` and `TouchCanvases` (ACME
+            // issuance, relay-leaf rotation, `InitInternalCa`) only bump the root
+            // and leave the rest to a derivation. A snapshot left on the old
+            // generation fences every edit off as stale, so the pass that follows
+            // every such bump is what reloads the graph.
+            LiveMessage::RolloutChanged {
+                scope: RolloutScope::Canvas(canvas),
+            } => state.tree.contains(canvas),
             // A routine report changes nothing the graph shows; only a status
             // flip moves a server's badge.
             LiveMessage::ServerHealth {
@@ -519,7 +559,7 @@ impl Processor<WatchServerHealth> for LiveService {
 
 /// The opening snapshot of a pod-health stream, plus its feed.
 pub struct PodHealthWatch {
-    /// Oldest first.
+    /// Oldest first; the newest `DEFAULT_POD_HISTORY_LIMIT` of the window.
     pub records: Vec<PodHealthRecordEntity>,
     pub events: broadcast::Receiver<LiveEvent>,
 }
@@ -551,6 +591,7 @@ impl Processor<WatchPodHealth> for LiveService {
                 pod: input.pod,
                 start: input.since,
                 end: Utc::now(),
+                limit: Some(DEFAULT_POD_HISTORY_LIMIT),
             })
             .await?;
         Ok(PodHealthWatch { records, events })

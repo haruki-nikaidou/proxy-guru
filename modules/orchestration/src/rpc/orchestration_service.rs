@@ -1885,6 +1885,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                         pod: pod.clone(),
                                         start: last,
                                         end: Utc::now(),
+                                        limit: None,
                                     })
                                 })
                                 .await

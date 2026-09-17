@@ -52,13 +52,36 @@ worker and is recorded as an `apply_error`.
 
 ## Health
 
-A rollout is only half the story: whether a worker actually runs what was published is answered by
-the health stream. Every worker pushes a `HealthReport` per interval, each report becomes one server
-record plus one record per pod, and the verdict it produces — `Online`, `Degraded`, `Offline` for a
-server, `Ready`, `Deploying`, `Failed` for a pod — is what the dashboard shows. Two of those
-verdicts are written by this pipeline rather than by a report: `AckConfig` marks a server `Degraded`
-when an apply failed, and a derivation marks every changed pod `Deploying` the moment it publishes.
-See [Health Monitor](/features/health-monitor/) for the fields, the thresholds and the passes.
+Every worker streams one `HealthReport` per `--health-interval` (default 15 s) over `ReportHealth`:
+the running revision, upload/download bytes and connection counts since the previous report (max
+is the high-water mark), and one `PodStatus` per running forwarding. Each report becomes one
+`server_health_record` row and one `pod_health_record` row per pod (a forwarding's tag is its pod's
+id; a pod held under two listeners while its dependants switch keeps the worst status). Pod
+statuses: `Ready` (the pod runs what `desired` asks), `Deploying` (a newer revision involving the
+pod is derived but not applied yet — written the moment a derivation publishes it), `Failed` (the
+pod failed to apply or to run). Server statuses: `Online`, `Degraded` (lagging `desired` past the
+grace period, or the last acknowledged revision failed for some pod), `Offline` (the health stream
+closed, or no report for three intervals — the `sweep_liveness` pass). Both histories are raw and
+trimmed by the `trim_health_history` pass;
+`ListServerHealthHistory` / `ListPodHealthHistory` read a time range.
+
+Both passes run in `--mode consumer`, on a signal the `cron` scheduler publishes when the job comes
+due. The scheduler holds no state beyond its own clock; the consumer claims each run in one
+`orchestration_job_run` row, so the pass runs once per configured interval however many consumers
+are up.
+
+In the dashboard, a canvas's **Health** page reads both histories over a selected window (1 h / 6 h
+/ 24 h / 7 d): one card per server showing its status, the connection count *at its last report* in
+that window and the peak, plus two charts — throughput from the per-report upload/download deltas,
+and connections against the high-water mark. The page follows the control plane's streams and
+updates in place, without reloading. A server's status badge and the summary counts follow status
+changes at once. New report points reach the charts every 2 s on the 1 h window, every 10 s on 6 h,
+30 s on 24 h and 2 min on 7 d (longer windows repaint less often). Points that fall out of the
+selected window drop off even when a server has gone silent. Every number is still a stored report,
+so an `Offline` server keeps showing what it last sent until that ages out of the window. Each
+card's *Pod events* tab lists the events of every pod on that server, including the `message` a
+`Failed` row carries. It is streamed only while the tab is open, shows at most the newest 500
+events per pod, and new events appear within about 2 s.
 
 ## Certificates
 

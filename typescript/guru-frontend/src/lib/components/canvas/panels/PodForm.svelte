@@ -59,13 +59,16 @@ let port = $state('');
 let bindIp = $state(BIND_ALL);
 let advertiseIp = $state(ADVERTISE_AUTO);
 let tls = $state<TlsDraft>({ sni: '', dnsProviderId: '', domainId: '', acmeDirectory: '' });
-let saves = $state(0);
 let pending = $state(false);
 
-// Reseeded after every save too: a port the control plane picked, or an
-// address it canonicalised, is what the next save sends.
+// Reseeded whenever the stored pod changes: after a save (a port the control
+// plane picked, an address it canonicalised) and after someone else's edit, so a
+// save never sends back values the form no longer shows the operator.
+const stored = $derived(
+	JSON.stringify([pod.name, pod.comment, pod.port, pod.bindIp, pod.advertiseIp, pod.ingress])
+);
 seedOn(
-	() => `${pod.id}#${saves}`,
+	() => `${pod.id}#${stored}`,
 	() => {
 		name = pod.name;
 		comment = pod.comment;
@@ -148,9 +151,8 @@ async function save() {
 		ingress
 	};
 	pending = true;
-	const written = await editor.commit(() => putPod(editor.graph, next), m.editor_saved());
+	await editor.commit(() => putPod(editor.graph, next), m.editor_saved());
 	pending = false;
-	if (written) saves += 1;
 }
 
 const dialedBy = $derived(
@@ -166,12 +168,11 @@ const serverName = (id: string) => graph.servers.find(entry => entry.id === id)?
 const rules = $derived(editor.drawing.rules.pods.get(pod.id) ?? []);
 
 function remove() {
-	const current = editor.graph;
 	editor.review({
 		title: m.editor_pod_delete_title(),
 		description: m.editor_pod_delete_description({ name: pod.name, port: pod.port }),
 		prunable: true,
-		build: prune => removeAll(current, editor.drawing, { podIds: [pod.id] }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { podIds: [pod.id] }, prune),
 		success: m.editor_deleted()
 	});
 }

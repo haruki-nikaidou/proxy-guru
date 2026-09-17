@@ -36,6 +36,10 @@ pub struct Notifier {
     pub live: Option<LivePublisher>,
 }
 
+/// How long the one retry of a failed live publish may wait for the connection
+/// manager's new connection.
+pub const LIVE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Where live events go.
 #[derive(Clone)]
 pub enum LivePublisher {
@@ -44,6 +48,9 @@ pub enum LivePublisher {
     /// structural — but it only learns of a lost socket from the command that
     /// fails on it, so a publish is retried once on that failure: otherwise the
     /// first edit after a broker restart would silently miss every dashboard.
+    /// The retry waits at most [`LIVE_RETRY_TIMEOUT`]: a publish is awaited on
+    /// the write path, and a broker that stays down must not hold every
+    /// mutation for the manager's whole reconnect backoff.
     Redis(redis::aio::ConnectionManager),
     /// Tests: hand the message straight to this process's bus, skipping the
     /// round trip. The same shortcut `amqp: None` is for.
@@ -86,11 +93,17 @@ impl Notifier {
                         .await
                 };
                 let result = match publish().await {
-                    // Exactly the failures that make the manager replace its
-                    // connection (a dropped socket, or an I/O error from a
-                    // cached failed connect); the retry waits for the new one.
-                    Err(error) if error.is_unrecoverable_error() || error.is_io_error() => {
-                        publish().await
+                    // A dropped connection, or a cached connect that failed on
+                    // one: the manager is replacing it, and the retry goes out on
+                    // the new connection if Redis answers in time. Not every I/O
+                    // error: a response timeout keeps the connection, where a
+                    // second PUBLISH queues behind the first and can deliver the
+                    // event twice.
+                    Err(error) if error.is_unrecoverable_error() => {
+                        match tokio::time::timeout(LIVE_RETRY_TIMEOUT, publish()).await {
+                            Ok(result) => result,
+                            Err(_) => Err(error),
+                        }
                     }
                     result => result,
                 };

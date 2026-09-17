@@ -349,9 +349,9 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a &
   ./target/release/manage-tool db migrate'
 #   → schema is up to date
 
-# 3. Control plane: one banner per mode, no restart loop, and one `live bus connected`
-#    from dashboard_grpc — the operator API's `Watch*` streams, and so the
-#    dashboard's live canvas and health pages, are served from it
+# 3. 控制平面：每种模式一条启动横幅，没有重启循环，并且 dashboard_grpc 打印了一行
+#    `live bus connected` —— 运维 API 的 `Watch*` 流，因而也包括控制台上
+#    实时更新的画布和健康状况页面，都是由它提供的
 journalctl -u 'guru-master@*' -n 20
 
 # 4. nginx 后面的控制台（303 跳到 /auth）

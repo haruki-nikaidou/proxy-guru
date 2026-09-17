@@ -13,11 +13,13 @@ import LiveBadge from '#lib/components/LiveBadge.svelte';
 import ServerHealthCard from './ServerHealthCard.svelte';
 import { formatCount, windowLabel } from './format.js';
 import { serverHealthLabel } from '#lib/i18n/labels.js';
+import { reconnectWhenTransient } from '#lib/live.svelte.js';
 import { watchServerHealth } from './health.remote.js';
 
 const canvasId = $derived(page.params.canvasId ?? '');
 let windowMinutes = $state<HealthWindowMinutes>(60);
 const health = $derived(watchServerHealth({ canvasId, windowMinutes }));
+reconnectWhenTransient(() => health);
 const servers = $derived(health.current);
 
 /** Every count the strip shows, walked once. */

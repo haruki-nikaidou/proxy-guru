@@ -34,7 +34,9 @@ let sticky = $state(false);
 let members = $state<{ from: number; weight: string }[]>([]);
 let pending = $state(false);
 
-const shape = $derived(`${card.id}`);
+// Reseeded when the stored splitter changes too, so a save never sends back
+// values the form no longer shows the operator.
+const shape = $derived(`${card.id}#${JSON.stringify([card.policy, card.sticky, card.weights])}`);
 seedOn(
 	() => shape,
 	() => {
@@ -101,13 +103,11 @@ async function addMember() {
 }
 
 function remove() {
-	const current = editor.graph;
-	const currentDrawing = editor.drawing;
 	editor.review({
 		title: m.editor_splitter_delete(),
 		description: m.editor_splitter_delete_description({ count: card.members.length }),
 		prunable: true,
-		build: prune => removeAll(current, currentDrawing, { splitterIds: [card.id] }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { splitterIds: [card.id] }, prune),
 		success: m.editor_deleted()
 	});
 }
