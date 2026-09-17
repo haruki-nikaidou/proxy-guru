@@ -1,4 +1,5 @@
 <script lang="ts">
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
@@ -18,7 +19,14 @@ let {
 const events = $derived(listPodHealth({ podId, windowMinutes }));
 </script>
 
-{#if events.current === undefined}
+{#if events.current === undefined && events.error}
+	<Table.Row>
+		<Table.Cell class="font-medium">{label}</Table.Cell>
+		<Table.Cell colspan={3}>
+			<BoundaryError error={events.error} retry variant="inline" />
+		</Table.Cell>
+	</Table.Row>
+{:else if events.current === undefined}
 	<Table.Row>
 		<Table.Cell class="font-medium">{label}</Table.Cell>
 		<Table.Cell colspan={3}><Skeleton class="h-4 w-full" /></Table.Cell>

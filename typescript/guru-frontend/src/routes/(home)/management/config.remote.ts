@@ -33,7 +33,11 @@ const documentSchema = v.pipe(
  */
 function toDto(key: ConfigKeyName, document: ConfigDocument | undefined): ConfigDocumentDto {
 	if (!document) {
-		error(500, { message: `Missing ConfigDocument for ${key}`, code: 'internal' });
+		error(500, {
+			message: 'Internal Error',
+			code: 'internal',
+			detail: `Missing ConfigDocument for ${key}`
+		});
 	}
 	return {
 		key,
@@ -80,7 +84,11 @@ export const saveConfigDocument = command(
 				// Exhaustive on purpose: a third key fails to assign to `never`
 				// here, so it cannot be added without wiring its typed RPC pair.
 				const unhandled: never = key;
-				error(500, { message: `Unknown config key ${String(unhandled)}`, code: 'internal' });
+				error(500, {
+					message: 'Internal Error',
+					code: 'internal',
+					detail: `Unknown config key ${String(unhandled)}`
+				});
 			}
 		}
 		await listConfigDocuments().refresh();

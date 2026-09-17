@@ -1,6 +1,7 @@
 <script lang="ts">
 import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 import { toast } from 'svelte-sonner';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
@@ -10,9 +11,9 @@ import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 import type { CertificateDto, CertificateStatusName } from '#lib/dto/tls.js';
-import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import { reportError } from '#lib/report.js';
 import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import {
 	deleteCertificate,
@@ -67,10 +68,6 @@ function expiryHint(notAfter: string): string | null {
 	return days < 0 ? m.tls_certificate_expired() : m.tls_certificate_expires_in({ days });
 }
 
-function reportError(err: unknown) {
-	toast.error(errorText(err));
-}
-
 async function retry(row: CertificateDto) {
 	retrying = row.id;
 	try {
@@ -102,7 +99,9 @@ async function confirmDelete(row: CertificateDto) {
 	</Card.Header>
 
 	<Card.Content>
-		{#if certificates.current === undefined}
+		{#if certificates.current === undefined && certificates.error}
+			<BoundaryError error={certificates.error} retry variant="inline" />
+		{:else if certificates.current === undefined}
 			<Skeleton class="h-32 w-full" />
 		{:else if (certificates.current ?? []).length === 0}
 			<Empty.Root>

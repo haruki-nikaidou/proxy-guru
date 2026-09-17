@@ -1,13 +1,13 @@
 <script lang="ts">
 import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { getAgentRelease, requestAgentUpdate } from '#lib/components/canvas/commands.js';
 import * as Alert from '#lib/components/ui/alert/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import type { ServerDto } from '#lib/dto/topology.js';
-import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
@@ -59,7 +59,11 @@ const updateAgent = () =>
 	</div>
 	<p class="mt-1 text-xs text-muted-foreground">{m.editor_agent_description()}</p>
 
-	{#if release.current === undefined}
+	{#if release.current === undefined && release.error}
+		<div class="mt-3">
+			<BoundaryError error={release.error} retry variant="inline" />
+		</div>
+	{:else if release.current === undefined}
 		<Skeleton class="mt-3 h-10 w-full" />
 	{:else}
 		{@const published = release.current}
@@ -120,10 +124,10 @@ const updateAgent = () =>
 		{/if}
 	{/if}
 
-	{#snippet failed(error)}
-		<Alert.Root variant="destructive" class="mt-3">
-			<Alert.Description>{errorText(error)}</Alert.Description>
-		</Alert.Root>
+	{#snippet failed(error, reset)}
+		<div class="mt-3">
+			<BoundaryError {error} {reset} variant="inline" />
+		</div>
 	{/snippet}
 </svelte:boundary>
 

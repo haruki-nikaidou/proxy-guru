@@ -1,6 +1,7 @@
 <script lang="ts">
 import PlusIcon from '@lucide/svelte/icons/plus';
 import { toast } from 'svelte-sonner';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
@@ -14,9 +15,10 @@ import {
 	type Identity
 } from '#lib/dto/identity.js';
 import { accountMutationBlock } from '#lib/guards.js';
-import { errorMessage, errorText } from '#lib/i18n/codes.js';
+import { errorMessage } from '#lib/i18n/codes.js';
 import { roleLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
+import { reportError } from '#lib/report.js';
 import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import CreateAccountDialog from './CreateAccountDialog.svelte';
 import { deleteAccount, listAccounts, setAccountRole } from './accounts.remote.js';
@@ -26,10 +28,6 @@ let { identity }: { identity: Identity } = $props();
 const accounts = listAccounts();
 let createOpen = $state(false);
 let deleteTarget = $state<AccountRow | null>(null);
-
-function reportError(err: unknown) {
-	toast.error(errorText(err));
-}
 
 async function changeRole(row: AccountRow, role: AssignableRole) {
 	try {
@@ -66,7 +64,9 @@ async function confirmDelete(row: AccountRow) {
 	</Card.Header>
 
 	<Card.Content>
-		{#if accounts.loading}
+		{#if accounts.current === undefined && accounts.error}
+			<BoundaryError error={accounts.error} retry variant="inline" />
+		{:else if accounts.loading}
 			<Skeleton class="h-40 w-full" />
 		{:else}
 			{@const rows = accounts.current ?? []}

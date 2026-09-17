@@ -1,3 +1,4 @@
+import { toAppError } from '#lib/errors.js';
 import { m } from '#lib/paraglide/messages.js';
 
 /**
@@ -81,35 +82,62 @@ export function issueMessage(code: string): string {
 }
 
 /**
- * `App.Error` codes. The special code `server_message` means the control plane
- * supplied actionable English text, which is displayed verbatim.
- */
-/**
- * What a remote function threw, as a sentence. Rejections carry the app's error
- * body, so the reason the control plane gave survives to the screen; anything
- * without one falls back the same way `errorMessage` does.
+ * What went wrong, as a sentence — whatever was thrown, rejected or handed to a
+ * boundary (see `#lib/errors.ts`). A refusal shows the reason the control plane
+ * gave; everything else says what kind of failure it was, and `errorDetails`
+ * says what exactly failed.
  */
 export function errorText(err: unknown): string {
-	const body = (err as { body?: App.Error }).body;
-	return errorMessage(body?.code, body?.message ?? '');
+	return appErrorText(toAppError(err));
 }
 
-export function errorMessage(code: string | undefined, fallback: string): string {
+export function appErrorText(error: App.Error): string {
+	return errorMessage(
+		error.code,
+		error.code === 'server_message' ? error.message : '',
+		error.status
+	);
+}
+
+/**
+ * `App.Error` codes. The special code `server_message` means the control plane
+ * supplied actionable English text, which is displayed verbatim as `fallback`.
+ */
+export function errorMessage(code: string | undefined, fallback: string, status?: number): string {
 	switch (code) {
 		case 'forbidden':
 			return m.error_forbidden();
 		case 'not_found':
 			return m.error_not_found();
-		case 'internal':
-			return m.error_internal();
+		case 'page_not_found':
+			return m.error_page_not_found();
 		case 'unavailable':
 			return m.error_unavailable();
+		case 'conflict':
+			return m.error_conflict();
+		case 'timeout':
+			return m.error_timeout();
+		case 'unimplemented':
+			return m.error_unimplemented();
+		case 'control_plane':
+			return m.error_control_plane();
+		case 'internal':
+			return m.error_internal();
+		case 'invalid_request':
+			return m.error_invalid_request();
+		case 'network':
+			return m.error_network();
+		case 'stale_app':
+			return m.error_stale_app();
+		case 'client_error':
+			return m.error_client();
 		case 'cannot_modify_self':
 			return m.error_cannot_modify_self();
 		case 'last_admin':
 			return m.error_last_admin();
 		default:
-			return fallback.length > 0 ? fallback : m.error_internal();
+			if (fallback.length > 0) return fallback;
+			return status === undefined ? m.error_internal() : m.error_status({ status });
 	}
 }
 
@@ -123,6 +151,6 @@ export function resultMessage(code: string): string {
 		case 'wrong_password':
 			return m.result_wrong_password();
 		default:
-			return m.error_internal();
+			return m.error_unknown_result({ code });
 	}
 }

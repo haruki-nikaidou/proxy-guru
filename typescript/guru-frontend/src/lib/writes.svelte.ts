@@ -1,12 +1,12 @@
 import { toast } from 'svelte-sonner';
-import { errorText } from '#lib/i18n/codes.js';
+import { reportError } from '#lib/report.js';
 
 /**
  * What every panel and dialog does around a write: keep its controls disabled
- * while the call is in flight, then report either the success message or the
- * control plane's own text. Remote functions reject with the app's error body,
- * so a refused write shows the reason the control plane gave — `errorMessage`
- * resolves its code, and falls back to the message when the code is unknown.
+ * while the call is in flight, then report either the success message or what
+ * went wrong. Remote functions reject with the app's error body, so a refused
+ * write shows the reason the control plane gave, and any other failure says
+ * what kind it was, with its details (`reportError`).
  *
  * Everything that must only happen on success (closing a dialog, clearing a
  * draft row, calling back) belongs inside `write`, where it runs before the
@@ -34,7 +34,7 @@ export function panelWrites(): PanelWrites {
 				await write();
 				if (success !== undefined) toast.success(success);
 			} catch (err) {
-				toast.error(errorText(err));
+				reportError(err);
 			} finally {
 				pending = false;
 			}

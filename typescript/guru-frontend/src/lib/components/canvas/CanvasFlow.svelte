@@ -78,10 +78,10 @@ import * as Empty from '#lib/components/ui/empty/index.js';
 import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import type { CanvasGraph } from '#lib/dto/topology.js';
-import { errorText } from '#lib/i18n/codes.js';
 import { suggestName } from '#lib/i18n/naming.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
+import { reportError } from '#lib/report.js';
 
 let { canvasId, editable, admin }: { canvasId: string; editable: boolean; admin: boolean } =
 	$props();
@@ -180,7 +180,8 @@ const refresh = () => getCanvasGraph({ canvasId }).refresh();
 
 /** Reports what went wrong with a gesture or a write. */
 function report(err: unknown) {
-	toast.error(err instanceof EditError ? editErrorText(err.code) : errorText(err));
+	if (err instanceof EditError) toast.error(editErrorText(err.code));
+	else reportError(err);
 }
 
 async function commit(change: GraphChange | (() => GraphChange), success?: string) {
@@ -578,7 +579,11 @@ $effect(() => {
 <svelte:boundary>
 	<!-- Only the first load has nothing to show: a refresh keeps the flow mounted,
 	     otherwise remounting it would re-run `fitView` and reset the viewport. -->
-	{#if graph === undefined || drawing === undefined}
+	{#if graph === undefined && query.error}
+		<div class="grid h-full place-items-center p-4">
+			<BoundaryError error={query.error} retry />
+		</div>
+	{:else if graph === undefined || drawing === undefined}
 		<Skeleton class="h-full w-full" />
 	{:else}
 		<Resizable.PaneGroup direction="horizontal">
@@ -628,6 +633,18 @@ $effect(() => {
 						<Panel position="top-right">
 							<RuleLegend {graph} {drawing} bind:highlighted={highlightedRule} />
 						</Panel>
+
+						<!-- A re-read that failed leaves the last graph on screen: say so. -->
+						{#if query.error}
+							<Panel position="top-center" class="w-96 max-w-[calc(100%-2rem)]">
+								<BoundaryError
+									error={query.error}
+									retry
+									variant="inline"
+									title={m.error_stale_title()}
+								/>
+							</Panel>
+						{/if}
 					</SvelteFlow>
 
 					{#if drawing.cards.length === 0}
@@ -676,7 +693,7 @@ $effect(() => {
 		{/if}
 	{/if}
 
-	{#snippet failed(error)}
-		<BoundaryError {error} />
+	{#snippet failed(error, reset)}
+		<BoundaryError {error} {reset} />
 	{/snippet}
 </svelte:boundary>

@@ -51,7 +51,9 @@ $effect(() => {
 	</div>
 
 	<svelte:boundary>
-		{#if options.current === undefined}
+		{#if options.current === undefined && options.error}
+			<BoundaryError error={options.error} retry />
+		{:else if options.current === undefined}
 			<Skeleton class="h-64 w-full max-w-2xl rounded-xl" />
 		{:else if !canvas}
 			<Empty.Root>
@@ -139,8 +141,8 @@ $effect(() => {
 			{/if}
 		{/if}
 
-		{#snippet failed(error)}
-			<BoundaryError {error} />
+		{#snippet failed(error, reset)}
+			<BoundaryError {error} {reset} />
 		{/snippet}
 	</svelte:boundary>
 </div>

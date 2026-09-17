@@ -1,5 +1,6 @@
 <script lang="ts">
 import BoxIcon from '@lucide/svelte/icons/box';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
@@ -25,7 +26,9 @@ const pods = $derived(
 );
 </script>
 
-{#if graph.current === undefined}
+{#if graph.current === undefined && graph.error}
+	<BoundaryError error={graph.error} retry variant="inline" />
+{:else if graph.current === undefined}
 	<Skeleton class="h-32 w-full" />
 {:else if pods.length === 0}
 	<Empty.Root>

@@ -33,6 +33,7 @@ export function tlsIssues(tls: TlsDraft) {
 
 <script lang="ts">
 import ShieldOffIcon from '@lucide/svelte/icons/shield-off';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
@@ -97,6 +98,8 @@ const issues = $derived(tlsIssues(tls));
 				     shown verbatim rather than firing a call that would be denied. -->
 				<Input id="pod-tls-provider" value={tls.dnsProviderId} disabled class="font-mono" />
 				<Field.FieldDescription>{m.editor_entry_tls_provider_admin_only()}</Field.FieldDescription>
+			{:else if providers?.current === undefined && providers?.error}
+				<BoundaryError error={providers.error} retry variant="inline" />
 			{:else if providers?.current === undefined}
 				<Spinner class="size-4" />
 			{:else if providers.current.length === 0}

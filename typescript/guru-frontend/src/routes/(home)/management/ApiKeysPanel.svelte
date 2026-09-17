@@ -2,15 +2,16 @@
 import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 import PlusIcon from '@lucide/svelte/icons/plus';
 import { toast } from 'svelte-sonner';
+import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import * as Table from '#lib/components/ui/table/index.js';
 import type { ApiKeyRow } from '#lib/dto/identity.js';
-import { errorText } from '#lib/i18n/codes.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
+import { reportError } from '#lib/report.js';
 import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
 import CreateApiKeyDialog from './CreateApiKeyDialog.svelte';
 import { listApiKeys, revokeApiKey } from './apiKeys.remote.js';
@@ -25,7 +26,7 @@ async function confirmRevoke(row: ApiKeyRow) {
 		revokeTarget = null;
 		toast.success(m.api_keys_revoked());
 	} catch (err) {
-		toast.error(errorText(err));
+		reportError(err);
 	}
 }
 </script>
@@ -43,7 +44,9 @@ async function confirmRevoke(row: ApiKeyRow) {
 	</Card.Header>
 
 	<Card.Content>
-		{#if keys.loading}
+		{#if keys.current === undefined && keys.error}
+			<BoundaryError error={keys.error} retry variant="inline" />
+		{:else if keys.loading}
 			<Skeleton class="h-32 w-full" />
 		{:else if (keys.current ?? []).length === 0}
 			<Empty.Root>

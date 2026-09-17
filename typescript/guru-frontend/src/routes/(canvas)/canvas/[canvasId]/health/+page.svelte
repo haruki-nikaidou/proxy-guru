@@ -61,7 +61,9 @@ function pickWindow(value: string) {
 	</div>
 
 	<svelte:boundary>
-		{#if servers === undefined}
+		{#if servers === undefined && health.error}
+			<BoundaryError error={health.error} retry />
+		{:else if servers === undefined}
 			<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 				{#each [0, 1, 2, 3] as slot (slot)}
 					<Skeleton class="h-24 w-full rounded-xl" />
@@ -77,6 +79,14 @@ function pickWindow(value: string) {
 				</Empty.Header>
 			</Empty.Root>
 		{:else}
+			{#if health.error}
+				<BoundaryError
+					error={health.error}
+					retry
+					variant="inline"
+					title={m.error_stale_title()}
+				/>
+			{/if}
 			<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 				<Card.Root>
 					<Card.Header>
@@ -112,8 +122,8 @@ function pickWindow(value: string) {
 			{/each}
 		{/if}
 
-		{#snippet failed(error)}
-			<BoundaryError {error} />
+		{#snippet failed(error, reset)}
+			<BoundaryError {error} {reset} />
 		{/snippet}
 	</svelte:boundary>
 </div>

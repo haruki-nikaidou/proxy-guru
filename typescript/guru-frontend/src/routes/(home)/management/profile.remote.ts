@@ -32,7 +32,11 @@ export const changeEmail = form(
 			case ChangeEmailResult.CHANGE_EMAIL_WRONG_PASSWORD:
 				return { error: 'wrong_password' as const };
 			default:
-				error(500, { message: 'Unexpected ChangeEmail result', code: 'internal' });
+				error(500, {
+					message: 'Internal Error',
+					code: 'internal',
+					detail: 'Unexpected ChangeEmail result'
+				});
 		}
 	}
 );
@@ -66,7 +70,11 @@ export const changePassword = form(
 			case ChangePasswordResult.WRONG_PASSWORD:
 				return { error: 'wrong_password' as const };
 			default:
-				error(500, { message: 'Unexpected ChangePassword result', code: 'internal' });
+				error(500, {
+					message: 'Internal Error',
+					code: 'internal',
+					detail: 'Unexpected ChangePassword result'
+				});
 		}
 	}
 );
