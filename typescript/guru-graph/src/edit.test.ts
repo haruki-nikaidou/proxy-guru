@@ -141,21 +141,38 @@ describe('splitters', () => {
 			'gcore4',
 			'gcore5'
 		]);
-		// Each landing pod goes on where the template's did: the splitter's first
-		// member, whose relays exit to its exit.
-		const template = splitter.members[0]?.podId;
-		const templateExit = template === 'web' ? 'exit-a' : 'exit-b';
+		// The landing pods stop there: where the members' relays go on (web's to
+		// exit-a, api's to exit-b) is theirs, not the joiner's.
 		for (const landing of landings) {
-			const out = after.edges.filter(e => e.sourcePodId === landing.id);
-			expect(out).toHaveLength(1);
-			expect(out[0]?.target).toEqual({ exit: templateExit });
+			expect(landing.route).toBeNull();
+			expect(after.edges.filter(e => e.sourcePodId === landing.id)).toEqual([]);
 		}
+		expect(change.putEdges.every(e => e.sourcePodId === 'ssh')).toBe(true);
 		// The joiner is drawn into the same splitter, a third member.
 		expect(
 			splitterOf(after)
 				.members.map(m => m.podId)
 				.sort()
 		).toEqual(['api', 'ssh', 'web']);
+	});
+
+	test('a joining pod keeps the override address of the way it copies, not its port', () => {
+		const base = fanOut();
+		const graph: Graph = {
+			...base,
+			pods: [...base.pods, pod('ssh', 'mobile', 'client_raw')],
+			edges: base.edges.map(e =>
+				e.sourcePodId === 'web' || e.sourcePodId === 'api'
+					? { ...e, overrideIp: '10.0.0.7', overridePort: 7443 }
+					: e
+			)
+		};
+		const change = joinSplitter(graph, draw(graph, 'root'), 'ssh', splitterOf(graph).id);
+		expect(change.putEdges).toHaveLength(5);
+		for (const edge of change.putEdges) {
+			expect(edge.overrideIp).toBe('10.0.0.7');
+			expect(edge.overridePort).toBeNull();
+		}
 	});
 
 	test('a member added to a splitter is added for every pod it stands for', () => {

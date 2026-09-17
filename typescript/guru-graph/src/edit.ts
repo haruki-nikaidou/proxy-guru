@@ -302,8 +302,9 @@ function splitter<S extends Server>(drawing: Drawing<S>, id: string): SplitterCa
 /**
  * A copy of `template` (a route node of `owner`) for `pod`: every leaf that goes
  * to an exit goes there from `pod` too, and every leaf that goes to a relay pod
- * lands on a new relay pod of the same server and ingress, which goes on where
- * the template's did.
+ * lands on a new relay pod of the same server and ingress, which has no way on
+ * yet. Where the template's relay pods go next belongs to their rule, not to
+ * the pod joining: a splitter often stands for rules bound for different exits.
  */
 function cloneFor<S extends Server>(draft: Draft<S>, pod: Pod, template: Route): Route {
 	return mapLeaves(template, edgeId => {
@@ -316,31 +317,22 @@ function cloneFor<S extends Server>(draft: Draft<S>, pod: Pod, template: Route):
 
 function cloneEdge<S extends Server>(draft: Draft<S>, pod: Pod, template: Edge): Edge {
 	const exit = edgeTargetExit(template);
-	let target: Edge['target'];
 	if (exit !== null) {
-		target = { exit };
-	} else {
-		const far = draft.pods.get(edgeTargetPod(template) ?? '');
-		if (!far) throw new EditError('pod_not_found');
-		const landing = draft.relayPod(far.serverId, far.canvasId, far.ingress, pod.name);
-		if (far.route) {
-			const route = mapLeaves(far.route, onward => {
-				const next = draft.edges.get(onward);
-				if (!next) return { edge: onward };
-				const copy: Edge = { ...next, id: newId(), sourcePodId: landing.id };
-				draft.putEdge(copy);
-				return { edge: copy.id };
-			});
-			draft.putPod({ ...draft.pod(landing.id), route });
-		}
-		target = { pod: landing.id };
+		const edge: Edge = { ...template, id: newId(), sourcePodId: pod.id, target: { exit } };
+		draft.putEdge(edge);
+		return edge;
 	}
+	const far = draft.pods.get(edgeTargetPod(template) ?? '');
+	if (!far) throw new EditError('pod_not_found');
+	const landing = draft.relayPod(far.serverId, far.canvasId, far.ingress, pod.name);
+	// The new pod is on the template's server, so an override address still
+	// reaches it; it listens on a port of its own, so an override port would not.
 	const edge: Edge = {
 		id: newId(),
 		sourcePodId: pod.id,
-		target,
+		target: { pod: landing.id },
 		overrideIp: template.overrideIp,
-		overridePort: template.overridePort
+		overridePort: null
 	};
 	draft.putEdge(edge);
 	return edge;
@@ -348,8 +340,9 @@ function cloneEdge<S extends Server>(draft: Draft<S>, pod: Pod, template: Edge):
 
 /**
  * `podId` takes the way a splitter goes: its route gains a copy of the
- * splitter's subtree, with relay pods of its own where the splitter's members
- * land on relay pods.
+ * splitter's subtree, landing on relay pods of its own where the splitter's
+ * members land on relay pods. Those have no way on yet; connecting one offers
+ * to connect the rest (see `fanOutSiblings`).
  */
 export function joinSplitter<S extends Server>(
 	graph: Graph<S>,
