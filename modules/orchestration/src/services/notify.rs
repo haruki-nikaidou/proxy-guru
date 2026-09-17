@@ -41,7 +41,9 @@ pub struct Notifier {
 pub enum LivePublisher {
     /// Production: `PUBLISH` on [`LIVE_CHANNEL`]. The manager reconnects on its
     /// own, so a broker blip costs the publishes attempted during it and nothing
-    /// structural.
+    /// structural — but it only learns of a lost socket from the command that
+    /// fails on it, so a publish is retried once on that failure: otherwise the
+    /// first edit after a broker restart would silently miss every dashboard.
     Redis(redis::aio::ConnectionManager),
     /// Tests: hand the message straight to this process's bus, skipping the
     /// round trip. The same shortcut `amqp: None` is for.
@@ -76,13 +78,21 @@ impl Notifier {
                         return;
                     }
                 };
-                let mut connection = manager.clone();
-                if let Err(error) = redis::cmd("PUBLISH")
-                    .arg(LIVE_CHANNEL)
-                    .arg(&bytes[..])
-                    .query_async::<()>(&mut connection)
-                    .await
-                {
+                let connection = manager.clone();
+                let publish = || async {
+                    redis::cmd("PUBLISH")
+                        .arg(LIVE_CHANNEL)
+                        .arg(&bytes[..])
+                        .query_async::<()>(&mut connection.clone())
+                        .await
+                };
+                let result = match publish().await {
+                    // The failure is what told the manager to reconnect; the
+                    // retry waits for that connection.
+                    Err(error) if error.is_unrecoverable_error() => publish().await,
+                    result => result,
+                };
+                if let Err(error) = result {
                     tracing::warn!(%error, "publishing a live event failed");
                 }
             }
