@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 table_record!(DnsProviderId, "dns_provider");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct DnsProviderEntity {
     pub id: DnsProviderId,
     pub name: String,
@@ -53,16 +53,19 @@ impl Processor<CreateDnsProvider> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateDnsProvider", skip_all, err)]
     async fn process(&self, input: CreateDnsProvider) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+        Ok(sqlx::query_as!(
+            DnsProviderEntity,
+            r#"INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
+                         account_id, api_secret, created_at"#,
+            DnsProviderId::new() as _,
+            input.name,
+            input.provider as _,
+            input.account_id,
+            input.api_secret,
+            input.now
         )
-        .bind(DnsProviderId::new())
-        .bind(input.name)
-        .bind(input.provider)
-        .bind(input.account_id)
-        .bind(input.api_secret)
-        .bind(input.now)
         .fetch_one(self.db())
         .await?)
     }
@@ -76,11 +79,14 @@ impl Processor<ListDnsProviders> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListDnsProviders", skip_all, err)]
     async fn process(&self, _: ListDnsProviders) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM dns_provider ORDER BY created_at")
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            DnsProviderEntity,
+            r#"SELECT id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
+                      account_id, api_secret, created_at
+               FROM dns_provider ORDER BY created_at"#
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -94,10 +100,15 @@ impl Processor<FindDnsProviderById> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindDnsProviderById", skip_all, err)]
     async fn process(&self, input: FindDnsProviderById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM dns_provider WHERE id = $1")
-            .bind(input.id)
-            .fetch_optional(self.db())
-            .await?)
+        Ok(sqlx::query_as!(
+            DnsProviderEntity,
+            r#"SELECT id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
+                      account_id, api_secret, created_at
+               FROM dns_provider WHERE id = $1"#,
+            input.id as _
+        )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -116,15 +127,18 @@ impl Processor<UpdateDnsProvider> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateDnsProvider", skip_all, err)]
     async fn process(&self, input: UpdateDnsProvider) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "UPDATE dns_provider
-             SET name = $2, account_id = $3, api_secret = COALESCE($4, api_secret)
-             WHERE id = $1 RETURNING *",
+        Ok(sqlx::query_as!(
+            DnsProviderEntity,
+            r#"UPDATE dns_provider
+               SET name = $2, account_id = $3, api_secret = COALESCE($4, api_secret)
+               WHERE id = $1
+               RETURNING id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
+                         account_id, api_secret, created_at"#,
+            input.id as _,
+            input.name,
+            input.account_id,
+            input.api_secret
         )
-        .bind(input.id)
-        .bind(input.name)
-        .bind(input.account_id)
-        .bind(input.api_secret)
         .fetch_optional(self.db())
         .await?)
     }
@@ -143,8 +157,7 @@ impl Processor<DeleteDnsProviderRow> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteDnsProviderRow", skip_all, err)]
     async fn process(&self, input: DeleteDnsProviderRow) -> Result<Self::Output, Self::Error> {
-        match sqlx::query("DELETE FROM dns_provider WHERE id = $1")
-            .bind(input.id)
+        match sqlx::query!("DELETE FROM dns_provider WHERE id = $1", input.id as _)
             .execute(self.db())
             .await
             .map_err(Error::from)
@@ -167,13 +180,11 @@ impl Processor<CountPodsUsingDnsProvider> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:CountPodsUsingDnsProvider", skip_all, err)]
     async fn process(&self, input: CountPodsUsingDnsProvider) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_scalar(
-                "SELECT count(*) FROM orchestration_pod WHERE tls_dns_provider = $1",
-            )
-            .bind(input.id)
-            .fetch_one(self.db())
-            .await?,
+        Ok(sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM orchestration_pod WHERE tls_dns_provider = $1"#,
+            input.id as _
         )
+        .fetch_one(self.db())
+        .await?)
     }
 }

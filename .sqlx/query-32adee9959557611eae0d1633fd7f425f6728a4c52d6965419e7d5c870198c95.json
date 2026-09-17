@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server\n                SET country = $2, country_address = $3, country_checked_at = $4\n              WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "32adee9959557611eae0d1633fd7f425f6728a4c52d6965419e7d5c870198c95"
+}

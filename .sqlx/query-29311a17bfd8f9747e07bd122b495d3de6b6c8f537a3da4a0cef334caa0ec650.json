@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE relay_certificate\nSET sni = $2, private_key_pem = $3, certificate_pem = $4,\n    not_before = $5, not_after = $6, version = version + 1\nWHERE pod = $1 AND version = $7\nRETURNING\n    id AS \"id: RelayCertificateId\",\n    pod AS \"pod: PodId\",\n    sni,\n    private_key_pem,\n    certificate_pem,\n    not_before,\n    not_after,\n    version\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RelayCertificateId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pod: PodId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "pod"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sni",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "sni"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "private_key_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "private_key_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "certificate_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "certificate_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "not_before",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "not_before"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "not_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "29311a17bfd8f9747e07bd122b495d3de6b6c8f537a3da4a0cef334caa0ec650"
+}

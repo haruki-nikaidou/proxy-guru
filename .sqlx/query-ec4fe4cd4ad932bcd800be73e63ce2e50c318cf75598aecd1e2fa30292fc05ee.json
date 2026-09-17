@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM api_key WHERE owner = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec4fe4cd4ad932bcd800be73e63ce2e50c318cf75598aecd1e2fa30292fc05ee"
+}

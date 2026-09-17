@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: AgentReleaseId\", version, sha256, arch, published_at\n               FROM orchestration_agent_release WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: AgentReleaseId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_agent_release",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_agent_release",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_agent_release",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "arch",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_agent_release",
+            "name": "arch"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "published_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orchestration_agent_release",
+            "name": "published_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dbc245c08154057aea01df9af274a4a6074ba67517f91c974e83ed9cd9ed8e6c"
+}

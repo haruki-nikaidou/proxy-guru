@@ -319,11 +319,13 @@ async fn seed_desired(
         forwardings: Vec::new(),
         certificates: Vec::new(),
     };
-    sqlx::query("UPDATE orchestration_server_config_view SET desired = $2 WHERE server = $1")
-        .bind(server)
-        .bind(sqlx::types::Json(&snapshot))
-        .execute(sp.db())
-        .await?;
+    sqlx::query!(
+        "UPDATE orchestration_server_config_view SET desired = $2 WHERE server = $1",
+        server as _,
+        sqlx::types::Json(&snapshot) as _
+    )
+    .execute(sp.db())
+    .await?;
     Ok(())
 }
 
@@ -746,11 +748,11 @@ async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult 
     let tokyo = server(&sp, &c, "tokyo").await?;
     let osaka = server_at(&sp, &c, "osaka", "198.51.100.10").await?;
     let provider = orchestration::utils::ids::dns_provider_id("cf");
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)
          VALUES ($1, 'cf', 'cloudflare', '', 'enc1:secret', now())",
+        &provider as _
     )
-    .bind(&provider)
     .execute(sp.db())
     .await?;
 

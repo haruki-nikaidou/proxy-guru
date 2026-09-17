@@ -14,9 +14,8 @@ use db_types::{table_record, text_enum};
 use guru_topology::Route;
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::PgRow;
+use sqlx::PgConnection;
 use sqlx::types::Json;
-use sqlx::{FromRow, PgConnection, Row};
 
 table_record!(PodId, "orchestration_pod");
 
@@ -180,19 +179,40 @@ fn corrupt(column: &str, message: String) -> sqlx::Error {
     }
 }
 
-impl FromRow<'_, PgRow> for PodEntity {
-    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
-        let id: PodId = row.try_get("id")?;
-        let port: i32 = row.try_get("port")?;
+/// One `orchestration_pod` row as the macros read it: one field per selected
+/// column, validated into a [`PodEntity`] by the conversion below.
+pub(crate) struct PodRow {
+    pub(crate) id: PodId,
+    pub(crate) canvas: CanvasId,
+    pub(crate) server: ServerId,
+    pub(crate) name: String,
+    pub(crate) comment: String,
+    pub(crate) port: i32,
+    pub(crate) bind_ip: Option<String>,
+    pub(crate) advertise_ip: Option<String>,
+    pub(crate) ingress: IngressKind,
+    pub(crate) receive_proxy_protocol: Option<ProxyProtocolVersion>,
+    pub(crate) tls_sni: Option<String>,
+    pub(crate) tls_dns_provider: Option<DnsProviderId>,
+    pub(crate) tls_domain_id: Option<String>,
+    pub(crate) tls_acme_directory: Option<String>,
+    pub(crate) route: Option<Json<Route>>,
+}
+
+impl TryFrom<PodRow> for PodEntity {
+    type Error = sqlx::Error;
+
+    fn try_from(row: PodRow) -> Result<Self, Self::Error> {
+        let id = row.id;
+        let port = row.port;
         let port = u16::try_from(port)
             .map_err(|_| corrupt("port", format!("pod {id}: port {port} out of range")))?;
-        let receive_proxy_protocol: Option<ProxyProtocolVersion> =
-            row.try_get("receive_proxy_protocol")?;
+        let receive_proxy_protocol = row.receive_proxy_protocol;
         let tls = match (
-            row.try_get::<Option<String>, _>("tls_sni")?,
-            row.try_get::<Option<DnsProviderId>, _>("tls_dns_provider")?,
-            row.try_get::<Option<String>, _>("tls_domain_id")?,
-            row.try_get::<Option<String>, _>("tls_acme_directory")?,
+            row.tls_sni,
+            row.tls_dns_provider,
+            row.tls_domain_id,
+            row.tls_acme_directory,
         ) {
             (Some(sni), Some(dns_provider), Some(domain_id), Some(acme_directory)) => {
                 Some(TlsConfig {
@@ -204,7 +224,7 @@ impl FromRow<'_, PgRow> for PodEntity {
             }
             _ => None,
         };
-        let ingress = match (row.try_get::<IngressKind, _>("ingress")?, tls) {
+        let ingress = match (row.ingress, tls) {
             (IngressKind::ClientRaw, None) => PodIngress::ClientRaw {
                 receive_proxy_protocol,
             },
@@ -222,18 +242,17 @@ impl FromRow<'_, PgRow> for PodEntity {
                 ));
             }
         };
-        let route: Option<Json<Route>> = row.try_get("route")?;
         Ok(PodEntity {
             id,
-            canvas: row.try_get("canvas")?,
-            server: row.try_get("server")?,
-            name: row.try_get("name")?,
-            comment: row.try_get("comment")?,
+            canvas: row.canvas,
+            server: row.server,
+            name: row.name,
+            comment: row.comment,
             port,
-            bind_ip: row.try_get("bind_ip")?,
-            advertise_ip: row.try_get("advertise_ip")?,
+            bind_ip: row.bind_ip,
+            advertise_ip: row.advertise_ip,
             ingress,
-            route: route.map(|json| json.0),
+            route: row.route.map(|json| json.0),
         })
     }
 }
@@ -241,28 +260,28 @@ impl FromRow<'_, PgRow> for PodEntity {
 /// Inserts a pod row as it is.
 pub(crate) async fn insert_pod(conn: &mut PgConnection, pod: &PodEntity) -> Result<(), Error> {
     let tls = pod.ingress.tls();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO orchestration_pod
              (id, canvas, server, name, comment, port, bind_ip, advertise_ip, ingress,
               receive_proxy_protocol, tls_sni, tls_dns_provider, tls_domain_id,
               tls_acme_directory, route)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+        pod.id as _,
+        pod.canvas as _,
+        pod.server as _,
+        pod.name,
+        pod.comment,
+        i32::from(pod.port),
+        pod.bind_ip,
+        pod.advertise_ip,
+        pod.ingress.kind() as _,
+        pod.ingress.receive_proxy_protocol() as _,
+        tls.map(|t| t.sni.as_str()),
+        tls.map(|t| &t.dns_provider) as _,
+        tls.map(|t| t.domain_id.as_str()),
+        tls.map(|t| t.acme_directory.as_str()),
+        pod.route.as_ref().map(Json) as _
     )
-    .bind(&pod.id)
-    .bind(&pod.canvas)
-    .bind(&pod.server)
-    .bind(&pod.name)
-    .bind(&pod.comment)
-    .bind(i32::from(pod.port))
-    .bind(&pod.bind_ip)
-    .bind(&pod.advertise_ip)
-    .bind(pod.ingress.kind())
-    .bind(pod.ingress.receive_proxy_protocol())
-    .bind(tls.map(|t| t.sni.as_str()))
-    .bind(tls.map(|t| &t.dns_provider))
-    .bind(tls.map(|t| t.domain_id.as_str()))
-    .bind(tls.map(|t| t.acme_directory.as_str()))
-    .bind(pod.route.as_ref().map(Json))
     .execute(conn)
     .await?;
     Ok(())
@@ -271,27 +290,27 @@ pub(crate) async fn insert_pod(conn: &mut PgConnection, pod: &PodEntity) -> Resu
 /// Rewrites every column of an existing pod but its id and canvas.
 pub(crate) async fn update_pod(conn: &mut PgConnection, pod: &PodEntity) -> Result<(), Error> {
     let tls = pod.ingress.tls();
-    sqlx::query(
+    sqlx::query!(
         "UPDATE orchestration_pod
          SET server = $2, name = $3, comment = $4, port = $5, bind_ip = $6, advertise_ip = $7,
              ingress = $8, receive_proxy_protocol = $9, tls_sni = $10, tls_dns_provider = $11,
              tls_domain_id = $12, tls_acme_directory = $13, route = $14
          WHERE id = $1",
+        pod.id as _,
+        pod.server as _,
+        pod.name,
+        pod.comment,
+        i32::from(pod.port),
+        pod.bind_ip,
+        pod.advertise_ip,
+        pod.ingress.kind() as _,
+        pod.ingress.receive_proxy_protocol() as _,
+        tls.map(|t| t.sni.as_str()),
+        tls.map(|t| &t.dns_provider) as _,
+        tls.map(|t| t.domain_id.as_str()),
+        tls.map(|t| t.acme_directory.as_str()),
+        pod.route.as_ref().map(Json) as _
     )
-    .bind(&pod.id)
-    .bind(&pod.server)
-    .bind(&pod.name)
-    .bind(&pod.comment)
-    .bind(i32::from(pod.port))
-    .bind(&pod.bind_ip)
-    .bind(&pod.advertise_ip)
-    .bind(pod.ingress.kind())
-    .bind(pod.ingress.receive_proxy_protocol())
-    .bind(tls.map(|t| t.sni.as_str()))
-    .bind(tls.map(|t| &t.dns_provider))
-    .bind(tls.map(|t| t.domain_id.as_str()))
-    .bind(tls.map(|t| t.acme_directory.as_str()))
-    .bind(pod.route.as_ref().map(Json))
     .execute(conn)
     .await?;
     Ok(())
@@ -312,10 +331,11 @@ impl Processor<ListCanvasesOfPods> for Db {
         if input.pods.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(sqlx::query_scalar(
-            "SELECT DISTINCT canvas FROM orchestration_pod WHERE id = ANY($1) ORDER BY canvas",
+        Ok(sqlx::query_scalar!(
+            r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
+               WHERE id = ANY($1) ORDER BY canvas"#,
+            &input.pods as _
         )
-        .bind(&input.pods)
         .fetch_all(self.db())
         .await?)
     }
@@ -333,10 +353,11 @@ impl Processor<FindPodById> for Db {
     #[tracing::instrument(name = "Query:FindPodById", skip_all, err)]
     async fn process(&self, input: FindPodById) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_as("SELECT * FROM orchestration_pod WHERE id = $1")
-                .bind(input.id)
+            sqlx::query_file_as!(PodRow, "sql/find_pod_by_id.sql", input.id as _)
                 .fetch_optional(self.db())
-                .await?,
+                .await?
+                .map(PodEntity::try_from)
+                .transpose()?,
         )
     }
 }
@@ -353,9 +374,9 @@ impl Processor<ListCanvasesWithRelayTls> for Db {
     #[tracing::instrument(name = "Query:ListCanvasesWithRelayTls", skip_all, err)]
     async fn process(&self, _: ListCanvasesWithRelayTls) -> Result<Self::Output, Self::Error> {
         let mut conn = self.db().acquire().await?;
-        let canvases: Vec<CanvasId> = sqlx::query_scalar(
-            "SELECT DISTINCT canvas FROM orchestration_pod
-             WHERE ingress IN ('relay_tls', 'relay_quic')",
+        let canvases: Vec<CanvasId> = sqlx::query_scalar!(
+            r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
+               WHERE ingress IN ('relay_tls', 'relay_quic')"#
         )
         .fetch_all(&mut *conn)
         .await?;

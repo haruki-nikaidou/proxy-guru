@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT refresh_key_generation,\n                      reported_addresses AS \"reported_addresses: Json<ReportedAddresses>\"\n               FROM orchestration_server\n               WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "refresh_key_generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "refresh_key_generation"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reported_addresses: Json<ReportedAddresses>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "reported_addresses"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "25da15e17fb734530576ec1692ab0faa4dc534db8271d14817af2fd96dd5b49d"
+}

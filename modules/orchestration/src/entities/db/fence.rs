@@ -46,10 +46,12 @@ pub const STALE_GENERATION: &str = "orchestration_stale_generation";
 /// The transaction's first write to the tree (see the lock order above).
 pub async fn touch(conn: &mut PgConnection, canvas: &CanvasId) -> Result<(), Error> {
     let root = tree::root_of(&mut *conn, canvas).await?;
-    sqlx::query("UPDATE orchestration_canvas SET generation = generation + 1 WHERE id = $1")
-        .bind(&root)
-        .execute(conn)
-        .await?;
+    sqlx::query!(
+        "UPDATE orchestration_canvas SET generation = generation + 1 WHERE id = $1",
+        &root as _
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -58,11 +60,14 @@ pub async fn touch(conn: &mut PgConnection, canvas: &CanvasId) -> Result<(), Err
 /// (positions, groups), and so must not send the tree back to derivation.
 pub async fn lock_root(conn: &mut PgConnection, canvas: &CanvasId) -> Result<(), Error> {
     let root = tree::root_of(&mut *conn, canvas).await?;
-    // The lock a bump takes, so the two queue behind each other.
-    sqlx::query("SELECT 1 FROM orchestration_canvas WHERE id = $1 FOR NO KEY UPDATE")
-        .bind(&root)
-        .execute(conn)
-        .await?;
+    // The lock a bump takes, so the two queue behind each other. The row the
+    // lock comes with is of no interest; the macro form has to take it anyway.
+    let _locked = sqlx::query_scalar!(
+        "SELECT 1 FROM orchestration_canvas WHERE id = $1 FOR NO KEY UPDATE",
+        &root as _
+    )
+    .fetch_optional(conn)
+    .await?;
     Ok(())
 }
 
@@ -83,12 +88,12 @@ pub async fn touch_checked(
     let Some(fence) = fence else {
         return touch(conn, canvas).await;
     };
-    let bumped: Option<CanvasId> = sqlx::query_scalar(
-        "UPDATE orchestration_canvas SET generation = generation + 1
-         WHERE id = $1 AND generation = $2 RETURNING id",
+    let bumped: Option<CanvasId> = sqlx::query_scalar!(
+        r#"UPDATE orchestration_canvas SET generation = generation + 1
+           WHERE id = $1 AND generation = $2 RETURNING id AS "id: CanvasId""#,
+        &fence.root as _,
+        fence.generation
     )
-    .bind(&fence.root)
-    .bind(fence.generation)
     .fetch_optional(&mut *conn)
     .await?;
     if bumped.is_none() {

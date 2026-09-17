@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE tree (canvas, depth) AS (\n    SELECT $1::text, 0\n  UNION ALL\n    SELECT c.id, tree.depth + 1\n    FROM tree JOIN orchestration_canvas c ON c.parent = tree.canvas\n    WHERE tree.depth < $2\n)\n-- Both columns are non-null by construction: the given canvas, then the ids of\n-- the rows below it, with the depth that counts them.\nSELECT canvas AS \"canvas!: CanvasId\", depth AS \"depth!\" FROM tree ORDER BY depth, canvas\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas!: CanvasId",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "depth!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "c67f2081307a74e8a1745af0ecbb3a85c65c93ea855dbeaa0346162f937a1d48"
+}

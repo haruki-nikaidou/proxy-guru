@@ -961,8 +961,15 @@ async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> Test
         .await?;
     let times: Vec<_> = watch.records.iter().map(|r| r.report_time).collect();
     assert_eq!(times.len(), DEFAULT_POD_HISTORY_LIMIT as usize);
-    assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "oldest first");
-    assert_eq!(times.last(), Some(&(now - TimeDelta::seconds(1))), "the newest row is in");
+    assert!(
+        times.windows(2).all(|pair| pair[0] < pair[1]),
+        "oldest first"
+    );
+    assert_eq!(
+        times.last(),
+        Some(&(now - TimeDelta::seconds(1))),
+        "the newest row is in"
+    );
     assert_eq!(
         times.first(),
         Some(&(now - TimeDelta::seconds(DEFAULT_POD_HISTORY_LIMIT))),

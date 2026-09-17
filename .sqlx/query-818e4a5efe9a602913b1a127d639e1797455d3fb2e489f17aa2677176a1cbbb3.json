@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT canvas AS \"canvas: CanvasId\" FROM orchestration_pod\n               WHERE ingress = 'client_tls' AND lower(tls_sni) = $1\n               ORDER BY canvas",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "canvas"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "818e4a5efe9a602913b1a127d639e1797455d3fb2e489f17aa2677176a1cbbb3"
+}

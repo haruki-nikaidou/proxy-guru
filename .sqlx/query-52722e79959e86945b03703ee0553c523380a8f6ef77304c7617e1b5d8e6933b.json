@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server_config_view\nSET applied = $3, in_flight = NULL, apply_error = NULL,\n    failed_revision = $4, failed_pods = $5, seq = seq + 1\nWHERE server = $1 AND (in_flight ->> 'revision')::bigint = $2\nRETURNING id AS \"id: ServerConfigViewId\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerConfigViewId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Jsonb",
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "52722e79959e86945b03703ee0553c523380a8f6ef77304c7617e1b5d8e6933b"
+}

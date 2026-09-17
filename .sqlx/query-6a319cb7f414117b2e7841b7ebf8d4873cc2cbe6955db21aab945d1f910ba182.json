@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT canvas AS \"canvas: CanvasId\" FROM orchestration_pod\n               WHERE id = ANY($1) ORDER BY canvas",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "canvas"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6a319cb7f414117b2e7841b7ebf8d4873cc2cbe6955db21aab945d1f910ba182"
+}

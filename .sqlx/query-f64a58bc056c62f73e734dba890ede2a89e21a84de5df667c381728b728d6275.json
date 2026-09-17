@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: ExitId\" FROM orchestration_exit WHERE id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ExitId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_exit",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f64a58bc056c62f73e734dba890ede2a89e21a84de5df667c381728b728d6275"
+}

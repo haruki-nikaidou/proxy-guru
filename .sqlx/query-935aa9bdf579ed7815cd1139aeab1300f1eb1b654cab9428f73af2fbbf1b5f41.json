@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT v.server                            AS \"id: ServerId\",\n       s.refresh_key_generation,\n       s.watch_epoch,\n       (v.desired ->> 'revision')::bigint   AS desired_revision,\n       (v.in_flight ->> 'revision')::bigint AS in_flight_revision,\n       (v.applied ->> 'revision')::bigint   AS applied_revision,\n       v.failed_revision\nFROM orchestration_server_config_view v\nJOIN orchestration_server s ON s.id = v.server\nWHERE v.server = ANY($1)\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "server"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "refresh_key_generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "refresh_key_generation"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "watch_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "watch_epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "desired_revision",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "in_flight_revision",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "applied_revision",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "failed_revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "failed_revision"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "935aa9bdf579ed7815cd1139aeab1300f1eb1b654cab9428f73af2fbbf1b5f41"
+}

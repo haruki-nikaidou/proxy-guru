@@ -20,7 +20,7 @@ pub fn agent_release_id() -> AgentReleaseId {
     AgentReleaseId::from_key(AGENT_RELEASE_KEY)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentReleaseEntity {
     pub id: AgentReleaseId,
     /// The worker crate version, as `guru-worker --version` prints it.
@@ -46,18 +46,18 @@ impl Processor<PublishAgentRelease> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:PublishAgentRelease", skip_all, err)]
     async fn process(&self, input: PublishAgentRelease) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO orchestration_agent_release (id, version, sha256, arch, published_at)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (id) DO UPDATE
                  SET version = EXCLUDED.version, sha256 = EXCLUDED.sha256,
                      arch = EXCLUDED.arch, published_at = EXCLUDED.published_at",
+            agent_release_id() as _,
+            input.version,
+            input.sha256,
+            input.arch,
+            input.now
         )
-        .bind(agent_release_id())
-        .bind(input.version)
-        .bind(input.sha256)
-        .bind(input.arch)
-        .bind(input.now)
         .execute(self.db())
         .await?;
         Ok(())
@@ -71,11 +71,13 @@ impl Processor<FindAgentRelease> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAgentRelease", skip_all, err)]
     async fn process(&self, _: FindAgentRelease) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM orchestration_agent_release WHERE id = $1")
-                .bind(agent_release_id())
-                .fetch_optional(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            AgentReleaseEntity,
+            r#"SELECT id AS "id: AgentReleaseId", version, sha256, arch, published_at
+               FROM orchestration_agent_release WHERE id = $1"#,
+            agent_release_id() as _
         )
+        .fetch_optional(self.db())
+        .await?)
     }
 }

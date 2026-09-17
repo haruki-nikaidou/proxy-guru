@@ -78,31 +78,63 @@ src/
 ### `entities/db`
 
 - One submodule per table or aggregate.
-- Define a row struct deriving `sqlx::FromRow`, and wrap the table's id in a
-  newtype with `table_record!(NameId, "table")` from `lib/db_types`: a `String`
-  newtype transparent to sqlx and serde, so foreign-key columns and ids inside
-  `jsonb` documents are typed too (`canvas: CanvasId`, never `String`). An enum
-  stored as text gets its one spelling from `text_enum!`; a document whose shape
-  varies per row is `jsonb` (`#[sqlx(json)]` on the field, serde on the type).
+- Define a row struct, and wrap the table's id in a newtype with
+  `table_record!(NameId, "table")` from `lib/db_types`: a `String` newtype
+  transparent to sqlx and serde, so foreign-key columns and ids inside `jsonb`
+  documents are typed too (`canvas: CanvasId`, never `String`). An enum stored
+  as text gets its one spelling from `text_enum!`; a document whose shape varies
+  per row is `jsonb` (serde on the type).
 - Implement `Processor<Input>` for `base::db::Db`, one impl per query/command,
-  with `Error = base::db::Error`. Run statements with
-  `sqlx::query_as(SQL).bind(v).fetch_one(self.db())`. A multi-statement write is
-  one `self.db().begin()` transaction with the statements in Rust order; a fence
+  with `Error = base::db::Error`. A multi-statement write is one
+  `self.db().begin()` transaction with the statements in Rust order; a fence
   that loses returns `Error::Conflict(<token>)` and rolls the transaction back,
   while a refused conditional write (`UPDATE … WHERE <fence> RETURNING …` that
   matches nothing) is an empty result, never an error. Transactions that write
   the same rows lock them in one order, or two of them deadlock: in
   `orchestration`, a write to a canvas tree takes the tree's root row first
   (`entities::db::fence`).
-- Queries are checked at runtime, not at compile time (no `query!` macros), so
-  cover them with the module's integration tests, which run against a real
-  database: `#[sqlx::test(migrator = "base::db::MIGRATOR")]` gives each test a
-  fresh, migrated one from `DATABASE_URL` (the `guru_test` database, never the
-  production one).
+- **Every statement goes through the `query!` family**, so the SQL is checked
+  against the real schema while the crate compiles:
+  `sqlx::query_as!(Row, SQL, arg, …)`, `sqlx::query_scalar!`, `sqlx::query!`.
+  Consequences to live with:
+  - No `SELECT *`: the macro requires the columns and the struct's fields to
+    match exactly, so columns are spelled out.
+  - A column whose Rust type is not the built-in mapping is aliased with its
+    type — `id AS "id: CanvasId"`, `status AS "status: ServerHealthStatus"`,
+    `spec AS "spec: Json<NodeSpec>"` — which needs a raw string literal for the
+    quotes. Nullability comes from the schema; `AS "x!: T"` / `AS "x?: T"`
+    override it where the query itself guarantees otherwise.
+  - A parameter of such a type is passed with a wildcard cast, `input.id as _`,
+    which is what tells the macro the value encodes itself.
+  - `query_as!` does not use `FromRow`, so a `jsonb` column read into a domain
+    type goes through a private row struct with `Json<T>` fields plus one
+    conversion into the entity (`entities::db::group`, `view`, `pod`); entity
+    structs themselves stay free of sqlx wrappers.
+  - SQL longer than five lines lives in `<crate>/sql/<operation>.sql` and is
+    called with `query_file!` / `query_file_as!` / `query_file_scalar!` (the
+    path is relative to the crate root). The file is named after the operation
+    it performs: the input struct in snake case where there is one
+    (`commit_canvas_derivation.sql`), the free function for a helper
+    (`ancestors_of.sql`), and one file per branch where a `Processor` runs
+    several (`ack_server_config_error.sql`, `ack_server_config_applied.sql`).
+    Nothing formats SQL at runtime.
+  - The offline query data is committed in `.sqlx/`; regenerate it with
+    `cargo sqlx prepare --workspace -- --all-targets` (needs `DATABASE_URL`
+    pointing at a migrated database) whenever a statement or the schema
+    changes, and commit the result — the Docker build compiles with
+    `SQLX_OFFLINE=true`. `-- --all-targets` is what includes the tests' own
+    statements; without it an offline `cargo test` fails on them. Each crate
+    that invokes the macros carries a `sqlx.toml` pinning `chrono` as the
+    date/time crate, because `wakuwaku` also enables sqlx's `time` feature.
+- Cover queries with the module's integration tests all the same — the macros
+  check shapes and types, not behaviour:
+  `#[sqlx::test(migrator = "base::db::MIGRATOR")]` creates and migrates one
+  database per test next to the one `DATABASE_URL` names (the `guru_test`
+  database, never the production one). Run the suites with
+  `SQLX_OFFLINE=true`, or the macros try to check every statement against that
+  bare database and fail.
 - PostgreSQL gotchas: compare a nullable column with `IS DISTINCT FROM`, not
-  `<>`; a JSON `null` inside `jsonb` is not SQL `NULL` (`jsonb_typeof`); the
-  `sqlx::query*` functions take `&'static str`, so a formatted statement needs
-  `sqlx::AssertSqlSafe` (tests only).
+  `<>`; a JSON `null` inside `jsonb` is not SQL `NULL` (`jsonb_typeof`).
 - Annotate every impl with the named tracing span described under *Tracing*.
 
 ### `entities/redis`

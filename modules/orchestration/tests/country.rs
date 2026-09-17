@@ -79,12 +79,14 @@ async fn row(db: &Db, id: &ServerId) -> ServerEntity {
 }
 
 async fn pin_v4(db: &Db, id: &ServerId, address: &str) {
-    sqlx::query("UPDATE orchestration_server SET override_v4 = $2 WHERE id = $1")
-        .bind(id)
-        .bind(address)
-        .execute(db.db())
-        .await
-        .unwrap();
+    sqlx::query!(
+        "UPDATE orchestration_server SET override_v4 = $2 WHERE id = $1",
+        id as _,
+        address
+    )
+    .execute(db.db())
+    .await
+    .unwrap();
 }
 
 async fn pass(service: &CountryService, now: DateTime<Utc>) -> CountryPass {

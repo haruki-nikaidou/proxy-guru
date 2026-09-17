@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server_config_view SET seq = seq + 1 WHERE server = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9c685fd7ed55d4745480909790a6e19f544234a429a612baf79efcbe3ccdec6d"
+}

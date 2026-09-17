@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_agent_release (id, version, sha256, arch, published_at)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT (id) DO UPDATE\n                 SET version = EXCLUDED.version, sha256 = EXCLUDED.sha256,\n                     arch = EXCLUDED.arch, published_at = EXCLUDED.published_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cecd7220257149aedf070766e69163d1781b27dcc6ef6c7a8d1e7ec71507cba7"
+}

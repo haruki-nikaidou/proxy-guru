@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET session_lease_until = NULL\n             WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d95e16536999c75da9791033d0fbd14fcbd03151b6983b1f93896e3b08f14191"
+}

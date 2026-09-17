@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM server_health_record WHERE report_time < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a0fb043f0e0e9f39aaa6f366c924d409b6b25e76bbcad0263559aab6c40eb2c"
+}

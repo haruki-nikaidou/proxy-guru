@@ -33,12 +33,11 @@ impl Processor<FindRawConfig> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindRawConfig", skip_all, err)]
     async fn process(&self, input: FindRawConfig) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar!(
-            "SELECT content FROM app_config WHERE key = $1",
-            input.key
+        Ok(
+            sqlx::query_scalar!("SELECT content FROM app_config WHERE key = $1", input.key)
+                .fetch_optional(self.db())
+                .await?,
         )
-        .fetch_optional(self.db())
-        .await?)
     }
 }
 

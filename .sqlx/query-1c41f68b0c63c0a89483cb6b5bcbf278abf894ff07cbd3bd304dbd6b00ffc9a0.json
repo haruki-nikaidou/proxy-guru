@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT canvas AS \"canvas: CanvasId\" FROM orchestration_server WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "canvas"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1c41f68b0c63c0a89483cb6b5bcbf278abf894ff07cbd3bd304dbd6b00ffc9a0"
+}

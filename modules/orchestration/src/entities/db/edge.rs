@@ -8,8 +8,7 @@ use crate::entities::db::exit::ExitId;
 use crate::entities::db::pod::PodId;
 use base::db::Error;
 use db_types::table_record;
-use sqlx::postgres::PgRow;
-use sqlx::{FromRow, PgConnection, Row};
+use sqlx::PgConnection;
 
 table_record!(EdgeId, "orchestration_edge");
 
@@ -31,13 +30,24 @@ pub enum EdgeTarget {
     Exit(ExitId),
 }
 
-impl FromRow<'_, PgRow> for EdgeEntity {
-    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
-        let id: EdgeId = row.try_get("id")?;
-        let target = match (
-            row.try_get::<Option<PodId>, _>("target_pod")?,
-            row.try_get::<Option<ExitId>, _>("target_exit")?,
-        ) {
+/// An `orchestration_edge` row, one field per column: what the `query_as!`
+/// macros fill in before [`EdgeEntity`] folds the two target columns into one
+/// [`EdgeTarget`].
+pub(crate) struct EdgeRow {
+    pub id: EdgeId,
+    pub source_pod: PodId,
+    pub target_pod: Option<PodId>,
+    pub target_exit: Option<ExitId>,
+    pub override_ip: Option<String>,
+    pub override_port: Option<i32>,
+}
+
+impl TryFrom<EdgeRow> for EdgeEntity {
+    type Error = sqlx::Error;
+
+    fn try_from(row: EdgeRow) -> Result<Self, sqlx::Error> {
+        let id = row.id;
+        let target = match (row.target_pod, row.target_exit) {
             (Some(pod), None) => EdgeTarget::Pod(pod),
             (None, Some(exit)) => EdgeTarget::Exit(exit),
             _ => {
@@ -48,7 +58,7 @@ impl FromRow<'_, PgRow> for EdgeEntity {
             }
         };
         let override_port = row
-            .try_get::<Option<i32>, _>("override_port")?
+            .override_port
             .map(|port| {
                 u16::try_from(port).map_err(|_| sqlx::Error::ColumnDecode {
                     index: "override_port".to_string(),
@@ -57,9 +67,9 @@ impl FromRow<'_, PgRow> for EdgeEntity {
             })
             .transpose()?;
         Ok(EdgeEntity {
-            source: row.try_get("source_pod")?,
+            source: row.source_pod,
             target,
-            override_ip: row.try_get("override_ip")?,
+            override_ip: row.override_ip,
             override_port,
             id,
         })
@@ -71,17 +81,17 @@ pub(crate) async fn insert_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> R
         EdgeTarget::Pod(pod) => (Some(pod), None),
         EdgeTarget::Exit(exit) => (None, Some(exit)),
     };
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO orchestration_edge
              (id, source_pod, target_pod, target_exit, override_ip, override_port)
          VALUES ($1, $2, $3, $4, $5, $6)",
+        edge.id as _,
+        edge.source as _,
+        pod as _,
+        exit as _,
+        edge.override_ip,
+        edge.override_port.map(i32::from)
     )
-    .bind(&edge.id)
-    .bind(&edge.source)
-    .bind(pod)
-    .bind(exit)
-    .bind(&edge.override_ip)
-    .bind(edge.override_port.map(i32::from))
     .execute(conn)
     .await?;
     Ok(())
@@ -90,11 +100,13 @@ pub(crate) async fn insert_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> R
 /// Rewrites what an existing edge dials. Its ends are its identity: moving an
 /// edge is deleting it and drawing another.
 pub(crate) async fn update_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> Result<(), Error> {
-    sqlx::query("UPDATE orchestration_edge SET override_ip = $2, override_port = $3 WHERE id = $1")
-        .bind(&edge.id)
-        .bind(&edge.override_ip)
-        .bind(edge.override_port.map(i32::from))
-        .execute(conn)
-        .await?;
+    sqlx::query!(
+        "UPDATE orchestration_edge SET override_ip = $2, override_port = $3 WHERE id = $1",
+        edge.id as _,
+        edge.override_ip,
+        edge.override_port.map(i32::from)
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }

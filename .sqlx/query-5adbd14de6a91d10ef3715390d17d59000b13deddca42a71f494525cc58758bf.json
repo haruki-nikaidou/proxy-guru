@@ -1,0 +1,119 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO server_health_record\n    (id, server, status, report_time, upload_bytes, download_bytes,\n     current_connections, max_connections)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nRETURNING id AS \"id: ServerHealthRecordId\", server AS \"server: ServerId\",\n          status AS \"status: ServerHealthStatus\", report_time,\n          upload_bytes, download_bytes, current_connections, max_connections\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerHealthRecordId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "server: ServerId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "server"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status: ServerHealthStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "report_time",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "report_time"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "upload_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "upload_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "download_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "download_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "current_connections",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "current_connections"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "max_connections",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "server_health_record",
+            "name": "max_connections"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5adbd14de6a91d10ef3715390d17d59000b13deddca42a71f494525cc58758bf"
+}

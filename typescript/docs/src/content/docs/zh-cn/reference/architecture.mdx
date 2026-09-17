@@ -68,10 +68,11 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 
 - **依赖方向：** `rpc → services → entities/events/config`。功能模块可以依赖 `base`，但 `base`
   不得依赖任何功能模块；模块之间也不得直接触碰彼此的内部实现 —— 它们通过 gRPC 或 AMQP 事件通信。
-- **`entities/db`：** 每个表或聚合对应一个子模块；行结构体派生 `sqlx::FromRow`；id 由
+- **`entities/db`：** 每个表或聚合对应一个子模块；定义行结构体；id 由
   `table_record!(NameId, "table")` 包装，以文本存储的枚举由 `text_enum!` 统一写一次。每条查询在
   `base::db::Db` 上实现一次 `Processor`，`Error = base::db::Error`；包含多条语句的写入要放进一个
-  `begin()` 事务。查询是在运行时校验的，因此必须由针对真实数据库的集成测试覆盖（`#[sqlx::test]`）。
+  `begin()` 事务。所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在编译期就会按真实 schema 校验；行为
+  仍然由针对真实数据库的集成测试覆盖（`#[sqlx::test]`）。
 - **`services`：** 持有自身依赖的 `Clone` 结构体，每个操作一个 `Processor` 实现，返回领域类型 ——
   绝不返回 protobuf 类型。
 - **`events`：** 消息载荷加上 `AmqpRouting`（`EXCHANGE`、`EXCHANGE_TYPE`、`ROUTING_KEY`）与
@@ -98,7 +99,11 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 - 比较可空列请用 `IS DISTINCT FROM`，而不是 `<>`：`<>` 与 `NULL` 比较的结果是 `NULL`，而不是
   `true`，所以用它写出来的围栏条件会悄无声息地永不匹配。
 - `jsonb` 文档里的 JSON `null` 不是 SQL 的 `NULL`；用 `jsonb_typeof` 区分两者。
-- `sqlx::query*` 接受的是 `&'static str`，所以在运行时拼出来的语句需要 `sqlx::AssertSqlSafe` ——
-  只在测试里这么做；`src/` 中没有任何地方格式化 SQL。
+- 语句在编译期校验：列要逐个写出（不用 `SELECT *`）；Rust 侧类型是 `table_record!` id、`text_enum!`
+  或 `Json<T>` 的列要带上类型别名（`id AS "id: CanvasId"`），同类型的参数则以 `input.id as _` 传入；
+  超过五行的 SQL 放在 `<crate>/sql/*.sql` 里，由 `query_file!` 调用。没有任何地方在运行时拼 SQL。
+- 离线查询数据提交在 `.sqlx/`，因此构建不需要数据库（镜像构建使用 `SQLX_OFFLINE=true`）。语句或
+  schema 变更后，对一个已迁移的数据库运行 `cargo sqlx prepare --workspace -- --all-targets` 重新生成
+  并提交（`-- --all-targets` 用来把测试自身的语句也收进去）。
 - Schema 只做 migration，绝不做原地修改：`guru-master` 在启动时持有一把 advisory lock 应用所有尚未
   应用的 migration，因此一批同时启动的 master 只会把每个 migration 恰好应用一次。

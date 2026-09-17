@@ -65,7 +65,7 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 ## レイヤールール
 
 - **依存の向き:** `rpc → services → entities/events/config`。機能モジュールは `base` に依存してよいですが、`base` が機能モジュールに依存してはならず、モジュール同士が互いの内部に手を伸ばしてもいけません。モジュール間の通信は gRPC か AMQP イベント経由です。
-- **`entities/db`:** テーブルまたは集約ごとに 1 サブモジュール。行構造体は `sqlx::FromRow` を derive し、ID は `table_record!(NameId, "table")` でラップします。テキストとして保存する enum は `text_enum!` で一度だけ書きます。クエリごとに `base::db::Db` 上の `Processor` 実装を 1 つ用意し、`Error = base::db::Error` とします。複数ステートメントの書き込みは 1 つの `begin()` トランザクションにまとめます。クエリは実行時に検査されるため、実データベースに対する結合テスト（`#[sqlx::test]`）でカバーします。
+- **`entities/db`:** テーブルまたは集約ごとに 1 サブモジュール。行構造体を定義し、ID は `table_record!(NameId, "table")` でラップします。テキストとして保存する enum は `text_enum!` で一度だけ書きます。クエリごとに `base::db::Db` 上の `Processor` 実装を 1 つ用意し、`Error = base::db::Error` とします。複数ステートメントの書き込みは 1 つの `begin()` トランザクションにまとめます。すべてのステートメントは sqlx の `query!` ファミリーを通るため、SQL はクレートのコンパイル時にスキーマに対して検査されます。振る舞いは引き続き実データベースに対する結合テスト（`#[sqlx::test]`）でカバーします。
 - **`services`:** 依存関係を保持する `Clone` 構造体。操作ごとに `Processor` 実装を 1 つ持ち、ドメイン型を返します — protobuf 型は返しません。
 - **`events`:** ペイロードに加えて `AmqpRouting`（`EXCHANGE`、`EXCHANGE_TYPE`、`ROUTING_KEY`）と `AmqpMessageSend`。モジュール間で唯一認められた非同期チャネルであり、定期処理もこのチャネルを通ります。実行時刻を迎えたジョブは `sweep_liveness` のような実行シグナルであって、呼び出しではありません。
 - **`hooks`:** AMQP コンシューマーは永続的な `QUEUE` 名を持つ `AmqpMessageProcessor<E>` を実装します。定期ジョブもその 1 つです。`cron` は実行時刻になるとシグナルを発行し、フックは作業を始める前にその実行を要求します（`orchestration_job_run` 行 1 件の compare-and-set）。そのため配信が重複してもよく、コンシューマーを多重化しても同じパスが 2 回走ることはありません。スケジューラーはデータベース接続を開かず、設定も読みません。*何が* 起こるかを決めるものはすべてコンシューマー側にあります。この帰結として、ブローカーは 4 つのモードすべてで必須です。RabbitMQ が停止している間は、導出スイープも liveness スイープも証明書更新も、復旧するまで実行されません。
@@ -78,5 +78,6 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 
 - NULL を許容するカラムの比較には `<>` ではなく `IS DISTINCT FROM` を使ってください。`NULL` に対する `<>` の結果は `NULL` であって `true` ではないため、`<>` で書いたフェンスは黙ってまったく一致しなくなります。
 - `jsonb` ドキュメント内の JSON の `null` は SQL の `NULL` ではありません。両者は `jsonb_typeof` で区別できます。
-- `sqlx::query*` は `&'static str` を取るため、実行時に組み立てたステートメントには `sqlx::AssertSqlSafe` が必要です — これはテストのみで、`src/` 内で SQL を文字列整形している箇所はありません。
+- ステートメントはコンパイル時に検査されます。カラムは明示的に列挙し（`SELECT *` は使いません）、Rust 側の型が `table_record!` の ID、`text_enum!`、`Json<T>` であるカラムには型を併記したエイリアス（`id AS "id: CanvasId"`）を付け、同じ型のパラメーターは `input.id as _` として渡します。5 行を超える SQL は `<crate>/sql/*.sql` に置き、`query_file!` から呼びます。実行時に SQL を組み立てる箇所はありません。
+- オフラインクエリデータは `.sqlx/` にコミットされているため、ビルドにデータベースは不要です（イメージのビルドは `SQLX_OFFLINE=true`）。ステートメントやスキーマを変更したら、マイグレーション済みのデータベースに対して `cargo sqlx prepare --workspace -- --all-targets` を実行して再生成します（`-- --all-targets` はテスト自身のステートメントも含めるために必要です）。
 - スキーマは常にマイグレーションであり、編集ではありません。`guru-master` が起動時にアドバイザリロックの下で未適用のものを適用するため、フリートが一斉に起動しても各マイグレーションはちょうど一度だけ適用されます。

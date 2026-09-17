@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_canvas SET generation = generation + 1\n           WHERE id = $1 AND generation = $2 RETURNING id AS \"id: CanvasId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "551cf9a1bbb740428d204ddec2a42764d52778956ae21716923dd72e8bb089be"
+}

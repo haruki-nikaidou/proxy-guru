@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET session_lease_until = $4, last_seen_at = $5\n               WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3\n               RETURNING id AS \"id: ServerId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "35f1c345d52e064dad348d3b1739f6ba5e0576952cb60ac86a184b23798c6b24"
+}

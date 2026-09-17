@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE tree (root, canvas, depth) AS (\n    SELECT id, id, 0 FROM orchestration_canvas\n  UNION ALL\n    SELECT tree.root, c.id, tree.depth + 1\n    FROM tree JOIN orchestration_canvas c ON c.parent = tree.canvas\n    WHERE tree.depth < 32\n), view_sum AS (\n    SELECT tree.root, COALESCE(SUM(v.seq), 0) AS seq_sum\n    FROM tree\n    JOIN orchestration_server s ON s.canvas = tree.canvas\n    JOIN orchestration_server_config_view v ON v.server = s.id\n    GROUP BY tree.root\n)\nSELECT c.id AS \"id: CanvasId\" FROM orchestration_canvas c\nLEFT JOIN view_sum ON view_sum.root = c.id\nWHERE c.generation > c.derived_generation\n   OR c.derived_view_seq < COALESCE(view_sum.seq_sum, 0)\nORDER BY c.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "31cfbf65ad3edcb2b8418f0748ce189b872fe334d5dc94e81c268d9d680cf878"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT canvas AS \"canvas: CanvasId\" FROM orchestration_pod\n               WHERE ingress IN ('relay_tls', 'relay_quic')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "canvas"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59809ae361c6dc18c0533027f7482f71c8bb4bae15f0cafd18bd760ec58a35f8"
+}

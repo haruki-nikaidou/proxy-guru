@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO internal_ca (id, certificate_pem, private_key_pem, not_after, created_at)\n               VALUES ($1, $2, $3, $4, $5)\n               ON CONFLICT (id) DO NOTHING RETURNING id AS \"id: InternalCaId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: InternalCaId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3ce2dc58080349d9664c2d0e256eeac93c9e2e8dd7bbb7ba2af335b9015ef891"
+}

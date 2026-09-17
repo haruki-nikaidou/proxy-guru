@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO relay_certificate\n    (id, pod, sni, private_key_pem, certificate_pem, not_before, not_after, version)\nVALUES ($1, $2, $3, $4, $5, $6, $7, 1)\nON CONFLICT ON CONSTRAINT relay_certificate_pod_key DO UPDATE\n    SET sni = EXCLUDED.sni, private_key_pem = EXCLUDED.private_key_pem,\n        certificate_pem = EXCLUDED.certificate_pem,\n        not_before = EXCLUDED.not_before, not_after = EXCLUDED.not_after,\n        version = relay_certificate.version + 1\nRETURNING\n    id AS \"id: RelayCertificateId\",\n    pod AS \"pod: PodId\",\n    sni,\n    private_key_pem,\n    certificate_pem,\n    not_before,\n    not_after,\n    version\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RelayCertificateId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pod: PodId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "pod"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sni",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "sni"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "private_key_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "private_key_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "certificate_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "certificate_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "not_before",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "not_before"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "not_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_certificate",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9f0a76f54c602a85447825942bd054e00f224400025a47844c2e246e452292ef"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET capabilities = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e39e6b813ed5cbb264c876bb0858bbe2121f6362cf97e6482bb5888bf0c860f9"
+}

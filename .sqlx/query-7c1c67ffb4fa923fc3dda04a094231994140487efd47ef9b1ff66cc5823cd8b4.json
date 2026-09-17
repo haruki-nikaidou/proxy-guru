@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- `IS DISTINCT FROM`: an empty `applied` or `failed_revision` must count as\n-- \"different\", which `<>` against NULL would not.\n--\n-- The returned `in_flight` is the `desired` this statement just promoted, which\n-- the `desired IS NOT NULL` predicate guarantees is there — hence `!`.\nUPDATE orchestration_server_config_view v\nSET in_flight = v.desired\nFROM orchestration_server s\nWHERE s.id = v.server AND v.server = $1\n  AND v.in_flight IS NULL AND v.desired IS NOT NULL\n  AND (v.desired ->> 'revision')::bigint IS DISTINCT FROM (v.applied ->> 'revision')::bigint\n  AND (v.desired ->> 'revision')::bigint IS DISTINCT FROM v.failed_revision\n  AND s.refresh_key_generation = $2 AND s.watch_epoch = $3\nRETURNING v.in_flight AS \"in_flight!: Json<ConfigSnapshot>\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_flight!: Json<ConfigSnapshot>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "in_flight"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "7c1c67ffb4fa923fc3dda04a094231994140487efd47ef9b1ff66cc5823cd8b4"
+}

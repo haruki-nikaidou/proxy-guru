@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: InternalCaId\", certificate_pem, private_key_pem,\n                      not_after, created_at\n               FROM internal_ca WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: InternalCaId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "certificate_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "certificate_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "private_key_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "private_key_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "not_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "internal_ca",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "613162c1b8b4566fc8a0cfe35545a48f9975897270f6e6bf1ce2c906ba792330"
+}

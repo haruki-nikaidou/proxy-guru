@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: PodId\" FROM orchestration_pod WHERE id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: PodId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "75fbb0cc49fbd0b5449c53a28be972e59b7367856e0409697cdc413e72ac9f60"
+}

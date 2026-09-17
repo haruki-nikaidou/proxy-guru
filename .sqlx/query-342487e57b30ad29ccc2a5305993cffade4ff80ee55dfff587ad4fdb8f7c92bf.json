@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET position_x = $2, position_y = $3 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "342487e57b30ad29ccc2a5305993cffade4ff80ee55dfff587ad4fdb8f7c92bf"
+}

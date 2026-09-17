@@ -164,10 +164,60 @@ async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
 
 // --- lock order -------------------------------------------------------------
 
-/// Locks the config view row of the server bound as `$1`, the row a server
-/// delete cascades to and a derivation commit rewrites.
-const VIEW_ROW: &str =
-    "SELECT 1 FROM orchestration_server_config_view WHERE server = $1 FOR UPDATE";
+/// The row a [`race`] holds while the writers it interleaves queue behind it.
+enum HeldRow {
+    /// The config view row of the server named by `key`, the row a server
+    /// delete cascades to and a derivation commit rewrites.
+    ServerConfigView,
+    Server,
+    Exit,
+    Canvas,
+}
+
+impl HeldRow {
+    /// Locks this row, keyed by `key`, for the rest of `conn`'s transaction.
+    async fn lock(self, conn: &mut sqlx::PgConnection, key: &str) {
+        match self {
+            Self::ServerConfigView => {
+                sqlx::query!(
+                    "SELECT 1 AS one FROM orchestration_server_config_view
+                     WHERE server = $1 FOR UPDATE",
+                    key
+                )
+                .fetch_optional(&mut *conn)
+                .await
+                .unwrap();
+            }
+            Self::Server => {
+                sqlx::query!(
+                    "SELECT 1 AS one FROM orchestration_server WHERE id = $1 FOR UPDATE",
+                    key
+                )
+                .fetch_optional(&mut *conn)
+                .await
+                .unwrap();
+            }
+            Self::Exit => {
+                sqlx::query!(
+                    "SELECT 1 AS one FROM orchestration_exit WHERE id = $1 FOR UPDATE",
+                    key
+                )
+                .fetch_optional(&mut *conn)
+                .await
+                .unwrap();
+            }
+            Self::Canvas => {
+                sqlx::query!(
+                    "SELECT 1 AS one FROM orchestration_canvas WHERE id = $1 FOR UPDATE",
+                    key
+                )
+                .fetch_optional(&mut *conn)
+                .await
+                .unwrap();
+            }
+        }
+    }
+}
 
 /// How long a racer may take to reach the lock it is expected to wait on.
 const REACH_LOCK_WITHIN: Duration = Duration::from_secs(10);
@@ -183,9 +233,9 @@ static ONE_RACE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 async fn until_waiting<T>(pool: &PgPool, waiters: i64, task: &JoinHandle<T>) {
     let deadline = tokio::time::Instant::now() + REACH_LOCK_WITHIN;
     loop {
-        let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity
-             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        let waiting: i64 = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "waiting!" FROM pg_stat_activity
+               WHERE datname = current_database() AND wait_event_type = 'Lock'"#
         )
         .fetch_one(pool)
         .await
@@ -203,14 +253,14 @@ async fn until_waiting<T>(pool: &PgPool, waiters: i64, task: &JoinHandle<T>) {
 
 /// Forces the interleaving a lock-order deadlock needs.
 ///
-/// `hold` locks one row (`$1` is `key`) in a transaction of its own. `first`
+/// `hold` locks one row (the one `key` names) in a transaction of its own. `first`
 /// runs until it waits on that row, keeping every lock it took before it;
 /// `second` runs until it waits too; only then is the row released. Two
 /// writers whose lock orders disagree deadlock here every time, and PostgreSQL
 /// aborts one of them after `deadlock_timeout` with `deadlock_detected`.
 async fn race<A, B>(
     pool: &PgPool,
-    hold: &'static str,
+    hold: HeldRow,
     key: &str,
     first: A,
     second: B,
@@ -223,11 +273,7 @@ where
 {
     let _alone = ONE_RACE_AT_A_TIME.lock().await;
     let mut holder = pool.begin().await.unwrap();
-    sqlx::query(hold)
-        .bind(key)
-        .execute(&mut *holder)
-        .await
-        .unwrap();
+    hold.lock(&mut holder, key).await;
     let first = tokio::spawn(first);
     until_waiting(pool, 1, &first).await;
     let second = tokio::spawn(second);
@@ -285,7 +331,14 @@ async fn a_server_deleted_while_its_canvas_derives_does_not_deadlock(pool: PgPoo
                 .await
         }
     };
-    let (deleted, derived) = race(&pool, VIEW_ROW, s.id.as_str(), delete, deriving(&w, &c)).await;
+    let (deleted, derived) = race(
+        &pool,
+        HeldRow::ServerConfigView,
+        s.id.as_str(),
+        delete,
+        deriving(&w, &c),
+    )
+    .await;
     deleted.expect("the delete commits");
     derived.expect("the derivation is not aborted");
 
@@ -341,7 +394,7 @@ async fn a_derivation_commit_and_an_address_report_do_not_deadlock(pool: PgPool)
     };
     let (committed, reported) = race(
         &pool,
-        VIEW_ROW,
+        HeldRow::ServerConfigView,
         s.id.as_str(),
         {
             let sp = sp.clone();
@@ -392,7 +445,14 @@ async fn a_server_forgotten_while_its_canvas_derives_does_not_deadlock(pool: PgP
                 .await
         }
     };
-    let (forgotten, derived) = race(&pool, VIEW_ROW, s.id.as_str(), forget, deriving(&w, &c)).await;
+    let (forgotten, derived) = race(
+        &pool,
+        HeldRow::ServerConfigView,
+        s.id.as_str(),
+        forget,
+        deriving(&w, &c),
+    )
+    .await;
     forgotten.expect("the forget commits");
     derived.expect("the derivation is not aborted");
     assert_derived(&w.db, &c).await
@@ -412,8 +472,14 @@ async fn a_subcanvas_deleted_while_its_tree_derives_does_not_deadlock(pool: PgPo
         let id = sub.id.clone();
         async move { db.process(DeleteCanvasRow { id }).await }
     };
-    let (deleted, derived) =
-        race(&pool, VIEW_ROW, s.id.as_str(), delete, deriving(&w, &root)).await;
+    let (deleted, derived) = race(
+        &pool,
+        HeldRow::ServerConfigView,
+        s.id.as_str(),
+        delete,
+        deriving(&w, &root),
+    )
+    .await;
     deleted.expect("the delete commits");
     derived.expect("the derivation is not aborted");
 
@@ -452,7 +518,7 @@ async fn a_server_edited_while_it_is_deleted_does_not_deadlock(pool: PgPool) -> 
     };
     let (updated, deleted) = race(
         &pool,
-        "SELECT 1 FROM orchestration_server WHERE id = $1 FOR UPDATE",
+        HeldRow::Server,
         s.id.as_str(),
         {
             let sp = sp.clone();
@@ -490,7 +556,7 @@ async fn items_moved_while_their_subcanvas_is_deleted_do_not_deadlock(pool: PgPo
     };
     let (moved, deleted) = race(
         &pool,
-        "SELECT 1 FROM orchestration_exit WHERE id = $1 FOR UPDATE",
+        HeldRow::Exit,
         origin.id.as_str(),
         {
             let sp = sp.clone();
@@ -549,7 +615,7 @@ async fn groups_rewritten_while_their_server_is_deleted_do_not_deadlock(
     };
     let (regrouped, deleted) = race(
         &pool,
-        "SELECT 1 FROM orchestration_canvas WHERE id = $1 FOR UPDATE",
+        HeldRow::Canvas,
         c.id.as_str(),
         {
             let sp = sp.clone();

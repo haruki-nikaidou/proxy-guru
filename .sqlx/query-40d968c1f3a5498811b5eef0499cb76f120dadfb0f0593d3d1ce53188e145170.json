@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM orchestration_edge e USING orchestration_pod p\n             WHERE p.id = e.source_pod AND p.canvas = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40d968c1f3a5498811b5eef0499cb76f120dadfb0f0593d3d1ce53188e145170"
+}

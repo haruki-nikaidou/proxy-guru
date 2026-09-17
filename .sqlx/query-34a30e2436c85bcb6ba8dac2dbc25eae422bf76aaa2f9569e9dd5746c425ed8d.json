@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET session_lease_until = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "34a30e2436c85bcb6ba8dac2dbc25eae422bf76aaa2f9569e9dd5746c425ed8d"
+}

@@ -144,6 +144,24 @@ bun run --filter guru-docs build   # static output in typescript/docs/dist
 bun run generate:proto
 ```
 
+## 修改查询之后
+
+所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在 crate 编译期就会按真实 schema 校验。普通构建不需要
+数据库：它读取提交在 `.sqlx/` 里的离线数据。新增或修改语句（或 migration）之后，请对一个已迁移的数据库
+重新生成这份数据并提交，否则没有 `DATABASE_URL` 的构建仍然只能看到旧的查询集合：
+
+```sh
+export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_dev
+# manage-tool 读的是 GURU_DATABASE_URL，不是 DATABASE_URL —— 显式传进去
+cargo run -p manage-tool -- --database-url "$DATABASE_URL" db migrate
+cargo sqlx prepare --workspace -- --all-targets   # 重写 .sqlx/
+```
+
+`cargo sqlx prepare` 需要 `sqlx-cli`（`cargo install sqlx-cli --no-default-features --features
+postgres,rustls`）。`-- --all-targets` 不能省：少了它，测试自身的语句就不会写进 `.sqlx/`，离线的
+`cargo test` 会在那里失败。一旦 export 了 `DATABASE_URL`，宏就会直接连那个数据库，`.sqlx/` 会被忽略
+—— 这也正是重新生成的数据必须单独提交的原因。
+
 ## 测试
 
 模块集成测试运行在一个真实的 PostgreSQL 服务端上：`#[sqlx::test]` 会基于 `DATABASE_URL`
@@ -152,7 +170,10 @@ bun run generate:proto
 
 ```sh
 export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_test
-cargo test
+SQLX_OFFLINE=true cargo test
 ```
 
 用 `createdb`（或 `CREATE DATABASE guru_test;`）创建它一次即可；对应的角色需要 `CREATEDB` 权限。
+运行器会为每个测试在它旁边新建一个库并对其应用 migration，所以 `DATABASE_URL` 指向的那个库本身并不需要
+schema —— 但 `query!` 宏会试着拿它来校验每条语句，并因为表不存在而失败。`SQLX_OFFLINE=true` 让宏改去读
+`.sqlx/`，这就把 `DATABASE_URL` 的两种身份分开了。（给那个库跑一次 migration 也可以。）

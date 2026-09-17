@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n    canvas AS \"canvas: CanvasId\",\n    -- `orchestration_pod_tls_shape` makes every `tls_*` column non-null exactly\n    -- for a `client_tls` pod.\n    tls_sni AS \"tls_sni!\",\n    tls_dns_provider AS \"tls_dns_provider!: DnsProviderId\",\n    tls_domain_id AS \"tls_domain_id!\",\n    tls_acme_directory AS \"tls_acme_directory!\"\nFROM orchestration_pod WHERE ingress = 'client_tls' ORDER BY id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "tls_sni!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "tls_sni"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tls_dns_provider!: DnsProviderId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "tls_dns_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "tls_domain_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "tls_domain_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "tls_acme_directory!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "tls_acme_directory"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "0ede1cecfa8a4601e7790448a8fa2e1f0a71fed2d2946543cf41aedab5856532"
+}

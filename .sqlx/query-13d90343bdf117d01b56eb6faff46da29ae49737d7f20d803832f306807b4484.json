@@ -1,0 +1,196 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE certificate SET\n    status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'pending' END,\n    last_error = NULL, last_attempt_at = NULL\nWHERE id = $1\nRETURNING\n    id AS \"id: CertificateId\",\n    sni,\n    dns_provider AS \"dns_provider: DnsProviderId\",\n    domain_id,\n    acme_directory,\n    status AS \"status: CertificateStatus\",\n    acme_account_key,\n    private_key_pem,\n    full_chain_pem,\n    not_before,\n    not_after,\n    last_error,\n    last_attempt_at,\n    version,\n    created_at\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: CertificateId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sni",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "sni"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "dns_provider: DnsProviderId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "dns_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "domain_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "domain_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "acme_directory",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "acme_directory"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status: CertificateStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "acme_account_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "acme_account_key"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "private_key_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "private_key_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "full_chain_pem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "full_chain_pem"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "not_before",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "not_before"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "not_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "last_attempt_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "last_attempt_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "certificate",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "13d90343bdf117d01b56eb6faff46da29ae49737d7f20d803832f306807b4484"
+}

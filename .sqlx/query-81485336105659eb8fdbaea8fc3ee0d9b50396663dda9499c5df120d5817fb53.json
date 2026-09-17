@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_exit\n         SET name = $2, comment = $3, destination = $4, send_proxy_protocol = $5,\n             position_x = $6, position_y = $7\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "81485336105659eb8fdbaea8fc3ee0d9b50396663dda9499c5df120d5817fb53"
+}

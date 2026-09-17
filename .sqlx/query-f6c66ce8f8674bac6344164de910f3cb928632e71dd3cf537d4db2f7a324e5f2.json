@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_server_config_view (id, server) VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6c66ce8f8674bac6344164de910f3cb928632e71dd3cf537d4db2f7a324e5f2"
+}

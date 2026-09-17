@@ -3,17 +3,18 @@
 //! Put your database row structs and query/command processors here — one
 //! submodule per table or aggregate (e.g. `pub mod user_account;`).
 //!
-//! The convention: define a `sqlx::FromRow` struct for the row, then model each
-//! read or write as an input struct with a `Processor` implementation on the
-//! shared `DatabaseProcessor` from `wakuwaku::sqlx`. Prefer the
-//! `sqlx::query!`/`query_as!` macros so queries are checked against the database
-//! at compile time.
+//! The convention: define a row struct, then model each read or write as an
+//! input struct with a `Processor` implementation on the shared
+//! `DatabaseProcessor` from `wakuwaku::sqlx`. Every statement goes through the
+//! `sqlx::query!`/`query_as!`/`query_scalar!` macros, so it is checked against
+//! the schema at compile time; SQL longer than five lines lives in this crate's
+//! `sql/` directory behind `query_file_as!`.
 //!
 //! ```ignore
 //! use kanau::processor::Processor;
 //! use wakuwaku::sqlx::DatabaseProcessor;
 //!
-//! #[derive(Debug, Clone, sqlx::FromRow)]
+//! #[derive(Debug, Clone)]
 //! pub struct Example {
 //!     pub id: uuid::Uuid,
 //!     pub name: String,

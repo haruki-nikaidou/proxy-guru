@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE up (canvas, depth) AS (\n    SELECT parent, 1 FROM orchestration_canvas WHERE id = $1 AND parent IS NOT NULL\n  UNION ALL\n    SELECT c.parent, up.depth + 1\n    FROM up JOIN orchestration_canvas c ON c.id = up.canvas\n    WHERE c.parent IS NOT NULL AND up.depth < $2\n)\n-- Both columns are non-null by construction: the walk only takes rows whose\n-- `parent` is set, and the depth counts them.\nSELECT canvas AS \"canvas!: CanvasId\", depth AS \"depth!\" FROM up ORDER BY depth\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas!: CanvasId",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "depth!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f609b4a9d590efeb0957ad90e51d8a844b082e994e2b03694c8e2c56e096f28e"
+}

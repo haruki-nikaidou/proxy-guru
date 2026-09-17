@@ -24,9 +24,9 @@ use guru_worker_config::{
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::CanvasUiPosition;
-use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
 use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
 use orchestration::entities::db::exit::{ExitEntity, ExitId};
+use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress};
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
@@ -515,7 +515,11 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
         view.apply_error
     );
     let failed = &view.failed_pods[0];
-    assert_eq!(failed.tag, canvas.pod.id.to_string(), "a pod's tag is its id");
+    assert_eq!(
+        failed.tag,
+        canvas.pod.id.to_string(),
+        "a pod's tag is its id"
+    );
     assert_eq!(failed.pod, canvas.pod.id);
     assert!(
         view.applied
@@ -767,11 +771,13 @@ async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestRe
 
     // Simulate the incumbent going silent: its lease lapses, so a replacement worker
     // is allowed to take the server over.
-    sqlx::query("UPDATE orchestration_server SET session_lease_until = $2 WHERE id = $1")
-        .bind(&canvas.server)
-        .bind(chrono::Utc::now() - chrono::TimeDelta::seconds(60))
-        .execute(master.db.db())
-        .await?;
+    sqlx::query!(
+        "UPDATE orchestration_server SET session_lease_until = $2 WHERE id = $1",
+        &canvas.server as _,
+        chrono::Utc::now() - chrono::TimeDelta::seconds(60)
+    )
+    .execute(master.db.db())
+    .await?;
     let second_key = register(&mut client, &server_key, &api_key).await?;
     assert_ne!(first_key, second_key);
 

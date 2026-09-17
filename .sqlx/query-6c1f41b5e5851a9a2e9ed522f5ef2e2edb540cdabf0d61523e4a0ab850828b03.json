@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: AccountId\", email, password_hash, role AS \"role: AccountRole\"\n               FROM auth_account WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "password_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "password_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role: AccountRole",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6c1f41b5e5851a9a2e9ed522f5ef2e2edb540cdabf0d61523e4a0ab850828b03"
+}

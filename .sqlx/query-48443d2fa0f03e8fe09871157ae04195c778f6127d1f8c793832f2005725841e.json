@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT converted_at, report FROM orchestration_graph_state WHERE id = 'current'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "converted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orchestration_graph_state",
+            "name": "converted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "report",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_graph_state",
+            "name": "report"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "48443d2fa0f03e8fe09871157ae04195c778f6127d1f8c793832f2005725841e"
+}

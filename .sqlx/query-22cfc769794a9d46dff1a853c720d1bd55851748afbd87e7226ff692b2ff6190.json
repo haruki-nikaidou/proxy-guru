@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: GroupId\", canvas AS \"canvas: CanvasId\", kind, name,\n                  props AS \"props: Json<Value>\"\n           FROM orchestration_group WHERE canvas = ANY($1) ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: GroupId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "props: Json<Value>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "props"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "22cfc769794a9d46dff1a853c720d1bd55851748afbd87e7226ff692b2ff6190"
+}

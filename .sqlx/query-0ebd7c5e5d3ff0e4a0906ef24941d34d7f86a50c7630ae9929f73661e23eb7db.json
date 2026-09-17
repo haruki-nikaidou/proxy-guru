@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: DnsProviderId\", name, provider AS \"provider: DnsProvider\",\n                      account_id, api_secret, created_at\n               FROM dns_provider WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: DnsProviderId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider: DnsProvider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "api_secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "api_secret"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0ebd7c5e5d3ff0e4a0906ef24941d34d7f86a50c7630ae9929f73661e23eb7db"
+}

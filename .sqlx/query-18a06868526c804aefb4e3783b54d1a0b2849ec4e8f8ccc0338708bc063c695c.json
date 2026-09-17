@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)\n               VALUES ($1, $2, $3, $4, $5, $6)\n               RETURNING id AS \"id: DnsProviderId\", name, provider AS \"provider: DnsProvider\",\n                         account_id, api_secret, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: DnsProviderId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider: DnsProvider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "api_secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "api_secret"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dns_provider",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "18a06868526c804aefb4e3783b54d1a0b2849ec4e8f8ccc0338708bc063c695c"
+}

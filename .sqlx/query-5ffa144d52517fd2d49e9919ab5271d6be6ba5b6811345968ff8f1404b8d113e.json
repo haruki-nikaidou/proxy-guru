@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: ApiKeyId\", name, owner AS \"owner: AccountId\", secret_sha256, created_at\n               FROM api_key WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ApiKeyId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "api_key",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "api_key",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "api_key",
+            "name": "owner"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "secret_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "api_key",
+            "name": "secret_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "api_key",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5ffa144d52517fd2d49e9919ab5271d6be6ba5b6811345968ff8f1404b8d113e"
+}

@@ -149,6 +149,27 @@ bun run --filter guru-docs build   # static output in typescript/docs/dist
 bun run generate:proto
 ```
 
+## クエリを変更したとき
+
+すべてのステートメントは sqlx の `query!` ファミリーを通るため、SQL はクレートのコンパイル時に実際の
+スキーマに対して検査されます。通常のビルドにデータベースは不要で、`.sqlx/` にコミットされているオフライン
+データを読みます。ステートメント（あるいはマイグレーション）を追加・変更したら、マイグレーション済みの
+データベースに対してそのデータを再生成してコミットしてください。さもないと `DATABASE_URL` のないビルドは
+古いクエリ集合を見続けます:
+
+```sh
+export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_dev
+# manage-tool が読むのは GURU_DATABASE_URL で、DATABASE_URL ではありません。明示的に渡します
+cargo run -p manage-tool -- --database-url "$DATABASE_URL" db migrate
+cargo sqlx prepare --workspace -- --all-targets   # .sqlx/ を書き換えます
+```
+
+`cargo sqlx prepare` には `sqlx-cli` が必要です（`cargo install sqlx-cli --no-default-features
+--features postgres,rustls`）。`-- --all-targets` は省略できません。これがないとテスト自身の
+ステートメントが `.sqlx/` に入らず、オフラインの `cargo test` がそこで失敗します。`DATABASE_URL` が
+export されているとマクロはそのデータベースに直接接続し、`.sqlx/` は無視されます。だからこそ再生成した
+データは別途コミットする必要があります。
+
 ## テスト
 
 モジュールの結合テストは実際の PostgreSQL サーバーに対して実行されます。`#[sqlx::test]` が `DATABASE_URL`
@@ -158,8 +179,12 @@ bun run generate:proto
 
 ```sh
 export DATABASE_URL=postgres://guru:guru@127.0.0.1:15432/guru_test
-cargo test
+SQLX_OFFLINE=true cargo test
 ```
 
 このデータベースは `createdb`（または `CREATE DATABASE guru_test;`）で一度だけ作成します。ロールには
-`CREATEDB` 権限が必要です。
+`CREATEDB` 権限が必要です。テストランナーはテストごとに隣のデータベースを作成してマイグレーションを当てる
+ため、`DATABASE_URL` が指すデータベース自体にスキーマは要りません。しかし `query!` マクロはそのデータ
+ベースに対してすべてのステートメントを検査しようとし、テーブルがないため失敗します。`SQLX_OFFLINE=true`
+はマクロを代わりに `.sqlx/` へ向け、`DATABASE_URL` の 2 つの役割を切り分けます（そのデータベースに一度
+マイグレーションを当てても動きます）。

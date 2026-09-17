@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_canvas\nSET name = $2, description = $3,\n    position_x = COALESCE($4, position_x), position_y = COALESCE($5, position_y)\nWHERE id = $1\nRETURNING id AS \"id: CanvasId\", name, description, parent AS \"parent: CanvasId\",\n          position_x, position_y, generation, derived_generation\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "parent: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "parent"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "position_x",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "position_x"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "position_y",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "position_y"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "generation"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "derived_generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "derived_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e129a0f34762a92a061fbe74512f00bec5b012f88b6020f67ddbc5fcce1765ac"
+}

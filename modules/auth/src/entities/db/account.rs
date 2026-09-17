@@ -4,7 +4,7 @@ use kanau::processor::Processor;
 
 table_record!(AccountId, "auth_account");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct AccountEntity {
     pub id: AccountId,
     pub email: String,

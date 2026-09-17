@@ -28,7 +28,7 @@ pub fn relay_sni(pod: &PodId) -> String {
     format!("{pod}{RELAY_SNI_SUFFIX}")
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct InternalCaEntity {
     pub id: InternalCaId,
     pub certificate_pem: String,
@@ -55,16 +55,16 @@ impl Processor<CreateInternalCa> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateInternalCa", skip_all, err)]
     async fn process(&self, input: CreateInternalCa) -> Result<Self::Output, Self::Error> {
-        let created: Option<InternalCaId> = sqlx::query_scalar(
-            "INSERT INTO internal_ca (id, certificate_pem, private_key_pem, not_after, created_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (id) DO NOTHING RETURNING id",
+        let created = sqlx::query_scalar!(
+            r#"INSERT INTO internal_ca (id, certificate_pem, private_key_pem, not_after, created_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (id) DO NOTHING RETURNING id AS "id: InternalCaId""#,
+            internal_ca_id() as _,
+            input.certificate_pem,
+            input.private_key_pem,
+            input.not_after,
+            input.now
         )
-        .bind(internal_ca_id())
-        .bind(input.certificate_pem)
-        .bind(input.private_key_pem)
-        .bind(input.not_after)
-        .bind(input.now)
         .fetch_optional(self.db())
         .await?;
         Ok(created.is_some())
@@ -79,16 +79,21 @@ impl Processor<FindInternalCa> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindInternalCa", skip_all, err)]
     async fn process(&self, _: FindInternalCa) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM internal_ca WHERE id = $1")
-            .bind(internal_ca_id())
-            .fetch_optional(self.db())
-            .await?)
+        Ok(sqlx::query_as!(
+            InternalCaEntity,
+            r#"SELECT id AS "id: InternalCaId", certificate_pem, private_key_pem,
+                      not_after, created_at
+               FROM internal_ca WHERE id = $1"#,
+            internal_ca_id() as _
+        )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
 table_record!(RelayCertificateId, "relay_certificate");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct RelayCertificateEntity {
     pub id: RelayCertificateId,
     pub pod: PodId,
@@ -131,41 +136,32 @@ impl Processor<StoreRelayCertificate> for Db {
     async fn process(&self, input: StoreRelayCertificate) -> Result<Self::Output, Self::Error> {
         let row = match input.expected_version {
             Some(expected) => {
-                sqlx::query_as(
-                    "UPDATE relay_certificate
-                     SET sni = $2, private_key_pem = $3, certificate_pem = $4,
-                         not_before = $5, not_after = $6, version = version + 1
-                     WHERE pod = $1 AND version = $7 RETURNING *",
+                sqlx::query_file_as!(
+                    RelayCertificateEntity,
+                    "sql/store_relay_certificate_update.sql",
+                    input.pod as _,
+                    input.sni,
+                    input.private_key_pem,
+                    input.certificate_pem,
+                    input.not_before,
+                    input.not_after,
+                    expected
                 )
-                .bind(&input.pod)
-                .bind(&input.sni)
-                .bind(&input.private_key_pem)
-                .bind(&input.certificate_pem)
-                .bind(input.not_before)
-                .bind(input.not_after)
-                .bind(expected)
                 .fetch_optional(self.db())
                 .await?
             }
             None => {
-                sqlx::query_as(
-                    "INSERT INTO relay_certificate
-                         (id, pod, sni, private_key_pem, certificate_pem, not_before, not_after, version)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
-                     ON CONFLICT ON CONSTRAINT relay_certificate_pod_key DO UPDATE
-                         SET sni = EXCLUDED.sni, private_key_pem = EXCLUDED.private_key_pem,
-                             certificate_pem = EXCLUDED.certificate_pem,
-                             not_before = EXCLUDED.not_before, not_after = EXCLUDED.not_after,
-                             version = relay_certificate.version + 1
-                     RETURNING *",
+                sqlx::query_file_as!(
+                    RelayCertificateEntity,
+                    "sql/store_relay_certificate_insert.sql",
+                    RelayCertificateId::new() as _,
+                    input.pod as _,
+                    input.sni,
+                    input.private_key_pem,
+                    input.certificate_pem,
+                    input.not_before,
+                    input.not_after
                 )
-                .bind(RelayCertificateId::new())
-                .bind(&input.pod)
-                .bind(&input.sni)
-                .bind(&input.private_key_pem)
-                .bind(&input.certificate_pem)
-                .bind(input.not_before)
-                .bind(input.not_after)
                 .fetch_optional(self.db())
                 .await?
             }
@@ -190,12 +186,15 @@ impl Processor<ListRelayCertificatesByPods> for Db {
         if input.pods.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(
-            sqlx::query_as("SELECT * FROM relay_certificate WHERE pod = ANY($1)")
-                .bind(&input.pods)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            RelayCertificateEntity,
+            r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
+                      private_key_pem, certificate_pem, not_before, not_after, version
+               FROM relay_certificate WHERE pod = ANY($1)"#,
+            &input.pods as _
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -215,12 +214,15 @@ impl Processor<ListRelayCertificatesByIds> for Db {
         if input.ids.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(
-            sqlx::query_as("SELECT * FROM relay_certificate WHERE id = ANY($1)")
-                .bind(&input.ids)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            RelayCertificateEntity,
+            r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
+                      private_key_pem, certificate_pem, not_before, not_after, version
+               FROM relay_certificate WHERE id = ANY($1)"#,
+            &input.ids as _
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -238,11 +240,14 @@ impl Processor<ListRelayCertificatesExpiringBefore> for Db {
         &self,
         input: ListRelayCertificatesExpiringBefore,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM relay_certificate WHERE not_after < $1")
-                .bind(input.before)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            RelayCertificateEntity,
+            r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
+                      private_key_pem, certificate_pem, not_before, not_after, version
+               FROM relay_certificate WHERE not_after < $1"#,
+            input.before
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }

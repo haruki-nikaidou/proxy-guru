@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_exit SET position_x = $2, position_y = $3\n                 WHERE id = $1 AND canvas = ANY($4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "109bbd5605d42200a41df2d0cb7f0b1bd0fb1344bcef94e2647c478b1eb904ff"
+}

@@ -38,7 +38,6 @@ pub enum GroupMember {
     Server(ServerId),
 }
 
-#[derive(sqlx::FromRow)]
 struct GroupRow {
     id: GroupId,
     canvas: CanvasId,
@@ -47,7 +46,6 @@ struct GroupRow {
     props: Json<Value>,
 }
 
-#[derive(sqlx::FromRow)]
 struct MemberRow {
     group_id: GroupId,
     pod: Option<PodId>,
@@ -61,19 +59,20 @@ pub(crate) async fn groups_of_canvases(
     conn: &mut PgConnection,
     canvases: &[CanvasId],
 ) -> Result<Vec<GroupEntity>, Error> {
-    let rows: Vec<GroupRow> =
-        sqlx::query_as("SELECT * FROM orchestration_group WHERE canvas = ANY($1) ORDER BY id")
-            .bind(canvases)
-            .fetch_all(&mut *conn)
-            .await?;
-    let members: Vec<MemberRow> = sqlx::query_as(
-        "SELECT m.group_id, m.pod, m.edge, m.exit, m.server
-         FROM orchestration_group_member m
-         JOIN orchestration_group g ON g.id = m.group_id
-         WHERE g.canvas = ANY($1)
-         ORDER BY m.group_id, m.position",
+    let rows = sqlx::query_as!(
+        GroupRow,
+        r#"SELECT id AS "id: GroupId", canvas AS "canvas: CanvasId", kind, name,
+                  props AS "props: Json<Value>"
+           FROM orchestration_group WHERE canvas = ANY($1) ORDER BY id"#,
+        canvases as _
     )
-    .bind(canvases)
+    .fetch_all(&mut *conn)
+    .await?;
+    let members = sqlx::query_file_as!(
+        MemberRow,
+        "sql/groups_of_canvases_members.sql",
+        canvases as _
+    )
     .fetch_all(conn)
     .await?;
     let mut by_group: HashMap<GroupId, Vec<GroupMember>> = HashMap::new();
@@ -104,14 +103,15 @@ pub(crate) async fn insert_group(
     conn: &mut PgConnection,
     group: &GroupEntity,
 ) -> Result<(), Error> {
-    sqlx::query(
-        "INSERT INTO orchestration_group (id, canvas, kind, name, props) VALUES ($1, $2, $3, $4, $5)",
+    sqlx::query!(
+        "INSERT INTO orchestration_group (id, canvas, kind, name, props)
+         VALUES ($1, $2, $3, $4, $5)",
+        group.id as _,
+        group.canvas as _,
+        group.kind,
+        group.name,
+        Json(&group.props) as _
     )
-    .bind(&group.id)
-    .bind(&group.canvas)
-    .bind(&group.kind)
-    .bind(&group.name)
-    .bind(Json(&group.props))
     .execute(&mut *conn)
     .await?;
     insert_members(conn, group).await
@@ -122,17 +122,21 @@ pub(crate) async fn update_group(
     conn: &mut PgConnection,
     group: &GroupEntity,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE orchestration_group SET kind = $2, name = $3, props = $4 WHERE id = $1")
-        .bind(&group.id)
-        .bind(&group.kind)
-        .bind(&group.name)
-        .bind(Json(&group.props))
-        .execute(&mut *conn)
-        .await?;
-    sqlx::query("DELETE FROM orchestration_group_member WHERE group_id = $1")
-        .bind(&group.id)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query!(
+        "UPDATE orchestration_group SET kind = $2, name = $3, props = $4 WHERE id = $1",
+        group.id as _,
+        group.kind,
+        group.name,
+        Json(&group.props) as _
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM orchestration_group_member WHERE group_id = $1",
+        group.id as _
+    )
+    .execute(&mut *conn)
+    .await?;
     insert_members(conn, group).await
 }
 
@@ -144,17 +148,17 @@ async fn insert_members(conn: &mut PgConnection, group: &GroupEntity) -> Result<
             GroupMember::Exit(id) => (None, None, Some(id), None),
             GroupMember::Server(id) => (None, None, None, Some(id)),
         };
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO orchestration_group_member (group_id, position, pod, edge, exit, server)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT DO NOTHING",
+            group.id as _,
+            i32::try_from(position).unwrap_or(i32::MAX),
+            pod as _,
+            edge as _,
+            exit as _,
+            server as _
         )
-        .bind(&group.id)
-        .bind(i32::try_from(position).unwrap_or(i32::MAX))
-        .bind(pod)
-        .bind(edge)
-        .bind(exit)
-        .bind(server)
         .execute(&mut *conn)
         .await?;
     }

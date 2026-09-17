@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_canvas\nSET derived_generation = $2, derived_view_seq = $3\nWHERE id = $1 AND generation = $2\n  AND (derived_generation < $2 OR derived_view_seq < $3)\nRETURNING id AS \"id: CanvasId\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8dcdea2960c32545a2e42aa8b1beff7672728c3d3232dcbe0c130adfd99d75be"
+}

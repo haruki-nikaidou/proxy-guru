@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server SET position_x = $2, position_y = $3\n                 WHERE id = $1 AND canvas = ANY($4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "53c37a899781d087b5f15522e8f8a737ce9a0949bcba9a4299f90943520a517c"
+}

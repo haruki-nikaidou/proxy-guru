@@ -17,7 +17,7 @@ use sqlx::PgConnection;
 
 table_record!(ServerHealthRecordId, "server_health_record");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerHealthRecordEntity {
     pub id: ServerHealthRecordId,
     pub server: ServerId,
@@ -67,14 +67,13 @@ impl Processor<ListServerHealthHistory> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServerHealthHistory", skip_all, err)]
     async fn process(&self, input: ListServerHealthHistory) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM server_health_record
-             WHERE server = $1 AND report_time >= $2 AND report_time <= $3
-             ORDER BY report_time ASC, id ASC",
+        Ok(sqlx::query_file_as!(
+            ServerHealthRecordEntity,
+            "sql/list_server_health_history.sql",
+            input.server as _,
+            input.start,
+            input.end
         )
-        .bind(input.server)
-        .bind(input.start)
-        .bind(input.end)
         .fetch_all(self.db())
         .await?)
     }
@@ -97,7 +96,6 @@ pub struct HealthWrite {
 }
 
 /// The server row's health fields, locked for the transaction that reads them.
-#[derive(sqlx::FromRow)]
 struct ServerHealthBefore {
     canvas: CanvasId,
     health_status: ServerHealthStatus,
@@ -108,11 +106,14 @@ async fn lock_server_health(
     conn: &mut PgConnection,
     server: &ServerId,
 ) -> Result<Option<ServerHealthBefore>, Error> {
-    Ok(sqlx::query_as(
-        "SELECT canvas, health_status, refresh_key_generation FROM orchestration_server
-         WHERE id = $1 FOR UPDATE",
+    Ok(sqlx::query_as!(
+        ServerHealthBefore,
+        r#"SELECT canvas AS "canvas: CanvasId",
+                  health_status AS "health_status: ServerHealthStatus",
+                  refresh_key_generation
+           FROM orchestration_server WHERE id = $1 FOR UPDATE"#,
+        server as _
     )
-    .bind(server)
     .fetch_optional(conn)
     .await?)
 }
@@ -131,20 +132,18 @@ async fn insert_server_record(
         current_connections,
         max_connections,
     ] = counters;
-    Ok(sqlx::query_as(
-        "INSERT INTO server_health_record
-             (id, server, status, report_time, upload_bytes, download_bytes,
-              current_connections, max_connections)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
+    Ok(sqlx::query_file_as!(
+        ServerHealthRecordEntity,
+        "sql/insert_server_record.sql",
+        ServerHealthRecordId::new() as _,
+        server as _,
+        status as _,
+        report_time,
+        upload_bytes,
+        download_bytes,
+        current_connections,
+        max_connections
     )
-    .bind(ServerHealthRecordId::new())
-    .bind(server)
-    .bind(status)
-    .bind(report_time)
-    .bind(upload_bytes)
-    .bind(download_bytes)
-    .bind(current_connections)
-    .bind(max_connections)
     .fetch_one(conn)
     .await?)
 }
@@ -180,14 +179,14 @@ impl Processor<InsertServerHealthRecord> for Db {
         if before.refresh_key_generation != input.generation {
             return Ok(None);
         }
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server
              SET last_health_report_at = $2, last_seen_at = $2, health_status = $3
              WHERE id = $1",
+            input.server as _,
+            input.report_time,
+            input.status as _
         )
-        .bind(&input.server)
-        .bind(input.report_time)
-        .bind(input.status)
         .execute(&mut *tx)
         .await?;
         let record = insert_server_record(
@@ -254,16 +253,12 @@ impl Processor<SetServerHealthStatus> for Db {
             return Ok(None);
         }
         let offline = input.status == ServerHealthStatus::Offline;
-        sqlx::query(
-            "UPDATE orchestration_server
-             SET health_status = $2,
-                 session_lease_until = CASE WHEN $3 THEN NULL ELSE session_lease_until END,
-                 watch_epoch = CASE WHEN $3 THEN watch_epoch + 1 ELSE watch_epoch END
-             WHERE id = $1",
+        sqlx::query_file!(
+            "sql/set_server_health_status.sql",
+            input.server as _,
+            input.status as _,
+            offline
         )
-        .bind(&input.server)
-        .bind(input.status)
-        .bind(offline)
         .execute(&mut *tx)
         .await?;
         let record =
@@ -279,7 +274,7 @@ impl Processor<SetServerHealthStatus> for Db {
 }
 
 /// What the liveness sweep decides on.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerLiveness {
     pub id: ServerId,
     pub last_health_report_at: Option<DateTime<Utc>>,
@@ -295,9 +290,11 @@ impl Processor<ListServersForLivenessSweep> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServersForLivenessSweep", skip_all, err)]
     async fn process(&self, _: ListServersForLivenessSweep) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT id, last_health_report_at, health_status FROM orchestration_server
-             WHERE health_status <> 'offline'",
+        Ok(sqlx::query_as!(
+            ServerLiveness,
+            r#"SELECT id AS "id: ServerId", last_health_report_at,
+                      health_status AS "health_status: ServerHealthStatus"
+               FROM orchestration_server WHERE health_status <> 'offline'"#
         )
         .fetch_all(self.db())
         .await?)
@@ -306,7 +303,7 @@ impl Processor<ListServersForLivenessSweep> for Db {
 
 table_record!(PodHealthRecordId, "pod_health_record");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct PodHealthRecordEntity {
     pub id: PodHealthRecordId,
     pub pod: PodId,
@@ -350,15 +347,14 @@ impl Processor<ListPodHealthHistory> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListPodHealthHistory", skip_all, err)]
     async fn process(&self, input: ListPodHealthHistory) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM pod_health_record
-             WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
-             ORDER BY report_time DESC, id DESC LIMIT $4",
+        Ok(sqlx::query_file_as!(
+            PodHealthRecordEntity,
+            "sql/list_pod_health_history.sql",
+            input.pod as _,
+            input.start,
+            input.end,
+            input.limit
         )
-        .bind(input.pod)
-        .bind(input.start)
-        .bind(input.end)
-        .bind(input.limit)
         .fetch_all(self.db())
         .await?)
     }
@@ -396,19 +392,14 @@ impl Processor<ListPodHealthSince> for Db {
     #[tracing::instrument(name = "Query:ListPodHealthSince", skip_all, err)]
     async fn process(&self, input: ListPodHealthSince) -> Result<Self::Output, Self::Error> {
         // `LIMIT NULL` is no limit at all.
-        Ok(sqlx::query_as(
-            "SELECT * FROM (
-                 SELECT * FROM pod_health_record
-                 WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
-                 ORDER BY report_time DESC, id DESC
-                 LIMIT $4
-             ) newest
-             ORDER BY report_time ASC, id ASC",
+        Ok(sqlx::query_file_as!(
+            PodHealthRecordEntity,
+            "sql/list_pod_health_since.sql",
+            input.pod as _,
+            input.start,
+            input.end,
+            input.limit
         )
-        .bind(input.pod)
-        .bind(input.start)
-        .bind(input.end)
-        .bind(input.limit)
         .fetch_all(self.db())
         .await?)
     }
@@ -436,16 +427,15 @@ async fn insert_pod_records(
     let statuses: Vec<PodHealthStatus> = records.iter().map(|r| r.status).collect();
     let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
     let times: Vec<DateTime<Utc>> = records.iter().map(|r| r.report_time).collect();
-    Ok(sqlx::query_as(
-        "INSERT INTO pod_health_record (id, pod, status, message, report_time)
-         SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])
-         RETURNING *",
+    Ok(sqlx::query_file_as!(
+        PodHealthRecordEntity,
+        "sql/insert_pod_records.sql",
+        &ids as _,
+        &pods as _,
+        &statuses as _,
+        &messages as _,
+        &times as _
     )
-    .bind(&ids)
-    .bind(&pods)
-    .bind(&statuses)
-    .bind(&messages)
-    .bind(&times)
     .fetch_all(conn)
     .await?)
 }
@@ -481,14 +471,18 @@ impl Processor<DeleteHealthRecordsBefore> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteHealthRecordsBefore", skip_all, err)]
     async fn process(&self, input: DeleteHealthRecordsBefore) -> Result<Self::Output, Self::Error> {
-        sqlx::query("DELETE FROM server_health_record WHERE report_time < $1")
-            .bind(input.server_records_before)
-            .execute(self.db())
-            .await?;
-        sqlx::query("DELETE FROM pod_health_record WHERE report_time < $1")
-            .bind(input.pod_records_before)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "DELETE FROM server_health_record WHERE report_time < $1",
+            input.server_records_before
+        )
+        .execute(self.db())
+        .await?;
+        sqlx::query!(
+            "DELETE FROM pod_health_record WHERE report_time < $1",
+            input.pod_records_before
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }

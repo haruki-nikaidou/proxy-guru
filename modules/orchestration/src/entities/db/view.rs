@@ -160,19 +160,16 @@ pub struct ConfigSnapshot {
     pub certificates: Vec<CertificateRef>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerConfigViewEntity {
     pub id: ServerConfigViewId,
     pub server: ServerId,
     /// The newest derivation. Never sent directly: a stream promotes it to
     /// `in_flight` with a conditional update.
-    #[sqlx(json(nullable))]
     pub desired: Option<ConfigSnapshot>,
     /// Sent to the worker and not yet acknowledged. At most one at a time.
-    #[sqlx(json(nullable))]
     pub in_flight: Option<ConfigSnapshot>,
     /// What the worker last told us it is running.
-    #[sqlx(json(nullable))]
     pub applied: Option<ConfigSnapshot>,
     pub failed_revision: Option<i64>,
     /// Set when the last acknowledged revision could not be applied at all.
@@ -180,12 +177,10 @@ pub struct ServerConfigViewEntity {
     /// Pods of the last acknowledged revision that failed on the worker. The
     /// other pods run the revision; these keep their previous shape, and
     /// `applied` describes that mix.
-    #[sqlx(json)]
     pub failed_pods: Vec<PodFailure>,
     pub derive_error: Option<String>,
     /// Pods that failed to derive while the rest of this server's config was
     /// published. Empty when `derive_error` is set: that is a whole-server failure.
-    #[sqlx(json)]
     pub invalid_pods: Vec<InvalidPod>,
     /// Servers whose `applied` config does not yet serve a listener this server's
     /// ideal config points at.
@@ -195,6 +190,42 @@ pub struct ServerConfigViewEntity {
     /// as `derived_view_seq`, which is how a worker moves the fence without
     /// ever writing the canvas row.
     pub seq: i64,
+}
+
+/// A view row as the query macros read it: they build the struct themselves, so
+/// the `jsonb` columns arrive as [`Json`] and are unwrapped once, here.
+struct ServerConfigViewRow {
+    id: ServerConfigViewId,
+    server: ServerId,
+    desired: Option<Json<ConfigSnapshot>>,
+    in_flight: Option<Json<ConfigSnapshot>>,
+    applied: Option<Json<ConfigSnapshot>>,
+    failed_revision: Option<i64>,
+    apply_error: Option<String>,
+    failed_pods: Json<Vec<PodFailure>>,
+    derive_error: Option<String>,
+    invalid_pods: Json<Vec<InvalidPod>>,
+    waiting_for: Vec<ServerId>,
+    seq: i64,
+}
+
+impl From<ServerConfigViewRow> for ServerConfigViewEntity {
+    fn from(row: ServerConfigViewRow) -> Self {
+        Self {
+            id: row.id,
+            server: row.server,
+            desired: row.desired.map(|json| json.0),
+            in_flight: row.in_flight.map(|json| json.0),
+            applied: row.applied.map(|json| json.0),
+            failed_revision: row.failed_revision,
+            apply_error: row.apply_error,
+            failed_pods: row.failed_pods.0,
+            derive_error: row.derive_error,
+            invalid_pods: row.invalid_pods.0,
+            waiting_for: row.waiting_for,
+            seq: row.seq,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -207,12 +238,14 @@ impl Processor<FindServerConfigView> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindServerConfigView", skip_all, err)]
     async fn process(&self, input: FindServerConfigView) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM orchestration_server_config_view WHERE server = $1")
-                .bind(input.server)
-                .fetch_optional(self.db())
-                .await?,
+        Ok(sqlx::query_file_as!(
+            ServerConfigViewRow,
+            "sql/find_server_config_view.sql",
+            input.server as _
         )
+        .fetch_optional(self.db())
+        .await?
+        .map(Into::into))
     }
 }
 
@@ -239,14 +272,14 @@ async fn views_of_canvases(
     conn: &mut sqlx::PgConnection,
     canvases: &[CanvasId],
 ) -> Result<Vec<ServerConfigViewEntity>, Error> {
-    Ok(sqlx::query_as(
-        "SELECT v.* FROM orchestration_server_config_view v
-         JOIN orchestration_server s ON s.id = v.server
-         WHERE s.canvas = ANY($1) ORDER BY v.server",
+    let rows = sqlx::query_file_as!(
+        ServerConfigViewRow,
+        "sql/views_of_canvases.sql",
+        canvases as _
     )
-    .bind(canvases)
     .fetch_all(conn)
-    .await?)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Hands `desired` to the calling stream by promoting it to `in_flight`.
@@ -267,22 +300,12 @@ impl Processor<TakeInFlight> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:TakeInFlight", skip_all, err)]
     async fn process(&self, input: TakeInFlight) -> Result<Self::Output, Self::Error> {
-        // `IS DISTINCT FROM`: an empty `applied` or `failed_revision` must count
-        // as "different", which `<>` against NULL would not.
-        let taken: Option<Json<ConfigSnapshot>> = sqlx::query_scalar(
-            "UPDATE orchestration_server_config_view v
-             SET in_flight = v.desired
-             FROM orchestration_server s
-             WHERE s.id = v.server AND v.server = $1
-               AND v.in_flight IS NULL AND v.desired IS NOT NULL
-               AND (v.desired ->> 'revision')::bigint IS DISTINCT FROM (v.applied ->> 'revision')::bigint
-               AND (v.desired ->> 'revision')::bigint IS DISTINCT FROM v.failed_revision
-               AND s.refresh_key_generation = $2 AND s.watch_epoch = $3
-             RETURNING v.in_flight",
+        let taken: Option<Json<ConfigSnapshot>> = sqlx::query_file_scalar!(
+            "sql/take_in_flight.sql",
+            input.server as _,
+            input.generation,
+            input.epoch
         )
-        .bind(input.server)
-        .bind(input.generation)
-        .bind(input.epoch)
         .fetch_optional(self.db())
         .await?;
         Ok(taken.map(|json| json.0))
@@ -319,46 +342,34 @@ impl Processor<AckServerConfig> for Db {
     async fn process(&self, input: AckServerConfig) -> Result<Self::Output, Self::Error> {
         let failed_revision = (!input.failed_pods.is_empty()).then_some(input.revision);
         let acked: Option<ServerConfigViewId> = if let Some(error) = &input.error {
-            sqlx::query_scalar(
-                "UPDATE orchestration_server_config_view
-                 SET in_flight = NULL, apply_error = $3, failed_revision = $2, failed_pods = '[]',
-                     seq = seq + 1
-                 WHERE server = $1 AND (in_flight ->> 'revision')::bigint = $2
-                 RETURNING id",
+            sqlx::query_file_scalar!(
+                "sql/ack_server_config_error.sql",
+                &input.server as _,
+                input.revision,
+                error.as_str()
             )
-            .bind(&input.server)
-            .bind(input.revision)
-            .bind(error)
             .fetch_optional(self.db())
             .await?
         } else if let Some(applied) = &input.applied {
             // Some pods failed: `applied` is the mix the worker runs (the revision
             // for the pods that took it, each failed pod's previous shape),
             // synthesised by the service.
-            sqlx::query_scalar(
-                "UPDATE orchestration_server_config_view
-                 SET applied = $3, in_flight = NULL, apply_error = NULL,
-                     failed_revision = $4, failed_pods = $5, seq = seq + 1
-                 WHERE server = $1 AND (in_flight ->> 'revision')::bigint = $2
-                 RETURNING id",
+            sqlx::query_file_scalar!(
+                "sql/ack_server_config_partial.sql",
+                &input.server as _,
+                input.revision,
+                Json(applied) as _,
+                failed_revision,
+                Json(&input.failed_pods) as _
             )
-            .bind(&input.server)
-            .bind(input.revision)
-            .bind(Json(applied))
-            .bind(failed_revision)
-            .bind(Json(&input.failed_pods))
             .fetch_optional(self.db())
             .await?
         } else {
-            sqlx::query_scalar(
-                "UPDATE orchestration_server_config_view
-                 SET applied = in_flight, in_flight = NULL, apply_error = NULL,
-                     failed_revision = NULL, failed_pods = '[]', seq = seq + 1
-                 WHERE server = $1 AND (in_flight ->> 'revision')::bigint = $2
-                 RETURNING id",
+            sqlx::query_file_scalar!(
+                "sql/ack_server_config_applied.sql",
+                &input.server as _,
+                input.revision
             )
-            .bind(&input.server)
-            .bind(input.revision)
             .fetch_optional(self.db())
             .await?
         };
@@ -382,13 +393,13 @@ impl Processor<ForgetServerAppliedRow> for Db {
         // The root before the view row (`fence`'s lock order), the order a
         // derivation commit takes them in.
         fence::touch(&mut tx, &input.canvas).await?;
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server_config_view
              SET applied = NULL, in_flight = NULL, apply_error = NULL, failed_revision = NULL,
                  failed_pods = '[]'
              WHERE server = $1",
+            &input.server as _
         )
-        .bind(&input.server)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -397,7 +408,7 @@ impl Processor<ForgetServerAppliedRow> for Db {
 }
 
 /// What the watch poller compares between ticks.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerWatchState {
     pub id: ServerId,
     pub refresh_key_generation: i64,
@@ -417,17 +428,11 @@ impl Processor<ListServerWatchState> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServerWatchState", skip_all, err)]
     async fn process(&self, input: ListServerWatchState) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT v.server AS id, s.refresh_key_generation, s.watch_epoch,
-                    (v.desired ->> 'revision')::bigint AS desired_revision,
-                    (v.in_flight ->> 'revision')::bigint AS in_flight_revision,
-                    (v.applied ->> 'revision')::bigint AS applied_revision,
-                    v.failed_revision
-             FROM orchestration_server_config_view v
-             JOIN orchestration_server s ON s.id = v.server
-             WHERE v.server = ANY($1)",
+        Ok(sqlx::query_file_as!(
+            ServerWatchState,
+            "sql/list_server_watch_state.sql",
+            &input.servers as _
         )
-        .bind(&input.servers)
         .fetch_all(self.db())
         .await?)
     }
@@ -464,11 +469,12 @@ impl Processor<LoadCanvasDerivationInput> for Db {
         let Some(root) = rows.canvases.iter().find(|c| c.id == rows.root) else {
             return Ok(None);
         };
-        let derived_view_seq: i64 =
-            sqlx::query_scalar("SELECT derived_view_seq FROM orchestration_canvas WHERE id = $1")
-                .bind(&rows.root)
-                .fetch_one(&mut *tx)
-                .await?;
+        let derived_view_seq: i64 = sqlx::query_scalar!(
+            "SELECT derived_view_seq FROM orchestration_canvas WHERE id = $1",
+            &rows.root as _
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         let canvas_ids: Vec<CanvasId> = rows.canvases.iter().map(|c| c.id.clone()).collect();
         let views = views_of_canvases(&mut tx, &canvas_ids).await?;
         tx.commit().await?;
@@ -525,16 +531,12 @@ impl Processor<CommitCanvasDerivation> for Db {
         // publishes its revisions. `view_seq` is the sum of the tree's view `seq`
         // counters as the pass read them: a worker write that lands after the
         // read leaves the sum above the stamp, so the canvas reads as stale again.
-        let fenced: Option<CanvasId> = sqlx::query_scalar(
-            "UPDATE orchestration_canvas
-             SET derived_generation = $2, derived_view_seq = $3
-             WHERE id = $1 AND generation = $2
-               AND (derived_generation < $2 OR derived_view_seq < $3)
-             RETURNING id",
+        let fenced: Option<CanvasId> = sqlx::query_file_scalar!(
+            "sql/commit_canvas_derivation.sql",
+            &input.canvas as _,
+            input.generation,
+            input.view_seq
         )
-        .bind(&input.canvas)
-        .bind(input.generation)
-        .bind(input.view_seq)
         .fetch_optional(&mut *tx)
         .await?;
         if fenced.is_none() {
@@ -549,34 +551,29 @@ impl Processor<CommitCanvasDerivation> for Db {
             // `desired` is left alone when the pass has no new revision;
             // `invalid_pods` is written either way: a pod breaking or being fixed
             // must be visible even when the served config is byte-identical.
-            sqlx::query(
-                "UPDATE orchestration_server_config_view
-                 SET desired = COALESCE($2, desired), derive_error = $3, invalid_pods = $4,
-                     waiting_for = $5,
-                     failed_revision = CASE WHEN $6 THEN NULL ELSE failed_revision END,
-                     apply_error = CASE WHEN $6 THEN NULL ELSE apply_error END
-                 WHERE server = $1",
+            sqlx::query_file!(
+                "sql/commit_canvas_derivation_view.sql",
+                &update.server as _,
+                update.desired.as_ref().map(Json) as _,
+                update.derive_error.as_deref(),
+                Json(&update.invalid_pods) as _,
+                &update.waiting_for as _,
+                update.clear_failure
             )
-            .bind(&update.server)
-            .bind(update.desired.as_ref().map(Json))
-            .bind(&update.derive_error)
-            .bind(Json(&update.invalid_pods))
-            .bind(&update.waiting_for)
-            .bind(update.clear_failure)
             .execute(&mut *tx)
             .await?;
         }
         // Subcanvas rows carry no generation of their own; keep them level so a
         // canvas that was imported mid-edit can never look stale on its own.
         let members = tree::tree_of(&mut tx, &input.canvas).await?;
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_canvas
              SET derived_generation = generation, derived_view_seq = $2
              WHERE id = ANY($1) AND id <> $3",
+            &members as _,
+            input.view_seq,
+            &input.canvas as _
         )
-        .bind(&members)
-        .bind(input.view_seq)
-        .bind(&input.canvas)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -598,27 +595,8 @@ impl Processor<ListStaleCanvases> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListStaleCanvases", skip_all, err)]
     async fn process(&self, _input: ListStaleCanvases) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar(
-            "WITH RECURSIVE tree (root, canvas, depth) AS (
-                 SELECT id, id, 0 FROM orchestration_canvas
-               UNION ALL
-                 SELECT tree.root, c.id, tree.depth + 1
-                 FROM tree JOIN orchestration_canvas c ON c.parent = tree.canvas
-                 WHERE tree.depth < 32
-             ), view_sum AS (
-                 SELECT tree.root, COALESCE(SUM(v.seq), 0) AS seq_sum
-                 FROM tree
-                 JOIN orchestration_server s ON s.canvas = tree.canvas
-                 JOIN orchestration_server_config_view v ON v.server = s.id
-                 GROUP BY tree.root
-             )
-             SELECT c.id FROM orchestration_canvas c
-             LEFT JOIN view_sum ON view_sum.root = c.id
-             WHERE c.generation > c.derived_generation
-                OR c.derived_view_seq < COALESCE(view_sum.seq_sum, 0)
-             ORDER BY c.id",
-        )
-        .fetch_all(self.db())
-        .await?)
+        Ok(sqlx::query_file_scalar!("sql/list_stale_canvases.sql")
+            .fetch_all(self.db())
+            .await?)
     }
 }

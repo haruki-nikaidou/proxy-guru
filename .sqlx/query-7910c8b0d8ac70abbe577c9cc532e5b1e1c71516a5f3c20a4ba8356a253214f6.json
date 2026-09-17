@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id           AS \"id: ServerConfigViewId\",\n       server       AS \"server: ServerId\",\n       desired      AS \"desired: Json<ConfigSnapshot>\",\n       in_flight    AS \"in_flight: Json<ConfigSnapshot>\",\n       applied      AS \"applied: Json<ConfigSnapshot>\",\n       failed_revision,\n       apply_error,\n       failed_pods  AS \"failed_pods: Json<Vec<PodFailure>>\",\n       derive_error,\n       invalid_pods AS \"invalid_pods: Json<Vec<InvalidPod>>\",\n       waiting_for  AS \"waiting_for: Vec<ServerId>\",\n       seq\nFROM orchestration_server_config_view\nWHERE server = $1\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerConfigViewId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "server: ServerId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "server"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "desired: Json<ConfigSnapshot>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "desired"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "in_flight: Json<ConfigSnapshot>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "in_flight"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "applied: Json<ConfigSnapshot>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "applied"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "failed_revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "failed_revision"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "apply_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "apply_error"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "failed_pods: Json<Vec<PodFailure>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "failed_pods"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "derive_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "derive_error"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "invalid_pods: Json<Vec<InvalidPod>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "invalid_pods"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "waiting_for: Vec<ServerId>",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "waiting_for"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server_config_view",
+            "name": "seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7910c8b0d8ac70abbe577c9cc532e5b1e1c71516a5f3c20a4ba8356a253214f6"
+}

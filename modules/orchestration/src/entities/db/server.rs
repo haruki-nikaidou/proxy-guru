@@ -15,19 +15,17 @@ table_record!(ServerId, "orchestration_server");
 /// The conflict reported when a server that still has pods is deleted.
 pub const SERVER_HAS_PODS: &str = "server still has pods; delete them first";
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerEntity {
     pub id: ServerId,
     pub canvas: CanvasId,
     pub name: String,
     pub icon: String,
     pub comment: String,
-    #[sqlx(flatten)]
     pub position: CanvasUiPosition,
     pub ipv6_resolve: ServerIpv6Resolve,
     pub log_level: ServerLogLevel,
     /// This server's side of every QUIC relay link it takes part in.
-    #[sqlx(json)]
     pub quic: ServerQuic,
     pub current_dynamic_refresh_key: Option<String>,
     pub refresh_key_generation: i64,
@@ -56,7 +54,6 @@ pub struct ServerEntity {
     /// address); pods may advertise one of them.
     pub extra_addresses: Vec<String>,
     /// What the worker last reported about itself.
-    #[sqlx(json(nullable))]
     pub reported_addresses: Option<ReportedAddresses>,
     /// The peer address the master saw the last registration come from.
     pub observed_address: Option<String>,
@@ -89,6 +86,91 @@ pub struct ServerEntity {
     /// What the server's worker reads beyond the config every worker reads, as
     /// it reported on its last registration (`route_table`, `relay_confirm`).
     pub capabilities: Vec<String>,
+}
+
+/// The stored shape of a server row, as the query macros fill it: `position` is
+/// two columns and the two `jsonb` documents arrive wrapped. Every read of the
+/// table goes through this and converts once.
+pub(crate) struct ServerRow {
+    pub(crate) id: ServerId,
+    pub(crate) canvas: CanvasId,
+    pub(crate) name: String,
+    pub(crate) icon: String,
+    pub(crate) comment: String,
+    pub(crate) position_x: i64,
+    pub(crate) position_y: i64,
+    pub(crate) ipv6_resolve: ServerIpv6Resolve,
+    pub(crate) log_level: ServerLogLevel,
+    pub(crate) quic: Json<ServerQuic>,
+    pub(crate) current_dynamic_refresh_key: Option<String>,
+    pub(crate) refresh_key_generation: i64,
+    pub(crate) watch_epoch: i64,
+    pub(crate) session_lease_until: Option<DateTime<Utc>>,
+    pub(crate) registered_at: Option<DateTime<Utc>>,
+    pub(crate) last_seen_at: Option<DateTime<Utc>>,
+    pub(crate) last_health_report_at: Option<DateTime<Utc>>,
+    pub(crate) health_status: ServerHealthStatus,
+    pub(crate) override_v4: Option<String>,
+    pub(crate) override_v6: Option<String>,
+    pub(crate) extra_addresses: Vec<String>,
+    pub(crate) reported_addresses: Option<Json<ReportedAddresses>>,
+    pub(crate) observed_address: Option<String>,
+    pub(crate) observed_at: Option<DateTime<Utc>>,
+    pub(crate) agent_version: Option<String>,
+    pub(crate) agent_arch: Option<String>,
+    pub(crate) agent_unit: Option<String>,
+    pub(crate) agent_update_requested: Option<String>,
+    pub(crate) agent_update_error: Option<String>,
+    pub(crate) agent_key_digest: Option<String>,
+    pub(crate) agent_key_issued_at: Option<DateTime<Utc>>,
+    pub(crate) country: Option<String>,
+    pub(crate) country_address: Option<String>,
+    pub(crate) country_checked_at: Option<DateTime<Utc>>,
+    pub(crate) capabilities: Vec<String>,
+}
+
+impl From<ServerRow> for ServerEntity {
+    fn from(row: ServerRow) -> Self {
+        Self {
+            id: row.id,
+            canvas: row.canvas,
+            name: row.name,
+            icon: row.icon,
+            comment: row.comment,
+            position: CanvasUiPosition {
+                x: row.position_x,
+                y: row.position_y,
+            },
+            ipv6_resolve: row.ipv6_resolve,
+            log_level: row.log_level,
+            quic: row.quic.0,
+            current_dynamic_refresh_key: row.current_dynamic_refresh_key,
+            refresh_key_generation: row.refresh_key_generation,
+            watch_epoch: row.watch_epoch,
+            session_lease_until: row.session_lease_until,
+            registered_at: row.registered_at,
+            last_seen_at: row.last_seen_at,
+            last_health_report_at: row.last_health_report_at,
+            health_status: row.health_status,
+            override_v4: row.override_v4,
+            override_v6: row.override_v6,
+            extra_addresses: row.extra_addresses,
+            reported_addresses: row.reported_addresses.map(|json| json.0),
+            observed_address: row.observed_address,
+            observed_at: row.observed_at,
+            agent_version: row.agent_version,
+            agent_arch: row.agent_arch,
+            agent_unit: row.agent_unit,
+            agent_update_requested: row.agent_update_requested,
+            agent_update_error: row.agent_update_error,
+            agent_key_digest: row.agent_key_digest,
+            agent_key_issued_at: row.agent_key_issued_at,
+            country: row.country,
+            country_address: row.country_address,
+            country_checked_at: row.country_checked_at,
+            capabilities: row.capabilities,
+        }
+    }
 }
 
 /// The address set a worker discovers about itself and sends with `Register`
@@ -317,32 +399,32 @@ impl Processor<CreateServer> for Db {
         // tree's root comes first (`fence`'s lock order).
         let mut tx = self.db().begin().await?;
         fence::touch(&mut tx, &input.canvas).await?;
-        let server: ServerEntity = sqlx::query_as(
-            "INSERT INTO orchestration_server
-                 (id, canvas, name, icon, comment, position_x, position_y, ipv6_resolve,
-                  log_level, override_v4, override_v6, extra_addresses)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             RETURNING *",
+        let server: ServerEntity = sqlx::query_file_as!(
+            ServerRow,
+            "sql/create_server.sql",
+            ServerId::new() as _,
+            input.canvas as _,
+            input.name,
+            input.icon,
+            input.comment,
+            input.position.x,
+            input.position.y,
+            input.ipv6_resolve as _,
+            input.log_level as _,
+            input.override_v4,
+            input.override_v6,
+            &input.extra_addresses
         )
-        .bind(ServerId::new())
-        .bind(&input.canvas)
-        .bind(&input.name)
-        .bind(&input.icon)
-        .bind(&input.comment)
-        .bind(input.position.x)
-        .bind(input.position.y)
-        .bind(input.ipv6_resolve)
-        .bind(input.log_level)
-        .bind(&input.override_v4)
-        .bind(&input.override_v6)
-        .bind(&input.extra_addresses)
         .fetch_one(&mut *tx)
+        .await?
+        .into();
+        sqlx::query!(
+            "INSERT INTO orchestration_server_config_view (id, server) VALUES ($1, $2)",
+            crate::entities::db::view::ServerConfigViewId::new() as _,
+            &server.id as _
+        )
+        .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO orchestration_server_config_view (id, server) VALUES ($1, $2)")
-            .bind(crate::entities::db::view::ServerConfigViewId::new())
-            .bind(&server.id)
-            .execute(&mut *tx)
-            .await?;
         tx.commit().await?;
         Ok(server)
     }
@@ -359,10 +441,10 @@ impl Processor<FindServerById> for Db {
     #[tracing::instrument(name = "Query:FindServerById", skip_all, err)]
     async fn process(&self, input: FindServerById) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_as("SELECT * FROM orchestration_server WHERE id = $1")
-                .bind(input.id)
+            sqlx::query_file_as!(ServerRow, "sql/find_server_by_id.sql", input.id as _)
                 .fetch_optional(self.db())
-                .await?,
+                .await?
+                .map(ServerEntity::from),
         )
     }
 }
@@ -377,11 +459,12 @@ impl Processor<ListAllServers> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListAllServers", skip_all, err)]
     async fn process(&self, _: ListAllServers) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM orchestration_server ORDER BY id")
-                .fetch_all(self.db())
-                .await?,
-        )
+        Ok(sqlx::query_file_as!(ServerRow, "sql/list_all_servers.sql")
+            .fetch_all(self.db())
+            .await?
+            .into_iter()
+            .map(ServerEntity::from)
+            .collect())
     }
 }
 
@@ -403,15 +486,15 @@ impl Processor<SetServerCountry> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:SetServerCountry", skip_all, err)]
     async fn process(&self, input: SetServerCountry) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server
                 SET country = $2, country_address = $3, country_checked_at = $4
               WHERE id = $1",
+            input.server as _,
+            input.country,
+            input.address,
+            input.checked_at
         )
-        .bind(input.server)
-        .bind(input.country)
-        .bind(input.address)
-        .bind(input.checked_at)
         .execute(self.db())
         .await?;
         Ok(())
@@ -428,12 +511,16 @@ impl Processor<ListServersByCanvas> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServersByCanvas", skip_all, err)]
     async fn process(&self, input: ListServersByCanvas) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM orchestration_server WHERE canvas = $1 ORDER BY id")
-                .bind(input.canvas)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_file_as!(
+            ServerRow,
+            "sql/list_servers_by_canvas.sql",
+            input.canvas as _
         )
+        .fetch_all(self.db())
+        .await?
+        .into_iter()
+        .map(ServerEntity::from)
+        .collect())
     }
 }
 
@@ -464,26 +551,24 @@ impl Processor<UpdateServerSettings> for Db {
         // The root before the server row (`fence`'s lock order), the order a
         // server delete takes them in.
         fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
-        let server: ServerEntity = sqlx::query_as(
-            "UPDATE orchestration_server
-             SET name = $2, icon = $3, comment = $4, ipv6_resolve = $5, log_level = $6,
-                 override_v4 = $7, override_v6 = $8, extra_addresses = $9, agent_unit = $10,
-                 quic = $11
-             WHERE id = $1 RETURNING *",
+        let server: ServerEntity = sqlx::query_file_as!(
+            ServerRow,
+            "sql/update_server_settings.sql",
+            input.id as _,
+            input.name,
+            input.icon,
+            input.comment,
+            input.ipv6_resolve as _,
+            input.log_level as _,
+            input.override_v4,
+            input.override_v6,
+            &input.extra_addresses,
+            input.agent_unit,
+            Json(input.quic) as _
         )
-        .bind(&input.id)
-        .bind(&input.name)
-        .bind(&input.icon)
-        .bind(&input.comment)
-        .bind(input.ipv6_resolve)
-        .bind(input.log_level)
-        .bind(&input.override_v4)
-        .bind(&input.override_v6)
-        .bind(&input.extra_addresses)
-        .bind(&input.agent_unit)
-        .bind(Json(input.quic))
         .fetch_one(&mut *tx)
-        .await?;
+        .await?
+        .into();
         tx.commit().await?;
         Ok(server)
     }
@@ -506,18 +591,17 @@ impl Processor<SetServerAgentKey> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:SetServerAgentKey", skip_all, err, fields(id = %input.id))]
     async fn process(&self, input: SetServerAgentKey) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "UPDATE orchestration_server
-             SET agent_key_digest = $2, agent_key_issued_at = $3, agent_unit = $4,
-                 agent_update_requested = NULL, agent_update_error = NULL
-             WHERE id = $1 RETURNING *",
+        Ok(sqlx::query_file_as!(
+            ServerRow,
+            "sql/set_server_agent_key.sql",
+            input.id as _,
+            input.digest,
+            input.now,
+            input.unit
         )
-        .bind(input.id)
-        .bind(input.digest)
-        .bind(input.now)
-        .bind(input.unit)
         .fetch_one(self.db())
-        .await?)
+        .await?
+        .into())
     }
 }
 
@@ -533,15 +617,15 @@ impl Processor<SetAgentUpdateRequested> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:SetAgentUpdateRequested", skip_all, err, fields(id = %input.id))]
     async fn process(&self, input: SetAgentUpdateRequested) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "UPDATE orchestration_server
-             SET agent_update_requested = $2, agent_update_error = NULL
-             WHERE id = $1 RETURNING *",
+        Ok(sqlx::query_file_as!(
+            ServerRow,
+            "sql/set_agent_update_requested.sql",
+            input.id as _,
+            input.version
         )
-        .bind(input.id)
-        .bind(input.version)
         .fetch_one(self.db())
-        .await?)
+        .await?
+        .into())
     }
 }
 
@@ -562,17 +646,12 @@ impl Processor<SettleAgentUpdate> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:SettleAgentUpdate", skip_all, err, fields(id = %input.id))]
     async fn process(&self, input: SettleAgentUpdate) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
-            "UPDATE orchestration_server
-             SET agent_update_requested = NULL,
-                 agent_update_error = CASE WHEN $2::text IS NOT NULL THEN $2 ELSE NULL END
-             WHERE id = $1
-               AND ($2::text IS NOT NULL
-                    OR (agent_update_requested IS NOT NULL AND agent_update_requested = $3))",
+        sqlx::query_file!(
+            "sql/settle_agent_update.sql",
+            input.id as _,
+            input.error,
+            input.reported_version
         )
-        .bind(input.id)
-        .bind(input.error)
-        .bind(input.reported_version)
         .execute(self.db())
         .await?;
         Ok(())
@@ -593,14 +672,14 @@ impl Processor<FindServerByAgentKeyDigest> for Db {
         &self,
         input: FindServerByAgentKeyDigest,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as(
-                "SELECT * FROM orchestration_server WHERE agent_key_digest = $1 LIMIT 1",
-            )
-            .bind(input.digest)
-            .fetch_optional(self.db())
-            .await?,
+        Ok(sqlx::query_file_as!(
+            ServerRow,
+            "sql/find_server_by_agent_key_digest.sql",
+            input.digest
         )
+        .fetch_optional(self.db())
+        .await?
+        .map(ServerEntity::from))
     }
 }
 
@@ -614,12 +693,12 @@ impl Processor<MoveServerPosition> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:MoveServerPosition", skip_all, err, fields(id = %input.id))]
     async fn process(&self, input: MoveServerPosition) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server SET position_x = $2, position_y = $3 WHERE id = $1",
+            input.id as _,
+            input.position.x,
+            input.position.y
         )
-        .bind(input.id)
-        .bind(input.position.x)
-        .bind(input.position.y)
         .execute(self.db())
         .await?;
         Ok(())
@@ -654,19 +733,22 @@ impl Processor<DeleteServerRow> for Db {
     async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
         fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
-        let pods: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM orchestration_pod WHERE server = $1")
-                .bind(&input.id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let pods: i64 = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM orchestration_pod WHERE server = $1"#,
+            &input.id as _
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         if pods > 0 {
             return Err(Error::Conflict(SERVER_HAS_PODS));
         }
         // Its view, health history and group memberships cascade.
-        sqlx::query("DELETE FROM orchestration_server WHERE id = $1")
-            .bind(&input.id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_server WHERE id = $1",
+            &input.id as _
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -713,14 +795,10 @@ pub struct RegisterWorkerSession {
 }
 
 /// The three snapshot slots of a view row, as the registration reads them.
-#[derive(sqlx::FromRow)]
 struct ViewSlots {
-    #[sqlx(json(nullable))]
-    desired: Option<ConfigSnapshot>,
-    #[sqlx(json(nullable))]
-    in_flight: Option<ConfigSnapshot>,
-    #[sqlx(json(nullable))]
-    applied: Option<ConfigSnapshot>,
+    desired: Option<Json<ConfigSnapshot>>,
+    in_flight: Option<Json<ConfigSnapshot>>,
+    applied: Option<Json<ConfigSnapshot>>,
 }
 
 impl Processor<RegisterWorkerSession> for Db {
@@ -734,52 +812,68 @@ impl Processor<RegisterWorkerSession> for Db {
         // `reported_addresses` and the worker's build are replaced only when the
         // worker sent them (`COALESCE` keeps the previous value otherwise, so an
         // older worker cannot blank a known version).
-        let rotated: Option<ServerEntity> = sqlx::query_as(
-            "UPDATE orchestration_server
-             SET current_dynamic_refresh_key = $2,
-                 refresh_key_generation = refresh_key_generation + 1,
-                 session_lease_until = $3, last_seen_at = $4, registered_at = $4,
-                 observed_address = $5, observed_at = $4,
-                 reported_addresses = COALESCE($6, reported_addresses),
-                 agent_version = COALESCE($7, agent_version),
-                 agent_arch = COALESCE($8, agent_arch),
-                 capabilities = $9
-             WHERE id = $1 AND (session_lease_until IS NULL OR session_lease_until <= $4)
-             RETURNING *",
+        let rotated: Option<ServerEntity> = sqlx::query_file_as!(
+            ServerRow,
+            "sql/register_worker_session.sql",
+            &input.server as _,
+            input.digest,
+            input.lease_until,
+            input.now,
+            input.observed,
+            input.reported.as_ref().map(Json) as _,
+            input.agent_version,
+            input.agent_arch,
+            &input.capabilities
         )
-        .bind(&input.server)
-        .bind(&input.digest)
-        .bind(input.lease_until)
-        .bind(input.now)
-        .bind(&input.observed)
-        .bind(input.reported.as_ref().map(Json))
-        .bind(&input.agent_version)
-        .bind(&input.agent_arch)
-        .bind(&input.capabilities)
         .fetch_optional(&mut *tx)
-        .await?;
+        .await?
+        .map(ServerEntity::from);
         let Some(server) = rotated else {
             tx.rollback().await?;
             return Ok(None);
         };
-        let slots: ViewSlots = sqlx::query_as(
-            "SELECT desired, in_flight, applied FROM orchestration_server_config_view
-             WHERE server = $1 FOR UPDATE",
+        let slots = sqlx::query_as!(
+            ViewSlots,
+            r#"SELECT desired AS "desired: Json<ConfigSnapshot>",
+                      in_flight AS "in_flight: Json<ConfigSnapshot>",
+                      applied AS "applied: Json<ConfigSnapshot>"
+               FROM orchestration_server_config_view
+               WHERE server = $1 FOR UPDATE"#,
+            &input.server as _
         )
-        .bind(&input.server)
         .fetch_one(&mut *tx)
         .await?;
-        let revision_of = |slot: &Option<ConfigSnapshot>| slot.as_ref().map(|s| s.revision);
+        let revision_of = |slot: &Option<Json<ConfigSnapshot>>| slot.as_ref().map(|s| s.revision);
         let running = input.running_revision;
-        let repair = if running > 0 {
+        if running > 0 {
             if revision_of(&slots.desired) == Some(running) {
-                Some("SET applied = desired, apply_error = NULL, failed_revision = NULL")
+                sqlx::query!(
+                    "UPDATE orchestration_server_config_view
+                     SET applied = desired, apply_error = NULL, failed_revision = NULL
+                     WHERE server = $1",
+                    &input.server as _
+                )
+                .execute(&mut *tx)
+                .await?;
             } else if revision_of(&slots.in_flight) == Some(running) {
-                Some("SET applied = in_flight, apply_error = NULL, failed_revision = NULL")
+                sqlx::query!(
+                    "UPDATE orchestration_server_config_view
+                     SET applied = in_flight, apply_error = NULL, failed_revision = NULL
+                     WHERE server = $1",
+                    &input.server as _
+                )
+                .execute(&mut *tx)
+                .await?;
             } else if revision_of(&slots.applied) != Some(running) {
-                Some("SET apply_error = 'running revision ' || $2::text || ' unknown'")
-            } else {
-                None
+                sqlx::query!(
+                    "UPDATE orchestration_server_config_view
+                     SET apply_error = 'running revision ' || $2::bigint::text || ' unknown'
+                     WHERE server = $1",
+                    &input.server as _,
+                    running
+                )
+                .execute(&mut *tx)
+                .await?;
             }
         } else {
             // A worker running nothing (a fresh install, a wiped state directory,
@@ -787,24 +881,21 @@ impl Processor<RegisterWorkerSession> for Db {
             // applied: forget that, so the stream hands the desired revision out
             // again instead of treating the server as converged, and dependants
             // stop counting on listeners nobody serves.
-            Some(
-                "SET applied = NULL, apply_error = NULL, failed_revision = NULL, failed_pods = '[]'",
+            sqlx::query!(
+                "UPDATE orchestration_server_config_view
+                 SET applied = NULL, apply_error = NULL, failed_revision = NULL,
+                     failed_pods = '[]'
+                 WHERE server = $1",
+                &input.server as _
             )
-        };
-        if let Some(assignment) = repair {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE orchestration_server_config_view {assignment} WHERE server = $1"
-            )))
-            .bind(&input.server)
-            .bind(running)
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server_config_view SET in_flight = NULL, seq = seq + 1
              WHERE server = $1",
+            &input.server as _
         )
-        .bind(&input.server)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -829,31 +920,40 @@ impl Processor<UpdateReportedAddresses> for Db {
     #[tracing::instrument(name = "Query-Transaction:UpdateReportedAddresses", skip_all, err, fields(server = %input.server))]
     async fn process(&self, input: UpdateReportedAddresses) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
-        let current: Option<(i64, Option<Json<ReportedAddresses>>)> = sqlx::query_as(
-            "SELECT refresh_key_generation, reported_addresses FROM orchestration_server
-             WHERE id = $1 FOR UPDATE",
+        let current = sqlx::query!(
+            r#"SELECT refresh_key_generation,
+                      reported_addresses AS "reported_addresses: Json<ReportedAddresses>"
+               FROM orchestration_server
+               WHERE id = $1 FOR UPDATE"#,
+            &input.server as _
         )
-        .bind(&input.server)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((generation, stored)) = current else {
+        let Some(current) = current else {
             return Ok(false);
         };
-        if generation != input.generation {
+        if current.refresh_key_generation != input.generation {
             return Ok(false);
         }
-        if stored.is_some_and(|stored| stored.0.same_addresses(&input.reported)) {
+        if current
+            .reported_addresses
+            .is_some_and(|stored| stored.0.same_addresses(&input.reported))
+        {
             return Ok(false);
         }
-        sqlx::query("UPDATE orchestration_server SET reported_addresses = $2 WHERE id = $1")
-            .bind(&input.server)
-            .bind(Json(&input.reported))
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE orchestration_server_config_view SET seq = seq + 1 WHERE server = $1")
-            .bind(&input.server)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE orchestration_server SET reported_addresses = $2 WHERE id = $1",
+            &input.server as _,
+            Json(&input.reported) as _
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view SET seq = seq + 1 WHERE server = $1",
+            &input.server as _
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -888,22 +988,22 @@ impl Processor<ClaimServerWatchSession> for Db {
     #[tracing::instrument(name = "Query-Transaction:ClaimServerWatchSession", skip_all, err)]
     async fn process(&self, input: ClaimServerWatchSession) -> Result<Self::Output, Self::Error> {
         let mut tx = self.db().begin().await?;
-        let claimed: Option<ServerEntity> = sqlx::query_as(
-            "UPDATE orchestration_server
-             SET watch_epoch = watch_epoch + 1, session_lease_until = $3, last_seen_at = $4
-             WHERE id = $1 AND refresh_key_generation = $2 RETURNING *",
+        let claimed: Option<ServerEntity> = sqlx::query_file_as!(
+            ServerRow,
+            "sql/claim_server_watch_session.sql",
+            &input.server as _,
+            input.generation,
+            input.lease_until,
+            input.now
         )
-        .bind(&input.server)
-        .bind(input.generation)
-        .bind(input.lease_until)
-        .bind(input.now)
         .fetch_optional(&mut *tx)
-        .await?;
+        .await?
+        .map(ServerEntity::from);
         if claimed.is_some() {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE orchestration_server_config_view SET in_flight = NULL WHERE server = $1",
+                &input.server as _
             )
-            .bind(&input.server)
             .execute(&mut *tx)
             .await?;
         }
@@ -928,16 +1028,16 @@ impl Processor<RenewServerWatchSession> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:RenewServerWatchSession", skip_all, err)]
     async fn process(&self, input: RenewServerWatchSession) -> Result<Self::Output, Self::Error> {
-        let renewed: Option<ServerId> = sqlx::query_scalar(
-            "UPDATE orchestration_server SET session_lease_until = $4, last_seen_at = $5
-             WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3
-             RETURNING id",
+        let renewed: Option<ServerId> = sqlx::query_scalar!(
+            r#"UPDATE orchestration_server SET session_lease_until = $4, last_seen_at = $5
+               WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3
+               RETURNING id AS "id: ServerId""#,
+            input.server as _,
+            input.generation,
+            input.epoch,
+            input.lease_until,
+            input.now
         )
-        .bind(input.server)
-        .bind(input.generation)
-        .bind(input.epoch)
-        .bind(input.lease_until)
-        .bind(input.now)
         .fetch_optional(self.db())
         .await?;
         Ok(renewed.is_some())
@@ -958,13 +1058,13 @@ impl Processor<ReleaseServerWatchSession> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ReleaseServerWatchSession", skip_all, err)]
     async fn process(&self, input: ReleaseServerWatchSession) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE orchestration_server SET session_lease_until = NULL
              WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3",
+            input.server as _,
+            input.generation,
+            input.epoch
         )
-        .bind(input.server)
-        .bind(input.generation)
-        .bind(input.epoch)
         .execute(self.db())
         .await?;
         Ok(())
@@ -1000,17 +1100,11 @@ impl Processor<RevokeSilentWatchSessions> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:RevokeSilentWatchSessions", skip_all, err)]
     async fn process(&self, input: RevokeSilentWatchSessions) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar(
-            "UPDATE orchestration_server
-             SET session_lease_until = NULL, watch_epoch = watch_epoch + 1
-             WHERE health_status = 'offline'
-               AND session_lease_until > $1
-               AND registered_at < $2
-               AND (last_health_report_at IS NULL OR last_health_report_at < registered_at)
-             RETURNING id",
+        Ok(sqlx::query_file_scalar!(
+            "sql/revoke_silent_watch_sessions.sql",
+            input.now,
+            input.registered_before
         )
-        .bind(input.now)
-        .bind(input.registered_before)
         .fetch_all(self.db())
         .await?)
     }
@@ -1028,12 +1122,14 @@ impl Processor<FindServerByRefreshKeyDigest> for Db {
         &self,
         input: FindServerByRefreshKeyDigest,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM orchestration_server WHERE current_dynamic_refresh_key = $1 LIMIT 1",
+        Ok(sqlx::query_file_as!(
+            ServerRow,
+            "sql/find_server_by_refresh_key_digest.sql",
+            input.digest
         )
-        .bind(input.digest)
         .fetch_optional(self.db())
-        .await?)
+        .await?
+        .map(ServerEntity::from))
     }
 }
 
@@ -1046,11 +1142,11 @@ impl Processor<FindCanvasOfServer> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCanvasOfServer", skip_all, err)]
     async fn process(&self, input: FindCanvasOfServer) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_scalar("SELECT canvas FROM orchestration_server WHERE id = $1")
-                .bind(input.server)
-                .fetch_optional(self.db())
-                .await?,
+        Ok(sqlx::query_scalar!(
+            r#"SELECT canvas AS "canvas: CanvasId" FROM orchestration_server WHERE id = $1"#,
+            input.server as _
         )
+        .fetch_optional(self.db())
+        .await?)
     }
 }

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server\nSET agent_update_requested = NULL,\n    agent_update_error = CASE WHEN $2::text IS NOT NULL THEN $2 ELSE NULL END\nWHERE id = $1\n  AND ($2::text IS NOT NULL\n       OR (agent_update_requested IS NOT NULL AND agent_update_requested = $3))\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0bce85d8923a05f7f46d856dfac4d30e8cb849770b108ab6773183a87b72bcbe"
+}

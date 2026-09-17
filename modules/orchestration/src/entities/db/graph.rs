@@ -4,20 +4,29 @@
 //! batch is checked against, and the unit derivation compiles.
 
 use crate::entities::db::canvas::{
-    CanvasEntity, CanvasFence, CanvasId, CanvasUiPosition, SNAPSHOT_READ,
+    CanvasEntity, CanvasFence, CanvasId, CanvasRow, CanvasUiPosition, SNAPSHOT_READ,
 };
-use crate::entities::db::edge::{EdgeEntity, EdgeId, insert_edge, update_edge};
-use crate::entities::db::exit::{ExitEntity, ExitId, insert_exit, update_exit};
+use crate::entities::db::dns::DnsProviderId;
+use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeRow, insert_edge, update_edge};
+use crate::entities::db::exit::{ExitEntity, ExitId, ExitRow, insert_exit, update_exit};
 use crate::entities::db::fence;
 use crate::entities::db::group::{
     GroupEntity, GroupId, groups_of_canvases, insert_group, update_group,
 };
-use crate::entities::db::pod::{PodEntity, PodId, insert_pod, update_pod};
-use crate::entities::db::server::ServerEntity;
+use crate::entities::db::health::ServerHealthStatus;
+use crate::entities::db::pod::{
+    IngressKind, PodEntity, PodId, PodRow, ProxyProtocolVersion, insert_pod, update_pod,
+};
+use crate::entities::db::server::{
+    ReportedAddresses, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
+    ServerRow,
+};
 use crate::entities::db::tree;
 use base::db::{Db, Error};
+use guru_topology::Route;
 use kanau::processor::Processor;
 use sqlx::PgConnection;
+use sqlx::types::Json;
 
 /// Everything the graph of one canvas tree is made of.
 #[derive(Debug, Clone)]
@@ -69,35 +78,52 @@ pub(crate) async fn load_graph(
     canvas: &CanvasId,
 ) -> Result<GraphRows, Error> {
     let (root, tree) = tree::whole_tree_of(&mut *conn, canvas).await?;
-    let mut canvases: Vec<CanvasEntity> =
-        sqlx::query_as("SELECT * FROM orchestration_canvas WHERE id = ANY($1)")
-            .bind(&tree)
-            .fetch_all(&mut *conn)
-            .await?;
+    let mut canvases: Vec<CanvasEntity> = sqlx::query_as!(
+        CanvasRow,
+        r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
+                  position_x, position_y, generation, derived_generation
+           FROM orchestration_canvas WHERE id = ANY($1)"#,
+        &tree as _
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(CanvasEntity::from)
+    .collect();
     canvases.sort_by_key(|c| tree.iter().position(|id| *id == c.id));
     let servers: Vec<ServerEntity> =
-        sqlx::query_as("SELECT * FROM orchestration_server WHERE canvas = ANY($1) ORDER BY id")
-            .bind(&tree)
+        sqlx::query_file_as!(ServerRow, "sql/load_graph_servers.sql", &tree as _)
             .fetch_all(&mut *conn)
-            .await?;
-    let pods: Vec<PodEntity> =
-        sqlx::query_as("SELECT * FROM orchestration_pod WHERE canvas = ANY($1) ORDER BY id")
-            .bind(&tree)
-            .fetch_all(&mut *conn)
-            .await?;
-    let exits: Vec<ExitEntity> =
-        sqlx::query_as("SELECT * FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id")
-            .bind(&tree)
-            .fetch_all(&mut *conn)
-            .await?;
-    let edges: Vec<EdgeEntity> = sqlx::query_as(
-        "SELECT e.* FROM orchestration_edge e
-         JOIN orchestration_pod p ON p.id = e.source_pod
-         WHERE p.canvas = ANY($1) ORDER BY e.id",
+            .await?
+            .into_iter()
+            .map(ServerEntity::from)
+            .collect();
+    let pods: Vec<PodEntity> = sqlx::query_file_as!(PodRow, "sql/load_graph_pods.sql", &tree as _)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(PodEntity::try_from)
+        .collect::<Result<_, sqlx::Error>>()?;
+    let exits: Vec<ExitEntity> = sqlx::query_as!(
+        ExitRow,
+        r#"SELECT id AS "id: ExitId", canvas AS "canvas: CanvasId", name, comment, destination,
+                  send_proxy_protocol AS "send_proxy_protocol: ProxyProtocolVersion",
+                  position_x, position_y
+           FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id"#,
+        &tree as _
     )
-    .bind(&tree)
     .fetch_all(&mut *conn)
-    .await?;
+    .await?
+    .into_iter()
+    .map(ExitEntity::from)
+    .collect();
+    let edges: Vec<EdgeEntity> =
+        sqlx::query_file_as!(EdgeRow, "sql/load_graph_edges.sql", &tree as _)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .map(EdgeEntity::try_from)
+            .collect::<Result<_, sqlx::Error>>()?;
     let groups = groups_of_canvases(conn, &tree).await?;
     Ok(GraphRows {
         root,
@@ -152,22 +178,30 @@ impl Processor<FindTakenIds> for Db {
     async fn process(&self, input: FindTakenIds) -> Result<Self::Output, Self::Error> {
         let mut conn = self.db().acquire().await?;
         Ok(TakenIds {
-            pods: sqlx::query_scalar("SELECT id FROM orchestration_pod WHERE id = ANY($1)")
-                .bind(&input.pods)
-                .fetch_all(&mut *conn)
-                .await?,
-            exits: sqlx::query_scalar("SELECT id FROM orchestration_exit WHERE id = ANY($1)")
-                .bind(&input.exits)
-                .fetch_all(&mut *conn)
-                .await?,
-            edges: sqlx::query_scalar("SELECT id FROM orchestration_edge WHERE id = ANY($1)")
-                .bind(&input.edges)
-                .fetch_all(&mut *conn)
-                .await?,
-            groups: sqlx::query_scalar("SELECT id FROM orchestration_group WHERE id = ANY($1)")
-                .bind(&input.groups)
-                .fetch_all(&mut *conn)
-                .await?,
+            pods: sqlx::query_scalar!(
+                r#"SELECT id AS "id: PodId" FROM orchestration_pod WHERE id = ANY($1)"#,
+                &input.pods as _
+            )
+            .fetch_all(&mut *conn)
+            .await?,
+            exits: sqlx::query_scalar!(
+                r#"SELECT id AS "id: ExitId" FROM orchestration_exit WHERE id = ANY($1)"#,
+                &input.exits as _
+            )
+            .fetch_all(&mut *conn)
+            .await?,
+            edges: sqlx::query_scalar!(
+                r#"SELECT id AS "id: EdgeId" FROM orchestration_edge WHERE id = ANY($1)"#,
+                &input.edges as _
+            )
+            .fetch_all(&mut *conn)
+            .await?,
+            groups: sqlx::query_scalar!(
+                r#"SELECT id AS "id: GroupId" FROM orchestration_group WHERE id = ANY($1)"#,
+                &input.groups as _
+            )
+            .fetch_all(&mut *conn)
+            .await?,
         })
     }
 }
@@ -232,23 +266,31 @@ impl Processor<ApplyGraphBatch> for Db {
         } else {
             fence::lock_root(&mut tx, &canvas).await?;
         }
-        sqlx::query("DELETE FROM orchestration_group WHERE id = ANY($1)")
-            .bind(&input.delete_groups)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM orchestration_edge WHERE id = ANY($1)")
-            .bind(&input.delete_edges)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_group WHERE id = ANY($1)",
+            &input.delete_groups as _
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_edge WHERE id = ANY($1)",
+            &input.delete_edges as _
+        )
+        .execute(&mut *tx)
+        .await?;
         // Health history and relay leaves cascade from the pod.
-        sqlx::query("DELETE FROM orchestration_pod WHERE id = ANY($1)")
-            .bind(&input.delete_pods)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM orchestration_exit WHERE id = ANY($1)")
-            .bind(&input.delete_exits)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_pod WHERE id = ANY($1)",
+            &input.delete_pods as _
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_exit WHERE id = ANY($1)",
+            &input.delete_exits as _
+        )
+        .execute(&mut *tx)
+        .await?;
         for pod in &input.insert_pods {
             insert_pod(&mut tx, pod).await?;
         }
@@ -274,11 +316,12 @@ impl Processor<ApplyGraphBatch> for Db {
             update_group(&mut tx, group).await?;
         }
         let root = tree::root_of(&mut tx, &canvas).await?;
-        let generation: i64 =
-            sqlx::query_scalar("SELECT generation FROM orchestration_canvas WHERE id = $1")
-                .bind(&root)
-                .fetch_one(&mut *tx)
-                .await?;
+        let generation: i64 = sqlx::query_scalar!(
+            "SELECT generation FROM orchestration_canvas WHERE id = $1",
+            root as _
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(generation)
     }
@@ -286,10 +329,9 @@ impl Processor<ApplyGraphBatch> for Db {
 
 /// That the node model was converted into the pod graph, and what the
 /// conversion found.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct GraphStateEntity {
     pub converted_at: chrono::DateTime<chrono::Utc>,
-    #[sqlx(json)]
     pub report: serde_json::Value,
 }
 
@@ -301,8 +343,9 @@ impl Processor<FindGraphState> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindGraphState", skip_all, err)]
     async fn process(&self, _: FindGraphState) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT converted_at, report FROM orchestration_graph_state WHERE id = 'current'",
+        Ok(sqlx::query_as!(
+            GraphStateEntity,
+            "SELECT converted_at, report FROM orchestration_graph_state WHERE id = 'current'"
         )
         .fetch_optional(self.db())
         .await?)
@@ -332,38 +375,38 @@ impl Processor<MoveGraphItems> for Db {
             fence::lock_root(&mut tx, canvas).await?;
         }
         for (server, position) in &input.servers {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE orchestration_server SET position_x = $2, position_y = $3
                  WHERE id = $1 AND canvas = ANY($4)",
+                server as _,
+                position.x,
+                position.y,
+                &input.tree as _
             )
-            .bind(server)
-            .bind(position.x)
-            .bind(position.y)
-            .bind(&input.tree)
             .execute(&mut *tx)
             .await?;
         }
         for (exit, position) in &input.exits {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE orchestration_exit SET position_x = $2, position_y = $3
                  WHERE id = $1 AND canvas = ANY($4)",
+                exit as _,
+                position.x,
+                position.y,
+                &input.tree as _
             )
-            .bind(exit)
-            .bind(position.x)
-            .bind(position.y)
-            .bind(&input.tree)
             .execute(&mut *tx)
             .await?;
         }
         for (canvas, position) in &input.canvases {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE orchestration_canvas SET position_x = $2, position_y = $3
                  WHERE id = $1 AND id = ANY($4)",
+                canvas as _,
+                position.x,
+                position.y,
+                &input.tree as _
             )
-            .bind(canvas)
-            .bind(position.x)
-            .bind(position.y)
-            .bind(&input.tree)
             .execute(&mut *tx)
             .await?;
         }

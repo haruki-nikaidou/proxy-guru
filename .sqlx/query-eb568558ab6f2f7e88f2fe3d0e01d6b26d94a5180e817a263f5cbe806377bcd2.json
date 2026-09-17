@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_pod\n             (id, canvas, server, name, comment, port, bind_ip, advertise_ip, ingress,\n              receive_proxy_protocol, tls_sni, tls_dns_provider, tls_domain_id,\n              tls_acme_directory, route)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb568558ab6f2f7e88f2fe3d0e01d6b26d94a5180e817a263f5cbe806377bcd2"
+}

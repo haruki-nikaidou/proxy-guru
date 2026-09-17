@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_pod\n         SET server = $2, name = $3, comment = $4, port = $5, bind_ip = $6, advertise_ip = $7,\n             ingress = $8, receive_proxy_protocol = $9, tls_sni = $10, tls_dns_provider = $11,\n             tls_domain_id = $12, tls_acme_directory = $13, route = $14\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8d69e53a4c7ee63dfe8d44fc0b054e87e958282bd5762dc7b8dce3faaf5693c0"
+}

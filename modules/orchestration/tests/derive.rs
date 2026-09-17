@@ -63,24 +63,28 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
         (&gcore, vec!["relay_confirm", "route_table"]),
         (&aws, vec![]),
     ] {
-        sqlx::query("UPDATE orchestration_server SET capabilities = $2 WHERE id = $1")
-            .bind(&server.id)
-            .bind(&capabilities)
-            .execute(w.db.db())
-            .await?;
+        sqlx::query!(
+            "UPDATE orchestration_server SET capabilities = $2 WHERE id = $1",
+            &server.id as _,
+            &capabilities as _
+        )
+        .execute(w.db.db())
+        .await?;
     }
     for (server, up_mbps, down_mbps) in [(&mobile, 100, 500), (&gcore, 1000, 50)] {
-        sqlx::query("UPDATE orchestration_server SET quic = $2 WHERE id = $1")
-            .bind(&server.id)
-            .bind(sqlx::types::Json(ServerQuic {
+        sqlx::query!(
+            "UPDATE orchestration_server SET quic = $2 WHERE id = $1",
+            &server.id as _,
+            sqlx::types::Json(ServerQuic {
                 congestion: QuicCongestion::Brutal,
                 up_mbps,
                 down_mbps,
                 stream_receive_window: 0,
                 conn_receive_window: 0,
-            }))
-            .execute(w.db.db())
-            .await?;
+            }) as _
+        )
+        .execute(w.db.db())
+        .await?;
     }
 
     let entry = client(&c, &mobile, "entry", 443, Some(ProxyProtocolVersion::V2));

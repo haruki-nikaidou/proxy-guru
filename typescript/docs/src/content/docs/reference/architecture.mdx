@@ -69,11 +69,12 @@ Every module crate mirrors `modules/base`:
 - **Dependency direction:** `rpc → services → entities/events/config`. A feature module may depend
   on `base`, but `base` must not depend on a feature module, and modules must not reach into each
   other's internals — they communicate via gRPC or AMQP events.
-- **`entities/db`:** one submodule per table or aggregate; a row struct deriving `sqlx::FromRow`;
-  the id wrapped by `table_record!(NameId, "table")`, an enum stored as text spelled once by
-  `text_enum!`. One `Processor` impl per query on `base::db::Db`, with `Error = base::db::Error`;
-  a multi-statement write is one `begin()` transaction. Queries are checked at runtime, so they are
-  covered by integration tests against a real database (`#[sqlx::test]`).
+- **`entities/db`:** one submodule per table or aggregate; a row struct; the id wrapped by
+  `table_record!(NameId, "table")`, an enum stored as text spelled once by `text_enum!`. One
+  `Processor` impl per query on `base::db::Db`, with `Error = base::db::Error`; a multi-statement
+  write is one `begin()` transaction. Every statement goes through sqlx's `query!` family, so the
+  SQL is checked against the schema at compile time; behaviour is still covered by integration
+  tests against a real database (`#[sqlx::test]`).
 - **`services`:** `Clone` structs owning their dependencies, one `Processor` impl per operation,
   returning domain types — never protobuf types.
 - **`events`:** the payload plus `AmqpRouting` (`EXCHANGE`, `EXCHANGE_TYPE`, `ROUTING_KEY`) and
@@ -103,7 +104,13 @@ Every module crate mirrors `modules/base`:
 - Compare a nullable column with `IS DISTINCT FROM`, not `<>`: `<>` against `NULL` is `NULL`, which
   is not `true`, so a fence written with it silently never matches.
 - A JSON `null` inside a `jsonb` document is not SQL `NULL`; `jsonb_typeof` tells them apart.
-- `sqlx::query*` take a `&'static str`, so a statement built at runtime needs
-  `sqlx::AssertSqlSafe` — tests only; nothing in `src/` formats SQL.
+- Statements are compile-time checked: columns are spelled out (no `SELECT *`), a column whose Rust
+  type is a `table_record!` id, a `text_enum!` or a `Json<T>` is aliased with it
+  (`id AS "id: CanvasId"`), a parameter of such a type is passed as `input.id as _`, and SQL longer
+  than five lines lives in `<crate>/sql/*.sql` behind `query_file!`. Nothing builds SQL at runtime.
+- `.sqlx/` holds the committed offline query data, so a build needs no database
+  (`SQLX_OFFLINE=true` in the image build). Regenerate it with
+  `cargo sqlx prepare --workspace -- --all-targets` against a migrated database whenever a statement
+  or the schema changes; `-- --all-targets` is what puts the tests’ own statements in there too.
 - The schema is a migration, never an edit: `guru-master` applies what is pending at startup under
   an advisory lock, so a fleet starting together applies each one exactly once.

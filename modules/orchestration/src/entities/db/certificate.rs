@@ -18,7 +18,7 @@ use kanau::processor::Processor;
 
 table_record!(CertificateId, "certificate");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct CertificateEntity {
     pub id: CertificateId,
     pub sni: String,
@@ -86,31 +86,29 @@ impl Processor<EnsureCertificate> for Db {
         // `DO NOTHING` returns no row when the pair exists; a second statement
         // then reads the one that won, whether it was ours or a concurrent
         // pod's.
-        let created: Option<CertificateEntity> = sqlx::query_as(
-            "INSERT INTO certificate
-                 (id, sni, dns_provider, domain_id, acme_directory, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-             ON CONFLICT ON CONSTRAINT certificate_sni_acme_directory_key DO NOTHING
-             RETURNING *",
+        let created = sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/ensure_certificate_insert.sql",
+            CertificateId::new() as _,
+            input.sni,
+            input.dns_provider as _,
+            input.domain_id,
+            input.acme_directory,
+            input.now
         )
-        .bind(CertificateId::new())
-        .bind(&input.sni)
-        .bind(&input.dns_provider)
-        .bind(&input.domain_id)
-        .bind(&input.acme_directory)
-        .bind(input.now)
         .fetch_optional(self.db())
         .await?;
         if let Some(row) = created {
             return Ok(row);
         }
-        Ok(
-            sqlx::query_as("SELECT * FROM certificate WHERE sni = $1 AND acme_directory = $2")
-                .bind(&input.sni)
-                .bind(&input.acme_directory)
-                .fetch_one(self.db())
-                .await?,
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/ensure_certificate_find.sql",
+            input.sni,
+            input.acme_directory
         )
+        .fetch_one(self.db())
+        .await?)
     }
 }
 
@@ -123,7 +121,7 @@ impl Processor<ListCertificates> for Db {
     #[tracing::instrument(name = "Query:ListCertificates", skip_all, err)]
     async fn process(&self, _: ListCertificates) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_as("SELECT * FROM certificate ORDER BY sni ASC, acme_directory ASC")
+            sqlx::query_file_as!(CertificateEntity, "sql/list_certificates.sql")
                 .fetch_all(self.db())
                 .await?,
         )
@@ -140,10 +138,13 @@ impl Processor<FindCertificateById> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCertificateById", skip_all, err)]
     async fn process(&self, input: FindCertificateById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM certificate WHERE id = $1")
-            .bind(input.id)
-            .fetch_optional(self.db())
-            .await?)
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/find_certificate_by_id.sql",
+            input.id as _
+        )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -162,12 +163,13 @@ impl Processor<ListCertificatesBySnis> for Db {
         if input.snis.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(
-            sqlx::query_as("SELECT * FROM certificate WHERE sni = ANY($1)")
-                .bind(&input.snis)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/list_certificates_by_snis.sql",
+            &input.snis
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -186,12 +188,13 @@ impl Processor<ListCertificatesByIds> for Db {
         if input.ids.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(
-            sqlx::query_as("SELECT * FROM certificate WHERE id = ANY($1)")
-                .bind(&input.ids)
-                .fetch_all(self.db())
-                .await?,
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/list_certificates_by_ids.sql",
+            &input.ids as _
         )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -219,17 +222,12 @@ impl Processor<ListCertificatesDue> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCertificatesDue", skip_all, err)]
     async fn process(&self, input: ListCertificatesDue) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM certificate WHERE
-                 (status IN ('pending', 'failed')
-                     AND (last_attempt_at IS NULL OR last_attempt_at < $2))
-                 OR (status = 'issued' AND (
-                     last_attempt_at IS NULL
-                     OR (not_after IS NOT NULL AND not_after < $1 AND last_attempt_at < $2)))
-             ORDER BY created_at ASC",
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/list_certificates_due.sql",
+            input.renew_before,
+            input.retry_before
         )
-        .bind(input.renew_before)
-        .bind(input.retry_before)
         .fetch_all(self.db())
         .await?)
     }
@@ -260,14 +258,14 @@ impl Processor<ClaimCertificateAttempt> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ClaimCertificateAttempt", skip_all, err, fields(certificate = %input.id))]
     async fn process(&self, input: ClaimCertificateAttempt) -> Result<Self::Output, Self::Error> {
-        let claimed: Option<CertificateId> = sqlx::query_scalar(
-            "UPDATE certificate SET last_attempt_at = $2
-             WHERE id = $1 AND last_attempt_at IS NOT DISTINCT FROM $3
-             RETURNING id",
+        let claimed = sqlx::query_scalar!(
+            r#"UPDATE certificate SET last_attempt_at = $2
+               WHERE id = $1 AND last_attempt_at IS NOT DISTINCT FROM $3
+               RETURNING id AS "id: CertificateId""#,
+            input.id as _,
+            input.now,
+            input.seen_attempt_at
         )
-        .bind(input.id)
-        .bind(input.now)
-        .bind(input.seen_attempt_at)
         .fetch_optional(self.db())
         .await?;
         Ok(claimed.is_some())
@@ -293,20 +291,17 @@ impl Processor<StoreIssuedCertificate> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:StoreIssuedCertificate", skip_all, err, fields(certificate = %input.id))]
     async fn process(&self, input: StoreIssuedCertificate) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "UPDATE certificate SET
-                 status = 'issued', acme_account_key = $2, private_key_pem = $3,
-                 full_chain_pem = $4, not_before = $5, not_after = $6,
-                 last_error = NULL, last_attempt_at = $7, version = version + 1
-             WHERE id = $1 RETURNING *",
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/store_issued_certificate.sql",
+            input.id as _,
+            input.acme_account_key,
+            input.private_key_pem,
+            input.full_chain_pem,
+            input.not_before,
+            input.not_after,
+            input.now
         )
-        .bind(input.id)
-        .bind(input.acme_account_key)
-        .bind(input.private_key_pem)
-        .bind(input.full_chain_pem)
-        .bind(input.not_before)
-        .bind(input.not_after)
-        .bind(input.now)
         .fetch_one(self.db())
         .await?)
     }
@@ -330,15 +325,15 @@ impl Processor<MarkCertificateAttemptFailed> for Db {
         &self,
         input: MarkCertificateAttemptFailed,
     ) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE certificate SET
                  status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'failed' END,
                  last_error = $2, last_attempt_at = $3
              WHERE id = $1",
+            input.id as _,
+            input.error,
+            input.now
         )
-        .bind(input.id)
-        .bind(input.error)
-        .bind(input.now)
         .execute(self.db())
         .await?;
         Ok(())
@@ -359,13 +354,11 @@ impl Processor<RetryCertificateRow> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:RetryCertificateRow", skip_all, err, fields(certificate = %input.id))]
     async fn process(&self, input: RetryCertificateRow) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "UPDATE certificate SET
-                 status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'pending' END,
-                 last_error = NULL, last_attempt_at = NULL
-             WHERE id = $1 RETURNING *",
+        Ok(sqlx::query_file_as!(
+            CertificateEntity,
+            "sql/retry_certificate_row.sql",
+            input.id as _
         )
-        .bind(input.id)
         .fetch_optional(self.db())
         .await?)
     }
@@ -381,8 +374,7 @@ impl Processor<DeleteCertificateRow> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteCertificateRow", skip_all, err, fields(certificate = %input.id))]
     async fn process(&self, input: DeleteCertificateRow) -> Result<Self::Output, Self::Error> {
-        sqlx::query("DELETE FROM certificate WHERE id = $1")
-            .bind(input.id)
+        sqlx::query!("DELETE FROM certificate WHERE id = $1", input.id as _)
             .execute(self.db())
             .await?;
         Ok(())
@@ -401,7 +393,6 @@ pub struct TlsRequest {
     pub tls: TlsConfig,
 }
 
-#[derive(sqlx::FromRow)]
 struct TlsRequestRow {
     canvas: CanvasId,
     tls_sni: String,
@@ -415,12 +406,9 @@ impl Processor<ListTlsRequests> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListTlsRequests", skip_all, err)]
     async fn process(&self, _: ListTlsRequests) -> Result<Self::Output, Self::Error> {
-        let rows: Vec<TlsRequestRow> = sqlx::query_as(
-            "SELECT canvas, tls_sni, tls_dns_provider, tls_domain_id, tls_acme_directory
-             FROM orchestration_pod WHERE ingress = 'client_tls' ORDER BY id",
-        )
-        .fetch_all(self.db())
-        .await?;
+        let rows = sqlx::query_file_as!(TlsRequestRow, "sql/list_tls_requests.sql")
+            .fetch_all(self.db())
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| TlsRequest {
@@ -448,12 +436,12 @@ impl Processor<ListCanvasesUsingSni> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCanvasesUsingSni", skip_all, err, fields(sni = %input.sni))]
     async fn process(&self, input: ListCanvasesUsingSni) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar(
-            "SELECT DISTINCT canvas FROM orchestration_pod
-             WHERE ingress = 'client_tls' AND lower(tls_sni) = $1
-             ORDER BY canvas",
+        Ok(sqlx::query_scalar!(
+            r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
+               WHERE ingress = 'client_tls' AND lower(tls_sni) = $1
+               ORDER BY canvas"#,
+            input.sni
         )
-        .bind(input.sni)
         .fetch_all(self.db())
         .await?)
     }

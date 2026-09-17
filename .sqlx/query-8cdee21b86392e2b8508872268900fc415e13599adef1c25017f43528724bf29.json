@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server\n             SET last_health_report_at = $2, last_seen_at = $2, health_status = $3\n             WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8cdee21b86392e2b8508872268900fc415e13599adef1c25017f43528724bf29"
+}

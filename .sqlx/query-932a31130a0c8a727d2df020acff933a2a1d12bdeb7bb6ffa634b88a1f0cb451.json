@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server\nSET session_lease_until = NULL, watch_epoch = watch_epoch + 1\nWHERE health_status = 'offline'\n  AND session_lease_until > $1\n  AND registered_at < $2\n  AND (last_health_report_at IS NULL OR last_health_report_at < registered_at)\nRETURNING id AS \"id: ServerId\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ServerId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "932a31130a0c8a727d2df020acff933a2a1d12bdeb7bb6ffa634b88a1f0cb451"
+}

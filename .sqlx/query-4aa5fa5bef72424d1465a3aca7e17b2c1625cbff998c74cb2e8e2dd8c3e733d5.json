@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: GroupId\" FROM orchestration_group WHERE id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: GroupId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_group",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4aa5fa5bef72424d1465a3aca7e17b2c1625cbff998c74cb2e8e2dd8c3e733d5"
+}

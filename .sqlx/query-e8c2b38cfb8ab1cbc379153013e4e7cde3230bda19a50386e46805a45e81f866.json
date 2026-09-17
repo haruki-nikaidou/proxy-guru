@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: EdgeId\" FROM orchestration_edge WHERE id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: EdgeId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_edge",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e8c2b38cfb8ab1cbc379153013e4e7cde3230bda19a50386e46805a45e81f866"
+}

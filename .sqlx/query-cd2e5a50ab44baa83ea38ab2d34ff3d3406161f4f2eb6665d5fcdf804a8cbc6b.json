@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server\nSET health_status = $2,\n    session_lease_until = CASE WHEN $3 THEN NULL ELSE session_lease_until END,\n    watch_epoch = CASE WHEN $3 THEN watch_epoch + 1 ELSE watch_epoch END\nWHERE id = $1\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cd2e5a50ab44baa83ea38ab2d34ff3d3406161f4f2eb6665d5fcdf804a8cbc6b"
+}

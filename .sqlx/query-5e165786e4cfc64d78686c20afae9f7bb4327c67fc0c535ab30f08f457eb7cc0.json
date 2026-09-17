@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT derived_view_seq FROM orchestration_canvas WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "derived_view_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "derived_view_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5e165786e4cfc64d78686c20afae9f7bb4327c67fc0c535ab30f08f457eb7cc0"
+}
