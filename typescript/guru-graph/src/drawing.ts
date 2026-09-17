@@ -8,8 +8,11 @@
  *   way between the same *cards* are one splitter however many pods they belong
  *   to: two rules fanned out over the same five servers are one splitter, not
  *   two.
- * - Edges travel in buses between card-level handles; a bus carries every edge
- *   and rule that takes the same way.
+ * - Edges travel in buses between handles: a line leaves the pod whose route
+ *   it belongs to and lands on the relay pod it dials, so a pod's own dot is
+ *   where its traffic is drawn. A card stands in only where no row can: an exit,
+ *   a subcanvas or portal, and a splitter's or aggregator's own handles. A bus
+ *   carries every edge and rule that takes the same way.
  * - Where buses from several places meet in front of a splitter or an exit, an
  *   aggregator gathers them.
  *
@@ -25,7 +28,7 @@ import { type RuleIndex, ruleIndex } from './rules.js';
 
 export type Point = { x: number; y: number };
 
-/** One end of a bus: a node of the drawing and a handle on it. */
+/** One end of a bus: a node of the drawing and a handle on it (a pod's row, or the card's own). */
 export type Handle = { node: string; handle: string };
 
 export type DrawnPod = {
@@ -245,14 +248,24 @@ export function draw<S extends Server>(graph: Graph<S>, canvasId: Id): Drawing<S
 		});
 	}
 
-	/** The card-level handle traffic into this pod or exit arrives at. */
+	/**
+	 * The handle traffic into this pod or exit arrives at: the pod's own row when
+	 * it is drawn here, else the card that stands for where it is. A client pod
+	 * has no row handle to land on — dialing one is refused by the check — so an
+	 * edge into one lands on its server's card.
+	 */
 	const intoHandle = (edge: Edge): Handle | null => {
 		const podId = edgeTargetPod(edge);
 		if (podId !== null) {
 			const pod = pods.get(podId);
 			if (!pod) return null;
 			const place = placeOf(pod.canvasId);
-			if (place.kind === 'here') return { node: serverNode(pod.serverId), handle: 'in' };
+			if (place.kind === 'here') {
+				return {
+					node: serverNode(pod.serverId),
+					handle: dialable(pod) ? podInHandle(pod.id) : 'in'
+				};
+			}
 			if (place.kind === 'child') return { node: place.node, handle: 'in' };
 			const card = portal(place.canvas);
 			if (!card.pods.some(p => p.id === pod.id)) card.pods.push(pod);
@@ -321,7 +334,7 @@ export function draw<S extends Server>(graph: Graph<S>, canvasId: Id): Drawing<S
 
 	for (const pod of podsHere) {
 		if (!pod.route) continue;
-		walk(pod, pod.route, [], { node: serverNode(pod.serverId), handle: 'out' });
+		walk(pod, pod.route, [], { node: serverNode(pod.serverId), handle: podOutHandle(pod.id) });
 	}
 	// Traffic arriving from pods drawn elsewhere: their routes are drawn where
 	// they live, here only where they come from.

@@ -21,8 +21,9 @@ import CardShell from './CardShell.svelte';
 import RuleDots from './RuleDots.svelte';
 
 // A server is the set of pods that run on it: the card lists the pods drawn on
-// this canvas, each with the handles a new connection starts from or lands on.
-// Buses between cards attach to the header.
+// this canvas, and each row has its own handles — lines leave a pod at its blue
+// dot and land on a relay pod at its red one. The header's red dot takes a drop
+// that makes a new relay pod on this server.
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'server' }> } = $props();
 
 const canvas = useCanvasContext();
@@ -85,7 +86,6 @@ const faded = $derived(
 >
 	{#snippet handles()}
 		<CardHandle id="in" side="left" role="end" />
-		<CardHandle id="out" side="right" role="bus" />
 	{/snippet}
 	<!-- `icon` names an Iconify icon (`flag:*` / `logo:*`); empty shows the flag
 	     of the IPv4 address's country, and anything unresolvable the default

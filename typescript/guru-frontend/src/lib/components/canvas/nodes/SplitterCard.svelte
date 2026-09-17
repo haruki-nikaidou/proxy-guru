@@ -61,7 +61,7 @@ const faded = $derived(
 		{/each}
 		<div class="relative flex items-center justify-end px-3 py-0.5 text-xs text-muted-foreground/70">
 			{m.editor_splitter_add_member()}
-			<CardHandle id="add" side="right" role="start" color="var(--canvas-port-destination)" />
+			<CardHandle id="add" side="right" role="start" />
 		</div>
 	</div>
 </CardShell>

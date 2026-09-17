@@ -1,5 +1,5 @@
 import type { Node } from '@xyflow/svelte';
-import type { Canvas, Drawing, Exit, Id, Pod, SplitterCard } from 'guru-graph';
+import type { Canvas, Drawing, Exit, Handle, Id, Pod, SplitterCard } from 'guru-graph';
 import { locate } from 'guru-graph';
 import type { CanvasGraph, DiagnosticDto, ServerDto } from '#lib/dto/topology.js';
 import { m } from '#lib/paraglide/messages.js';
@@ -136,6 +136,39 @@ export function problemIndex(graph: CanvasGraph, drawing: Drawing<ServerDto>): P
 		}
 	}
 	return index;
+}
+
+/**
+ * One end of a bus as the bus panel names it: a pod with its server, a
+ * splitter's member, an aggregator's way out, or else the card itself.
+ */
+export function handleLabel(
+	graph: CanvasGraph,
+	drawing: Drawing<ServerDto>,
+	handle: Handle
+): string {
+	for (const prefix of ['pod-out:', 'pod-in:']) {
+		if (!handle.handle.startsWith(prefix)) continue;
+		const podId = handle.handle.slice(prefix.length);
+		const pod = graph.pods.find(entry => entry.id === podId);
+		if (!pod) return podId;
+		const server = graph.servers.find(entry => entry.id === pod.serverId);
+		return server ? `${pod.name} · ${server.name}` : pod.name;
+	}
+	const card = cardLabel(graph, drawing, handle.node);
+	if (handle.handle.startsWith('out:')) {
+		const rest = handle.handle.slice('out:'.length);
+		if (handle.node.startsWith('split:') && /^\d+$/.test(rest)) {
+			return m.editor_splitter_member_of({ splitter: card, index: Number(rest) + 1 });
+		}
+		if (handle.node.startsWith('agg:')) {
+			return m.editor_aggregator_way_to({
+				aggregator: card,
+				target: cardLabel(graph, drawing, rest)
+			});
+		}
+	}
+	return card;
 }
 
 /** How a card names what a bus leads into. */
