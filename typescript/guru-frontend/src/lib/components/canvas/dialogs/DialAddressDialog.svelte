@@ -17,7 +17,8 @@ let { edge = $bindable(null) }: { edge?: Edge | null } = $props();
 
 const editor = useEditor();
 let address = $state('');
-// `Input` renders a dynamic `type`, so Svelte never coerces this to a number.
+// A text field, not `type="number"`: Svelte binds a number input as a number,
+// and as null for anything it cannot parse (`80e`), which would read as no override.
 let port = $state('');
 let pending = $state(false);
 
@@ -71,9 +72,7 @@ async function save() {
 				<Field.FieldLabel for="dial-port">{m.editor_override_port()}</Field.FieldLabel>
 				<Input
 					id="dial-port"
-					type="number"
-					min={1}
-					max={65535}
+					inputmode="numeric"
 					bind:value={port}
 					aria-invalid={!portValid}
 				/>
