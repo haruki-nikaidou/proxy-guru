@@ -32,13 +32,14 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		`guru-worker` はリスナーを終端してトラフィックを転送します。ローカルの TOML ファイルから、
 		あるいはマスターから設定をストリーミングして動作します。
 	</Card>
-	<Card title="収束型ロールアウト" icon="approve-check">
-		すべてのサーバーが `desired`、`in_flight`、`applied` のスナップショットを保持するため、
-		ロールアウトの途中でリビジョンがトラフィックを落とすことはありません。
+	<Card title="すべてがリアルタイム" icon="bars">
+		あらゆる変更がライブバスに載るので、キャンバス、ヘルスページ、そのポッドイベントはその場で
+		更新されます — ポーリングもリロードもありません。ワーカー自身も設定をストリーミングで受け取り、
+		自分のヘルスを送り続けます。
 	</Card>
-	<Card title="すべては Processor" icon="puzzle">
-		状態と非同期関数だけです。各クエリ、オペレーション、コンシューマーは、1つの `Processor` 実装を持つ
-		入力構造体として表現されます。
+	<Card title="BFF を備えた単一入口のマイクロサービス" icon="puzzle">
+		関心ごとに 1 つの機能モジュールがあり、それらは単一の gRPC 入口の背後に載ります。ブラウザに
+		面するのはダッシュボードだけで、gRPC を呼ぶのはそのサーバーであり、ブラウザではありません。
 	</Card>
 </CardGrid>
 
@@ -57,6 +58,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		[キャンバス](/ja/reference/canvas/) ·
 		[ノード](/ja/reference/nodes/) ·
 		[ロールアウト](/ja/reference/rollout/)
+	</Card>
+	<Card title="機能" icon="approve-check">
+		[ヘルスモニター](/ja/features/health-monitor/) ·
+		[DNS を使った ACME](/ja/features/acme-dns/)
 	</Card>
 	<Card title="リファレンス" icon="list-format">
 		[アーキテクチャ](/ja/reference/architecture/) ·

@@ -87,5 +87,7 @@ Redis の pub/sub、モジュール間イベントには AMQP、トレーシン�
 - [ノード](/ja/reference/nodes/) — サーバー、ポッド、エグジット、スプリッター、アグリゲーターをカードごとに。
 - [アーキテクチャ](/ja/reference/architecture/) — クレートの役割とレイヤーのルール。
 - [ロールアウト](/ja/reference/rollout/) — 編集がワーカーに届くまで。
+- [ヘルスモニター](/ja/features/health-monitor/) — ワーカーが報告する内容と、ステータスの決まり方。
+- [DNS を使った ACME](/ja/features/acme-dns/) — TLS ポッドのための DNS-01 証明書と、リレー CA。
 - [独立ワーカーのデプロイ](/ja/guides/independent-worker/) — マスターなしで、TOML ファイルから
   ワーカーを実行します。

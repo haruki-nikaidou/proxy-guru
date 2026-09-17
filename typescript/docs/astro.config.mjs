@@ -104,6 +104,22 @@ export default defineConfig({
 					]
 				},
 				{
+					label: 'Features',
+					translations: { ja: '機能', 'zh-CN': '功能' },
+					items: [
+						{
+							label: 'Health Monitor',
+							translations: { ja: 'ヘルスモニター', 'zh-CN': '健康监控' },
+							link: '/features/health-monitor/'
+						},
+						{
+							label: 'ACME with DNS',
+							translations: { ja: 'DNS を使った ACME', 'zh-CN': '基于 DNS 的 ACME' },
+							link: '/features/acme-dns/'
+						}
+					]
+				},
+				{
 					label: 'Configuration',
 					translations: { ja: '設定', 'zh-CN': '配置' },
 					items: [

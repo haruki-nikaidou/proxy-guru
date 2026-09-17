@@ -4,42 +4,47 @@
     stored.</title>
 
   <!--
-    One palette, no `prefers-color-scheme`: this file is loaded through an <img>, so it cannot see
-    the theme Starlight puts on <html>, and a media query would invert it whenever the site theme
-    and the OS preference disagree. Every colour below therefore clears 3.9:1 against white and
-    3.9:1 against the dark theme's near-black background; hierarchy comes from weight and size.
+    Fixed light panel, no `prefers-color-scheme`: loaded through an <img>, this file cannot see the
+    theme Starlight sets on <html>, so a media query would invert it whenever the site theme and the
+    OS preference disagree. Painting its own background instead lets one palette be measurably
+    readable on either site theme, and matches the light dashboard screenshots around it. Contrast
+    against that panel: every label 7.5:1 or better, accent text 5.5:1 (teal) and 7.1:1 (violet),
+    card and edge strokes 7.6:1. The hairlines that separate rows are decorative only.
   -->
   <style>
-    .panel-title { font-size: 15px; font-weight: 600; fill: #6b7280; }
-    .card        { fill: none; stroke: #7d8796; stroke-width: 1.2; }
-    .card-title  { font-size: 12px; font-weight: 600; fill: #6b7280; }
-    .pod         { font-size: 11px; fill: #6b7280; }
-    .note        { font-size: 10px; font-style: italic; fill: #6b7280; }
-    .rule        { stroke: #9aa3b0; stroke-width: 1; }
-    .edge        { fill: none; stroke: #7d8796; stroke-width: 1.1; }
-    .caption     { font-size: 11px; font-style: italic; fill: #6b7280; }
-    .divider     { stroke: #9aa3b0; stroke-width: 1; }
-    .flow        { font-size: 11px; font-style: italic; fill: #6b7280; }
+    .panel       { fill: #ffffff; }
+    .panel-title { font-size: 15px; font-weight: 600; fill: #0f172a; }
+    .card        { fill: none; stroke: #475569; stroke-width: 1.2; }
+    .card-title  { font-size: 12px; font-weight: 600; fill: #0f172a; }
+    .pod         { font-size: 11px; fill: #1f2937; }
+    .note        { font-size: 10px; font-style: italic; fill: #4b5563; }
+    .rule        { stroke: #cbd5e1; stroke-width: 1; }
+    .edge        { fill: none; stroke: #475569; stroke-width: 1.1; }
+    .caption     { font-size: 11px; font-style: italic; fill: #4b5563; }
+    .divider     { stroke: #cbd5e1; stroke-width: 1; }
+    .flow        { font-size: 11px; font-style: italic; fill: #4b5563; }
 
     /* accent 1: the exit, in both halves */
-    .exit-box    { fill: none; stroke: #0d9488; stroke-width: 1.2; }
-    .exit-tag    { font-size: 10px; fill: #0d9488; }
-    .exit-name   { font-size: 12px; font-weight: 600; fill: #0d9488; }
+    .exit-box    { fill: none; stroke: #0f766e; stroke-width: 1.2; }
+    .exit-tag    { font-size: 10px; fill: #0f766e; }
+    .exit-name   { font-size: 12px; font-weight: 600; fill: #0f766e; }
 
     /* accent 2: everything the canvas computes instead of storing */
-    .derived       { fill: none; stroke: #8b5cf6; stroke-width: 1.2; stroke-dasharray: 5 3; }
-    .derived-title { font-size: 12px; font-weight: 600; fill: #8b5cf6; }
-    .derived-sub   { font-size: 10px; fill: #8b5cf6; }
-    .derived-row   { font-size: 11px; fill: #8b5cf6; }
-    .derived-rule  { stroke: #8b5cf6; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.55; }
-    .edge-derived  { fill: none; stroke: #8b5cf6; stroke-width: 1.1; }
-    .bus-label     { font-size: 10px; font-style: italic; fill: #8b5cf6; }
-    .badge         { fill: none; stroke: #8b5cf6; stroke-width: 1; }
-    .badge-text    { font-size: 10px; fill: #8b5cf6; }
+    .derived       { fill: none; stroke: #6d28d9; stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .derived-title { font-size: 12px; font-weight: 600; fill: #6d28d9; }
+    .derived-sub   { font-size: 10px; fill: #6d28d9; }
+    .derived-row   { font-size: 11px; fill: #6d28d9; }
+    .derived-rule  { stroke: #6d28d9; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.55; }
+    .edge-derived  { fill: none; stroke: #6d28d9; stroke-width: 1.1; }
+    .bus-label     { font-size: 10px; font-style: italic; fill: #6d28d9; }
+    .badge         { fill: none; stroke: #6d28d9; stroke-width: 1; }
+    .badge-text    { font-size: 10px; fill: #6d28d9; }
 
     /* arrowheads follow their edge colour where context-stroke is supported */
-    .arrow-head { fill: #7d8796; fill: context-stroke; }
+    .arrow-head { fill: #475569; fill: context-stroke; }
   </style>
+
+  <rect class="panel" x="0" y="0" width="960" height="520" rx="10" />
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"

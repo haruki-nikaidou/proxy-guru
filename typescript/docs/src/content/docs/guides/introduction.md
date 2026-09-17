@@ -87,5 +87,7 @@ under `typescript/` sharing one generated API client.
 - [Nodes](/reference/nodes/) — servers, pods, exits, splitters and aggregators, card by card.
 - [Architecture](/reference/architecture/) — crate roles and layer rules.
 - [Rollout](/reference/rollout/) — how an edit reaches a worker.
+- [Health Monitor](/features/health-monitor/) — what a worker reports and how status is decided.
+- [ACME with DNS](/features/acme-dns/) — DNS-01 certificates for TLS pods, and the relay CA.
 - [Independent Worker Deployment](/guides/independent-worker/) — run a worker from a
   TOML file, without a master.

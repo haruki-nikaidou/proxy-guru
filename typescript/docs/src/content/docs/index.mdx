@@ -32,13 +32,13 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		`guru-worker` terminates listeners and forwards traffic, either from a local TOML file or by
 		streaming configs from the master.
 	</Card>
-	<Card title="Convergent rollout" icon="approve-check">
-		Every server keeps `desired`, `in_flight` and `applied` snapshots, so no revision drops
-		traffic mid-rollout.
+	<Card title="Everything is in real-time" icon="bars">
+		Every mutation goes on a live bus, so the canvas, the health page and its pod events update in
+		place — no polling, no reload — while workers stream their configs and push their own health.
 	</Card>
-	<Card title="Everything is a Processor" icon="puzzle">
-		State plus an async function. Each query, operation and consumer is an input struct with one
-		`Processor` impl.
+	<Card title="Single Entry Microservices with BFF" icon="puzzle">
+		One feature module per concern, mounted behind a single gRPC entry point, with the dashboard as
+		the only browser-facing surface: its server calls gRPC, the browser never does.
 	</Card>
 </CardGrid>
 
@@ -57,6 +57,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		[Canvas](/reference/canvas/) ·
 		[Nodes](/reference/nodes/) ·
 		[Rollout](/reference/rollout/)
+	</Card>
+	<Card title="Features" icon="approve-check">
+		[Health Monitor](/features/health-monitor/) ·
+		[ACME with DNS](/features/acme-dns/)
 	</Card>
 	<Card title="Reference" icon="list-format">
 		[Architecture](/reference/architecture/) ·

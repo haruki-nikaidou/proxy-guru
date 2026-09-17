@@ -79,5 +79,7 @@ Redis pub/sub、用于模块间事件的 AMQP、用于链路追踪的 OpenTeleme
 - [节点](/zh-cn/reference/nodes/) —— 服务器、Pod、出口、分流器和聚合器，逐张卡片讲解。
 - [架构](/zh-cn/reference/architecture/) —— crate 的职责与分层规则。
 - [发布](/zh-cn/reference/rollout/) —— 一次编辑如何抵达 Worker。
+- [健康监控](/zh-cn/features/health-monitor/) —— Worker 上报什么，以及状态是如何判定的。
+- [基于 DNS 的 ACME](/zh-cn/features/acme-dns/) —— 为 TLS Pod 签发的 DNS-01 证书，以及中继 CA。
 - [独立 Worker 部署](/zh-cn/guides/independent-worker/) —— 不依赖 master，仅用 TOML 文件运行
   一个 Worker。

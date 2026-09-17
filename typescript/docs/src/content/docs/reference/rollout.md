@@ -52,60 +52,23 @@ worker and is recorded as an `apply_error`.
 
 ## Health
 
-Every worker streams one `HealthReport` per `--health-interval` (default 15 s) over `ReportHealth`:
-the running revision, upload/download bytes and connection counts since the previous report (max
-is the high-water mark), and one `PodStatus` per running forwarding. Each report becomes one
-`server_health_record` row and one `pod_health_record` row per pod (a forwarding's tag is its pod's
-id; a pod held under two listeners while its dependants switch keeps the worst status). Pod
-statuses: `Ready` (the pod runs what `desired` asks), `Deploying` (a newer revision involving the
-pod is derived but not applied yet — written the moment a derivation publishes it), `Failed` (the
-pod failed to apply or to run). Server statuses: `Online`, `Degraded` (lagging `desired` past the
-grace period, or the last acknowledged revision failed for some pod), `Offline` (the health stream
-closed, or no report for three intervals — the `sweep_liveness` pass). Both histories are raw and
-trimmed by the `trim_health_history` pass;
-`ListServerHealthHistory` / `ListPodHealthHistory` read a time range.
-
-Both passes run in `--mode consumer`, on a signal the `cron` scheduler publishes when the job comes
-due. The scheduler holds no state beyond its own clock; the consumer claims each run in one
-`orchestration_job_run` row, so the pass runs once per configured interval however many consumers
-are up.
-
-In the dashboard, a canvas's **Health** page reads both histories over a selected window (1 h / 6 h
-/ 24 h / 7 d): one card per server showing its status, the connection count *at its last report* in
-that window and the peak, plus two charts — throughput from the per-report upload/download deltas,
-and connections against the high-water mark. Nothing on the page is live: every number is a stored
-report, so an `Offline` server still shows whatever it last sent. Each card's *Pod events* tab
-lists the events of every pod running on that server, including the `message` a `Failed` row
-carries; it is fetched only once opened.
+A rollout is only half the story: whether a worker actually runs what was published is answered by
+the health stream. Every worker pushes a `HealthReport` per interval, each report becomes one server
+record plus one record per pod, and the verdict it produces — `Online`, `Degraded`, `Offline` for a
+server, `Ready`, `Deploying`, `Failed` for a pod — is what the dashboard shows. Two of those
+verdicts are written by this pipeline rather than by a report: `AckConfig` marks a server `Degraded`
+when an apply failed, and a derivation marks every changed pod `Deploying` the moment it publishes.
+See [Health Monitor](/features/health-monitor/) for the fields, the thresholds and the passes.
 
 ## Certificates
 
-A TLS client pod (`sni`, DNS provider, `domain_id`, optional ACME directory — empty means
-the stored `orchestration` config's `default_acme_directory`, Let's Encrypt) resolves to one
-`certificate` row per
-`(sni, acme_directory)`. The ACME pass creates the row, runs a DNS-01 challenge through the DNS
-provider (Cloudflare: `domain_id` is the zone id; Vercel: `domain_id` is the domain, the provider's
-`account_id` is the team id), waits for the TXT record to be visible on public resolvers, and stores
-the chain and the encrypted key. Until then the pod is an `invalid_pods` entry
-("certificate for <sni> is pending"), never a server failure. Renewal happens 30 days before expiry;
-a renewal bumps the row's version, and because every snapshot pins the versions its TOML references,
-every server serving that certificate gets a new revision with the same file paths and new
-material.
-
-Relay listeners over TLS or QUIC use the **internal CA** instead: `manage-tool orchestration init-ca`
-creates it once, the derivation hook issues a 30-day leaf per relay pod (SAN
-`<pod-key>.relay.guru.internal`), the `rotate_relay_certificates` pass rotates leaves ten days
-before expiry, and workers verify relay peers only against `certs/ca.pem` (`relay_ca` in the TOML).
-DNS providers, certificates and the CA are Admin-managed through the operator API
-(`CreateDnsProvider`, `ListCertificates`, `RetryCertificate`, …); secrets are encrypted with
-`GURU_MASTER_KEY` and never returned.
-
-The dashboard's **TLS** page is the Admin-facing side of this: DNS providers are created, edited
-(an empty API token keeps the stored one) and deleted there, and the certificate table shows each
-row's status, resolved provider, validity window with an expiry hint, and the `last_error` of a
-failure, with *Retry* (clear a failure or force a renewal) and *Delete* per row. It never issues a
-certificate: a row appears once the derivation pass reads a TLS client pod's certificate settings,
-which are edited in the pod's panel on the canvas.
+A TLS client pod resolves to one `certificate` row per `(sni, acme_directory)`, and relay listeners
+over TLS or QUIC use the internal CA instead. Both matter here for the same reason: a snapshot pins
+the version of every certificate its TOML references, so renewing one produces a new revision for
+each server serving it even though the TOML bytes do not change, and a pod whose certificate is not
+issued yet is left out of its server's config as an `invalid_pods` entry without failing the
+server. See [ACME with DNS](/features/acme-dns/) for the issuance pass, the DNS providers and the
+relay CA.
 
 ## Inspecting a derived config
 

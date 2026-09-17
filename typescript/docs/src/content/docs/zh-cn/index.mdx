@@ -32,13 +32,13 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		`guru-worker` 负责终结监听器并转发流量，配置既可以来自本地 TOML 文件，
 		也可以从 master 流式下发。
 	</Card>
-	<Card title="收敛式发布" icon="approve-check">
-		每台服务器都保存 `desired`、`in_flight` 和 `applied` 三份快照，因此任何修订版本都不会在
-		发布过程中丢弃流量。
+	<Card title="一切都是实时的" icon="bars">
+		每一次改动都会走实时总线，所以画布、健康状况页面及其 Pod 事件都会就地更新 —— 不轮询，
+		也不刷新页面；同时 Worker 自己也在流式接收配置、主动上报健康状况。
 	</Card>
-	<Card title="一切皆 Processor" icon="puzzle">
-		状态加上一个异步函数。每个查询、操作和消费者都是一个输入结构体，配一个
-		`Processor` 实现。
+	<Card title="带 BFF 的单入口微服务" icon="puzzle">
+		每个关注点一个功能模块，统一挂在单一的 gRPC 入口之后；面向浏览器的只有控制台一个入口，
+		而调用 gRPC 的是它的服务端，不是浏览器。
 	</Card>
 </CardGrid>
 
@@ -57,6 +57,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		[画布](/zh-cn/reference/canvas/) ·
 		[节点](/zh-cn/reference/nodes/) ·
 		[发布](/zh-cn/reference/rollout/)
+	</Card>
+	<Card title="功能" icon="approve-check">
+		[健康监控](/zh-cn/features/health-monitor/) ·
+		[基于 DNS 的 ACME](/zh-cn/features/acme-dns/)
 	</Card>
 	<Card title="参考" icon="list-format">
 		[架构](/zh-cn/reference/architecture/) ·

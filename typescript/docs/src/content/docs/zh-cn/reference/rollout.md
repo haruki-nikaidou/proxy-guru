@@ -43,48 +43,20 @@ Worker 上的任何东西，并被记录为 `apply_error`。
 
 ## 健康状况
 
-每个 Worker 都会按 `--health-interval`（默认 15 秒）通过 `ReportHealth` 流式上报一个 `HealthReport`：
-当前运行的修订版本、自上次上报以来的上传/下载字节数和连接数（max 为峰值水位），以及每个正在运行的
-forwarding 对应的一个 `PodStatus`。每次上报会生成一行 `server_health_record`，以及每个 pod 各一行
-`pod_health_record`（forwarding 的 tag 就是它的 pod id；依赖方切换期间以两个监听器保留的 pod 取其中最差的状态）。
-pod 状态：`Ready`（pod 运行的正是 `desired` 要求的内容）、`Deploying`（涉及该 pod 的更新修订版本已派生但尚未
-应用 —— 在派生发布的那一刻就写入）、`Failed`（pod 应用失败或运行失败）。服务器状态：`Online`、`Degraded`
-（落后于 `desired` 且超过宽限期，或最近一次确认的修订版本在某个 pod 上失败）、`Offline`（健康流已关闭，
-或连续三个间隔没有上报 —— 即 `sweep_liveness` 任务的判定）。两份历史都是原始记录，由
-`trim_health_history` 任务裁剪；`ListServerHealthHistory` / `ListPodHealthHistory` 按时间范围读取。
-
-这两个任务都在 `--mode consumer` 中运行，其触发信号由 `cron` 调度器在任务到期时发布。调度器除了自己的
-时钟之外不保存任何状态；消费者会在一行 `orchestration_job_run` 中声明每一次运行，因此无论有多少个消费者
-在运行，该任务在每个配置间隔内都只执行一次。
-
-在控制台中，画布的**健康状况**页面会按选定的时间窗口（1 小时 / 6 小时 / 24 小时 / 7 天）读取这两份历史：
-每台服务器一张卡片，显示其状态、该窗口内*最后一次上报时*的连接数以及峰值，另外还有两张图表 —— 由每次
-上报的上传/下载增量得出的吞吐量，以及连接数与峰值水位的对比。页面上没有任何实时数据：每个数字都来自已
-存储的上报，因此一台 `Offline` 的服务器仍会显示它最后一次发送的内容。每张卡片的 *Pod 事件* 标签页列出
-在该服务器上运行的所有 pod 的事件，包括 `Failed` 记录所携带的 `message`；它只在展开时才会加载。
+发布只是故事的一半：Worker 是否真的在运行已发布的内容，由健康流来回答。每个 Worker 按间隔推送一个
+`HealthReport`，每次上报会生成一行服务器记录以及每个 pod 各一行记录，而它得出的结论 —— 服务器的
+`Online`、`Degraded`、`Offline`，pod 的 `Ready`、`Deploying`、`Failed` —— 就是控制台展示的内容。其
+中有两个结论是由这条流水线写入的，而不是由某次上报写入的：应用失败时 `AckConfig` 会把服务器标记为
+`Degraded`，而一次派生会在发布的那一刻把每个发生变化的 pod 标记为 `Deploying`。字段、阈值和周期任务
+见[健康监控](/zh-cn/features/health-monitor/)。
 
 ## 证书
 
-TLS 客户端 Pod（`sni`、DNS 提供商、`domain_id`，以及可选的 ACME 目录 —— 留空表示使用存储的
-`orchestration` 配置中的 `default_acme_directory`，即 Let's Encrypt）会按 `(sni, acme_directory)`
-解析出一行
-`certificate` 记录。ACME 任务会创建该行记录，通过 DNS 提供商执行 DNS-01 挑战（Cloudflare：`domain_id`
-是 zone id；Vercel：`domain_id` 是域名，提供商的 `account_id` 是 team id），等待 TXT 记录在公共解析器
-上可见，然后存储证书链和加密后的私钥。在此之前，该 pod 只是一条 `invalid_pods` 条目
-（“certificate for <sni> is pending”），而绝不是服务器故障。续期发生在到期前 30 天；续期会递增该行的
-版本号，而由于每个快照都会固定其 TOML 所引用的版本，因此每台提供该证书服务的服务器都会收到一个新的修订
-版本 —— 文件路径不变，内容更新。
-
-基于 TLS 或 QUIC 的中继监听器改用**内部 CA**：`manage-tool orchestration init-ca` 一次性创建它，派生
-钩子为每个中继 pod 签发一张 30 天的叶证书（SAN 为 `<pod-key>.relay.guru.internal`），
-`rotate_relay_certificates` 任务在到期前十天轮换叶证书，而 Worker 只根据 `certs/ca.pem`（TOML 中的
-`relay_ca`）校验中继对端。DNS 提供商、证书和 CA 都由 Admin 通过运维 API 管理（`CreateDnsProvider`、
-`ListCertificates`、`RetryCertificate` 等）；密钥材料使用 `GURU_MASTER_KEY` 加密，且从不返回。
-
-控制台的 **TLS** 页面是这一切面向 Admin 的一侧：DNS 提供商在这里创建、编辑（API 令牌留空则保留已存储的
-令牌）和删除，证书表格则显示每行的状态、解析出的提供商、带到期提示的有效期窗口，以及失败时的
-`last_error`，每行都带有 *重试*（清除失败状态或强制续期）和 *删除*。它从不签发证书：只有当派生任务读取
-到某个 TLS 客户端 Pod 的证书设置之后，对应的记录行才会出现，而这些设置是在画布上该 Pod 的面板里编辑的。
+一个 TLS 客户端 Pod 会按 `(sni, acme_directory)` 解析出一行 `certificate` 记录，而基于 TLS 或 QUIC
+的中继监听器改用内部 CA。两者在这里之所以重要，原因是同一个：快照会固定它的 TOML 所引用的每张证书
+的版本，因此续期其中一张就会为每台提供它服务的服务器产生一个新的修订版本，即便 TOML 的字节并没有变
+化；而证书尚未签发的 pod 会作为一条 `invalid_pods` 条目被排除在其服务器的配置之外，却不会让该服务器
+故障。签发任务、DNS 提供商和中继 CA 见[基于 DNS 的 ACME](/zh-cn/features/acme-dns/)。
 
 ## 查看派生出的配置
 
