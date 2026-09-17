@@ -10,6 +10,7 @@ import RuleDots from './RuleDots.svelte';
 
 // Where buses from several servers meet before a splitter or an exit. Nothing
 // about it is stored: it is how the drawing keeps many parallel lines readable.
+// A drag from one of its ways out gives every pod on that way a way on.
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'aggregator' }> } = $props();
 
 const canvas = useCanvasContext();
@@ -36,7 +37,7 @@ const faded = $derived(
 		{#each data.ways as way (way.handle)}
 			<div class="relative flex items-center px-3 py-0.5 text-xs">
 				<span class="min-w-0 truncate">{way.label}</span>
-				<CardHandle id={way.handle} side="right" role="bus" />
+				<CardHandle id={way.handle} side="right" role="start" />
 			</div>
 		{/each}
 	</div>

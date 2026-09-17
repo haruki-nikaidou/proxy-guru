@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { AggregatorCard, SplitterCard } from './drawing.js';
-import { clearSpot, draw } from './drawing.js';
+import { clearSpot, draw, routeNodesAt } from './drawing.js';
 import { connect } from './edit.js';
 import { applied, exit, fanOut, leaf, pod, server, toExit, toPod } from './fixture.test-util.js';
 import type { Graph } from './model.js';
@@ -93,6 +93,28 @@ describe('drawing the production fan-out', () => {
 
 	test('a drawing is stable', () => {
 		expect(draw(graph, 'root')).toEqual(drawing);
+	});
+
+	test('a row stands for the route nodes behind it', () => {
+		const splitter = splitters[0] as SplitterCard;
+		const aggregator = aggregators[0] as AggregatorCard;
+		const byPod = (a: { podId: string }, b: { podId: string }) => a.podId.localeCompare(b.podId);
+		// An aggregator's way out: the root of each pod whose line runs through it.
+		expect(
+			routeNodesAt(drawing, { node: aggregator.id, handle: 'out:exit:exit-a' }).sort(byPod)
+		).toEqual([1, 2, 3, 4, 5].map(i => ({ podId: `web-g${i}`, path: [] })));
+		// A splitter's member row: that member of every route it stands for.
+		expect(routeNodesAt(drawing, { node: splitter.id, handle: 'out:2' }).sort(byPod)).toEqual([
+			{ podId: 'api', path: [2] },
+			{ podId: 'web', path: [2] }
+		]);
+		expect(routeNodesAt(drawing, { node: splitter.id, handle: 'add' }).sort(byPod)).toEqual([
+			{ podId: 'api', path: [] },
+			{ podId: 'web', path: [] }
+		]);
+		expect(routeNodesAt(drawing, { node: splitter.id, handle: 'out:5' })).toEqual([]);
+		expect(routeNodesAt(drawing, { node: 'server:mobile', handle: 'pod-out:web' })).toEqual([]);
+		expect(routeNodesAt(drawing, { node: 'agg:gone', handle: 'out:exit:exit-a' })).toEqual([]);
 	});
 
 	test('what only the drawing has is placed between its ends', () => {

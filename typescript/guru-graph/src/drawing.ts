@@ -397,6 +397,37 @@ export function draw<S extends Server>(graph: Graph<S>, canvasId: Id): Drawing<S
 	};
 }
 
+/**
+ * The route nodes a handle stands for, where a drag may start that gives each
+ * of them a way on:
+ * - a splitter's member row, `out:<i>`: that member of every route node the
+ *   splitter stands for;
+ * - a splitter's `add` handle: those route nodes themselves;
+ * - an aggregator's way out, `out:<card>`: the root of the route of every pod
+ *   whose line runs through it. An aggregator only gathers lines that leave a
+ *   pod's own row, and a pod's row is where its route starts.
+ *
+ * Anything else stands for nothing: an empty list, never an error, since a
+ * drag asks while it hovers.
+ */
+export function routeNodesAt<S extends Server>(drawing: Drawing<S>, at: Handle): SplitterMember[] {
+	const card = drawing.cards.find(entry => entry.id === at.node);
+	if (card?.kind === 'splitter') {
+		if (at.handle === 'add')
+			return card.members.map(({ podId, path }) => ({ podId, path: [...path] }));
+		const index = /^out:(\d+)$/.exec(at.handle)?.[1];
+		if (index === undefined || Number(index) >= card.arity) return [];
+		return card.members.map(({ podId, path }) => ({ podId, path: [...path, Number(index)] }));
+	}
+	if (card?.kind === 'aggregator') {
+		const bus = drawing.buses.find(
+			entry => entry.source.node === at.node && entry.source.handle === at.handle
+		);
+		return (bus?.pods ?? []).map(podId => ({ podId, path: [] }));
+	}
+	return [];
+}
+
 function orderRules(index: RuleIndex, set: Set<Id>): Id[] {
 	return index.rules.filter(rule => set.has(rule));
 }

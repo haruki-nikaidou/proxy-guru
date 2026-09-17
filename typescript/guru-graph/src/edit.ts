@@ -7,8 +7,8 @@
  * [`EditError`] naming why, for the dashboard to say in the operator's language.
  */
 
-import type { Drawing, Point, SplitterCard } from './drawing.js';
-import { LAYOUT_KIND, layoutGroup } from './drawing.js';
+import type { Drawing, Handle, Point, SplitterCard, SplitterMember } from './drawing.js';
+import { LAYOUT_KIND, layoutGroup, routeNodesAt } from './drawing.js';
 import { newId } from './ids.js';
 import { drawnPositions } from './layout.js';
 import type {
@@ -26,6 +26,8 @@ import type {
 } from './model.js';
 import { edgeTargetExit, edgeTargetPod, emptyChange, isRelay } from './model.js';
 import {
+	type Addition,
+	appendAt,
 	appendMember,
 	at,
 	children,
@@ -35,17 +37,21 @@ import {
 	removeEdges as removeRouteEdges,
 	reordered,
 	replaceAt,
+	nodes as routeNodes,
 	withPolicy
 } from './route.js';
+import { ruleIndex } from './rules.js';
 
 export type EditErrorCode =
 	| 'pod_not_found'
 	| 'exit_not_found'
 	| 'server_not_found'
 	| 'splitter_not_found'
+	| 'aggregator_not_found'
 	| 'target_not_dialable'
 	| 'self_dial'
-	| 'client_pod_dialed';
+	| 'client_pod_dialed'
+	| 'cycle';
 
 export class EditError extends Error {
 	constructor(readonly code: EditErrorCode) {
@@ -366,7 +372,7 @@ export function joinSplitter<S extends Server>(
 
 /**
  * Every route node a splitter stands for gains a member: an edge to a relay pod
- * or an exit, or a new relay pod per member pod on a server.
+ * or an exit, or to a new relay pod on a server (one per rule; see `addWayOn`).
  */
 export function addSplitterMember<S extends Server>(
 	graph: Graph<S>,
@@ -374,29 +380,213 @@ export function addSplitterMember<S extends Server>(
 	splitterId: string,
 	target: Target
 ): GraphChange {
+	return addWayOn(graph, drawing, { node: splitterId, handle: 'add' }, target);
+}
+
+// --- ways on for many pods at once --------------------------------------------
+
+/**
+ * A way on to `target` for every route node the handle `from` stands for (see
+ * `routeNodesAt`), as one batch: a splitter's member row gives that member of
+ * each route a way on, its `add` handle each route, and an aggregator's way out
+ * every pod whose line runs through it. A single edge becomes a balance over
+ * the old and the new; a group gains a member.
+ *
+ * A new relay pod on a server is shared by the pods that carry the same rules:
+ * five relay pods of one rule on five servers land on one pod there, and each
+ * other rule gets one of its own.
+ */
+export function addWayOn<S extends Server>(
+	graph: Graph<S>,
+	drawing: Drawing<S>,
+	from: Handle,
+	target: Target
+): GraphChange {
 	const draft = new Draft(graph);
-	const card = splitter(drawing, splitterId);
-	for (const { podId, path } of card.members) {
-		const pod = draft.pod(podId);
-		const edgeTarget = resolveTarget(draft, pod, target);
-		const edge: Edge = {
-			id: newId(),
-			sourcePodId: pod.id,
-			target: edgeTarget,
-			overrideIp: null,
-			overridePort: null
-		};
-		draft.putEdge(edge);
-		const current = draft.pod(podId);
-		if (!current.route) continue;
-		const node = at(current.route, path);
-		if (!node) continue;
-		draft.putPod({
-			...current,
-			route: replaceAt(current.route, path, appendMember(node, { edge: edge.id }))
-		});
-	}
+	const stale = from.node.startsWith('agg:') ? 'aggregator_not_found' : 'splitter_not_found';
+	addWays(draft, routeNodesAt(drawing, from), target, stale);
 	return draft.change();
+}
+
+/** A way on to `target` at the root of each pod's route, as one batch. */
+export function connectEach<S extends Server>(
+	graph: Graph<S>,
+	podIds: readonly Id[],
+	target: Target
+): GraphChange {
+	const draft = new Draft(graph);
+	addWays(
+		draft,
+		podIds.map(podId => ({ podId, path: [] })),
+		target,
+		'pod_not_found'
+	);
+	return draft.change();
+}
+
+/**
+ * Whether a drag from `from` (see `routeNodesAt`) may end at the handle `to`:
+ * `from` stands for something; the drop is not on a splitter, where joining is
+ * one pod's gesture; no line of `from` already runs to `to`; and a relay pod's
+ * row is neither one of its pods nor leads back to one.
+ */
+export function canDropWayOn<S extends Server>(
+	graph: Graph<S>,
+	drawing: Drawing<S>,
+	from: Handle,
+	to: Handle
+): boolean {
+	const nodes = routeNodesAt(drawing, from);
+	if (nodes.length === 0) return false;
+	if (to.node.startsWith('split:') || to.node.startsWith('agg:')) return false;
+	const already = drawing.buses.some(
+		bus =>
+			bus.source.node === from.node &&
+			bus.source.handle === from.handle &&
+			bus.target.node === to.node &&
+			bus.target.handle === to.handle
+	);
+	if (already) return false;
+	if (to.handle.startsWith('pod-in:')) {
+		const pods = new Set(nodes.map(node => node.podId));
+		const onward = reachableFrom(graph.edges, to.handle.slice('pod-in:'.length));
+		return ![...onward].some(id => pods.has(id));
+	}
+	return to.handle === 'in';
+}
+
+/**
+ * The relay pods landed together with `podId` that still have no way on, for
+ * connecting them the way `podId` just was. Only when exactly one pod dials
+ * `podId`: the relay pods of the same canvas that the other edges of the
+ * smallest group holding that edge lead to, with no route of their own, that
+ * are not the target and that the target does not lead to.
+ */
+export function fanOutSiblings<S extends Server>(graph: Graph<S>, podId: Id, target: Target): Id[] {
+	const pods = new Map(graph.pods.map(pod => [pod.id, pod]));
+	const edges = new Map(graph.edges.map(edge => [edge.id, edge]));
+	const into = graph.edges.filter(edge => edgeTargetPod(edge) === podId);
+	const [first] = into;
+	const self = pods.get(podId);
+	if (!first || !self || into.some(edge => edge.sourcePodId !== first.sourcePodId)) return [];
+	const route = pods.get(first.sourcePodId)?.route ?? null;
+	const leaf = routeNodes(route).find(
+		entry => 'edge' in entry.node && entry.node.edge === first.id
+	);
+	if (!leaf || leaf.path.length === 0) return [];
+	const group = at(route, leaf.path.slice(0, -1));
+	const unreachable = 'pod' in target ? reachableFrom(graph.edges, target.pod) : new Set<Id>();
+	const siblings: Id[] = [];
+	for (const edgeId of leaves(group)) {
+		const edge = edges.get(edgeId);
+		const sibling = edge ? edgeTargetPod(edge) : null;
+		if (sibling === null || sibling === podId || unreachable.has(sibling)) continue;
+		const pod = pods.get(sibling);
+		if (!pod || pod.route || !isRelay(pod.ingress) || pod.canvasId !== self.canvasId) continue;
+		if (!siblings.includes(sibling)) siblings.push(sibling);
+	}
+	return siblings;
+}
+
+/**
+ * Where the new edge out of `podId` in a batch leads, as a target another
+ * gesture can reuse: a relay pod the batch made on a server is a pod by now.
+ */
+export function targetOf(change: GraphChange, podId: Id): Target | null {
+	const edge = change.putEdges.find(entry => entry.sourcePodId === podId);
+	if (!edge) return null;
+	return 'pod' in edge.target ? { pod: edge.target.pod } : { exit: edge.target.exit };
+}
+
+/** Every pod `start` leads to by following edges, `start` included. */
+function reachableFrom(edges: Iterable<Edge>, start: Id): Set<Id> {
+	const next = new Map<Id, Id[]>();
+	for (const edge of edges) {
+		const target = edgeTargetPod(edge);
+		if (target === null) continue;
+		const targets = next.get(edge.sourcePodId);
+		if (targets) targets.push(target);
+		else next.set(edge.sourcePodId, [target]);
+	}
+	const seen = new Set<Id>([start]);
+	const stack = [start];
+	for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+		for (const target of next.get(id) ?? []) {
+			if (seen.has(target)) continue;
+			seen.add(target);
+			stack.push(target);
+		}
+	}
+	return seen;
+}
+
+/**
+ * An edge to `target` for each route node, added to that node of its pod's
+ * route (see `appendAt`). Every node is found before anything is put, so a
+ * drawing gone stale throws `stale` rather than leaving half a batch; the root
+ * of a pod with no route yet is a node too.
+ */
+function addWays<S extends Server>(
+	draft: Draft<S>,
+	nodes: readonly SplitterMember[],
+	target: Target,
+	stale: EditErrorCode
+) {
+	const byPod = new Map<Id, Path[]>();
+	for (const { podId, path } of nodes) {
+		const pod = draft.pods.get(podId);
+		if (!pod || (path.length > 0 && !at(pod.route, path))) throw new EditError(stale);
+		const paths = byPod.get(podId) ?? [];
+		if (!paths.some(known => known.join('.') === path.join('.'))) paths.push(path);
+		byPod.set(podId, paths);
+	}
+	if (byPod.size === 0) throw new EditError(stale);
+	if ('exit' in target) {
+		if (!draft.exits.has(target.exit)) throw new EditError('exit_not_found');
+	} else if ('pod' in target) {
+		const far = draft.pods.get(target.pod);
+		if (!far) throw new EditError('pod_not_found');
+		if (byPod.has(far.id)) throw new EditError('self_dial');
+		if (!isRelay(far.ingress)) throw new EditError('client_pod_dialed');
+		const onward = reachableFrom(draft.edges.values(), far.id);
+		if ([...byPod.keys()].some(id => onward.has(id))) throw new EditError('cycle');
+	} else if (!draft.graph.servers.some(server => server.id === target.server)) {
+		throw new EditError('server_not_found');
+	}
+	const rules = ruleIndex(draft.graph).pods;
+	const landings = new Map<string, Id>();
+	for (const [podId, paths] of byPod) {
+		const pod = draft.pod(podId);
+		const additions: Addition[] = paths.map(path => {
+			let edgeTarget: Edge['target'];
+			if ('server' in target) {
+				const key = (rules.get(podId) ?? []).join('\n') || `pod:${podId}`;
+				let landing = landings.get(key);
+				if (!landing) {
+					landing = draft.relayPod(
+						target.server,
+						target.canvasId,
+						{ kind: target.ingress },
+						pod.name
+					).id;
+					landings.set(key, landing);
+				}
+				edgeTarget = { pod: landing };
+			} else {
+				edgeTarget = 'exit' in target ? { exit: target.exit } : { pod: target.pod };
+			}
+			const edge: Edge = {
+				id: newId(),
+				sourcePodId: podId,
+				target: edgeTarget,
+				overrideIp: null,
+				overridePort: null
+			};
+			draft.putEdge(edge);
+			return { path, member: { edge: edge.id } };
+		});
+		draft.putPod({ ...pod, route: appendAt(pod.route, additions) });
+	}
 }
 
 // --- changing a splitter -----------------------------------------------------

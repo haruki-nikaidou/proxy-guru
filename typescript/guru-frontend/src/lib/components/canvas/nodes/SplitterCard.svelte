@@ -11,7 +11,8 @@ import CardShell from './CardShell.svelte';
 import RuleDots from './RuleDots.svelte';
 
 // A group of route nodes that choose the same way between the same cards: a
-// balance by weight, or a failover in tiers. One way out per member; the faint
+// balance by weight, or a failover in tiers. One way out per member, and a drag
+// from a member's row gives that member of every route a way on; the faint
 // handle at the bottom adds a member to every route the card stands for.
 let { id, data }: NodeProps & { data: Extract<FlowNodeData, { kind: 'splitter' }> } = $props();
 
@@ -56,7 +57,7 @@ const faded = $derived(
 					{way.weight === null ? `#${index + 1}` : `×${way.weight}`}
 				</span>
 				<span class="min-w-0 truncate">{way.label}</span>
-				<CardHandle id={way.handle} side="right" role="bus" />
+				<CardHandle id={way.handle} side="right" role="start" />
 			</div>
 		{/each}
 		<div class="relative flex items-center justify-end px-3 py-0.5 text-xs text-muted-foreground/70">

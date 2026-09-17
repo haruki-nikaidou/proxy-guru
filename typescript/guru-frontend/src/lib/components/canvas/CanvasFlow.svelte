@@ -12,19 +12,27 @@ import {
 import '@xyflow/svelte/dist/style.css';
 import {
 	addSplitterMember,
+	addWayOn,
+	canDropWayOn,
 	carryLayout,
 	clearSpot,
 	connect,
+	connectEach,
 	draw,
 	EditError,
+	fanOutSiblings,
 	type GraphChange,
+	type Handle,
 	isEmptyChange,
+	isRelay,
 	joinSplitter,
 	locate,
 	moveCards,
 	removeAll,
+	routeNodesAt,
 	type Subject,
-	type Target
+	type Target,
+	targetOf
 } from 'guru-graph';
 import { mode } from 'mode-watcher';
 import { tick, untrack } from 'svelte';
@@ -184,7 +192,17 @@ function report(err: unknown) {
 	else reportError(err);
 }
 
-async function commit(change: GraphChange | (() => GraphChange), success?: string) {
+/**
+ * Applies a batch. `base` is the graph a gesture built it from when that can be
+ * older than the graph now — the operator took a while in a dialog: its
+ * generation is the one the write expects, so a batch naming routes that have
+ * changed since is refused instead of written.
+ */
+async function commit(
+	change: GraphChange | (() => GraphChange),
+	success?: string,
+	base?: { generation: number }
+) {
 	const current = graph;
 	if (!current) return false;
 	try {
@@ -193,7 +211,7 @@ async function commit(change: GraphChange | (() => GraphChange), success?: strin
 		const outcome = await applyGraphChange({
 			canvasId,
 			change: batch,
-			expectedGeneration: current.generation
+			expectedGeneration: (base ?? current).generation
 		});
 		if (!outcome.applied) {
 			toast.error(refusalText(outcome.diagnostics));
@@ -265,12 +283,11 @@ async function addServer() {
 
 // --- connecting --------------------------------------------------------------
 
-/** What a drop on a card means as a target, asking the operator where needed. */
-async function dropTarget(
-	node: string,
-	handle: string,
-	from: string | null
-): Promise<Target | null> {
+/**
+ * What a drop on a card means as a target, asking the operator where needed;
+ * `exclude` are the pods the drag starts from, which may not be picked.
+ */
+async function dropTarget(node: string, handle: string, exclude: string[]): Promise<Target | null> {
 	if (handle.startsWith('pod-in:')) return { pod: handle.slice('pod-in:'.length) };
 	if (node.startsWith('exit:')) return { exit: node.slice('exit:'.length) };
 	if (node.startsWith('server:')) {
@@ -289,8 +306,58 @@ async function dropTarget(
 	return pickTarget({
 		title: m.editor_target_title(),
 		scope: inside,
-		excludePods: from ? [from] : []
+		excludePods: exclude
 	});
+}
+
+/**
+ * A splitter's member row or an aggregator's way out: a drag from it gives
+ * every pod behind it a way on at once (see `routeNodesAt`).
+ */
+const isRow = (from: Handle) =>
+	(from.node.startsWith('split:') || from.node.startsWith('agg:')) &&
+	from.handle.startsWith('out:');
+
+/**
+ * A pod's new way on. A relay pod that had none, landed together with relay
+ * pods that have none either, offers to connect those the same way — in the
+ * toast, so nothing waits on it.
+ */
+async function connectPod(current: CanvasGraph, podId: string, target: Target) {
+	const pod = current.pods.find(entry => entry.id === podId);
+	const bare = pod !== undefined && pod.route === null && isRelay(pod.ingress);
+	const batch = connect(current, podId, target);
+	if (!(await commit(batch, undefined, current))) return;
+	const onward = targetOf(batch, podId);
+	const siblings = bare && onward ? fanOutSiblings(current, podId, onward) : [];
+	if (!onward || siblings.length === 0) {
+		toast.success(m.editor_connected());
+		return;
+	}
+	toast.success(m.editor_connected(), {
+		description: m.editor_siblings_hint({ count: siblings.length }),
+		duration: 10_000,
+		action: {
+			label: m.editor_connect_siblings({ count: siblings.length }),
+			onClick: () => void connectSiblings(podId, onward)
+		}
+	});
+}
+
+/** The siblings of `podId` as the graph has them now, connected to `target` in one batch. */
+async function connectSiblings(podId: string, target: Target) {
+	const current = graph;
+	if (!current) return;
+	try {
+		const siblings = fanOutSiblings(current, podId, target);
+		if (siblings.length === 0) return;
+		const batch = connectEach(current, siblings, target);
+		if (await commit(batch, undefined, current)) {
+			toast.success(m.editor_siblings_connected({ count: siblings.length }));
+		}
+	} catch (err) {
+		report(err);
+	}
 }
 
 /**
@@ -303,6 +370,7 @@ async function connectGesture(connection: Connection) {
 	if (!current || !currentDrawing) return;
 	const sourceHandle = connection.sourceHandle ?? '';
 	const targetHandle = connection.targetHandle ?? '';
+	const from = { node: connection.source, handle: sourceHandle };
 	try {
 		if (sourceHandle.startsWith('pod-out:')) {
 			const podId = sourceHandle.slice('pod-out:'.length);
@@ -313,15 +381,24 @@ async function connectGesture(connection: Connection) {
 				);
 				return;
 			}
-			const target = await dropTarget(connection.target, targetHandle, podId);
-			if (target) await commit(() => connect(current, podId, target), m.editor_connected());
+			const target = await dropTarget(connection.target, targetHandle, [podId]);
+			if (target) await connectPod(current, podId, target);
 		} else if (sourceHandle === 'add' && connection.source.startsWith('split:')) {
-			const target = await dropTarget(connection.target, targetHandle, null);
+			const target = await dropTarget(connection.target, targetHandle, []);
 			if (target) {
 				await commit(
 					() => addSplitterMember(current, currentDrawing, connection.source, target),
-					m.editor_member_added()
+					m.editor_member_added(),
+					current
 				);
+			}
+		} else if (isRow(from)) {
+			const rowPods = [...new Set(routeNodesAt(currentDrawing, from).map(node => node.podId))];
+			const target = await dropTarget(connection.target, targetHandle, rowPods);
+			if (!target) return;
+			const batch = addWayOn(current, currentDrawing, from, target);
+			if (await commit(batch, undefined, current)) {
+				toast.success(m.editor_ways_added({ count: batch.putEdges.length }));
 			}
 		}
 	} catch (err) {
@@ -332,6 +409,14 @@ async function connectGesture(connection: Connection) {
 const isValidConnection = (connection: Edge | Connection): boolean => {
 	const sourceHandle = connection.sourceHandle ?? '';
 	const targetHandle = connection.targetHandle ?? '';
+	const from = { node: connection.source, handle: sourceHandle };
+	if (isRow(from)) {
+		return (
+			graph !== undefined &&
+			drawing !== undefined &&
+			canDropWayOn(graph, drawing, from, { node: connection.target, handle: targetHandle })
+		);
+	}
 	const fromPod = sourceHandle.startsWith('pod-out:');
 	const fromSplitter = sourceHandle === 'add' && connection.source.startsWith('split:');
 	if (!fromPod && !fromSplitter) return false;

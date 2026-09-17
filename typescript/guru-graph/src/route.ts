@@ -116,6 +116,51 @@ export function appendMember(route: Route | null, member: Route): Route {
 	return { failover: [...route.failover, member] };
 }
 
+/** A member for the node at `path`. */
+export type Addition = { path: Path; member: Route };
+
+/**
+ * The route with each addition's member added to the node at its path the way
+ * `appendMember` adds one, rebuilt in one pass so that every path names a node
+ * of the route as it was. Nothing collapses on the way: a group stored with a
+ * single member keeps its place, and so do the paths through it. A single edge
+ * that becomes a balance inside a sticky balance is sticky too, so a client
+ * keeps to one way. An addition whose path leads nowhere is ignored.
+ */
+export function appendAt(route: Route | null, additions: readonly Addition[]): Route | null {
+	const byPath = new Map<string, Route[]>();
+	for (const { path, member } of additions) {
+		const key = path.join('.');
+		const members = byPath.get(key);
+		if (members) members.push(member);
+		else byPath.set(key, [member]);
+	}
+	const grow = (node: Route | null, path: readonly number[], sticky: boolean): Route | null => {
+		let next = node;
+		for (const member of byPath.get(path.join('.')) ?? []) {
+			const grown = appendMember(next, member);
+			next =
+				sticky && next !== null && 'edge' in next && 'balance' in grown
+					? { balance: grown.balance, sticky: 'client_ip' }
+					: grown;
+		}
+		return next;
+	};
+	const rebuild = (node: Route, path: readonly number[], sticky: boolean): Route => {
+		let rebuilt = node;
+		if (!('edge' in node)) {
+			const inside = 'balance' in node ? node.sticky === 'client_ip' : sticky;
+			rebuilt = withChildren(
+				node,
+				children(node).map((child, i) => rebuild(child, [...path, i], inside)),
+				weightsOf(node)
+			);
+		}
+		return grow(rebuilt, path, sticky) ?? rebuilt;
+	};
+	return route ? rebuild(route, [], false) : grow(null, [], false);
+}
+
 /** The route with every leaf replaced by what `leaf` makes of it. */
 export function mapLeaves(route: Route, leaf: (edge: Id) => Route): Route {
 	if ('edge' in route) return leaf(route.edge);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { Route } from './model.js';
 import {
+	appendAt,
 	appendMember,
 	at,
 	leaves,
@@ -115,5 +116,64 @@ describe('routes', () => {
 			failover: [e('a'), e('b'), e('c')]
 		});
 		expect(unnest(route, [0])).toEqual({ failover: [e('a'), e('b'), e('c')] });
+	});
+});
+
+describe('adding at many places at once', () => {
+	test('every path names the route as it was, single-member groups included', () => {
+		// A balance holding one balance of one edge, as a route may be stored.
+		// Adding at the edge first would fold both groups away one at a time, and
+		// the path to the inner group would then name the edge.
+		const stored: Route = { balance: [{ to: { balance: [{ to: e('a') }] } }] };
+		expect(
+			appendAt(stored, [
+				{ path: [0, 0], member: e('x') },
+				{ path: [0], member: e('y') }
+			])
+		).toEqual({
+			balance: [
+				{
+					to: {
+						balance: [{ to: { balance: [{ to: e('a') }, { to: e('x') }] } }, { to: e('y') }]
+					}
+				}
+			]
+		});
+	});
+
+	test('an edge inside a sticky balance becomes a sticky balance', () => {
+		const route: Route = {
+			balance: [{ weight: 2, to: e('a') }, { to: { failover: [e('b'), e('c')] } }],
+			sticky: 'client_ip'
+		};
+		expect(
+			appendAt(route, [
+				{ path: [0], member: e('x') },
+				{ path: [1, 1], member: e('y') },
+				{ path: [1], member: e('z') }
+			])
+		).toEqual({
+			balance: [
+				{ weight: 2, to: { balance: [{ to: e('a') }, { to: e('x') }], sticky: 'client_ip' } },
+				{
+					to: {
+						failover: [
+							e('b'),
+							{ balance: [{ to: e('c') }, { to: e('y') }], sticky: 'client_ip' },
+							e('z')
+						]
+					}
+				}
+			],
+			sticky: 'client_ip'
+		});
+		// Outside any sticky balance nothing is sticky.
+		expect(appendAt(e('a'), [{ path: [], member: e('x') }])).toEqual(appendMember(e('a'), e('x')));
+	});
+
+	test('a pod with no route gets the member itself, and nowhere adds nothing', () => {
+		expect(appendAt(null, [{ path: [], member: e('n') }])).toEqual(e('n'));
+		expect(appendAt(e('a'), [{ path: [3], member: e('x') }])).toEqual(e('a'));
+		expect(appendAt(e('a'), [])).toEqual(e('a'));
 	});
 });

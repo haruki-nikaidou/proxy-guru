@@ -1,11 +1,15 @@
 import { describe, expect, test } from 'bun:test';
-import type { SplitterCard } from './drawing.js';
+import type { AggregatorCard, SplitterCard } from './drawing.js';
 import { draw } from './drawing.js';
 import {
 	addSplitterMember,
+	addWayOn,
+	canDropWayOn,
 	connect,
+	connectEach,
 	cutEdges,
 	EditError,
+	fanOutSiblings,
 	joinSplitter,
 	moveCards,
 	newPod,
@@ -14,17 +18,50 @@ import {
 	removeExits,
 	removePods,
 	removeSplitter,
-	setSplitterPolicy
+	setSplitterPolicy,
+	targetOf
 } from './edit.js';
-import { applied, consistent, exit, fanOut, pod, server } from './fixture.test-util.js';
+import {
+	applied,
+	consistent,
+	exit,
+	fanOut,
+	leaf,
+	pod,
+	server,
+	toExit,
+	toPod
+} from './fixture.test-util.js';
 import { isRecordKey } from './ids.js';
-import type { Graph } from './model.js';
+import type { Graph, Route } from './model.js';
 import { leaves } from './route.js';
 
 const splitterOf = (graph: Graph): SplitterCard => {
 	const card = draw(graph, 'root').cards.find(c => c.kind === 'splitter');
 	if (card?.kind !== 'splitter') throw new Error('no splitter');
 	return card;
+};
+
+/** The aggregator whose ways out include `target`. */
+const aggregatorTo = (graph: Graph, target: string): AggregatorCard => {
+	const card = draw(graph, 'root').cards.find(
+		c => c.kind === 'aggregator' && c.targets.includes(target)
+	);
+	if (card?.kind !== 'aggregator') throw new Error('no aggregator');
+	return card;
+};
+
+const routeOf = (graph: Graph, id: string): Route | null =>
+	graph.pods.find(p => p.id === id)?.route ?? null;
+
+/** The code of the `EditError` a gesture throws, `other` or `none`. */
+const reasonOf = (fn: () => unknown) => {
+	try {
+		fn();
+	} catch (err) {
+		return err instanceof EditError ? err.code : 'other';
+	}
+	return 'none';
 };
 
 describe('connecting', () => {
@@ -81,18 +118,10 @@ describe('connecting', () => {
 
 	test('nonsense is refused with a reason', () => {
 		const graph = fanOut();
-		const reason = (fn: () => unknown) => {
-			try {
-				fn();
-			} catch (err) {
-				return err instanceof EditError ? err.code : 'other';
-			}
-			return 'none';
-		};
-		expect(reason(() => connect(graph, 'web', { pod: 'web' }))).toBe('self_dial');
-		expect(reason(() => connect(graph, 'web', { pod: 'api' }))).toBe('client_pod_dialed');
-		expect(reason(() => connect(graph, 'ghost', { exit: 'exit-a' }))).toBe('pod_not_found');
-		expect(reason(() => connect(graph, 'web', { exit: 'nope' }))).toBe('exit_not_found');
+		expect(reasonOf(() => connect(graph, 'web', { pod: 'web' }))).toBe('self_dial');
+		expect(reasonOf(() => connect(graph, 'web', { pod: 'api' }))).toBe('client_pod_dialed');
+		expect(reasonOf(() => connect(graph, 'ghost', { exit: 'exit-a' }))).toBe('pod_not_found');
+		expect(reasonOf(() => connect(graph, 'web', { exit: 'nope' }))).toBe('exit_not_found');
 	});
 });
 
@@ -189,6 +218,297 @@ describe('splitters', () => {
 		const kept = applied(graph, removeSplitter(graph, draw(graph, 'root'), splitter.id, false));
 		expect(kept.pods).toHaveLength(12);
 		expect(consistent(kept)).toEqual([]);
+	});
+});
+
+describe('a way on for a whole row', () => {
+	const withExits = (graph: Graph, ...ids: string[]): Graph => ({
+		...graph,
+		exits: [...graph.exits, ...ids.map((id, i) => exit(id, 'root', 1200, 1000 + i * 200))]
+	});
+
+	test("an aggregator's way out gives every pod on it a way on, and one splitter appears", () => {
+		const graph = withExits(fanOut(), 'exit-c', 'exit-d');
+		const aggregator = aggregatorTo(graph, 'exit:exit-a');
+		const change = addWayOn(
+			graph,
+			draw(graph, 'root'),
+			{ node: aggregator.id, handle: 'out:exit:exit-a' },
+			{ exit: 'exit-c' }
+		);
+		expect(change.putEdges).toHaveLength(5);
+		const after = applied(graph, change);
+		expect(consistent(after)).toEqual([]);
+		for (let i = 1; i <= 5; i += 1) {
+			const route = routeOf(after, `web-g${i}`);
+			if (!route || !('balance' in route)) throw new Error('not a balance');
+			expect(route.balance[0]?.to).toEqual(leaf(`web-g${i}>out`));
+			expect(route.balance).toHaveLength(2);
+			expect(routeOf(after, `api-g${i}`)).toEqual(leaf(`api-g${i}>out`));
+		}
+		// Drawn: one new splitter for the five routes, still behind the aggregator.
+		const redrawn = draw(after, 'root');
+		const added = redrawn.cards.find(
+			(c): c is SplitterCard => c.kind === 'splitter' && c.members.some(m => m.podId === 'web-g1')
+		);
+		expect(added?.members).toHaveLength(5);
+		expect(added?.arity).toBe(2);
+		const gathered = aggregatorTo(after, 'exit:exit-b');
+		expect(gathered.id).toBe(aggregator.id);
+		expect(gathered.targets).toEqual(['exit:exit-b', added?.id ?? '']);
+
+		// The way out into that splitter adds a member to each of those routes.
+		const again = applied(
+			after,
+			addWayOn(
+				after,
+				redrawn,
+				{ node: gathered.id, handle: `out:${added?.id}` },
+				{ exit: 'exit-d' }
+			)
+		);
+		expect(consistent(again)).toEqual([]);
+		const route = routeOf(again, 'web-g3');
+		expect(route && 'balance' in route && route.balance).toHaveLength(3);
+	});
+
+	test('a new relay pod on a server is shared by the pods of one rule, not across rules', () => {
+		const base = fanOut();
+		const graph: Graph = { ...base, servers: [...base.servers, server('gcore6')] };
+		const rowA = aggregatorTo(graph, 'exit:exit-a');
+		const change = addWayOn(
+			graph,
+			draw(graph, 'root'),
+			{ node: rowA.id, handle: 'out:exit:exit-a' },
+			{ server: 'gcore6', ingress: 'relay_quic', canvasId: 'root' }
+		);
+		// web-g1..5 have five different names and one rule: one landing pod.
+		const [landing, ...more] = change.putPods.filter(p => p.serverId === 'gcore6');
+		expect(more).toHaveLength(0);
+		expect(
+			change.putEdges.filter(e => 'pod' in e.target && e.target.pod === landing?.id)
+		).toHaveLength(5);
+		expect(consistent(applied(graph, change))).toEqual([]);
+
+		// Both rules on one way out, every relay pod named alike: one pod per rule.
+		const shared: Graph = {
+			...graph,
+			pods: graph.pods.map(p => (p.id.includes('-g') ? { ...p, name: 'relay' } : p)),
+			edges: graph.edges.map(e =>
+				e.id.startsWith('api-g') ? { ...e, target: { exit: 'exit-a' } } : e
+			)
+		};
+		const both = addWayOn(
+			shared,
+			draw(shared, 'root'),
+			{ node: aggregatorTo(shared, 'exit:exit-a').id, handle: 'out:exit:exit-a' },
+			{ server: 'gcore6', ingress: 'relay_quic', canvasId: 'root' }
+		);
+		expect(both.putPods.filter(p => p.serverId === 'gcore6')).toHaveLength(2);
+		expect(consistent(applied(shared, both))).toEqual([]);
+	});
+
+	test("a splitter's member row gives that member of every route a way on", () => {
+		const base = withExits(fanOut(), 'exit-c');
+		const weighted = applied(
+			base,
+			setSplitterPolicy(base, draw(base, 'root'), splitterOf(base).id, {
+				kind: 'balance',
+				sticky: true,
+				weights: [5, 1, 1, 1, 1],
+				order: [0, 1, 2, 3, 4]
+			})
+		);
+		const change = addWayOn(
+			weighted,
+			draw(weighted, 'root'),
+			{ node: splitterOf(weighted).id, handle: 'out:2' },
+			{ exit: 'exit-c' }
+		);
+		const after = applied(weighted, change);
+		expect(consistent(after)).toEqual([]);
+		for (const id of ['web', 'api']) {
+			const route = routeOf(after, id);
+			if (!route || !('balance' in route)) throw new Error('not a balance');
+			expect(route.sticky).toBe('client_ip');
+			expect(route.balance.map(m => m.weight ?? 1)).toEqual([5, 1, 1, 1, 1]);
+			const member = route.balance[2]?.to;
+			if (!member || !('balance' in member)) throw new Error('member not a balance');
+			expect(member.sticky).toBe('client_ip');
+			expect(member.balance[0]?.to).toEqual(leaf(`${id}>g3`));
+		}
+	});
+
+	test('a pod holding one splitter twice gains a way on at both', () => {
+		const base = fanOut();
+		const graph: Graph = {
+			...base,
+			pods: [
+				...base.pods.map(p =>
+					p.id === 'web'
+						? {
+								...p,
+								route: {
+									failover: [
+										{ balance: [{ to: leaf('web>g1') }, { to: leaf('web>g2') }] },
+										{ balance: [{ to: leaf('web>h1') }, { to: leaf('web>h2') }] },
+										{ balance: ['web>g3', 'web>g4', 'web>g5'].map(id => ({ to: leaf(id) })) }
+									]
+								}
+							}
+						: p
+				),
+				pod('web-h1', 'gcore1', 'relay_quic', leaf('web-h1>out')),
+				pod('web-h2', 'gcore2', 'relay_quic', leaf('web-h2>out'))
+			],
+			edges: [
+				...base.edges,
+				toPod('web>h1', 'web', 'web-h1'),
+				toPod('web>h2', 'web', 'web-h2'),
+				toExit('web-h1>out', 'web-h1', 'exit-a'),
+				toExit('web-h2>out', 'web-h2', 'exit-a')
+			],
+			exits: [...base.exits, exit('exit-c')]
+		};
+		expect(consistent(graph)).toEqual([]);
+		const drawing = draw(graph, 'root');
+		const twice = drawing.cards.find(
+			(c): c is SplitterCard =>
+				c.kind === 'splitter' && c.members.filter(m => m.podId === 'web').length === 2
+		);
+		if (!twice) throw new Error('no splitter held twice');
+		const after = applied(
+			graph,
+			addWayOn(graph, drawing, { node: twice.id, handle: 'out:1' }, { exit: 'exit-c' })
+		);
+		expect(consistent(after)).toEqual([]);
+		const route = routeOf(after, 'web');
+		if (!route || !('failover' in route)) throw new Error('not a failover');
+		for (const group of route.failover.slice(0, 2)) {
+			if (!('balance' in group)) throw new Error('not a balance');
+			const second = group.balance[1]?.to;
+			expect(second && 'balance' in second && second.balance).toHaveLength(2);
+		}
+	});
+
+	test('a row may not dial its own pods, lead back into itself, or use a stale drawing', () => {
+		const base = withExits(fanOut(), 'exit-c');
+		// api-g1 also dials web-g2, so anything leading to api-g1 leads to web-g2.
+		const graph: Graph = {
+			...base,
+			pods: base.pods.map(p =>
+				p.id === 'api-g1'
+					? { ...p, route: { balance: [{ to: leaf('api-g1>out') }, { to: leaf('api-g1>web') }] } }
+					: p
+			),
+			edges: [...base.edges, toPod('api-g1>web', 'api-g1', 'web-g2')]
+		};
+		const drawing = draw(graph, 'root');
+		const row = { node: aggregatorTo(graph, 'exit:exit-a').id, handle: 'out:exit:exit-a' };
+		expect(reasonOf(() => addWayOn(graph, drawing, row, { pod: 'web-g1' }))).toBe('self_dial');
+		expect(reasonOf(() => addWayOn(graph, drawing, row, { pod: 'api-g1' }))).toBe('cycle');
+		expect(reasonOf(() => addWayOn(graph, drawing, row, { pod: 'web' }))).toBe('client_pod_dialed');
+		expect(
+			reasonOf(() =>
+				addWayOn(graph, drawing, { node: 'agg:gone', handle: row.handle }, { exit: 'exit-c' })
+			)
+		).toBe('aggregator_not_found');
+
+		// A drawing of routes that have changed since: nothing half-made.
+		const fan = withExits(fanOut(), 'exit-c');
+		const old = draw(fan, 'root');
+		const reshaped: Graph = {
+			...fan,
+			pods: fan.pods.map(p => (p.id === 'web' ? { ...p, route: leaf('web>g1') } : p))
+		};
+		const splitter = splitterOf(fan);
+		expect(
+			reasonOf(() =>
+				addWayOn(reshaped, old, { node: splitter.id, handle: 'out:3' }, { exit: 'exit-c' })
+			)
+		).toBe('splitter_not_found');
+		expect(reasonOf(() => addSplitterMember(fan, old, 'split:gone', { exit: 'exit-c' }))).toBe(
+			'splitter_not_found'
+		);
+	});
+
+	test('a row is only offered drops it can use', () => {
+		const graph = withExits(fanOut(), 'exit-c');
+		const drawing = draw(graph, 'root');
+		const splitter = splitterOf(graph);
+		const row = { node: aggregatorTo(graph, 'exit:exit-a').id, handle: 'out:exit:exit-a' };
+		const drop = (from: { node: string; handle: string }, node: string, handle: string) =>
+			canDropWayOn(graph, drawing, from, { node, handle });
+		expect(drop(row, 'exit:exit-c', 'in')).toBe(true);
+		expect(drop(row, 'server:gcore1', 'in')).toBe(true);
+		expect(drop(row, 'server:gcore1', 'pod-in:api-g1')).toBe(true);
+		// Where it already runs, a splitter, its own pods.
+		expect(drop(row, 'exit:exit-a', 'in')).toBe(false);
+		expect(drop(row, splitter.id, 'in')).toBe(false);
+		expect(drop(row, 'server:gcore1', 'pod-in:web-g1')).toBe(false);
+		const member = { node: splitter.id, handle: 'out:0' };
+		expect(drop(member, 'server:gcore1', 'pod-in:web-g1')).toBe(false);
+		expect(drop(member, 'exit:exit-c', 'in')).toBe(true);
+		expect(drop({ node: 'server:mobile', handle: 'pod-out:web' }, 'exit:exit-c', 'in')).toBe(false);
+	});
+});
+
+describe('connecting the rest of a fan-out', () => {
+	/** The fan-out right after it landed: relay pods with no way on yet. */
+	const landed = (): Graph => {
+		const base = fanOut();
+		return {
+			...base,
+			servers: [...base.servers, server('gcore6')],
+			pods: base.pods.map(p => (p.id.includes('-g') ? { ...p, route: null } : p)),
+			edges: base.edges.filter(e => !e.id.endsWith('>out'))
+		};
+	};
+
+	test('the relay pods landed with one are found, and connected in one batch', () => {
+		const graph = landed();
+		const first = connect(graph, 'web-g1', { exit: 'exit-a' });
+		const target = targetOf(first, 'web-g1');
+		expect(target).toEqual({ exit: 'exit-a' });
+		if (!target) throw new Error('no target');
+		const after = applied(graph, first);
+		const siblings = fanOutSiblings(after, 'web-g1', target);
+		expect(siblings).toEqual(['web-g2', 'web-g3', 'web-g4', 'web-g5']);
+		const rest = applied(after, connectEach(after, siblings, target));
+		expect(consistent(rest)).toEqual([]);
+		expect(fanOutSiblings(rest, 'web-g1', target)).toEqual([]);
+	});
+
+	test('a relay pod made for the first is where the rest go', () => {
+		const graph = landed();
+		const first = connect(graph, 'web-g1', {
+			server: 'gcore6',
+			ingress: 'relay_tls',
+			canvasId: 'root'
+		});
+		const target = targetOf(first, 'web-g1');
+		if (!target || !('pod' in target)) throw new Error('not a pod');
+		const after = applied(graph, first);
+		const siblings = fanOutSiblings(after, 'web-g1', target);
+		expect(siblings).toHaveLength(4);
+		const rest = applied(after, connectEach(after, siblings, target));
+		expect(consistent(rest)).toEqual([]);
+		expect(rest.edges.filter(e => 'pod' in e.target && e.target.pod === target.pod)).toHaveLength(
+			5
+		);
+	});
+
+	test('pods with a way on, the target and pods dialed twice are not siblings', () => {
+		const graph = landed();
+		const withG2 = applied(graph, connect(graph, 'web-g2', { exit: 'exit-a' }));
+		const first = connect(withG2, 'web-g1', { pod: 'web-g3' });
+		expect(targetOf(first, 'web-g1')).toEqual({ pod: 'web-g3' });
+		const after = applied(withG2, first);
+		expect(fanOutSiblings(after, 'web-g1', { pod: 'web-g3' })).toEqual(['web-g4', 'web-g5']);
+		// web-g3 is dialed by web and by web-g1 now.
+		expect(fanOutSiblings(after, 'web-g3', { exit: 'exit-a' })).toEqual([]);
+		// A client pod has no dialer at all.
+		expect(fanOutSiblings(after, 'web', { exit: 'exit-a' })).toEqual([]);
 	});
 });
 

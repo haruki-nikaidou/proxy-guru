@@ -79,11 +79,15 @@ export function editErrorText(code: EditErrorCode): string {
 			return m.editor_edit_server_not_found();
 		case 'splitter_not_found':
 			return m.editor_edit_splitter_not_found();
+		case 'aggregator_not_found':
+			return m.editor_edit_aggregator_not_found();
 		case 'target_not_dialable':
 		case 'client_pod_dialed':
 			return m.editor_edit_client_pod_dialed();
 		case 'self_dial':
 			return m.editor_edit_self_dial();
+		case 'cycle':
+			return m.editor_edit_cycle();
 	}
 }
 
