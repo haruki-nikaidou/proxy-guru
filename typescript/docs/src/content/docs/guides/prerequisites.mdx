@@ -374,6 +374,9 @@ services:
   rabbitmq:
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    # The data directory is named after the node, rabbit@<hostname>: pin it, or
+    # every container recreation starts an empty broker.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
@@ -407,16 +410,17 @@ first, because a master applies the schema to the database as it starts.
 </TabItem>
 </Tabs>
 
-The Compose examples need one additional detail. RabbitMQ
-names its data directory after its node name, `rabbit@<hostname>`, so the repository's Compose file
-pins `hostname:`; without it every container recreation would start an empty broker. Redis is the
-odd one out on purpose: no volume, no published port and no healthcheck — the masters reach it over
-the Compose network, and a fresh empty server is exactly as useful as the one it replaces.
+The Compose example needs one detail explained. RabbitMQ names its data directory after its node
+name, `rabbit@<hostname>`, which is why the service pins `hostname:`; without it every container
+recreation would start an empty broker. Redis is the odd one out on purpose: no volume, no
+published port and no healthcheck — the masters reach it over the Compose network, and a fresh empty
+server is exactly as useful as the one it replaces.
 
 The queues the consumer binds are created for you: `guru_orchestration_canvas_dirty` for edits, plus
 `guru_orchestration_derive_stale_canvases`, `guru_orchestration_sweep_liveness`,
-`guru_orchestration_trim_health_history`, `guru_orchestration_renew_certificates` and
-`guru_orchestration_rotate_relay_certificates` for the five periodic jobs.
+`guru_orchestration_trim_health_history`, `guru_orchestration_renew_certificates`,
+`guru_orchestration_rotate_relay_certificates` and `guru_orchestration_resolve_server_countries`
+for the six periodic jobs.
 
 ## 5. A hostname and a certificate
 

@@ -13,7 +13,7 @@ directory as `/agent/`.
 ## 1. Publish a release
 
 The dashboard hands out whatever `manage-tool agent publish` last recorded. It needs the built
-binary and the directory nginx serves under `/agent/` (`/srv/guru/agent` in the native guide):
+binary and the directory nginx serves under `/agent/` (`/srv/guru/agent` in both deployment guides):
 
 ```sh
 cargo build --release --locked -p guru-worker
@@ -40,9 +40,11 @@ into one database row (`orchestration_agent_release:current`), which is state ra
 configuration: a publish takes effect immediately, no master restart, and publishing the same
 version again simply overwrites it. Older version directories stay on disk; nothing prunes them.
 
-The control plane also has to know its own public origin, so the command it renders points somewhere.
-That is `agent_public_base_url` on the orchestration configuration — the URL workers dial and
-browsers open, `https://guru.example.com` in these guides. Set it once and restart the masters
+The control plane also has to know the public origin workers dial, so the command it renders points
+somewhere. That is `agent_public_base_url` on the orchestration configuration — the origin the
+worker API and `/agent/` are served on, `https://guru.example.com` in these guides. It need not be
+the dashboard's hostname, but it must be the one workers are told to dial, since a worker refuses
+an update URL outside its own `GURU_MASTER` origin. Set it once and restart the masters
 (`config set` replaces the whole document, so start from `config get`):
 
 ```sh

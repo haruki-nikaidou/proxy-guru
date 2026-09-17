@@ -376,6 +376,9 @@ services:
   rabbitmq:
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    # The data directory is named after the node, rabbit@<hostname>: pin it, or
+    # every container recreation starts an empty broker.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
@@ -409,14 +412,17 @@ sudo docker compose up -d postgres rabbitmq redis
 </TabItem>
 </Tabs>
 
-Compose 例では、さらに重要な点が 1 つあります。RabbitMQ は
-データディレクトリをノード名 `rabbit@<hostname>` に基づいて命名するため、リポジトリの Compose ファイルは
-`hostname:` を固定しています。これがないと、コンテナを作り直すたびに空のブローカーで起動してしまいます。
+Compose 例で 1 つ説明しておくべき点があります。RabbitMQ はデータディレクトリをノード名
+`rabbit@<hostname>` に基づいて命名するため、このサービスは `hostname:` を固定しています。これがないと、
+コンテナを作り直すたびに空のブローカーで起動してしまいます。Redis だけは意図的に例外です: ボリュームも、
+公開ポートも、healthcheck もありません — master は Compose ネットワーク経由で到達し、新しい空のサーバーは
+置き換えた元のサーバーとまったく同じように役立ちます。
 
 consumer がバインドするキューは自動的に作成されます。編集用の `guru_orchestration_canvas_dirty` に加え、
-5 つの定期ジョブ用に `guru_orchestration_derive_stale_canvases`、`guru_orchestration_sweep_liveness`、
+6 つの定期ジョブ用に `guru_orchestration_derive_stale_canvases`、`guru_orchestration_sweep_liveness`、
 `guru_orchestration_trim_health_history`、`guru_orchestration_renew_certificates`、
-`guru_orchestration_rotate_relay_certificates` が作成されます。
+`guru_orchestration_rotate_relay_certificates`、`guru_orchestration_resolve_server_countries` が
+作成されます。
 
 ## 5. ホスト名と証明書
 

@@ -24,6 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=planner /usr/src/proxy-guru/recipe.json recipe.json
+# `[patch.crates-io]` points at a path outside the workspace; chef's recipe holds
+# skeletons for workspace members only, so the patched crate must be real before
+# the dependency layer cooks.
+COPY vendor/ vendor/
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .

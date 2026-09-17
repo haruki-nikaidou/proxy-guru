@@ -21,6 +21,7 @@ COPY package.json bun.lock ./
 COPY typescript/app-protobuf/package.json typescript/app-protobuf/
 COPY typescript/docs/package.json typescript/docs/
 COPY typescript/guru-frontend/package.json typescript/guru-frontend/
+COPY typescript/guru-graph/package.json typescript/guru-graph/
 
 FROM base AS builder
 RUN bun install --frozen-lockfile --filter guru-frontend

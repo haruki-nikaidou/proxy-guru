@@ -208,8 +208,9 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: workers_grpc
+    # Loopback only: nginx terminates TLS for the worker API on :443 (section 9).
     ports:
-      - "50052:50052"
+      - "127.0.0.1:50052:50052"
 
   master-consumer:
     <<: *master
@@ -235,16 +236,17 @@ services:
   ストリームを保持しているインスタンスに固定されるため、前段には素の TCP/gRPC ロードバランサーを置き、
   HTTP/1 プロキシは決して置かないでください。
 - **`consumer`** — すべてのフック: `CanvasDirty` メッセージが届いたらキャンバスを再導出し（プリフェッチ 8）、
-  実行シグナルが届いたら 5 つの定期パスすべてを実行します — 古いキャンバスのスイープ、ヘルスの生存確認
-  スイープ、ヘルス保持期間の整理、ACME の発行/更新、リレーリーフのローテーション。ACME ディレクトリと
-  DNS プロバイダー API への外向き HTTPS、および公開リゾルバーへの DNS が必要になるのはこのモードです。
-  スループットとフェイルオーバーのためにレプリケートしてください: 導出はキャンバスの世代カウンターで
-  保護され、各定期パスは作業の前に `orchestration_job_run` 行 1 件で実行権を主張するので、シグナルが
-  二重に届いても 2 つのレプリカに届いても実行は 1 回だけです。2 つの ACME パスが同じ DNS-01 チャレンジを
-  競合させることもありません — 証明書の取得試行は行ごとに主張されます。
+  実行シグナルが届いたら 6 つの定期パスすべてを実行します — 古いキャンバスのスイープ、ヘルスの生存確認
+  スイープ、ヘルス保持期間の整理、ACME の発行/更新、リレーリーフのローテーション、新しいサーバーアドレスの
+  国判定。ACME ディレクトリ、DNS プロバイダー API、`country_lookup_url` への外向き HTTPS、および公開
+  リゾルバーへの DNS が必要になるのはこのモードです。スループットとフェイルオーバーのためにレプリケート
+  してください: 導出はキャンバスの世代カウンターで保護され、各定期パスは作業の前に `orchestration_job_run`
+  行 1 件で実行権を主張するので、シグナルが二重に届いても 2 つのレプリカに届いても実行は 1 回だけです。
+  2 つの ACME パスが同じ DNS-01 チャレンジを競合させることもありません — 証明書の取得試行は行ごとに
+  主張されます。
 - **`cron`** — 時計であり、時計だけです。5 秒ごとにスキャンし、実行時刻を迎えたジョブごとに実行シグナルを
-  1 件発行します: `derive_stale_canvases` と `sweep_liveness` は 30 秒ごと、
-  `renew_certificates` は 60 秒ごと、`trim_health_history` は 5 分ごと、
+  1 件発行します: `derive_stale_canvases` と `sweep_liveness` は 30 秒ごと、`renew_certificates` と
+  `resolve_server_countries` は 60 秒ごと、`trim_health_history` は 5 分ごと、
   `rotate_relay_certificates` は 1 時間ごと。データベース接続を開かず、`GURU_MASTER_KEY` も読まず、
   ローカルの状態も持たないため、保持するシークレットは `AMQP_URI` 内のブローカー認証情報だけです —
   そしてそれは、これなしでは動けない唯一のものでもあります。スケールさせるものは何もありません:
@@ -295,7 +297,8 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rota
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60
+master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 ```
 
 スケジューラーはその後は静かです: 各発行は `DEBUG`
@@ -350,9 +353,10 @@ cargo build --release -p manage-tool
 
 定期ジョブの周期は同じキーに含まれます: `sweep_interval_secs`（30）、
 `liveness_interval_secs`（30）、`health_retention_interval_secs`（300）、`acme_interval_secs`（60）、
-`relay_rotation_interval_secs`（3600）。スケジューラーは設定を読まないため固定周期で発行します。各 consumer は
-*設定された*間隔につき最大 1 回だけ実行権を主張するので、シグナルの周期以下の値は「シグナルごとに実行」を
-意味し、それより大きい値はフリート全体でそのジョブを遅くします:
+`country_lookup_interval_secs`（60）、`relay_rotation_interval_secs`（3600）。スケジューラーは設定を
+読まないため固定周期で発行します。各 consumer は*設定された*間隔につき最大 1 回だけ実行権を主張するので、
+シグナルの周期以下の値は「シグナルごとに実行」を意味し、それより大きい値はフリート全体でそのジョブを
+遅くします:
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -403,17 +407,55 @@ cargo build --release -p manage-tool
 破棄します。
 :::
 
-アプリが必要とする 2 つのヘッダーを含む、最小限の nginx サーバーブロック:
+以下のサーバーブロックは、ダッシュボード、ワーカー API、エージェントのダウンロードディレクトリを 1 つの
+ホスト名に載せます。gRPC には固有のパスプレフィックスがありません: ワーカーの呼び出しはすべて
+`POST /guru.orchestration.agent.WorkerAgent/<Method>` なので、そのプレフィックスに対する `location` が
+それらのリクエストを `:50052` へ渡し、それ以外はすべてダッシュボードへ渡します。`/agent/` の location は
+`manage-tool agent publish` が書き出したものを配信します（[エージェントのインストールと更新](/ja/guides/agent-install/)）。
+最初の publish の前にディレクトリを作成しておいてください（`sudo mkdir -p /srv/guru/agent`）。
+ダッシュボードとワーカー API を 2 つのホスト名に分けることもできます — server ブロックを 2 つ、それぞれの
+名前の証明書を 1 つずつ — ただし `agent_public_base_url` がワーカー用の location を載せたほうを
+指していることが条件です。
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
-    listen 443 ssl;
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
+    http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
 
-    location / {
+    # ---- worker agent API: TLS terminated here, plaintext h2c to master-workers.
+    location ^~ /guru.orchestration.agent.WorkerAgent/ {
+        grpc_pass grpc://127.0.0.1:50052;
+        grpc_connect_timeout 5s;
+        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_send_timeout 7d;
+        grpc_socket_keepalive on;
+        client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
+        client_body_timeout 60s;  # four missed health reports
+        grpc_set_header x-api-key     $http_x_api_key;
+        grpc_set_header x-refresh-key $http_x_refresh_key;
+        grpc_set_header X-Real-IP     $remote_addr;
+    }
+
+    # ---- agent binaries, installer, unit and start guard.
+    location ^~ /agent/ {
+        alias /srv/guru/agent/;
+        autoindex off;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=300";
+    }
+
+    # ---- dashboard, with the two headers the app needs.
+    location ^~ / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
@@ -421,13 +463,18 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_buffering off;      # SvelteKit streams responses
+        proxy_read_timeout 3600s;
     }
 }
 ```
 
-その他に有用なもの: 実際のクライアント IP が欲しい場合は `ADDRESS_HEADER=x-forwarded-for`、非常に大きな
-キャンバスをインポートすることがある場合は `BODY_SIZE_LIMIT`（デフォルト `512K`）。
+ワーカー用 location の各設定については
+[ネイティブにデプロイ → nginx](/ja/guides/deploy-natively/#7-nginx-ダッシュボードとワーカー-api-を-1-つのホスト名に載せる)
+で説明しています。nginx のデフォルトである 60 秒のままだと、すべてのワーカーが 1 分ごとに再登録することに
+なります。その他に有用なもの: 実際のクライアント IP が欲しい場合は `ADDRESS_HEADER=x-forwarded-for`、
+非常に大きなキャンバスをインポートすることがある場合は `BODY_SIZE_LIMIT`（デフォルト `512K`）。
 
 あとは `https://guru.example.com/` を開くと `/auth` にリダイレクトされるので、セクション 8 のアカウントで
 サインインしてください。サイドバーにメールアドレスが表示された状態で、キャンバス一覧に到達するはずです。
@@ -533,11 +580,13 @@ url=$(curl -fsSL \
 curl -fsSL "$url" -o guru-worker
 ```
 
-続いて実行権限を付け、起動することを確認します（`--version` フラグはありません。スモークテストは `--help` です）:
+続いて実行権限を付け、起動することを確認します — バイナリは自身のバージョンを出力し、これは
+`manage-tool agent publish` が記録するものでもあります:
 
 ```sh
 chmod +x guru-worker
-./guru-worker --help
+./guru-worker --version
+# guru-worker 0.4.0-beta
 ```
 
 バイナリは自分の成果物ストア（社内 HTTP サーバー、apt/OCI レジストリ、構成管理システム）にバージョンと
@@ -568,8 +617,10 @@ docker compose ps                     # postgres + rabbitmq が healthy、redis 
 # 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
 
-# 4. ワーカー API がデータプレーンノードのネットワークから到達できること
-nc -z <host> 50052 && echo "workers_grpc reachable"
+# 4. Worker API through nginx: HTTP/2 200 with a grpc-status header means the
+#    master answered (13 = "Missing request message", which an empty probe earns)
+curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
+  --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
 # 5. プロキシ経由のダッシュボード（/auth へ 303）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/

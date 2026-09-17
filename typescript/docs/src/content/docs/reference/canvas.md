@@ -9,7 +9,7 @@ graph on every edit and derives one config per server from it (see
 [Rollout Model](/reference/rollout/)). Everything else the canvas shows — splitters, aggregators,
 buses — is how that graph is *drawn*, computed from it on the fly.
 
-![The main canvas: two client pods on a Hangzhou server each send their own line into one splitter, which fans out to relay pods on five Hong Kong servers; an aggregator gathers their lines into two exits](/img/canvas/canvas-overview.avif)
+![The main canvas: three client pods on a Singapore server; two of them send their own line into one splitter, which balances between a relay pod on a US server and the exit itself, while the third goes straight to the exit; an aggregator gathers the lines from both servers into the exit example.com](/img/canvas/canvas-overview.avif)
 
 ## The model
 
@@ -43,14 +43,14 @@ A few rules follow from the model:
 
 ### Servers
 
-![A server card for 杭州移动: a Chinese flag, a green Online badge, its IPv4 and IPv6 addresses, the last report, and two client pods m_hk7_145 and tutusgak with their listen addresses and a blue handle each](/img/canvas/card-server-client.avif)
+![A server card for guru-test-sg: a Singapore flag, a green Online badge, its IPv4 address, the last report and the worker version, and three client pods — direct and plain over raw TCP, web terminating TLS — with their listen addresses and a blue handle each](/img/canvas/card-server-client.avif)
 
 A server card shows its health badge, the addresses other servers dial it at, the time of its last
 health report and the worker version, then one row per pod drawn on this canvas: the colours of the
 rules that pass through it, its name, how it listens (a client pod carries an arrow into a box) and
 its listen address.
 
-![A server card for gcore-hk-1 with two QUIC relay pods, each with a red handle on the left and a blue one on the right](/img/canvas/card-server-relay.avif)
+![A server card for guru-test-us-1 with two QUIC relay pods, plain and web, each with a red handle on the left and a blue one on the right](/img/canvas/card-server-relay.avif)
 
 Every pod row has a blue handle on the **right**: the pod's lines leave from it, and dragging from it
 gives the pod a new way on. A relay pod's row also has a red handle on the **left**, where the lines
@@ -64,25 +64,25 @@ stands in a rollout.
 
 ### Exits
 
-![An exit card: exit-8443, destination localhost:8443, five pods lead here](/img/canvas/card-exit.avif)
+![An exit card: example.com, destination example.com:80, five edges lead here](/img/canvas/card-exit.avif)
 
 An exit card shows its destination, the rules that reach it and how many edges lead there.
 
 ### Splitters
 
-![A splitter card: Balance, 2 routes, five members gcore-hk-1 to gcore-hk-5 with their weights, and a + member handle](/img/canvas/card-splitter.avif)
+![A splitter card: Balance, 2 routes, two members — guru-test-us-1 and example.com — with their weights, and a + member handle](/img/canvas/card-splitter.avif)
 
 A splitter is a group of a route — a balance or a failover. Groups that choose the same way between
-the same cards are drawn as **one** splitter however many pods they belong to: two rules fanned out
-over the same five servers are one splitter standing for two routes. Each row is one member, with
-its weight (`×2`) or its tier (`#1`) and where it leads; a member that is itself a group leads to a
-nested splitter. The **+ member** handle adds a member to every route the splitter stands for, and
-a drag from a member's row gives that member of every route a way on. Its panel changes the policy,
-stickiness, weights and order of all of them at once.
+the same cards are drawn as **one** splitter however many pods they belong to: two rules balanced
+over the same relay server and the same exit are one splitter standing for two routes. Each row is
+one member, with its weight (`×2`) or its tier (`#1`) and where it leads; a member that is itself a
+group leads to a nested splitter. The **+ member** handle adds a member to every route the splitter
+stands for, and a drag from a member's row gives that member of every route a way on. Its panel
+changes the policy, stickiness, weights and order of all of them at once.
 
 ### Aggregators
 
-![An aggregator card: 5 servers, two ways out, to exit-8443 and to 出口 黑色的海豚](/img/canvas/card-aggregator.avif)
+![An aggregator card: 2 servers, one way out, to example.com](/img/canvas/card-aggregator.avif)
 
 Where buses from two or more servers meet in front of the same splitter or exit, an aggregator
 gathers them, with one way out per card it hands on to. It is only drawing: nothing about it is
@@ -105,7 +105,7 @@ Click a bus to open its panel: where it runs, the rules riding it — each in it
 how many of the bus's edges carry it — and every edge with its id, the rules it carries, where it
 leads and the address it dials.
 
-![The panel of the line from m_hk7_145 into the splitter: from m_hk7_145 · 杭州移动 to Balance, one rule in green riding 5 edges, and the five edges to the relay pods on gcore-hk-1 to gcore-hk-5, each with its edge ID](/img/canvas/panel-bus.avif)
+![The panel of the line from plain into the splitter: from plain · guru-test-sg to Balance, one rule riding 2 edges, and the two edges — to the relay pod plain on guru-test-us-1 and to example.com — each with its edge ID](/img/canvas/panel-bus.avif)
 
 ### Subcanvases and portals
 
@@ -168,7 +168,7 @@ either, shows a notice with a button that connects them the same way.
 
 ### Editing a pod
 
-![The pod panel of m_hk7_145: port, bind and advertise address, and the route editor showing a balance over relay pods on gcore-hk-1 and gcore-hk-2](/img/canvas/panel-route.avif)
+![The pod panel of plain: port, bind and advertise address, and the route editor showing a balance over the relay pod on guru-test-us-1 and the exit example.com](/img/canvas/panel-route.avif)
 
 Click a pod row to open its panel: its name and comment, how it listens, whether it receives
 PROXY, its TLS certificate (SNI, DNS provider, zone or domain id, ACME directory) for a TLS client
@@ -190,7 +190,7 @@ that lead into a relay pod.
 Select cards or buses and press **Delete**, or use the delete button of a panel. What goes is shown
 before it goes, with the control plane's verdict on the graph it leads to:
 
-![The review dialog: 2 pods removed, 4 edges removed, 2 pods rewritten, a switch to also remove relay pods left unreached, and the control plane accepts this change](/img/canvas/dialog-review.avif)
+![The review dialog: 2 pods removed, 4 edges removed, 2 pods rewritten, server guru-test-us-1 deleted, a switch to also remove relay pods left unreached, and the control plane accepts this change](/img/canvas/dialog-review.avif)
 
 Removing a pod takes every edge into and out of it, and rewrites the routes that named them.
 **Also remove relay pods left unreached** takes away the relay pods nothing leads into any more,

@@ -7,7 +7,7 @@ description: 画布所画的 Pod 图 —— Pod、出口、边和路由 —— �
 控制平面都会检查整张图，并由它为每台服务器派生一份配置（见[发布模型](/zh-cn/reference/rollout/)）。画布上
 显示的其他东西 —— 分流器、聚合器、总线 —— 都是这张图的*画法*，是从图上实时计算出来的。
 
-![main 画布：杭州的服务器上两个客户端 Pod 各自用一条线进入同一个分流器，分散到香港五台服务器上的中继 Pod，再由一个聚合器把这些线汇合到两个出口](/img/canvas/canvas-overview.avif)
+![main 画布：新加坡的服务器上有三个客户端 Pod，其中两个各自用一条线进入同一个分流器，在美国服务器上的中继 Pod 和出口本身之间做负载均衡，第三个直接去往出口；一个聚合器把来自两台服务器的线汇合到出口 example.com](/img/canvas/canvas-overview.avif)
 
 ## 模型
 
@@ -37,12 +37,12 @@ description: 画布所画的 Pod 图 —— Pod、出口、边和路由 —— �
 
 ### 服务器
 
-![杭州移动 的服务器卡片：中国国旗、绿色的 Online 徽标、IPv4 和 IPv6 地址、最后一次上报，以及两个客户端 Pod m_hk7_145 和 tutusgak 及其监听地址](/img/canvas/card-server-client.avif)
+![guru-test-sg 的服务器卡片：新加坡国旗、绿色的 Online 徽标、IPv4 地址、最后一次上报和 Worker 版本，以及三个客户端 Pod —— 走原始 TCP 的 direct 和 plain、终结 TLS 的 web —— 及其监听地址，每个都带一个蓝色把手](/img/canvas/card-server-client.avif)
 
 服务器卡片显示健康徽标、其他服务器拨它时用的地址、最后一次健康上报的时间和 Worker 版本，然后是画在这个画布上的
 每个 Pod 各一行：经过它的规则的颜色、名字、接入方式（客户端 Pod 带一个进入方框的箭头）和监听地址。
 
-![gcore-hk-1 的服务器卡片：两个 QUIC 中继 Pod，每个左边有一个红色把手、右边有一个蓝色把手](/img/canvas/card-server-relay.avif)
+![guru-test-us-1 的服务器卡片：两个 QUIC 中继 Pod plain 和 web，每个左边有一个红色把手、右边有一个蓝色把手](/img/canvas/card-server-relay.avif)
 
 每个 Pod 行的**右侧**都有一个蓝色把手：这个 Pod 的线从这里出发，从这里拖出就给它加一个新的去向。中继 Pod 的行在
 **左侧**还有一个红色把手，连向这个 Pod 的线落在这里，去向也可以放在这里。卡片标题上的红色把手会把去向落成这台服务器
@@ -53,23 +53,23 @@ Pod 的一行、在它上面运行的 agent，以及它在发布中的状态。
 
 ### 出口
 
-![出口卡片：exit-8443，目的地 localhost:8443，有 5 条连入](/img/canvas/card-exit.avif)
+![出口卡片：example.com，目的地 example.com:80，有 5 条边连入](/img/canvas/card-exit.avif)
 
 出口卡片显示目的地、到达它的规则，以及有多少条边连到这里。
 
 ### 分流器
 
-![分流器卡片：负载均衡，2 个路由，gcore-hk-1 到 gcore-hk-5 五个成员及其权重，以及 + 成员 把手](/img/canvas/card-splitter.avif)
+![分流器卡片：负载均衡，2 个路由，guru-test-us-1 和 example.com 两个成员及其权重，以及 + 成员 把手](/img/canvas/card-splitter.avif)
 
 分流器是路由中的一个分组 —— 负载均衡或故障转移。在相同的卡片之间以相同方式选择的分组，不论属于多少个 Pod，都画成
-**一个**分流器：两条规则分散到同样的五台服务器上，就是一个代表两个路由的分流器。每一行是一个成员，带着它的权重
+**一个**分流器：两条规则在同一台中继服务器和同一个出口之间做负载均衡，就是一个代表两个路由的分流器。每一行是一个成员，带着它的权重
 （`×2`）或档位（`#1`）以及去向；成员本身是分组时，会连向一个嵌套的分流器。**+ 成员** 把手会给这个分流器
 代表的每个路由都加一个成员；从某个成员行拖出，则给每个路由里的这个成员加上去向。它的面板可以一次性修改所有这些
 路由的策略、固定方式、权重和顺序。
 
 ### 聚合器
 
-![聚合器卡片：5 台服务器，两个去向，到 exit-8443 和 出口 黑色的海豚](/img/canvas/card-aggregator.avif)
+![聚合器卡片：2 台服务器，一个去向，到 example.com](/img/canvas/card-aggregator.avif)
 
 当来自两台及以上服务器的总线在同一个分流器或出口前汇合时，聚合器把它们收拢，并为每张交出去的卡片各设一个出口。
 它只是画法：不保存任何东西，也不能编辑或删除。但从它的某个去向行拖出，可以一次给这一行上的每个 Pod 加上去向
@@ -87,7 +87,7 @@ Pod 的一行、在它上面运行的 agent，以及它在发布中的状态。
 点击一条总线会打开它的面板：它从哪里到哪里，走在上面的规则 —— 每条用它细线的颜色显示，并写明总线里有几条边承载它
 —— 以及每条边的 id、它承载的规则、去向和拨号地址。
 
-![从 m_hk7_145 进入分流器那条线的面板：从 m_hk7_145 · 杭州移动 到 Balance，一条绿色规则走在 5 条边上，以及连向 gcore-hk-1 到 gcore-hk-5 上中继 Pod 的五条边，每条都带着连线 ID](/img/canvas/panel-bus.avif)
+![从 plain 进入分流器那条线的面板：从 plain · guru-test-sg 到 Balance，一条规则走在 2 条边上，以及连向 guru-test-us-1 上中继 Pod plain 和连向 example.com 的两条边，每条都带着连线 ID](/img/canvas/panel-bus.avif)
 
 ### 子画布与传送门
 
@@ -140,7 +140,7 @@ Pod 的一行、在它上面运行的 agent，以及它在发布中的状态。
 
 ### 编辑 Pod
 
-![m_hk7_145 的 Pod 面板：端口、绑定和对外地址，以及显示在 gcore-hk-1 和 gcore-hk-2 的中继 Pod 之间负载均衡的路由编辑器](/img/canvas/panel-route.avif)
+![plain 的 Pod 面板：端口、绑定和对外地址，以及显示在 guru-test-us-1 的中继 Pod 与出口 example.com 之间负载均衡的路由编辑器](/img/canvas/panel-route.avif)
 
 点击 Pod 行打开它的面板：名字和备注、接入方式、是否接收 PROXY、TLS 客户端 Pod 的 TLS 证书（SNI、DNS 提供商、
 zone 或域名 id、ACME 目录）、端口、绑定地址和对外地址。下面是树形的路由：
@@ -159,7 +159,7 @@ zone 或域名 id、ACME 目录）、端口、绑定地址和对外地址。下�
 
 选中卡片或总线后按 **Delete**，或使用面板里的删除按钮。要删除的内容会在删除之前连同控制平面对结果图的判定一起显示：
 
-![确认对话框：删除 2 个 Pod、删除 4 条连线、改写 2 个 Pod，一个“同时删除不再有入边的中继 Pod”的开关，以及控制面接受这次修改](/img/canvas/dialog-review.avif)
+![确认对话框：删除 2 个 Pod、删除 4 条连线、改写 2 个 Pod、删除服务器 guru-test-us-1，一个“同时删除不再有入边的中继 Pod”的开关，以及控制面接受这次修改](/img/canvas/dialog-review.avif)
 
 删除 Pod 会删除进出它的所有边，并改写引用这些边的路由。**同时删除不再有入边的中继 Pod** 会把不再有任何连入的中继
 Pod 连同它们的去向一起删掉 —— 也就是为某条规则落在中转服务器上的那些。删除服务器会先删除它的 Pod；删除子画布会

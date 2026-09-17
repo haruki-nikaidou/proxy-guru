@@ -48,7 +48,7 @@ unit。
 
 ```sh
 sudo install -m 0755 guru-worker /usr/local/bin/guru-worker
-/usr/local/bin/guru-worker --help        # there is no --version; --help is the smoke test
+/usr/local/bin/guru-worker --version     # the smoke test; the version is what agent mode registers as
 ```
 
 创建一个系统组以及对应的系统用户（无家目录、无 shell），再创建一个该用户可读的配置目录。请显式创建这个组，而不要指望

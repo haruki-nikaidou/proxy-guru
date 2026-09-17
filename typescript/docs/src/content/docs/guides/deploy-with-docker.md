@@ -211,8 +211,9 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: workers_grpc
+    # Loopback only: nginx terminates TLS for the worker API on :443 (section 9).
     ports:
-      - "50052:50052"
+      - "127.0.0.1:50052:50052"
 
   master-consumer:
     <<: *master
@@ -236,17 +237,17 @@ What each mode is for, and how it scales:
   (`GURU_WATCH_POLL_MS`, default `1000`). Replicable, but each worker session is pinned to the
   instance holding its stream, so put a plain TCP/gRPC load balancer in front, never an HTTP/1 proxy.
 - **`consumer`** — every hook: it re-derives a canvas when a `CanvasDirty` message arrives (prefetch
-  8) and it runs all five periodic passes when their execution signals arrive — the stale-canvas
-  sweep, the health liveness sweep, health retention, ACME issuance/renewal and relay-leaf
-  rotation. This is the mode that needs outbound HTTPS to the ACME directory and the DNS provider
-  APIs, and DNS to public resolvers. Replicate it for throughput and for failover: derivation is
-  guarded by the canvas generation counter, and every periodic pass claims its run in one
-  `orchestration_job_run` row before working, so a signal delivered twice or to two replicas runs
-  once. Two ACME passes cannot race the same DNS-01 challenge either — each certificate attempt is
-  claimed per row.
+  8) and it runs all six periodic passes when their execution signals arrive — the stale-canvas
+  sweep, the health liveness sweep, health retention, ACME issuance/renewal, relay-leaf rotation
+  and the country lookup of new server addresses. This is the mode that needs outbound HTTPS to the
+  ACME directory, the DNS provider APIs and `country_lookup_url`, and DNS to public resolvers.
+  Replicate it for throughput and for failover: derivation is guarded by the canvas generation
+  counter, and every periodic pass claims its run in one `orchestration_job_run` row before working,
+  so a signal delivered twice or to two replicas runs once. Two ACME passes cannot race the same
+  DNS-01 challenge either — each certificate attempt is claimed per row.
 - **`cron`** — the clock, and only the clock. It scans every 5 s and publishes one execution signal
-  per due job: `derive_stale_canvases` and `sweep_liveness` every 30 s,
-  `renew_certificates` every 60 s, `trim_health_history` every 5 min,
+  per due job: `derive_stale_canvases` and `sweep_liveness` every 30 s, `renew_certificates` and
+  `resolve_server_countries` every 60 s, `trim_health_history` every 5 min,
   `rotate_relay_certificates` hourly. It opens no database connection, never reads
   `GURU_MASTER_KEY` and keeps no local state, so the only secret it holds is the broker credential
   in `AMQP_URI` — which is also the one thing it cannot run without. There is nothing to scale:
@@ -297,7 +298,8 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rota
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60
+master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 ```
 
 The scheduler is quiet after that: each publication is logged at `DEBUG`
@@ -350,11 +352,11 @@ so restart them to pick a change up. See
 [Configuration → Module configuration](/reference/configuration#module-configuration).
 
 The cadence of the periodic jobs lives on the same key: `sweep_interval_secs` (30),
-`liveness_interval_secs` (30), `health_retention_interval_secs` (300), `acme_interval_secs` (60)
-and `relay_rotation_interval_secs` (3600). The scheduler publishes on a fixed cadence because it
-reads no configuration; each consumer claims a run at most once per *configured* interval, so a
-value at or below the signal's cadence means "run on every signal" and a larger one slows the job
-down fleet-wide:
+`liveness_interval_secs` (30), `health_retention_interval_secs` (300), `acme_interval_secs` (60),
+`country_lookup_interval_secs` (60) and `relay_rotation_interval_secs` (3600). The scheduler
+publishes on a fixed cadence because it reads no configuration; each consumer claims a run at most
+once per *configured* interval, so a value at or below the signal's cadence means "run on every
+signal" and a larger one slows the job down fleet-wide:
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -406,17 +408,54 @@ the control plane) is issued with `Secure`, so browsers drop it over plain HTTP 
 `localhost`.
 :::
 
-A minimal nginx server block, with the two headers the app needs:
+The server block below carries the dashboard, the worker API and the agent download directory on
+one hostname. gRPC has no path prefix of its own: every worker call is
+`POST /guru.orchestration.agent.WorkerAgent/<Method>`, so a `location` on that prefix hands those
+requests to `:50052` and everything else to the dashboard. The `/agent/` location serves what
+`manage-tool agent publish` writes ([Install and Update Agents](/guides/agent-install/)); create the
+directory (`sudo mkdir -p /srv/guru/agent`) before the first publish. The dashboard and the worker
+API may also live on two hostnames — two server blocks, each with a certificate for its name — as
+long as `agent_public_base_url` names the one the worker locations are on.
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
-    listen 443 ssl;
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
+    http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
 
-    location / {
+    # ---- worker agent API: TLS terminated here, plaintext h2c to master-workers.
+    location ^~ /guru.orchestration.agent.WorkerAgent/ {
+        grpc_pass grpc://127.0.0.1:50052;
+        grpc_connect_timeout 5s;
+        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_send_timeout 7d;
+        grpc_socket_keepalive on;
+        client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
+        client_body_timeout 60s;  # four missed health reports
+        grpc_set_header x-api-key     $http_x_api_key;
+        grpc_set_header x-refresh-key $http_x_refresh_key;
+        grpc_set_header X-Real-IP     $remote_addr;
+    }
+
+    # ---- agent binaries, installer, unit and start guard.
+    location ^~ /agent/ {
+        alias /srv/guru/agent/;
+        autoindex off;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=300";
+    }
+
+    # ---- dashboard, with the two headers the app needs.
+    location ^~ / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
@@ -424,13 +463,18 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_buffering off;      # SvelteKit streams responses
+        proxy_read_timeout 3600s;
     }
 }
 ```
 
-Also useful: `ADDRESS_HEADER=x-forwarded-for` if you want real client IPs, and `BODY_SIZE_LIMIT`
-(default `512K`) if you ever import very large canvases.
+Each of the worker-location settings is explained in
+[Deploy Natively → nginx](/guides/deploy-natively/#7-nginx-dashboard-and-worker-api-on-one-hostname);
+with the 60 s nginx defaults every worker would re-register once a minute. Also useful:
+`ADDRESS_HEADER=x-forwarded-for` if you want real client IPs, and `BODY_SIZE_LIMIT` (default
+`512K`) if you ever import very large canvases.
 
 Now open `https://guru.example.com/`, which redirects to `/auth`, and sign in with the account from
 section 8. You should land on the canvas list with your email in the sidebar.
@@ -531,12 +575,13 @@ url=$(curl -fsSL \
 curl -fsSL "$url" -o guru-worker
 ```
 
-Then make it executable and confirm it runs (there is no `--version` flag; `--help` is the smoke
-test):
+Then make it executable and confirm it runs — the binary prints its own version, which is also what
+`manage-tool agent publish` records:
 
 ```sh
 chmod +x guru-worker
-./guru-worker --help
+./guru-worker --version
+# guru-worker 0.4.0-beta
 ```
 
 Keep the binaries in your own artifact store (an internal HTTP server, an apt/OCI registry, your
@@ -568,8 +613,10 @@ docker compose ps                     # postgres + rabbitmq healthy, redis up
 # 3. Control plane: one banner per mode, and no restart loop
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
 
-# 4. Worker API reachable from a data-plane node's network
-nc -z <host> 50052 && echo "workers_grpc reachable"
+# 4. Worker API through nginx: HTTP/2 200 with a grpc-status header means the
+#    master answered (13 = "Missing request message", which an empty probe earns)
+curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
+  --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
 # 5. Dashboard through the proxy (303 to /auth)
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/

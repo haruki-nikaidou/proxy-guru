@@ -37,7 +37,7 @@ Docker、PostgreSQL、RabbitMQ、ダッシュボード、API キー、そして�
 
 ```sh
 sudo install -m 0755 guru-worker /usr/local/bin/guru-worker
-/usr/local/bin/guru-worker --help        # there is no --version; --help is the smoke test
+/usr/local/bin/guru-worker --version     # the smoke test; the version is what agent mode registers as
 ```
 
 システムグループと、それに対応する、ホームディレクトリもシェルも持たないシステムユーザーを作成し、続いてそのユーザーが読める設定ディレクトリを作ります。グループは `useradd` に任せず明示的に作成してください。`useradd` がグループを派生させるかどうかはディストリビューションの `useradd` のデフォルト（`USERGROUPS_ENAB`）によって変わり、以下のすべての `chown` とユニットの `Group=` はグループが存在することを前提としています。

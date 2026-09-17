@@ -189,8 +189,9 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: workers_grpc
+    # Loopback only: nginx terminates TLS for the worker API on :443 (section 9).
     ports:
-      - "50052:50052"
+      - "127.0.0.1:50052:50052"
 
   master-consumer:
     <<: *master
@@ -214,19 +215,19 @@ services:
   （`GURU_WATCH_POLL_MS`，默认 `1000`）。可以复制，但每个 worker 会话都固定在持有其流的那个实例上，
   所以前面要放一个纯 TCP/gRPC 负载均衡器，绝不能用 HTTP/1 代理。
 - **`consumer`** —— 所有钩子都在这里：收到 `CanvasDirty` 消息时重新派生一个画布（prefetch 为 8），
-  并在五个周期任务的执行信号到达时运行它们 —— 过期画布清扫、健康存活检测清扫、健康数据保留清理、
-  ACME 签发/续期以及 relay 叶子证书轮换。这也是需要出站 HTTPS 访问 ACME 目录和 DNS provider API、
-  以及需要 DNS 访问公共解析器的模式。为了吞吐和故障转移可以复制它：派生由画布代数计数器守护，
-  而每个周期任务在开始工作前都会在一行 `orchestration_job_run` 中认领本次运行，因此一条被投递两次、
-  或被投递给两个副本的信号只会执行一次。两个 ACME 任务也不会争抢同一个 DNS-01 挑战 ——
-  每次证书尝试都按行认领。
+  并在六个周期任务的执行信号到达时运行它们 —— 过期画布清扫、健康存活检测清扫、健康数据保留清理、
+  ACME 签发/续期、relay 叶子证书轮换，以及新服务器地址的国家查询。这也是需要出站 HTTPS 访问 ACME
+  目录、DNS provider API 和 `country_lookup_url`、以及需要 DNS 访问公共解析器的模式。为了吞吐和故障
+  转移可以复制它：派生由画布代数计数器守护，而每个周期任务在开始工作前都会在一行
+  `orchestration_job_run` 中认领本次运行，因此一条被投递两次、或被投递给两个副本的信号只会执行一次。
+  两个 ACME 任务也不会争抢同一个 DNS-01 挑战 —— 每次证书尝试都按行认领。
 - **`cron`** —— 只是时钟，仅此而已。它每 5 秒扫描一次，为每个到期任务发布一条执行信号：
-  `derive_stale_canvases` 与 `sweep_liveness` 每 30 秒，`renew_certificates` 每 60 秒，
-  `trim_health_history` 每 5 分钟，`rotate_relay_certificates` 每小时。它不打开数据库连接，
-  从不读取 `GURU_MASTER_KEY`，也不保存任何本地状态，因此它持有的唯一机密就是 `AMQP_URI` 里的 broker
-  凭据 —— 那也是它唯一离不开的东西。这里没有什么需要扩容的：一个副本就够了，多一个也无害，
-  因为 consumer 的运行认领会丢弃重复的那一条。一个任务实际允许多久运行一次是存储在数据库里的设置，
-  不是启动参数 —— 见第 8 节。
+  `derive_stale_canvases` 与 `sweep_liveness` 每 30 秒，`renew_certificates` 与
+  `resolve_server_countries` 每 60 秒，`trim_health_history` 每 5 分钟，`rotate_relay_certificates`
+  每小时。它不打开数据库连接，从不读取 `GURU_MASTER_KEY`，也不保存任何本地状态，因此它持有的唯一机密
+  就是 `AMQP_URI` 里的 broker 凭据 —— 那也是它唯一离不开的东西。这里没有什么需要扩容的：一个副本就够了，
+  多一个也无害，因为 consumer 的运行认领会丢弃重复的那一条。一个任务实际允许多久运行一次是存储在
+  数据库里的设置，不是启动参数 —— 见第 8 节。
 
 基于 TLS 或 QUIC 的 relay 链路在其 pod 派生之前需要内部 CA。请在运维机器上执行一次下面的命令，
 使用与 master 相同的 `GURU_MASTER_KEY`：
@@ -269,7 +270,8 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rota
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60
+master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 ```
 
 此后调度器是安静的：每次发布都记在 `DEBUG` 级别
@@ -319,10 +321,10 @@ cargo build --release -p manage-tool
 [配置 → 模块配置](/zh-cn/reference/configuration#模块配置)。
 
 周期任务的节奏也在同一个键上：`sweep_interval_secs`（30）、`liveness_interval_secs`（30）、
-`health_retention_interval_secs`（300）、`acme_interval_secs`（60）和
-`relay_rotation_interval_secs`（3600）。调度器以固定节奏发布，因为它不读取任何配置；每个 consumer
-在每个*配置的*间隔内最多认领一次运行，所以一个小于或等于信号节奏的值意味着"每条信号都执行"，
-而更大的值会让该任务在整个集群范围内变慢：
+`health_retention_interval_secs`（300）、`acme_interval_secs`（60）、
+`country_lookup_interval_secs`（60）和 `relay_rotation_interval_secs`（3600）。调度器以固定节奏发布，
+因为它不读取任何配置；每个 consumer 在每个*配置的*间隔内最多认领一次运行，所以一个小于或等于信号
+节奏的值意味着"每条信号都执行"，而更大的值会让该任务在整个集群范围内变慢：
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -370,17 +372,53 @@ worker TOML。当某个节点的行为与画布看起来不一致时，就该拿
 是带 `Secure` 签发的，所以除 `localhost` 之外，浏览器在纯 HTTP 下都会丢弃它。
 :::
 
-一个最小的 nginx server 块，带上应用需要的那两个请求头：
+下面这个 server 块把控制台、worker API 和 agent 下载目录放在同一个主机名下。gRPC 没有自己的路径前缀：
+每次 worker 调用都是 `POST /guru.orchestration.agent.WorkerAgent/<Method>`，所以一个匹配该前缀的
+`location` 把这些请求交给 `:50052`，其余一切交给控制台。`/agent/` 这个 location 提供的是
+`manage-tool agent publish` 写出的内容（[安装与更新 Agent](/zh-cn/guides/agent-install/)）；
+请在第一次 publish 之前先创建该目录（`sudo mkdir -p /srv/guru/agent`）。控制台和 worker API 也可以
+分别放在两个主机名下 —— 两个 server 块，各自持有自己名字的证书 —— 只要 `agent_public_base_url`
+指向 worker 相关 location 所在的那一个即可。
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
-    listen 443 ssl;
+    listen 443 ssl so_keepalive=60s:15s:4;
+    listen [::]:443 ssl so_keepalive=60s:15s:4;
+    http2 on;                 # nginx ≥ 1.25.1; older builds: `listen 443 ssl http2;`
     server_name guru.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/guru.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/guru.example.com/privkey.pem;
 
-    location / {
+    # ---- worker agent API: TLS terminated here, plaintext h2c to master-workers.
+    location ^~ /guru.orchestration.agent.WorkerAgent/ {
+        grpc_pass grpc://127.0.0.1:50052;
+        grpc_connect_timeout 5s;
+        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_send_timeout 7d;
+        grpc_socket_keepalive on;
+        client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
+        client_body_timeout 60s;  # four missed health reports
+        grpc_set_header x-api-key     $http_x_api_key;
+        grpc_set_header x-refresh-key $http_x_refresh_key;
+        grpc_set_header X-Real-IP     $remote_addr;
+    }
+
+    # ---- agent binaries, installer, unit and start guard.
+    location ^~ /agent/ {
+        alias /srv/guru/agent/;
+        autoindex off;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=300";
+    }
+
+    # ---- dashboard, with the two headers the app needs.
+    location ^~ / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
@@ -388,13 +426,18 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_buffering off;      # SvelteKit streams responses
+        proxy_read_timeout 3600s;
     }
 }
 ```
 
-另外两个有用的变量：如果你想拿到真实客户端 IP，可以设置 `ADDRESS_HEADER=x-forwarded-for`；
-如果你会导入非常大的画布，可以调整 `BODY_SIZE_LIMIT`（默认 `512K`）。
+worker location 里的每一项设置都在
+[原生部署 → nginx](/zh-cn/guides/deploy-natively/#7-nginx把控制台和-worker-api-放在同一个主机名下)
+中逐条解释；按 nginx 默认的 60 秒超时，每个 worker 每分钟都会重新注册一次。另外两个有用的变量：
+如果你想拿到真实客户端 IP，可以设置 `ADDRESS_HEADER=x-forwarded-for`；如果你会导入非常大的画布，
+可以调整 `BODY_SIZE_LIMIT`（默认 `512K`）。
 
 现在打开 `https://guru.example.com/`，它会重定向到 `/auth`，用第 8 节创建的账号登录。
 你应该会看到画布列表，侧边栏里显示你的邮箱。
@@ -497,11 +540,13 @@ url=$(curl -fsSL \
 curl -fsSL "$url" -o guru-worker
 ```
 
-然后赋予可执行权限并确认它能运行（没有 `--version` 参数；`--help` 就是烟雾测试）：
+然后赋予可执行权限并确认它能运行 —— 这个二进制会打印自己的版本号，那也正是 `manage-tool agent publish`
+所记录的版本：
 
 ```sh
 chmod +x guru-worker
-./guru-worker --help
+./guru-worker --version
+# guru-worker 0.4.0-beta
 ```
 
 请把这些二进制文件按版本存放在你自己的产物库中（内部 HTTP 服务器、apt/OCI registry，或你的配置管理系统）。
@@ -531,8 +576,10 @@ docker compose ps                     # postgres、rabbitmq 健康，redis 已�
 # 3. 控制平面：每种模式一条启动横幅，且没有重启循环
 docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
 
-# 4. Worker API 可从数据平面节点的网络访问
-nc -z <host> 50052 && echo "workers_grpc reachable"
+# 4. Worker API through nginx: HTTP/2 200 with a grpc-status header means the
+#    master answered (13 = "Missing request message", which an empty probe earns)
+curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
+  --data-binary '' https://guru.example.com/guru.orchestration.agent.WorkerAgent/Register
 
 # 5. 经反向代理访问控制台（303 跳到 /auth）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/

@@ -361,6 +361,9 @@ services:
   rabbitmq:
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    # The data directory is named after the node, rabbit@<hostname>: pin it, or
+    # every container recreation starts an empty broker.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
@@ -394,15 +397,15 @@ sudo docker compose up -d postgres rabbitmq redis
 </TabItem>
 </Tabs>
 
-Compose 示例还有两个关键细节。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
-所以仓库的 Compose 文件固定了 `hostname:`；否则每次重新创建容器都会得到一个空的消息代理。Redis
+Compose 示例有一个细节需要解释。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
+这正是该服务固定 `hostname:` 的原因；否则每次重新创建容器都会得到一个空的消息代理。Redis
 刻意没有卷：它的服务命令关掉了 RDB 与 AOF，因为经过它的一切都只是过路的实时事件。
 
 consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orchestration_canvas_dirty`，
-以及对应五个周期任务的 `guru_orchestration_derive_stale_canvases`、
+以及对应六个周期任务的 `guru_orchestration_derive_stale_canvases`、
 `guru_orchestration_sweep_liveness`、`guru_orchestration_trim_health_history`、
-`guru_orchestration_renew_certificates` 和
-`guru_orchestration_rotate_relay_certificates`。
+`guru_orchestration_renew_certificates`、`guru_orchestration_rotate_relay_certificates` 和
+`guru_orchestration_resolve_server_countries`。
 
 ## 5. 主机名与证书
 

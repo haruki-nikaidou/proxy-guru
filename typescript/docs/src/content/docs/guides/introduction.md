@@ -16,7 +16,7 @@ every new revision automatically.
 |---|---|
 | `dashboard_grpc` | Operator API consumed by the frontend |
 | `workers_grpc` | Worker API plus the config-view poller |
-| `consumer` | Every AMQP hook: the derivation hook, and all five periodic jobs |
+| `consumer` | Every AMQP hook: the derivation hook, and all six periodic jobs |
 | `cron` | The clock: publishes one execution signal per due periodic job |
 
 The last two are one job split in half on purpose. `cron` reads no configuration and opens no
