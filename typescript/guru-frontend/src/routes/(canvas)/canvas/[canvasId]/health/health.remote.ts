@@ -26,9 +26,9 @@ import type {
 } from '#lib/dto/health.js';
 import { HEALTH_WINDOWS } from '#lib/dto/health.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
-import { GrpcStreams, streamFailure } from '#lib/server/live.js';
+import { GrpcStreams, liveSessionId, streamFailure } from '#lib/server/live.js';
 import { idSchema } from '#lib/server/schemas.js';
-import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
+import { sessionMetadata } from '#lib/server/session.js';
 import { toServerHealth } from '#lib/server/topology/enums.js';
 import { getRequestEvent, query } from '$app/server';
 
@@ -101,7 +101,9 @@ async function* liveFeeds<E, P extends TimedPoint>(
 	windowMinutes: number,
 	spec: FeedSpec<E, P>
 ): AsyncGenerator<Feed<P>[]> {
-	const metadata = sessionMetadata(requireSessionId());
+	const sessionId = liveSessionId();
+	if (!sessionId) return;
+	const metadata = sessionMetadata(sessionId);
 	const streams = new GrpcStreams<GraphEvent | E>(getRequestEvent().request.signal);
 	const feeds = new Map<string, Feed<P> & { last: string }>();
 	const pending = new Set<string>();
@@ -154,10 +156,14 @@ async function* liveFeeds<E, P extends TimedPoint>(
 	streams.open('graph', signal =>
 		orchestrationClient().watchGraph({ canvasId }, { metadata, signal })
 	);
+	let yielded = false;
 	try {
 		for await (const item of streams) {
 			if (item.key === 'graph') {
-				if ('error' in item) streamFailure(item.error);
+				if ('error' in item) {
+					if (streamFailure(item.error, yielded) === 'end') return;
+					continue;
+				}
 				const event = item.event as GraphEvent;
 				if (!event.snapshot) continue;
 				onGraph(event.snapshot);
@@ -166,9 +172,9 @@ async function* liveFeeds<E, P extends TimedPoint>(
 				const feed = feeds.get(id);
 				if (!feed) continue;
 				if ('error' in item) {
-					if (!(item.error instanceof ClientError && item.error.code === Status.NOT_FOUND)) {
-						streamFailure(item.error);
-					}
+					// A deleted member: the next graph snapshot agrees.
+					const gone = item.error instanceof ClientError && item.error.code === Status.NOT_FOUND;
+					if (!gone && streamFailure(item.error, yielded) === 'end') return;
 					feeds.delete(id);
 					pending.delete(id);
 				} else {
@@ -183,6 +189,7 @@ async function* liveFeeds<E, P extends TimedPoint>(
 			yield [...feeds.values()]
 				.map(({ last: _, ...feed }) => feed)
 				.sort((a, b) => a.name.localeCompare(b.name));
+			yielded = true;
 		}
 	} finally {
 		streams.closeAll();
