@@ -234,7 +234,7 @@ mod tests {
             .await
             .unwrap();
         let started = std::time::Instant::now();
-        let error: Error = sqlx::query("SELECT pg_sleep(5)")
+        let error: Error = sqlx::query!("SELECT pg_sleep(5)")
             .execute(&pool)
             .await
             .map_err(Error::from)
@@ -245,7 +245,7 @@ mod tests {
             started.elapsed()
         );
         assert!(is_unavailable(&error), "{error}");
-        let seven: i64 = sqlx::query_scalar("SELECT 7::bigint")
+        let seven: i64 = sqlx::query_scalar!(r#"SELECT 7::bigint AS "seven!""#)
             .fetch_one(&pool)
             .await
             .unwrap();

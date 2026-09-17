@@ -33,12 +33,12 @@ impl Processor<FindRawConfig> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindRawConfig", skip_all, err)]
     async fn process(&self, input: FindRawConfig) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_scalar("SELECT content FROM app_config WHERE key = $1")
-                .bind(input.key)
-                .fetch_optional(self.db())
-                .await?,
+        Ok(sqlx::query_scalar!(
+            "SELECT content FROM app_config WHERE key = $1",
+            input.key
         )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -53,12 +53,12 @@ impl Processor<UpsertRawConfig> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpsertRawConfig", skip_all, err)]
     async fn process(&self, input: UpsertRawConfig) -> Result<Self::Output, Self::Error> {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO app_config (key, content) VALUES ($1, $2)
              ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content",
+            input.key,
+            input.content
         )
-        .bind(input.key)
-        .bind(input.content)
         .execute(self.db())
         .await?;
         Ok(())
@@ -82,12 +82,12 @@ impl Processor<InsertRawConfigIfAbsent> for Db {
     async fn process(&self, input: InsertRawConfigIfAbsent) -> Result<Self::Output, Self::Error> {
         // `DO NOTHING` returns no row on conflict, so the key comes back exactly
         // when the row was created.
-        let created: Option<String> = sqlx::query_scalar(
+        let created: Option<String> = sqlx::query_scalar!(
             "INSERT INTO app_config (key, content) VALUES ($1, $2)
              ON CONFLICT (key) DO NOTHING RETURNING key",
+            input.key,
+            input.content
         )
-        .bind(input.key)
-        .bind(input.content)
         .fetch_optional(self.db())
         .await?;
         Ok(created.is_some())

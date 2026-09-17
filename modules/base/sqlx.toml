@@ -1,0 +1,5 @@
+# `wakuwaku` turns on sqlx's `time` feature, which would otherwise make the
+# `query!` macros map `timestamptz` to `time::OffsetDateTime`; every row type
+# here is `chrono`.
+[macros.preferred-crates]
+date-time = "chrono"

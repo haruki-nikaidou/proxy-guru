@@ -307,11 +307,13 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request(
 
     // Stale record: the next authentication brings it forward.
     let backdated = at_login - chrono::Duration::minutes(5);
-    sqlx::query("UPDATE auth_session SET last_active_at = $2 WHERE id = $1")
-        .bind(&token)
-        .bind(backdated)
-        .execute(sp.db())
-        .await?;
+    sqlx::query!(
+        "UPDATE auth_session SET last_active_at = $2 WHERE id = $1",
+        token,
+        backdated
+    )
+    .execute(sp.db())
+    .await?;
     assert!(
         sessions
             .process(AuthenticateSession {
@@ -325,11 +327,13 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request(
     // Idle past the deadline: rejected, and the row is gone.
     let expired =
         at_login - chrono::Duration::seconds(AuthConfig::default().session_idle_ttl_secs + 1);
-    sqlx::query("UPDATE auth_session SET last_active_at = $2 WHERE id = $1")
-        .bind(&token)
-        .bind(expired)
-        .execute(sp.db())
-        .await?;
+    sqlx::query!(
+        "UPDATE auth_session SET last_active_at = $2 WHERE id = $1",
+        token,
+        expired
+    )
+    .execute(sp.db())
+    .await?;
     assert!(
         sessions
             .process(AuthenticateSession {

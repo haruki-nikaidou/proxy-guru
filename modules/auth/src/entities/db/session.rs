@@ -7,7 +7,7 @@ use kanau::processor::Processor;
 // A session's id is the opaque session token itself.
 table_record!(SessionId, "auth_session");
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct SessionEntity {
     pub id: SessionId,
     pub account_id: AccountId,
@@ -25,10 +25,15 @@ impl Processor<FindSessionById> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindSessionById", skip_all, err)]
     async fn process(&self, input: FindSessionById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM auth_session WHERE id = $1")
-            .bind(input.session_id)
-            .fetch_optional(self.db())
-            .await?)
+        Ok(sqlx::query_as!(
+            SessionEntity,
+            r#"SELECT id AS "id: SessionId", account_id AS "account_id: AccountId", user_agent,
+                      created_at, last_active_at
+               FROM auth_session WHERE id = $1"#,
+            input.session_id
+        )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -46,15 +51,18 @@ impl Processor<CreateSession> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateSession", skip_all, err)]
     async fn process(&self, input: CreateSession) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "INSERT INTO auth_session (id, account_id, user_agent, created_at, last_active_at)
-             VALUES ($1, $2, $3, $4, $5) RETURNING *",
+        Ok(sqlx::query_as!(
+            SessionEntity,
+            r#"INSERT INTO auth_session (id, account_id, user_agent, created_at, last_active_at)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id AS "id: SessionId", account_id AS "account_id: AccountId", user_agent,
+                         created_at, last_active_at"#,
+            SessionId::from_key(input.token) as _,
+            input.account_id as _,
+            input.user_agent,
+            input.created_at,
+            input.last_active_at
         )
-        .bind(SessionId::from_key(input.token))
-        .bind(input.account_id)
-        .bind(input.user_agent)
-        .bind(input.created_at)
-        .bind(input.last_active_at)
         .fetch_one(self.db())
         .await?)
     }
@@ -69,8 +77,7 @@ impl Processor<DeleteSession> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteSession", skip_all, err)]
     async fn process(&self, input: DeleteSession) -> Result<Self::Output, Self::Error> {
-        sqlx::query("DELETE FROM auth_session WHERE id = $1")
-            .bind(input.session_id)
+        sqlx::query!("DELETE FROM auth_session WHERE id = $1", input.session_id)
             .execute(self.db())
             .await?;
         Ok(())
@@ -87,11 +94,13 @@ impl Processor<UpdateSession> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateSession", skip_all, err)]
     async fn process(&self, input: UpdateSession) -> Result<Self::Output, Self::Error> {
-        sqlx::query("UPDATE auth_session SET last_active_at = $2 WHERE id = $1")
-            .bind(input.id)
-            .bind(input.last_active_at)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "UPDATE auth_session SET last_active_at = $2 WHERE id = $1",
+            input.id,
+            input.last_active_at
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }
@@ -105,10 +114,12 @@ impl Processor<DeleteSessionsByAccount> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteSessionsByAccount", skip_all, err)]
     async fn process(&self, input: DeleteSessionsByAccount) -> Result<Self::Output, Self::Error> {
-        sqlx::query("DELETE FROM auth_session WHERE account_id = $1")
-            .bind(input.account_id)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "DELETE FROM auth_session WHERE account_id = $1",
+            input.account_id as _
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }

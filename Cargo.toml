@@ -37,9 +37,11 @@ kanau = { version = "0.5", features = [
     "serde_json",
 ] }
 amqprs = { version = "2.1", features = ["uriparse", "urispec"] }
-# PostgreSQL. Queries are checked at runtime and covered by the modules' integration
-# tests, so no `query!` macros and no offline query data; `macros` is what
-# `sqlx::migrate!` and `#[sqlx::test]` need.
+# PostgreSQL. Every statement goes through the `query!` family, so the SQL is
+# checked against the schema at compile time; `.sqlx/` carries the offline data
+# for builds without a database (`cargo sqlx prepare --workspace`).
+# `sqlx-toml` is what makes the per-crate `sqlx.toml` (which pins `chrono` as
+# the date/time crate for the macros) take effect.
 sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -49,6 +51,7 @@ sqlx = { version = "0.9", default-features = false, features = [
     "derive",
     "macros",
     "migrate",
+    "sqlx-toml",
 ] }
 redis = { version = "1.0", features = [
     "tokio-comp",

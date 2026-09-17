@@ -34,12 +34,14 @@ impl<'a> Processor<FindAccountByEmail<'a>> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAccountByEmail", skip_all, err)]
     async fn process(&self, input: FindAccountByEmail<'a>) -> Result<Self::Output, Self::Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM auth_account WHERE email = $1")
-                .bind(input.email)
-                .fetch_optional(self.db())
-                .await?,
+        Ok(sqlx::query_as!(
+            AccountEntity,
+            r#"SELECT id AS "id: AccountId", email, password_hash, role AS "role: AccountRole"
+               FROM auth_account WHERE email = $1"#,
+            input.email
         )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -54,14 +56,16 @@ impl Processor<CreateAccount> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateAccount", skip_all, err)]
     async fn process(&self, input: CreateAccount) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as(
-            "INSERT INTO auth_account (id, email, password_hash, role)
-             VALUES ($1, $2, $3, $4) RETURNING *",
+        Ok(sqlx::query_as!(
+            AccountEntity,
+            r#"INSERT INTO auth_account (id, email, password_hash, role)
+               VALUES ($1, $2, $3, $4)
+               RETURNING id AS "id: AccountId", email, password_hash, role AS "role: AccountRole""#,
+            AccountId::new() as _,
+            input.email,
+            input.password_hash,
+            input.role as _
         )
-        .bind(AccountId::new())
-        .bind(input.email)
-        .bind(input.password_hash)
-        .bind(input.role)
         .fetch_one(self.db())
         .await?)
     }
@@ -77,11 +81,13 @@ impl Processor<UpdateAccountPassword> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateAccountPassword", skip_all, err)]
     async fn process(&self, input: UpdateAccountPassword) -> Result<Self::Output, Self::Error> {
-        sqlx::query("UPDATE auth_account SET password_hash = $2 WHERE id = $1")
-            .bind(input.id)
-            .bind(input.password_hash)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "UPDATE auth_account SET password_hash = $2 WHERE id = $1",
+            input.id as _,
+            input.password_hash
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }
@@ -96,11 +102,13 @@ impl Processor<UpdateAccountEmail> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateAccountEmail", skip_all, err)]
     async fn process(&self, input: UpdateAccountEmail) -> Result<Self::Output, Self::Error> {
-        sqlx::query("UPDATE auth_account SET email = $2 WHERE id = $1")
-            .bind(input.id)
-            .bind(input.new_email)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "UPDATE auth_account SET email = $2 WHERE id = $1",
+            input.id as _,
+            input.new_email
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }
@@ -114,10 +122,14 @@ impl Processor<FindAccountById> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAccountById", skip_all, err)]
     async fn process(&self, input: FindAccountById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM auth_account WHERE id = $1")
-            .bind(input.id)
-            .fetch_optional(self.db())
-            .await?)
+        Ok(sqlx::query_as!(
+            AccountEntity,
+            r#"SELECT id AS "id: AccountId", email, password_hash, role AS "role: AccountRole"
+               FROM auth_account WHERE id = $1"#,
+            input.id as _
+        )
+        .fetch_optional(self.db())
+        .await?)
     }
 }
 
@@ -128,9 +140,13 @@ impl Processor<ListAccounts> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListAccounts", skip_all, err)]
     async fn process(&self, _input: ListAccounts) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as("SELECT * FROM auth_account ORDER BY email")
-            .fetch_all(self.db())
-            .await?)
+        Ok(sqlx::query_as!(
+            AccountEntity,
+            r#"SELECT id AS "id: AccountId", email, password_hash, role AS "role: AccountRole"
+               FROM auth_account ORDER BY email"#
+        )
+        .fetch_all(self.db())
+        .await?)
     }
 }
 
@@ -144,11 +160,13 @@ impl Processor<UpdateAccountRole> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateAccountRole", skip_all, err)]
     async fn process(&self, input: UpdateAccountRole) -> Result<Self::Output, Self::Error> {
-        sqlx::query("UPDATE auth_account SET role = $2 WHERE id = $1")
-            .bind(input.id)
-            .bind(input.role)
-            .execute(self.db())
-            .await?;
+        sqlx::query!(
+            "UPDATE auth_account SET role = $2 WHERE id = $1",
+            input.id as _,
+            input.role as _
+        )
+        .execute(self.db())
+        .await?;
         Ok(())
     }
 }
@@ -163,8 +181,7 @@ impl Processor<DeleteAccount> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteAccount", skip_all, err)]
     async fn process(&self, input: DeleteAccount) -> Result<Self::Output, Self::Error> {
-        sqlx::query("DELETE FROM auth_account WHERE id = $1")
-            .bind(input.id)
+        sqlx::query!("DELETE FROM auth_account WHERE id = $1", input.id as _)
             .execute(self.db())
             .await?;
         Ok(())
