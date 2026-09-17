@@ -17,6 +17,12 @@ export type ReviewRequest = {
 	 * is called again whenever it is toggled.
 	 */
 	prunable: boolean;
+	/**
+	 * Builds from the live `editor.graph`, never from a graph captured when the
+	 * review was requested: the batch is committed against the generation the
+	 * editor holds when it is confirmed, so one built from an older graph would
+	 * write its rows over whatever changed in between.
+	 */
 	build(prune: boolean): GraphChange;
 	/** What has to happen once the batch is written: deleting servers, canvases. */
 	after?: () => Promise<unknown>;

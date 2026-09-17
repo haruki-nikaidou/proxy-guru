@@ -135,13 +135,13 @@ const save = () =>
  * graph no longer holds the server.
  */
 function removeServer() {
-	const graph = editor.graph;
-	const podIds = graph.pods.filter(pod => pod.serverId === server.id).map(pod => pod.id);
+	const podsOf = () =>
+		editor.graph.pods.filter(pod => pod.serverId === server.id).map(pod => pod.id);
 	editor.review({
 		title: m.editor_server_delete(),
-		description: m.editor_server_delete_description({ name: server.name, count: podIds.length }),
+		description: m.editor_server_delete_description({ name: server.name, count: podsOf().length }),
 		prunable: true,
-		build: prune => removeAll(graph, editor.drawing, { podIds }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { podIds: podsOf() }, prune),
 		alsoDeletes: { servers: [server.name], canvases: [] },
 		after: () => deleteServerNode({ serverId: server.id }),
 		success: m.editor_deleted()

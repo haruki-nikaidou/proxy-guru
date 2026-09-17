@@ -138,12 +138,11 @@ async function addWay(path: number[]) {
 }
 
 function removeWay(edgeId: string) {
-	const current = editor.graph;
 	editor.review({
 		title: m.editor_way_remove_title(),
 		description: m.editor_way_remove_description({ name: targetLabel(edgeOf(edgeId)).name }),
 		prunable: true,
-		build: prune => removeAll(current, editor.drawing, { edgeIds: [edgeId] }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { edgeIds: [edgeId] }, prune),
 		success: m.editor_deleted()
 	});
 }

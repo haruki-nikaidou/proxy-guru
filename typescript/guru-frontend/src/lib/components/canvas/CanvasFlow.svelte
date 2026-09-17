@@ -88,6 +88,7 @@ import * as Resizable from '#lib/components/ui/resizable/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import type { CanvasGraph } from '#lib/dto/topology.js';
 import { suggestName } from '#lib/i18n/naming.js';
+import { reconnectWhenTransient } from '#lib/live.svelte.js';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 import { reportError } from '#lib/report.js';
@@ -96,6 +97,7 @@ let { canvasId, editable, admin }: { canvasId: string; editable: boolean; admin:
 	$props();
 
 const query = $derived(watchCanvasGraph({ canvasId }));
+reconnectWhenTransient(() => query);
 const graph = $derived(query.current);
 const drawing = $derived(graph ? draw(graph, canvasId) : undefined);
 const problems = $derived(graph && drawing ? problemIndex(graph, drawing) : undefined);
@@ -489,7 +491,6 @@ function requestRemoval(nodeIds: string[], busIds: string[]) {
 	const edgeIds = busIds.flatMap(
 		id => currentDrawing.buses.find(bus => bus.id === id)?.edges ?? []
 	);
-	const podIds = current.pods.filter(pod => serverIds.includes(pod.serverId)).map(pod => pod.id);
 	if (
 		serverIds.length + canvasIds.length + exitIds.length + splitterIds.length + edgeIds.length ===
 		0
@@ -502,8 +503,24 @@ function requestRemoval(nodeIds: string[], busIds: string[]) {
 		title: m.editor_remove_title(),
 		description: m.editor_remove_description(),
 		prunable: true,
-		build: prune =>
-			removeAll(current, currentDrawing, { podIds, exitIds, splitterIds, edgeIds }, prune),
+		// Built from the live graph, not the one the request was made from: the
+		// dialog commits against the generation of the graph it reads, so a batch
+		// built from an older one would write stale rows over a concurrent edit.
+		build: prune => {
+			const now = graph ?? current;
+			const nowDrawing = drawing ?? currentDrawing;
+			return removeAll(
+				now,
+				nowDrawing,
+				{
+					podIds: now.pods.filter(pod => serverIds.includes(pod.serverId)).map(pod => pod.id),
+					exitIds,
+					splitterIds,
+					edgeIds: busIds.flatMap(id => nowDrawing.buses.find(bus => bus.id === id)?.edges ?? [])
+				},
+				prune
+			);
+		},
 		alsoDeletes: {
 			servers: names(serverIds, current.servers),
 			canvases: names(canvasIds, current.canvases)
@@ -544,12 +561,11 @@ async function persistMoves(dragged: FlowNode[]) {
 				canvases: moves.canvases
 			});
 		}
+		// Rows moved without a batch need no re-read: the move announces itself,
+		// and its snapshot arrives on the open stream.
 		if (moves.layout) {
 			const outcome = await applyGraphChange({ canvasId, change: moves.layout });
 			if (!outcome.applied) toast.error(refusalText(outcome.diagnostics));
-		} else {
-			// Rows moved without a batch: re-read, so a later redraw starts from them.
-			await refresh();
 		}
 	} catch (err) {
 		report(err);

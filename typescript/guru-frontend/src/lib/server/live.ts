@@ -6,7 +6,10 @@
  * exponential backoff; the source closure is called again, so a caller that
  * captures a watermark in it resumes from there. A failure before the first
  * event, or a status a retry cannot fix, is handed to the caller as an item
- * so the live query fails like a unary call would instead of hanging.
+ * so the live query fails like a unary call would instead of hanging — except
+ * `UNAVAILABLE`, which is retried for FIRST_OPEN_GRACE_MS first: every SSE
+ * reconnect opens its streams afresh, and one that lands while the control
+ * plane is still starting (a deploy restarts both) must not end the query.
  */
 import { ClientError, Status } from 'nice-grpc';
 import { getRequestEvent } from '$app/server';
@@ -27,6 +30,22 @@ const RETRYABLE: readonly Status[] = [
 	Status.RESOURCE_EXHAUSTED
 ];
 const MAX_BACKOFF_MS = 30_000;
+/** How long a stream that has delivered nothing yet keeps retrying `UNAVAILABLE`. */
+const FIRST_OPEN_GRACE_MS = 30_000;
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise(resolve => {
+		if (signal.aborted) return resolve();
+		const timer = setTimeout(done, ms);
+		signal.addEventListener('abort', done, { once: true });
+		function done() {
+			clearTimeout(timer);
+			signal.removeEventListener('abort', done);
+			resolve();
+		}
+	});
+}
 
 export class GrpcStreams<E> {
 	readonly #signal: AbortSignal;
@@ -108,6 +127,7 @@ export class GrpcStreams<E> {
 		// transport loss to bridge: a reopen that fails before its first event
 		// (the master still restarting) must keep retrying.
 		let delivered = false;
+		const opened = Date.now();
 		try {
 			while (!signal.aborted) {
 				try {
@@ -123,7 +143,10 @@ export class GrpcStreams<E> {
 				} catch (error) {
 					if (signal.aborted) return;
 					const retryable =
-						delivered && error instanceof ClientError && RETRYABLE.includes(error.code);
+						error instanceof ClientError &&
+						(delivered
+							? RETRYABLE.includes(error.code)
+							: error.code === Status.UNAVAILABLE && Date.now() - opened < FIRST_OPEN_GRACE_MS);
 					if (!retryable) {
 						release();
 						this.#push({ key, error });
@@ -132,15 +155,7 @@ export class GrpcStreams<E> {
 				}
 				const delay = Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS);
 				attempt += 1;
-				await new Promise<void>(resolve => {
-					const timer = setTimeout(done, delay);
-					signal.addEventListener('abort', done, { once: true });
-					function done() {
-						clearTimeout(timer);
-						signal.removeEventListener('abort', done);
-						resolve();
-					}
-				});
+				await sleep(delay, signal);
 			}
 		} finally {
 			release();

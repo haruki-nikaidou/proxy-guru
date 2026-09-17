@@ -60,12 +60,11 @@ const edges = $derived(
 );
 
 function remove() {
-	const current = editor.graph;
 	editor.review({
 		title: m.editor_bus_delete(),
 		description: m.editor_bus_delete_description({ count: bus.edges.length }),
 		prunable: true,
-		build: prune => removeAll(current, editor.drawing, { edgeIds: bus.edges }, prune),
+		build: prune => removeAll(editor.graph, editor.drawing, { edgeIds: bus.edges }, prune),
 		success: m.editor_deleted()
 	});
 }
