@@ -19,52 +19,28 @@ hero:
       variant: secondary
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## Two planes, one model
 
 <CardGrid>
-	<Card title="Control plane" icon="setting">
-		`guru-master` serves the operator API, the worker API, the AMQP hooks that derive configs and
-		run every periodic job, and the clock that schedules them — one binary, four modes.
-	</Card>
-	<Card title="Data plane" icon="rocket">
-		`guru-worker` terminates listeners and forwards traffic, either from a local TOML file or by
-		streaming configs from the master.
-	</Card>
-	<Card title="Everything is in real-time" icon="bars">
-		Every mutation goes on a live bus, so the canvas, the health page and its pod events update in
-		place — no polling, no reload — while workers stream their configs and push their own health.
-	</Card>
-	<Card title="Single Entry Microservices with BFF" icon="puzzle">
-		One feature module per concern, mounted behind a single gRPC entry point, with the dashboard as
-		the only browser-facing surface: its server calls gRPC, the browser never does.
-	</Card>
-</CardGrid>
-
-## Where to go next
-
-<CardGrid>
-	<Card title="Guides" icon="open-book">
-		[Introduction](/guides/introduction/) ·
-		[Local Development](/guides/local-development/) ·
-		[Prerequisites](/guides/prerequisites/) ·
-		[Setup Database Schema](/guides/setup-database-schema/) ·
-		[Deploy with Docker](/guides/deploy-with-docker/) ·
-		[Deploy Natively](/guides/deploy-natively/)
-	</Card>
-	<Card title="Core Concepts" icon="puzzle">
-		[Canvas](/reference/canvas/) ·
-		[Nodes](/reference/nodes/) ·
-		[Rollout](/reference/rollout/)
-	</Card>
-	<Card title="Features" icon="approve-check">
-		[Health Monitor](/features/health-monitor/) ·
-		[ACME with DNS](/features/acme-dns/)
-	</Card>
-	<Card title="Reference" icon="list-format">
-		[Architecture](/reference/architecture/) ·
-		[Configuration](/reference/configuration/) ·
-		[Workspace Layout](/reference/workspace-layout/)
-	</Card>
+  <Card title="Control plane" icon="pen">
+    `guru-master` serves the operator API, the worker API, the AMQP hooks that
+    derive configs and run every periodic job, and the clock that schedules them
+    — one binary, four modes.
+  </Card>
+  <Card title="Data plane" icon="server">
+    `guru-worker` terminates listeners and forwards traffic, either from a local
+    TOML file or by streaming configs from the master.
+  </Card>
+  <Card title="Everything is in real-time" icon="rocket">
+    Every mutation goes on a live bus, so the canvas, the health page and its
+    pod events update in place — no polling, no reload — while workers stream
+    their configs and push their own health.
+  </Card>
+  <Card title="Single Entry Microservices with BFF" icon="puzzle">
+    One feature module per concern, mounted behind a single gRPC entry point,
+    with the dashboard as the only browser-facing surface: its server calls
+    gRPC, the browser never does.
+  </Card>
 </CardGrid>
