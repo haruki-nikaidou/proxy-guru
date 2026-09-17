@@ -120,7 +120,8 @@ async fn fixture(w: &World) -> Result<Fixture, Box<dyn std::error::Error>> {
     let (canvas, server) = base(w).await?;
     let (web, web_out, _, web_change) = to_exit(&canvas, &server, "web", 443, "10.0.0.5:8080");
     let (api, api_out, _, api_change) = to_exit(&canvas, &server, "api", 8443, "10.0.0.6:9090");
-    w.apply(&canvas, merge(vec![web_change, api_change])).await?;
+    w.apply(&canvas, merge(vec![web_change, api_change]))
+        .await?;
     w.derive(&canvas.id).await?;
     Ok(Fixture {
         canvas: canvas.id.clone(),
@@ -298,9 +299,7 @@ fn destination_of(config: &Config, name: &str) -> Remote {
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn a_report_records_the_server_and_every_pod(
-    pool: sqlx::PgPool,
-) -> TestResult {
+async fn a_report_records_the_server_and_every_pod(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
@@ -429,10 +428,7 @@ async fn a_report_from_a_superseded_session_is_refused_and_records_nothing(
         "{refused:?}"
     );
     assert!(server_history(&w, &f.server).await.is_empty());
-    assert_eq!(
-        latest_pod(&w, &f.web.id).await.map(|r| r.id.0),
-        before
-    );
+    assert_eq!(latest_pod(&w, &f.web.id).await.map(|r| r.id.0), before);
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Offline
@@ -678,7 +674,11 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
     let after = reported_at + threshold + TimeDelta::seconds(1);
     let swept = w.health.process(SweepLiveness { now: after }).await?;
     assert_eq!(
-        swept.flipped.iter().map(|id| id.0.clone()).collect::<Vec<_>>(),
+        swept
+            .flipped
+            .iter()
+            .map(|id| id.0.clone())
+            .collect::<Vec<_>>(),
         vec![f.server.0.clone()]
     );
     assert!(
@@ -804,7 +804,11 @@ async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
     let swept = w.health.process(SweepLiveness { now: after }).await?;
     assert!(swept.flipped.is_empty(), "the server was offline already");
     assert_eq!(
-        swept.revoked.iter().map(|id| id.0.clone()).collect::<Vec<_>>(),
+        swept
+            .revoked
+            .iter()
+            .map(|id| id.0.clone())
+            .collect::<Vec<_>>(),
         vec![f.server.0.clone()]
     );
     let row = server_row(&w, &f.server).await;

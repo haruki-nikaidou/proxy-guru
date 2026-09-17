@@ -321,6 +321,26 @@ impl Processor<ListCanvasesOfPods> for Db {
     }
 }
 
+/// One pod by id; `None` when there is no such row.
+#[derive(Debug)]
+pub struct FindPodById {
+    pub id: PodId,
+}
+
+impl Processor<FindPodById> for Db {
+    type Output = Option<PodEntity>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:FindPodById", skip_all, err)]
+    async fn process(&self, input: FindPodById) -> Result<Self::Output, Self::Error> {
+        Ok(
+            sqlx::query_as("SELECT * FROM orchestration_pod WHERE id = $1")
+                .bind(input.id)
+                .fetch_optional(self.db())
+                .await?,
+        )
+    }
+}
+
 /// The root canvases of every tree holding a TLS or QUIC relay pod: the trees
 /// whose derivation depends on the internal CA. `InitInternalCa` touches them
 /// so pods reported invalid for lack of a CA get their first leaves.

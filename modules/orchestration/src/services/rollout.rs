@@ -1,8 +1,8 @@
 //! Rollout status and config reads.
 
 use crate::entities::db::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
-use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
 use crate::entities::db::server::FindCanvasOfServer;
+use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, InvalidPod,
     ServerConfigViewEntity,

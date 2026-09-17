@@ -16,8 +16,7 @@ use crate::entities::db::health::{
 };
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::{
-    FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId,
-    UpdateReportedAddresses,
+    FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId, UpdateReportedAddresses,
 };
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,

@@ -676,6 +676,34 @@ message RolloutEvent {
     KeepAlive keep_alive = 2;
   }
 }
+// Any canvas of a tree may be given; the snapshot is the whole tree, exactly as
+// GetGraph answers it. A snapshot follows every graph edit of the tree and every
+// health *status* change of one of its servers; a routine report that changes
+// nothing sends none.
+message WatchGraphRequest {
+  string canvas_id = 1;
+}
+message GraphEvent {
+  oneof event {
+    GetGraphReply snapshot = 1;
+    KeepAlive keep_alive = 2;
+  }
+}
+// `since` is RFC 3339; empty means one hour ago.
+message WatchPodHealthRequest {
+  string pod_id = 1;
+  string since = 2;
+}
+message PodHealthSnapshot {
+  repeated PodHealthRecord records = 1; // oldest first
+}
+message PodHealthEvent {
+  oneof event {
+    PodHealthSnapshot snapshot = 1;
+    PodHealthRecord record = 2;
+    KeepAlive keep_alive = 3;
+  }
+}
 
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
@@ -700,6 +728,8 @@ service Orchestration {
   rpc ListPodHealthHistory(ListPodHealthHistoryRequest) returns (ListPodHealthHistoryReply);
   rpc WatchServerHealth(WatchServerHealthRequest) returns (stream ServerHealthEvent);
   rpc WatchRollouts(WatchRolloutsRequest) returns (stream RolloutEvent);
+  rpc WatchGraph(WatchGraphRequest) returns (stream GraphEvent);
+  rpc WatchPodHealth(WatchPodHealthRequest) returns (stream PodHealthEvent);
   rpc CreateDnsProvider(CreateDnsProviderRequest) returns (CreateDnsProviderReply);
   rpc ListDnsProviders(ListDnsProvidersRequest) returns (ListDnsProvidersReply);
   rpc UpdateDnsProvider(UpdateDnsProviderRequest) returns (UpdateDnsProviderReply);

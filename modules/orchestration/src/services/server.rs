@@ -15,8 +15,8 @@ use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
 use crate::entities::db::graph::LoadCanvasGraph;
 use crate::entities::db::server::{
     CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
-    SetAgentUpdateRequested, SetServerAgentKey, UpdateServerSettings,
+    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic, SetAgentUpdateRequested,
+    SetServerAgentKey, UpdateServerSettings,
 };
 use crate::events::live::CanvasChangeKind;
 use crate::services::notify::Notifier;

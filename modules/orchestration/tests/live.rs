@@ -16,6 +16,7 @@ use orchestration::entities::db::agent_release::PublishAgentRelease;
 use orchestration::entities::db::canvas::{CanvasEntity, CanvasId};
 use orchestration::entities::db::exit::ExitEntity;
 use orchestration::entities::db::health::{PodHealthStatus, ServerHealthStatus};
+use orchestration::entities::db::pod::PodId;
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
@@ -29,7 +30,8 @@ use orchestration::services::canvas as canvas_service;
 use orchestration::services::graph::GraphChange;
 use orchestration::services::health::{HealthReportInput, RecordHealthReport, SweepLiveness};
 use orchestration::services::live::{
-    RolloutsLive, ViewHandle, ViewValue, WatchRollouts, WatchServerHealth,
+    GraphLive, RolloutsLive, ViewHandle, ViewValue, WatchGraph, WatchPodHealth, WatchRollouts,
+    WatchServerHealth,
 };
 use orchestration::services::server::{
     AddressOverrides, CreateServer, IssueServerAgentInstall, MoveServer, RequestAgentUpdate,
@@ -92,11 +94,10 @@ async fn wired(
 ) -> Result<(CanvasEntity, ServerId, ExitEntity), Box<dyn std::error::Error>> {
     let canvas = canvas_named(w, "prod", None).await?;
     let server = make_server(w, &canvas.id, "tokyo", "203.0.113.10").await?;
-    let row = w
-        .db
-        .process(FindServerById { id: server.clone() })
-        .await?
-        .unwrap();
+    let row =
+        w.db.process(FindServerById { id: server.clone() })
+            .await?
+            .unwrap();
     let web = client(&canvas, &row, "web", 443, None);
     let out = exit(&canvas, "web-out", "10.0.0.5:8080");
     let edge = edge_to_exit("web-edge", &web, &out);
@@ -269,11 +270,10 @@ async fn edits_are_announced_with_their_kind(pool: sqlx::PgPool) -> TestResult {
         .await?;
     next_message(&mut events, changed(CanvasChangeKind::ServerMoved)).await;
 
-    let row = w
-        .db
-        .process(FindServerById { id: tokyo.clone() })
-        .await?
-        .unwrap();
+    let row =
+        w.db.process(FindServerById { id: tokyo.clone() })
+            .await?
+            .unwrap();
     w.apply(
         &canvas,
         GraphChange {
@@ -350,11 +350,10 @@ async fn agent_state_changes_are_announced(pool: sqlx::PgPool) -> TestResult {
         })
         .await?;
     next_message(&mut events, server_updated).await;
-    let issued = w
-        .db
-        .process(FindServerById { id: server.clone() })
-        .await?
-        .unwrap();
+    let issued =
+        w.db.process(FindServerById { id: server.clone() })
+            .await?
+            .unwrap();
     assert_eq!(issued.agent_unit.as_deref(), Some("tokyo-1"));
     assert!(issued.agent_key_issued_at.is_some());
 
@@ -388,11 +387,10 @@ async fn agent_state_changes_are_announced(pool: sqlx::PgPool) -> TestResult {
         })
         .await?;
     next_message(&mut events, server_updated).await;
-    let failed = w
-        .db
-        .process(FindServerById { id: server.clone() })
-        .await?
-        .unwrap();
+    let failed =
+        w.db.process(FindServerById { id: server.clone() })
+            .await?
+            .unwrap();
     assert_eq!(failed.agent_update_requested, None);
     assert_eq!(
         failed.agent_update_error.as_deref(),
@@ -604,6 +602,87 @@ async fn resync_reloads_a_view_that_missed_its_events(pool: sqlx::PgPool) -> Tes
     Ok(())
 }
 
+// --- the graph view ----------------------------------------------------------
+
+/// The graph view follows edits and health *status* flips, and ignores the
+/// routine report that changes nothing it shows: a fleet reporting every
+/// interval must not reload every dashboard every interval.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn graph_view_reloads_on_a_status_flip_not_a_report(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let (canvas, server, _) = wired(&w).await?;
+    w.derive(&canvas.id).await?;
+    let agent = register(&w, &server).await?;
+
+    let mut handle = w
+        .live
+        .process(WatchGraph {
+            actor: operator(),
+            canvas: canvas.id.clone(),
+        })
+        .await?;
+    assert_eq!(w.live.graph.active(), 1, "one view while the handle lives");
+    let status_of = |value: &ViewValue<GraphLive>| {
+        let (state, _) = ready(value);
+        let servers = &state.view.rows.servers;
+        assert_eq!(servers.len(), 1, "the tree has one server");
+        servers[0].health_status
+    };
+    assert_eq!(
+        status_of(&next_value(&mut handle).await),
+        ServerHealthStatus::Offline,
+        "a server that never reported opens offline"
+    );
+
+    // The first report flips the server online; it may also announce the
+    // reported address as a canvas change, so wait until the flip is visible.
+    w.health
+        .process(RecordHealthReport {
+            agent: agent.clone(),
+            report: report(0),
+        })
+        .await?;
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if status_of(&next_value(&mut handle).await) == ServerHealthStatus::Online {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the view sees the server come online");
+
+    // The same report again changes nothing the graph shows: no reload.
+    w.health
+        .process(RecordHealthReport {
+            agent: agent.clone(),
+            report: report(0),
+        })
+        .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), handle.rx.changed())
+            .await
+            .is_err(),
+        "a routine report does not reload the graph"
+    );
+
+    // The master's own flip does.
+    w.health
+        .process(SweepLiveness {
+            now: Utc::now() + TimeDelta::days(1),
+        })
+        .await?;
+    assert_eq!(
+        status_of(&next_value(&mut handle).await),
+        ServerHealthStatus::Offline,
+        "the sweep's flip reaches the view"
+    );
+
+    drop(handle);
+    assert_eq!(w.live.graph.active(), 0, "the view is gone");
+    Ok(())
+}
+
 // --- the health feeds --------------------------------------------------------
 
 /// A server-health watch opens with the history it was asked for, then sees one
@@ -698,9 +777,9 @@ async fn pod_health_is_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> T
     let of_web = |status: PodHealthStatus| {
         let web = web.clone();
         move |m: &LiveMessage| match m {
-            LiveMessage::PodHealth { records } => records
-                .iter()
-                .any(|r| r.pod == web && r.status == status),
+            LiveMessage::PodHealth { records } => {
+                records.iter().any(|r| r.pod == web && r.status == status)
+            }
             _ => false,
         }
     };
@@ -712,6 +791,29 @@ async fn pod_health_is_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> T
     w.derive(&canvas.id).await?;
     take_and_ack(&w, &agent, vec![pod_ok("web")], None).await?;
     next_message(&mut events, of_web(PodHealthStatus::Ready)).await;
+
+    // A pod watch opened now carries the history so far, oldest first.
+    let watch = w
+        .live
+        .process(WatchPodHealth {
+            actor: operator(),
+            pod: PodId::from_key(key("web")),
+            since: Utc::now() - TimeDelta::hours(1),
+        })
+        .await?;
+    let statuses: Vec<_> = watch.records.iter().map(|r| r.status).collect();
+    assert_eq!(
+        statuses,
+        vec![PodHealthStatus::Deploying, PodHealthStatus::Ready],
+        "the snapshot lists the pod's events in order"
+    );
+    assert!(
+        watch
+            .records
+            .windows(2)
+            .all(|w| w[0].report_time <= w[1].report_time),
+        "oldest first"
+    );
 
     // Moving the exit is what makes a *new* revision for the worker to refuse.
     w.apply(

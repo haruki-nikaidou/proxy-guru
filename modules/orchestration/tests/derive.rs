@@ -127,9 +127,8 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
         ..GraphChange::default()
     };
     w.apply(&c, change).await?;
-    let graph = w
-        .db
-        .process(LoadCanvasGraph {
+    let graph =
+        w.db.process(LoadCanvasGraph {
             canvas: c.id.clone(),
         })
         .await?;
@@ -141,7 +140,10 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
     })
 }
 
-fn derived(graph: &GraphRows, certificates: &DerivationCertificates) -> std::collections::BTreeMap<ServerId, DerivedConfig> {
+fn derived(
+    graph: &GraphRows,
+    certificates: &DerivationCertificates,
+) -> std::collections::BTreeMap<ServerId, DerivedConfig> {
     derive_tree(graph, certificates, &OrchestrationConfig::default())
         .unwrap()
         .into_iter()
@@ -164,7 +166,11 @@ async fn a_worker_that_reads_route_tables_gets_one(pool: sqlx::PgPool) -> TestRe
     let [entry] = mobile.config.forwardings.as_slice() else {
         panic!("{:?}", mobile.config.forwardings);
     };
-    assert_eq!(entry.tag, key("entry"), "a forwarding is tagged with its pod's id");
+    assert_eq!(
+        entry.tag,
+        key("entry"),
+        "a forwarding is tagged with its pod's id"
+    );
     let To::Route(root) = &entry.to else {
         panic!("a route-table worker gets a route: {:?}", entry.to);
     };
@@ -172,7 +178,11 @@ async fn a_worker_that_reads_route_tables_gets_one(pool: sqlx::PgPool) -> TestRe
     let Policy::Failover { members } = &group(root).policy else {
         panic!("{:?}", group(root));
     };
-    let Policy::Balance { members: balance, sticky } = &group(&members[0]).policy else {
+    let Policy::Balance {
+        members: balance,
+        sticky,
+    } = &group(&members[0]).policy
+    else {
         panic!("{:?}", group(&members[0]));
     };
     assert_eq!(*sticky, Some(Sticky::ClientIp));
@@ -190,11 +200,17 @@ async fn a_worker_that_reads_route_tables_gets_one(pool: sqlx::PgPool) -> TestRe
         "the edge's override address wins"
     );
     assert!(to_g2.confirm, "both ends confirm relays");
-    assert!(to_g2.quic.is_some(), "a QUIC hop pairs the two servers' rates");
+    assert!(
+        to_g2.quic.is_some(),
+        "a QUIC hop pairs the two servers' rates"
+    );
     let Target::Relay(to_a1) = &upstream(&members[1]).target else {
         panic!("{:?}", upstream(&members[1]));
     };
-    assert!(!to_a1.confirm, "the older worker at the far end cannot confirm");
+    assert!(
+        !to_a1.confirm,
+        "the older worker at the far end cannot confirm"
+    );
 
     // The dependency record: the listeners the entry dials, by identity.
     let mut ports: Vec<i64> = mobile.forwardings[0]
@@ -205,11 +221,11 @@ async fn a_worker_that_reads_route_tables_gets_one(pool: sqlx::PgPool) -> TestRe
     ports.sort_unstable();
     assert_eq!(ports, vec![7443, 7444, 8443]);
 
+    assert_golden("fabric_mobile", &mobile.config.to_toml_string().unwrap());
     assert_golden(
-        "fabric_mobile",
-        &mobile.config.to_toml_string().unwrap(),
+        "fabric_gcore",
+        &configs[&f.gcore].config.to_toml_string().unwrap(),
     );
-    assert_golden("fabric_gcore", &configs[&f.gcore].config.to_toml_string().unwrap());
     Ok(())
 }
 
@@ -244,7 +260,10 @@ async fn an_older_worker_gets_trees(pool: sqlx::PgPool) -> TestResult {
 
     let aws = &configs[&f.aws].config.forwardings[0];
     assert!(matches!(aws.to.tree(), Some(ForwardingTo::Exit { .. })));
-    assert_golden("fabric_aws", &configs[&f.aws].config.to_toml_string().unwrap());
+    assert_golden(
+        "fabric_aws",
+        &configs[&f.aws].config.to_toml_string().unwrap(),
+    );
     Ok(())
 }
 
@@ -263,7 +282,9 @@ async fn a_pod_without_its_material_is_invalid_alone(pool: sqlx::PgPool) -> Test
     assert_eq!(mobile.invalid[0].name, "entry");
     assert_eq!(mobile.invalid[0].listen, "[::]:443");
     assert!(
-        mobile.invalid[0].error.contains("internal CA not initialised"),
+        mobile.invalid[0]
+            .error
+            .contains("internal CA not initialised"),
         "{}",
         mobile.invalid[0].error
     );

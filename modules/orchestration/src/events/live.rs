@@ -48,7 +48,8 @@ pub enum LiveMessage {
     /// `RecordHealthReport` and `RegisterWorker` when a server's reported
     /// addresses move.
     /// Consumed by: [`crate::services::live::RolloutsView`] (the set of servers
-    /// and the tree's generation may have moved with it).
+    /// and the tree's generation may have moved with it) and
+    /// [`crate::services::live::GraphLiveView`].
     ///
     /// `canvas` is the canvas the edit happened in (not the root); views match it
     /// against their own tree, so a subcanvas edit refreshes its ancestors.
@@ -72,7 +73,8 @@ pub enum LiveMessage {
     ///
     /// Published by: `HealthService` (`RecordHealthReport`, `MarkServerOffline`,
     /// `SweepLiveness`) and `AckConfig`.
-    /// Consumed by: the `WatchServerHealth` stream (every row).
+    /// Consumed by: the `WatchServerHealth` stream (every row) and
+    /// [`crate::services::live::GraphLiveView`] (only when `status_changed`).
     ServerHealth {
         server: String,
         canvas: String,
@@ -85,8 +87,7 @@ pub enum LiveMessage {
     /// Published by: the derivation hook (`Deploying` the moment a revision is
     /// published), `AckConfig` (the settled verdicts) and `RecordHealthReport`
     /// (the rows that travelled inside the report's transaction).
-    /// Consumed by: nobody yet — published so a pod health stream needs no
-    /// publisher changes.
+    /// Consumed by: the `WatchPodHealth` stream (the records of its pod).
     PodHealth { records: Vec<PodHealthLive> },
     /// A `certificate` row changed status or version.
     ///

@@ -251,9 +251,11 @@ impl Processor<DeleteCanvas> for CanvasService {
                 "pod {pod} outside this canvas still leads into it; remove those edges first"
             )));
         }
-        if let Some(pod) = graph.pods.iter().find(|p| {
-            !doomed.contains(&p.canvas) && inside_servers.contains(p.server.as_str())
-        }) {
+        if let Some(pod) = graph
+            .pods
+            .iter()
+            .find(|p| !doomed.contains(&p.canvas) && inside_servers.contains(p.server.as_str()))
+        {
             return Err(OrchestrationError::Conflict(format!(
                 "pod {} outside this canvas runs on a server inside it; move or delete it first",
                 pod.name
@@ -282,7 +284,9 @@ fn find_subtree<'a>(tree: &'a CanvasTree, id: &CanvasId) -> Option<&'a CanvasTre
     if tree.canvas.id == *id {
         return Some(tree);
     }
-    tree.children.iter().find_map(|child| find_subtree(child, id))
+    tree.children
+        .iter()
+        .find_map(|child| find_subtree(child, id))
 }
 
 fn collect(tree: &CanvasTree, out: &mut HashSet<CanvasId>) {

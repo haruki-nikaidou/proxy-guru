@@ -8,9 +8,9 @@
 
 use crate::entities::db::canvas::{CanvasId, SNAPSHOT_READ};
 use crate::entities::db::fence;
+use crate::entities::db::graph::{GraphRows, load_graph};
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
-use crate::entities::db::graph::{GraphRows, load_graph};
 use crate::entities::db::tree;
 use base::db::{Db, Error};
 use chrono::{DateTime, Utc};

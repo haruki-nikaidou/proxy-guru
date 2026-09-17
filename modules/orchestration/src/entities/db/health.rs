@@ -364,6 +364,42 @@ impl Processor<ListPodHealthHistory> for Db {
     }
 }
 
+/// Pod records in `[start, end]`, oldest first: a live stream's opening
+/// snapshot and its recovery read. Unbounded like `ListServerHealthHistory`:
+/// pod rows are deployment events, a few per derivation, not a per-interval
+/// series.
+///
+/// `report_time` alone is the stream's watermark. Every writer
+/// (`InsertPodHealthRecords` from the derive hook, `AckConfig`,
+/// `RecordHealthReport`) writes at most one row *per pod* per statement, so
+/// two rows of one pod can only share a `report_time` if two writes landed in
+/// the same microsecond, which nothing in the fleet does; `id` only makes the
+/// order deterministic.
+#[derive(Debug)]
+pub struct ListPodHealthSince {
+    pub pod: PodId,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+impl Processor<ListPodHealthSince> for Db {
+    type Output = Vec<PodHealthRecordEntity>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query:ListPodHealthSince", skip_all, err)]
+    async fn process(&self, input: ListPodHealthSince) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_as(
+            "SELECT * FROM pod_health_record
+             WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
+             ORDER BY report_time ASC, id ASC",
+        )
+        .bind(input.pod)
+        .bind(input.start)
+        .bind(input.end)
+        .fetch_all(self.db())
+        .await?)
+    }
+}
+
 /// A pod record to insert; the row id is generated.
 #[derive(Debug, Clone)]
 pub struct NewPodHealthRecord {

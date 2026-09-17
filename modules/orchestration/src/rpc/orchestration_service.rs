@@ -10,16 +10,17 @@ use crate::entities::db::edge::{EdgeEntity, EdgeTarget};
 use crate::entities::db::exit::ExitEntity;
 use crate::entities::db::group::{GroupEntity, GroupMember};
 use crate::entities::db::health::{
-    ListServerHealthHistory as ListServerHealthHistoryRows, PodHealthRecordEntity,
-    PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+    ListPodHealthSince, ListServerHealthHistory as ListServerHealthHistoryRows,
+    PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use crate::entities::db::pod::{PodEntity, PodIngress, ProxyProtocolVersion, TlsConfig};
 use crate::entities::db::server::{
     AddressSource, QuicCongestion, ServerEntity, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
 };
 use crate::entities::db::view::{ConfigSnapshot, ListenerCap};
-use crate::events::live::{LiveMessage, ServerHealthLive, live_time};
+use crate::events::live::{LiveMessage, PodHealthLive, ServerHealthLive, live_time};
 use crate::hooks::live::LiveEvent;
+use crate::services::OrchestrationError;
 use crate::services::acme::{self, AcmeService};
 use crate::services::canvas::{self, CanvasService};
 use crate::services::config::{self, OrchestrationConfigService};
@@ -359,6 +360,31 @@ fn server_health_live_to_proto(server: &str, record: &ServerHealthLive) -> pb::S
         download_bytes: record.download_bytes,
         current_connections: record.current_connections,
         max_connections: record.max_connections,
+    }
+}
+
+fn pod_health_live_to_proto(record: &PodHealthLive) -> pb::PodHealthRecord {
+    pb::PodHealthRecord {
+        id: record.id.clone(),
+        pod_id: record.pod.clone(),
+        status: pod_health_to_proto(record.status),
+        message: record.message.clone(),
+        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
+    }
+}
+
+/// A tree with its diagnostics as `GetGraph` and `WatchGraph` both answer it.
+fn graph_reply(view: &graph::GraphView) -> pb::GetGraphReply {
+    let rows = &view.rows;
+    pb::GetGraphReply {
+        canvases: rows.canvases.iter().map(canvas_to_proto).collect(),
+        servers: rows.servers.iter().map(server_to_proto).collect(),
+        pods: rows.pods.iter().map(pod_to_proto).collect(),
+        exits: rows.exits.iter().map(exit_to_proto).collect(),
+        edges: rows.edges.iter().map(edge_to_proto).collect(),
+        groups: rows.groups.iter().map(group_to_proto).collect(),
+        diagnostics: view.diagnostics.iter().map(diagnostic_to_proto).collect(),
+        generation: rows.generation(),
     }
 }
 
@@ -824,9 +850,21 @@ fn change_from_proto(change: Option<pb::GraphChange>) -> Result<graph::GraphChan
             .into_iter()
             .map(group_from_proto)
             .collect::<Result<_, _>>()?,
-        delete_pods: change.delete_pod_ids.iter().map(|id| ids::pod_id(id)).collect(),
-        delete_exits: change.delete_exit_ids.iter().map(|id| ids::exit_id(id)).collect(),
-        delete_edges: change.delete_edge_ids.iter().map(|id| ids::edge_id(id)).collect(),
+        delete_pods: change
+            .delete_pod_ids
+            .iter()
+            .map(|id| ids::pod_id(id))
+            .collect(),
+        delete_exits: change
+            .delete_exit_ids
+            .iter()
+            .map(|id| ids::exit_id(id))
+            .collect(),
+        delete_edges: change
+            .delete_edge_ids
+            .iter()
+            .map(|id| ids::edge_id(id))
+            .collect(),
         delete_groups: change
             .delete_group_ids
             .iter()
@@ -978,17 +1016,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 canvas: ids::canvas_id(&input.canvas_id),
             })
             .await?;
-        let rows = &view.rows;
-        Ok(Response::new(pb::GetGraphReply {
-            canvases: rows.canvases.iter().map(canvas_to_proto).collect(),
-            servers: rows.servers.iter().map(server_to_proto).collect(),
-            pods: rows.pods.iter().map(pod_to_proto).collect(),
-            exits: rows.exits.iter().map(exit_to_proto).collect(),
-            edges: rows.edges.iter().map(edge_to_proto).collect(),
-            groups: rows.groups.iter().map(group_to_proto).collect(),
-            diagnostics: view.diagnostics.iter().map(diagnostic_to_proto).collect(),
-            generation: rows.generation(),
-        }))
+        Ok(Response::new(graph_reply(&view)))
     }
 
     async fn apply_graph(
@@ -1521,6 +1549,76 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    type WatchGraphStream = ReceiverStream<Result<pb::GraphEvent, Status>>;
+
+    async fn watch_graph(
+        &self,
+        request: Request<pb::WatchGraphRequest>,
+    ) -> Result<Response<Self::WatchGraphStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let handle = self
+            .live
+            .process(live::WatchGraph {
+                actor,
+                canvas: ids::canvas_id(&input.canvas_id),
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        tokio::spawn(async move {
+            let mut handle = handle;
+            let ended: Result<(), Status> = async {
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::GraphEvent {
+                                event: Some(pb::graph_event::Event::KeepAlive(pb::KeepAlive {})),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        changed = handle.rx.changed() => {
+                            if changed.is_err() {
+                                return Ok(());
+                            }
+                            let value = handle.rx.borrow_and_update().clone();
+                            match value {
+                                ViewValue::Loading => {}
+                                ViewValue::Missing => {
+                                    return Err(Status::not_found("canvas not found"));
+                                }
+                                ViewValue::Ready { state, .. } => {
+                                    let event = pb::GraphEvent {
+                                        event: Some(pb::graph_event::Event::Snapshot(
+                                            graph_reply(&state.view),
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     type WatchServerHealthStream = ReceiverStream<Result<pb::ServerHealthEvent, Status>>;
 
     /// A record log, not a view: every accepted report is forwarded once.
@@ -1653,6 +1751,163 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                     let event = pb::ServerHealthEvent {
                                         event: Some(pb::server_health_event::Event::Record(
                                             server_health_record_to_proto(record),
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                return Ok(());
+                            }
+                        },
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchPodHealthStream = ReceiverStream<Result<pb::PodHealthEvent, Status>>;
+
+    /// The pod counterpart of `watch_server_health`: a record log with the same
+    /// `last` watermark. A bus batch carries the rows of every pod its event
+    /// touched; only this pod's are forwarded.
+    ///
+    /// An unknown pod is `NOT_FOUND` *on the stream*, as the view streams
+    /// deliver it: a client reads its Watch* streams the same way whether the
+    /// record was missing at open or vanished later.
+    async fn watch_pod_health(
+        &self,
+        request: Request<pb::WatchPodHealthRequest>,
+    ) -> Result<Response<Self::WatchPodHealthStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let (since, _) = history_window(&input.since, "")?;
+        let pod = ids::pod_id(&input.pod_id);
+        let pod_key = pod.to_string();
+        let watch = match self
+            .live
+            .process(live::WatchPodHealth {
+                actor,
+                pod: pod.clone(),
+                since,
+            })
+            .await
+        {
+            Ok(watch) => watch,
+            Err(OrchestrationError::NotFound) => {
+                let (tx, rx) = mpsc::channel(1);
+                let _ = tx.try_send(Err(Status::not_found("pod not found")));
+                return Ok(Response::new(ReceiverStream::new(rx)));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        );
+        let db = self.live.db.clone();
+        tokio::spawn(async move {
+            let mut events = watch.events;
+            let mut last = watch
+                .records
+                .last()
+                .map(|record| record.report_time)
+                .unwrap_or(since);
+            let snapshot = pb::PodHealthEvent {
+                event: Some(pb::pod_health_event::Event::Snapshot(
+                    pb::PodHealthSnapshot {
+                        records: watch
+                            .records
+                            .iter()
+                            .map(pod_health_record_to_proto)
+                            .collect(),
+                    },
+                )),
+            };
+            let ended: Result<(), Status> = async {
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    return Ok(());
+                }
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            let event = pb::PodHealthEvent {
+                                event: Some(pb::pod_health_event::Event::KeepAlive(
+                                    pb::KeepAlive {},
+                                )),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        received = events.recv() => match received {
+                            Ok(LiveEvent::Message(message)) => {
+                                let LiveMessage::PodHealth { records } = &*message else {
+                                    continue;
+                                };
+                                for record in records {
+                                    if record.pod != pod_key {
+                                        continue;
+                                    }
+                                    let time = live_time(record.report_time_unix_micros);
+                                    if time <= last {
+                                        continue;
+                                    }
+                                    last = time;
+                                    let event = pb::PodHealthEvent {
+                                        event: Some(pb::pod_health_event::Event::Record(
+                                            pod_health_live_to_proto(record),
+                                        )),
+                                    };
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            // The bus may have skipped records; the database has
+                            // them all, so read forward from the watermark.
+                            Ok(LiveEvent::Resync)
+                            | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                let rows = match retry_read(|| {
+                                    db.process(ListPodHealthSince {
+                                        pod: pod.clone(),
+                                        start: last,
+                                        end: Utc::now(),
+                                    })
+                                })
+                                .await
+                                {
+                                    Ok(rows) => rows,
+                                    // The signal that got us here is consumed;
+                                    // swallowing the failure would leave the gap
+                                    // open until the next reconnect, so end the
+                                    // stream and let the client come back.
+                                    Err(error) => {
+                                        return Err(Status::internal(format!(
+                                            "refetching pod health failed: {error}"
+                                        )));
+                                    }
+                                };
+                                for record in &rows {
+                                    if record.report_time <= last {
+                                        continue;
+                                    }
+                                    last = record.report_time;
+                                    let event = pb::PodHealthEvent {
+                                        event: Some(pb::pod_health_event::Event::Record(
+                                            pod_health_record_to_proto(record),
                                         )),
                                     };
                                     if tx.send(Ok(event)).await.is_err() {

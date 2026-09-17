@@ -148,8 +148,11 @@ pub fn derive_tree(
                 .unwrap_or_default(),
         )
     })?;
-    let pods: HashMap<&str, &PodEntity> =
-        graph.pods.iter().map(|pod| (pod.id.as_str(), pod)).collect();
+    let pods: HashMap<&str, &PodEntity> = graph
+        .pods
+        .iter()
+        .map(|pod| (pod.id.as_str(), pod))
+        .collect();
     let mut out = BTreeMap::new();
     for server in &graph.servers {
         let Some(share) = compiled
@@ -277,9 +280,7 @@ fn invalid_message(invalid: &topo::InvalidPod, certificates: &DerivationCertific
                         "failed: {}",
                         c.last_error.as_deref().unwrap_or("unknown error")
                     ),
-                    CertificateStatus::Pending | CertificateStatus::Issued => {
-                        "pending".to_string()
-                    }
+                    CertificateStatus::Pending | CertificateStatus::Issued => "pending".to_string(),
                 },
             };
             format!("certificate for {sni} is {state}")
