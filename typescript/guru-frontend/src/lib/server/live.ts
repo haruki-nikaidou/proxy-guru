@@ -47,10 +47,11 @@ export class GrpcStreams<E> {
 		this.#open.set(key, own);
 		const onParentAbort = () => own.abort();
 		this.#signal.addEventListener('abort', onParentAbort, { once: true });
-		void this.#run(key, source, own.signal).finally(() => {
+		const release = () => {
 			this.#signal.removeEventListener('abort', onParentAbort);
 			if (this.#open.get(key) === own) this.#open.delete(key);
-		});
+		};
+		void this.#run(key, source, own.signal, release);
 	}
 
 	/** Aborts that stream's call. */
@@ -90,43 +91,59 @@ export class GrpcStreams<E> {
 		wake?.();
 	}
 
-	async #run(key: string, source: StreamSource<E>, signal: AbortSignal): Promise<void> {
+	/**
+	 * `release` drops the key's registration; it runs before an error item is
+	 * queued, so a caller that reopens the key while handling that item (a
+	 * graph snapshot listing the member again) starts a new stream instead of
+	 * hitting the no-op in `open`.
+	 */
+	async #run(
+		key: string,
+		source: StreamSource<E>,
+		signal: AbortSignal,
+		release: () => void
+	): Promise<void> {
 		let attempt = 0;
 		// Once the stream has delivered anything, every later failure is a
 		// transport loss to bridge: a reopen that fails before its first event
 		// (the master still restarting) must keep retrying.
 		let delivered = false;
-		while (!signal.aborted) {
-			try {
-				for await (const event of source(signal)) {
+		try {
+			while (!signal.aborted) {
+				try {
+					for await (const event of source(signal)) {
+						if (signal.aborted) return;
+						delivered = true;
+						attempt = 0;
+						this.#push({ key, event });
+					}
+					// The control plane closed the stream (a restart, a shutdown):
+					// reopen. A stream that never delivered still closes cleanly only
+					// when the master went away mid-open, so this is not an error.
+				} catch (error) {
 					if (signal.aborted) return;
-					delivered = true;
-					attempt = 0;
-					this.#push({ key, event });
+					const retryable =
+						delivered && error instanceof ClientError && RETRYABLE.includes(error.code);
+					if (!retryable) {
+						release();
+						this.#push({ key, error });
+						return;
+					}
 				}
-				// The control plane closed the stream (a restart, a shutdown):
-				// reopen. A stream that never delivered still closes cleanly only
-				// when the master went away mid-open, so this is not an error.
-			} catch (error) {
-				if (signal.aborted) return;
-				const retryable =
-					delivered && error instanceof ClientError && RETRYABLE.includes(error.code);
-				if (!retryable) {
-					this.#push({ key, error });
-					return;
-				}
+				const delay = Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS);
+				attempt += 1;
+				await new Promise<void>(resolve => {
+					const timer = setTimeout(done, delay);
+					signal.addEventListener('abort', done, { once: true });
+					function done() {
+						clearTimeout(timer);
+						signal.removeEventListener('abort', done);
+						resolve();
+					}
+				});
 			}
-			const delay = Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS);
-			attempt += 1;
-			await new Promise<void>(resolve => {
-				const timer = setTimeout(done, delay);
-				signal.addEventListener('abort', done, { once: true });
-				function done() {
-					clearTimeout(timer);
-					signal.removeEventListener('abort', done);
-					resolve();
-				}
-			});
+		} finally {
+			release();
 		}
 	}
 }

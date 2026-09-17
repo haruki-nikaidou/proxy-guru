@@ -175,6 +175,7 @@ async function* liveFeeds<E, P extends TimedPoint>(
 					// A deleted member: the next graph snapshot agrees.
 					const gone = item.error instanceof ClientError && item.error.code === Status.NOT_FOUND;
 					if (!gone && streamFailure(item.error, yielded) === 'end') return;
+					streams.close(item.key);
 					feeds.delete(id);
 					pending.delete(id);
 				} else {

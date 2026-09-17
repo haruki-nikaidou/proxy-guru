@@ -78,18 +78,20 @@ impl Notifier {
                         return;
                     }
                 };
-                let connection = manager.clone();
                 let publish = || async {
                     redis::cmd("PUBLISH")
                         .arg(LIVE_CHANNEL)
                         .arg(&bytes[..])
-                        .query_async::<()>(&mut connection.clone())
+                        .query_async::<()>(&mut manager.clone())
                         .await
                 };
                 let result = match publish().await {
-                    // The failure is what told the manager to reconnect; the
-                    // retry waits for that connection.
-                    Err(error) if error.is_unrecoverable_error() => publish().await,
+                    // Exactly the failures that make the manager replace its
+                    // connection (a dropped socket, or an I/O error from a
+                    // cached failed connect); the retry waits for the new one.
+                    Err(error) if error.is_unrecoverable_error() || error.is_io_error() => {
+                        publish().await
+                    }
                     result => result,
                 };
                 if let Err(error) = result {
