@@ -1,19 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" font-family="system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 650" width="640" height="650" role="img" font-family="system-ui, sans-serif">
   <title>The canvas stores servers, pods, exits, edges and one route tree per pod; it draws the same
     graph compressed into splitter cards, aggregator cards and buses, which are computed and never
     stored.</title>
 
   <!--
+    Drawn at the docs content width (640px) so it renders 1:1 and the 10-14px labels stay that size;
+    that is why the two panels are stacked instead of standing side by side.
+
     Fixed light panel, no `prefers-color-scheme`: loaded through an <img>, this file cannot see the
     theme Starlight sets on <html>, so a media query would invert it whenever the site theme and the
     OS preference disagree. Painting its own background instead lets one palette be measurably
-    readable on either site theme, and matches the light dashboard screenshots around it. Contrast
-    against that panel: every label 7.5:1 or better, accent text 5.5:1 (teal) and 7.1:1 (violet),
-    card and edge strokes 7.6:1. The hairlines that separate rows are decorative only.
+    readable on either site theme, and matches the light dashboard screenshots around it. Same
+    palette as img/rollout/edit-to-applied.svg. Contrast against that panel: every label 7.5:1 or
+    better, accent text 5.5:1 (teal) and 7.1:1 (violet), card and edge strokes 7.6:1. The hairlines
+    that separate rows are decorative only.
   -->
   <style>
     .panel       { fill: #ffffff; }
-    .panel-title { font-size: 15px; font-weight: 600; fill: #0f172a; }
+    .panel-title { font-size: 14px; font-weight: 600; fill: #0f172a; }
     .card        { fill: none; stroke: #475569; stroke-width: 1.2; }
     .card-title  { font-size: 12px; font-weight: 600; fill: #0f172a; }
     .pod         { font-size: 11px; fill: #1f2937; }
@@ -24,7 +28,7 @@
     .divider     { stroke: #cbd5e1; stroke-width: 1; }
     .flow        { font-size: 11px; font-style: italic; fill: #4b5563; }
 
-    /* accent 1: the exit, in both halves */
+    /* accent 1: the exit, in both panels */
     .exit-box    { fill: none; stroke: #0f766e; stroke-width: 1.2; }
     .exit-tag    { font-size: 10px; fill: #0f766e; }
     .exit-name   { font-size: 12px; font-weight: 600; fill: #0f766e; }
@@ -39,124 +43,125 @@
     .bus-label     { font-size: 10px; font-style: italic; fill: #6d28d9; }
     .badge         { fill: none; stroke: #6d28d9; stroke-width: 1; }
     .badge-text    { font-size: 10px; fill: #6d28d9; }
-
-    /* arrowheads follow their edge colour where context-stroke is supported */
-    .arrow-head { fill: #475569; fill: context-stroke; }
   </style>
 
-  <rect class="panel" x="0" y="0" width="960" height="520" rx="10" />
+  <rect class="panel" x="0" y="0" width="640" height="650" rx="10" />
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
             orient="auto-start-reverse">
-      <path class="arrow-head" d="M0,0.8 L9,5 L0,9.2 Z" />
+      <path d="M0,0.8 L9,5 L0,9.2 Z" fill="#475569" />
+    </marker>
+    <marker id="arrow-derived" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+            orient="auto-start-reverse">
+      <path d="M0,0.8 L9,5 L0,9.2 Z" fill="#6d28d9" />
     </marker>
   </defs>
 
-  <!-- ===================== divider and direction ===================== -->
-  <line class="divider" x1="480" y1="62" x2="480" y2="236" />
-  <line class="divider" x1="480" y1="286" x2="480" y2="466" />
-  <text class="flow" x="483" y="256" text-anchor="middle">drawn as</text>
-  <line class="edge" x1="464" y1="272" x2="500" y2="272" marker-end="url(#arrow)" />
+  <!-- ===================== top panel: what is stored ===================== -->
+  <text class="panel-title" x="320" y="30" text-anchor="middle">What is stored</text>
 
-  <!-- ===================== left panel: what is stored ===================== -->
-  <text class="panel-title" x="240" y="46" text-anchor="middle">What is stored</text>
+  <!-- server guru-test-sg, three client pods, each with its route tree -->
+  <rect class="card" x="28" y="48" width="180" height="129" rx="8" />
+  <text class="card-title" x="40" y="69">guru-test-sg</text>
+  <line class="rule" x1="28" y1="78" x2="208" y2="78" />
+  <line class="rule" x1="28" y1="111" x2="208" y2="111" />
+  <line class="rule" x1="28" y1="144" x2="208" y2="144" />
+  <text class="pod"  x="40" y="93">plain</text>
+  <text class="note" x="40" y="105">route: balance ×1 / ×1</text>
+  <text class="pod"  x="40" y="126">web</text>
+  <text class="note" x="40" y="138">route: balance ×1 / ×1</text>
+  <text class="pod"  x="40" y="159">direct</text>
+  <text class="note" x="40" y="171">route: single way on</text>
 
-  <!-- server guru-test-sg, three client pods -->
-  <rect class="card" x="24" y="80" width="170" height="135" rx="8" />
-  <text class="card-title" x="36" y="101">guru-test-sg</text>
-  <line class="rule" x1="24" y1="112" x2="194" y2="112" />
-  <line class="rule" x1="24" y1="145" x2="194" y2="145" />
-  <line class="rule" x1="24" y1="178" x2="194" y2="178" />
-  <text class="pod"  x="36" y="127">plain</text>
-  <text class="note" x="36" y="139">route: balance ×1 / ×1</text>
-  <text class="pod"  x="36" y="160">web</text>
-  <text class="note" x="36" y="172">route: balance ×1 / ×1</text>
-  <text class="pod"  x="36" y="193">direct</text>
-  <text class="note" x="36" y="205">route: single way on</text>
+  <!-- server guru-test-us-1, two relay pods -->
+  <rect class="card" x="356" y="48" width="180" height="96" rx="8" />
+  <text class="card-title" x="368" y="69">guru-test-us-1</text>
+  <line class="rule" x1="356" y1="78" x2="536" y2="78" />
+  <line class="rule" x1="356" y1="111" x2="536" y2="111" />
+  <text class="pod"  x="368" y="93">plain</text>
+  <text class="note" x="368" y="105">route: single way on</text>
+  <text class="pod"  x="368" y="126">web</text>
+  <text class="note" x="368" y="138">route: single way on</text>
 
-  <!-- server guru-test-us-1, two QUIC relay pods -->
-  <rect class="card" x="250" y="80" width="170" height="102" rx="8" />
-  <text class="card-title" x="262" y="101">guru-test-us-1</text>
-  <line class="rule" x1="250" y1="112" x2="420" y2="112" />
-  <line class="rule" x1="250" y1="145" x2="420" y2="145" />
-  <text class="pod"  x="262" y="127">plain</text>
-  <text class="note" x="262" y="139">route: single way on</text>
-  <text class="pod"  x="262" y="160">web</text>
-  <text class="note" x="262" y="172">route: single way on</text>
+  <!-- the exit both servers reach -->
+  <rect class="exit-box" x="232" y="230" width="176" height="54" rx="8" />
+  <text class="exit-tag"  x="320" y="250" text-anchor="middle">exit</text>
+  <text class="exit-name" x="320" y="268" text-anchor="middle">example.com:80</text>
 
-  <!-- exit -->
-  <rect class="exit-box" x="160" y="356" width="140" height="54" rx="8" />
-  <text class="exit-tag"  x="230" y="376" text-anchor="middle">exit</text>
-  <text class="exit-name" x="230" y="394" text-anchor="middle">example.com:80</text>
+  <!-- the seven stored edges: two between the servers, five into the exit -->
+  <path class="edge" d="M208,95 L356,95" marker-end="url(#arrow)" />
+  <path class="edge" d="M208,128 L356,128" marker-end="url(#arrow)" />
+  <path class="edge" d="M208,95 L236,95 L236,198 L300,198 L300,230" marker-end="url(#arrow)" />
+  <path class="edge" d="M208,128 L226,128 L226,206 L276,206 L276,230" marker-end="url(#arrow)" />
+  <path class="edge" d="M208,161 L216,161 L216,214 L252,214 L252,230" marker-end="url(#arrow)" />
+  <path class="edge" d="M536,95 L556,95 L556,206 L388,206 L388,230" marker-end="url(#arrow)" />
+  <path class="edge" d="M536,128 L544,128 L544,190 L364,190 L364,230" marker-end="url(#arrow)" />
 
-  <!-- the seven stored edges -->
-  <path class="edge" d="M194,128 L250,128" marker-end="url(#arrow)" />
-  <path class="edge" d="M194,161 L250,161" marker-end="url(#arrow)" />
-  <path class="edge" d="M194,128 L206,128 L206,322 L178,322 L178,356" marker-end="url(#arrow)" />
-  <path class="edge" d="M194,161 L218,161 L218,338 L204,338 L204,356" marker-end="url(#arrow)" />
-  <path class="edge" d="M194,194 L230,194 L230,356" marker-end="url(#arrow)" />
-  <path class="edge" d="M420,128 L438,128 L438,322 L256,322 L256,356" marker-end="url(#arrow)" />
-  <path class="edge" d="M420,161 L448,161 L448,338 L282,338 L282,356" marker-end="url(#arrow)" />
+  <text class="caption" x="320" y="306" text-anchor="middle">servers, pods, exits, edges, one route tree per pod</text>
 
-  <text class="caption" x="240" y="452" text-anchor="middle">servers, pods, exits, edges, one route tree per pod</text>
+  <!-- ===================== the transition ===================== -->
+  <line class="divider" x1="28" y1="336" x2="270" y2="336" />
+  <line class="divider" x1="372" y1="336" x2="612" y2="336" />
+  <text class="flow" x="308" y="340" text-anchor="middle">drawn as</text>
+  <line class="edge" x1="348" y1="324" x2="348" y2="348" marker-end="url(#arrow)" />
 
-  <!-- ===================== right panel: what is drawn ===================== -->
-  <text class="panel-title" x="722" y="46" text-anchor="middle">What is drawn</text>
+  <!-- ===================== bottom panel: what is drawn ===================== -->
+  <text class="panel-title" x="320" y="376" text-anchor="middle">What is drawn</text>
 
-  <!-- same server card -->
-  <rect class="card" x="506" y="76" width="140" height="110" rx="8" />
-  <text class="card-title" x="518" y="97">guru-test-sg</text>
-  <line class="rule" x1="506" y1="108" x2="646" y2="108" />
-  <line class="rule" x1="506" y1="134" x2="646" y2="134" />
-  <line class="rule" x1="506" y1="160" x2="646" y2="160" />
-  <text class="pod" x="518" y="125">plain</text>
-  <text class="pod" x="518" y="151">web</text>
-  <text class="pod" x="518" y="177">direct</text>
+  <!-- the same client server, routes no longer on the card -->
+  <rect class="card" x="20" y="394" width="130" height="106" rx="8" />
+  <text class="card-title" x="32" y="413">guru-test-sg</text>
+  <line class="rule" x1="20" y1="422" x2="150" y2="422" />
+  <line class="rule" x1="20" y1="448" x2="150" y2="448" />
+  <line class="rule" x1="20" y1="474" x2="150" y2="474" />
+  <text class="pod" x="32" y="439">plain</text>
+  <text class="pod" x="32" y="465">web</text>
+  <text class="pod" x="32" y="491">direct</text>
 
   <!-- computed splitter card: both balance routes collapse into one card -->
-  <rect class="derived" x="660" y="72" width="140" height="100" rx="8" />
-  <text class="derived-title" x="672" y="92">Balance</text>
-  <text class="derived-sub"   x="672" y="105">2 routes</text>
-  <line class="derived-rule" x1="660" y1="112" x2="800" y2="112" />
-  <line class="derived-rule" x1="660" y1="142" x2="800" y2="142" />
-  <text class="derived-row" x="672" y="131">guru-test-us-1</text>
-  <text class="derived-row" x="788" y="131" text-anchor="end">×1</text>
-  <text class="derived-row" x="672" y="160">example.com</text>
-  <text class="derived-row" x="788" y="160" text-anchor="end">×1</text>
+  <rect class="derived" x="190" y="388" width="160" height="96" rx="8" />
+  <text class="derived-title" x="202" y="408">Balance</text>
+  <text class="derived-sub"   x="202" y="421">2 routes</text>
+  <line class="derived-rule" x1="190" y1="427" x2="350" y2="427" />
+  <line class="derived-rule" x1="190" y1="455" x2="350" y2="455" />
+  <text class="derived-row" x="202" y="446">guru-test-us-1</text>
+  <text class="derived-row" x="338" y="446" text-anchor="end">×1</text>
+  <text class="derived-row" x="202" y="474">example.com</text>
+  <text class="derived-row" x="338" y="474" text-anchor="end">×1</text>
 
-  <!-- same relay server card -->
-  <rect class="card" x="826" y="190" width="118" height="84" rx="8" />
-  <text class="card-title" x="838" y="211">guru-test-us-1</text>
-  <line class="rule" x1="826" y1="222" x2="944" y2="222" />
-  <line class="rule" x1="826" y1="248" x2="944" y2="248" />
-  <text class="pod" x="838" y="239">plain</text>
-  <text class="pod" x="838" y="265">web</text>
+  <!-- the same relay server -->
+  <rect class="card" x="480" y="394" width="140" height="80" rx="8" />
+  <text class="card-title" x="492" y="413">guru-test-us-1</text>
+  <line class="rule" x1="480" y1="422" x2="620" y2="422" />
+  <line class="rule" x1="480" y1="448" x2="620" y2="448" />
+  <text class="pod" x="492" y="439">plain</text>
+  <text class="pod" x="492" y="465">web</text>
 
-  <!-- computed aggregator card in front of the exit -->
-  <rect class="derived" x="676" y="356" width="104" height="54" rx="8" />
-  <text class="derived-title" x="728" y="378" text-anchor="middle">2 servers</text>
-  <text class="derived-sub"   x="728" y="394" text-anchor="middle">one way out</text>
+  <!-- computed aggregator card: every line in front of the exit meets here -->
+  <rect class="derived" x="190" y="548" width="140" height="54" rx="8" />
+  <text class="derived-title" x="260" y="570" text-anchor="middle">2 servers</text>
+  <text class="derived-sub"   x="260" y="586" text-anchor="middle">one way out</text>
 
-  <!-- the same exit -->
-  <rect class="exit-box" x="826" y="356" width="118" height="54" rx="8" />
-  <text class="exit-tag"  x="885" y="376" text-anchor="middle">exit</text>
-  <text class="exit-name" x="885" y="394" text-anchor="middle">example.com:80</text>
+  <!-- the same exit, now with a single line into it -->
+  <rect class="exit-box" x="438" y="548" width="182" height="54" rx="8" />
+  <text class="exit-tag"  x="529" y="568" text-anchor="middle">exit</text>
+  <text class="exit-name" x="529" y="586" text-anchor="middle">example.com:80</text>
 
   <!-- drawn cables -->
-  <path class="edge-derived" d="M646,121 L660,113" marker-end="url(#arrow)" />
-  <path class="edge-derived" d="M646,147 L660,137" marker-end="url(#arrow)" />
-  <path class="edge-derived" d="M800,112 L813,112 L813,236 L826,236" marker-end="url(#arrow)" />
-  <path class="edge-derived" d="M730,172 L730,356" marker-end="url(#arrow)" />
-  <path class="edge" d="M646,173 L652,173 L652,372 L676,372" marker-end="url(#arrow)" />
-  <path class="edge" d="M885,274 L885,332 L766,332 L766,356" marker-end="url(#arrow)" />
-  <path class="edge-derived" d="M780,383 L826,383" marker-end="url(#arrow)" />
+  <path class="edge-derived" d="M150,435 L190,418" marker-end="url(#arrow-derived)" />
+  <path class="edge-derived" d="M150,461 L190,436" marker-end="url(#arrow-derived)" />
+  <path class="edge-derived" d="M350,441 L480,441" marker-end="url(#arrow-derived)" />
+  <path class="edge-derived" d="M260,484 L260,548" marker-end="url(#arrow-derived)" />
+  <path class="edge" d="M150,487 L170,487 L170,574 L190,574" marker-end="url(#arrow)" />
+  <path class="edge" d="M550,474 L550,518 L300,518 L300,548" marker-end="url(#arrow)" />
+  <path class="edge-derived" d="M330,575 L438,575" marker-end="url(#arrow-derived)" />
 
-  <!-- bus annotation on the cable that stands for two edges -->
-  <line class="edge-derived" x1="813" y1="204" x2="806" y2="204" />
-  <text class="bus-label" x="802" y="207" text-anchor="end">bus</text>
-  <rect class="badge" x="758" y="194" width="20" height="19" rx="5" />
-  <text class="badge-text" x="768" y="208" text-anchor="middle">2</text>
+  <!-- the cable to the relay server is one bus standing for two edges -->
+  <rect class="badge" x="398" y="394" width="20" height="19" rx="5" />
+  <text class="badge-text" x="408" y="408" text-anchor="middle">2</text>
+  <line class="edge-derived" x1="408" y1="413" x2="408" y2="438" />
+  <text class="bus-label" x="392" y="408" text-anchor="end">bus</text>
 
-  <text class="caption" x="722" y="452" text-anchor="middle">splitters, aggregators and buses are computed, never stored</text>
+  <text class="caption" x="320" y="626" text-anchor="middle">splitters, aggregators and buses are computed, never stored</text>
 </svg>

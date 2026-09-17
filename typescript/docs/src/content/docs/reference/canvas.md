@@ -17,7 +17,7 @@ What the control plane keeps is small: servers with their pods, exits, subcanvas
 on, one route tree per pod, and where each card sits. Everything else in the picture is computed
 from that graph while it is drawn, so that a fabric of forty edges stays a handful of cards.
 
-![Two panels showing the same topology. Left, what is stored: a Singapore server with the client pods plain, web and direct, a US server with the relay pods plain and web, the exit example.com:80, seven edges between them, and a balance route on each of the two pods that have two ways on. Right, what is drawn: the same servers and exit, but the lines out of plain and web enter one Balance splitter standing for 2 routes, and the lines in front of the exit meet in one aggregator over 2 servers](/img/canvas/graph-vs-drawing.svg)
+![Two panels showing the same topology. Above, what is stored: a Singapore server with the client pods plain, web and direct, a US server with the relay pods plain and web, the exit example.com:80, seven edges between them, and a balance route on each of the two pods that have two ways on. Below, what is drawn: the same servers and exit, but the lines out of plain and web enter one Balance splitter standing for 2 routes, the cable from it to the US server is one bus of 2 edges, and the lines in front of the exit meet in one aggregator over 2 servers](/img/canvas/graph-vs-drawing.svg)
 
 Splitters stand for route groups, aggregators for lines that meet, buses for edges that run the same
 way. None of them has a row of its own: they appear, merge and vanish as the graph changes, which is
