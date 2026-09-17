@@ -66,7 +66,10 @@ pub enum LiveMessage {
     /// pass (scoped to the tree), `AckConfig`, `RegisterWorker`,
     /// `ForgetServerApplied`, and the worker stream's conditional take (scoped to
     /// the one server).
-    /// Consumed by: [`crate::services::live::RolloutsView`].
+    /// Consumed by: [`crate::services::live::RolloutsView`] and, when scoped to a
+    /// tree, [`crate::services::live::GraphLiveView`] (a derivation follows every
+    /// bump of the tree's generation, including the ones that announce no
+    /// `CanvasChanged`).
     RolloutChanged { scope: RolloutScope },
     /// One accepted `server_health_record` row: a report, an ack verdict, or the
     /// master flipping a silent server offline.

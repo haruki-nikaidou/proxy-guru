@@ -9,13 +9,16 @@
 
 mod common;
 
-use chrono::{TimeDelta, Utc};
+use chrono::{SubsecRound, TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::PublishAgentRelease;
 use orchestration::entities::db::canvas::{CanvasEntity, CanvasId};
+use orchestration::entities::db::certificate::TouchCanvases;
 use orchestration::entities::db::exit::ExitEntity;
-use orchestration::entities::db::health::{PodHealthStatus, ServerHealthStatus};
+use orchestration::entities::db::health::{
+    InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus, ServerHealthStatus,
+};
 use orchestration::entities::db::pod::PodId;
 use orchestration::entities::db::server::{
     FindServerById, ServerId, ServerIpv6Resolve, ServerLogLevel,
@@ -28,7 +31,9 @@ use orchestration::services::agent::{
 };
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::graph::GraphChange;
-use orchestration::services::health::{HealthReportInput, RecordHealthReport, SweepLiveness};
+use orchestration::services::health::{
+    DEFAULT_POD_HISTORY_LIMIT, HealthReportInput, RecordHealthReport, SweepLiveness,
+};
 use orchestration::services::live::{
     GraphLive, RolloutsLive, ViewHandle, ViewValue, WatchGraph, WatchPodHealth, WatchRollouts,
     WatchServerHealth,
@@ -683,6 +688,86 @@ async fn graph_view_reloads_on_a_status_flip_not_a_report(pool: sqlx::PgPool) ->
     Ok(())
 }
 
+fn generation_of(value: &ViewValue<GraphLive>) -> i64 {
+    ready(value).0.view.rows.generation()
+}
+
+/// Waits until a graph handle shows `generation`.
+async fn graph_reaches(handle: &mut ViewHandle<GraphLive>, generation: i64) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if generation_of(&next_value(handle).await) == generation {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the graph view reached the generation");
+}
+
+/// Some writes move the tree's generation without announcing a canvas change
+/// (`TouchCanvases` after an ACME issuance or a relay-leaf rotation,
+/// `ForgetServerApplied`). The derivation that follows them is what reloads
+/// the graph view; a view left on the old generation fences every edit off as
+/// stale.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn graph_view_follows_a_bump_through_its_derivation(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let (canvas, _, _) = wired(&w).await?;
+    w.derive(&canvas.id).await?;
+
+    let mut handle = w
+        .live
+        .process(WatchGraph {
+            actor: operator(),
+            canvas: canvas.id.clone(),
+        })
+        .await?;
+    let before = generation_of(&next_value(&mut handle).await);
+
+    w.db.process(TouchCanvases {
+        canvases: vec![canvas.id.clone()],
+    })
+    .await?;
+    w.derive(&canvas.id).await?;
+    graph_reaches(&mut handle, before + 1).await;
+    Ok(())
+}
+
+/// A watcher joining a view that is already loaded triggers a re-read, so a
+/// write the view does not match (here a bare generation bump) cannot stay
+/// invisible to every later open, or to a client's reconnect.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn joining_a_loaded_view_rereads_it(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let (canvas, _, _) = wired(&w).await?;
+    let watch = || {
+        w.live.process(WatchGraph {
+            actor: operator(),
+            canvas: canvas.id.clone(),
+        })
+    };
+
+    let mut first = watch().await?;
+    let before = generation_of(&next_value(&mut first).await);
+    w.db.process(TouchCanvases {
+        canvases: vec![canvas.id.clone()],
+    })
+    .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), first.rx.changed())
+            .await
+            .is_err(),
+        "nothing the view matches was published"
+    );
+
+    let mut second = watch().await?;
+    assert_eq!(w.live.graph.active(), 1, "the joiner shares the view");
+    graph_reaches(&mut second, before + 1).await;
+    graph_reaches(&mut first, before + 1).await;
+    Ok(())
+}
+
 // --- the health feeds --------------------------------------------------------
 
 /// A server-health watch opens with the history it was asked for, then sees one
@@ -840,6 +925,48 @@ async fn pod_health_is_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> T
             .unwrap()
             .message,
         "boom"
+    );
+    Ok(())
+}
+
+/// Every report writes a row per pod, so a pod watch opens with the newest page
+/// of its window only, oldest first, rather than the whole per-interval series.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    wired(&w).await?;
+    let pod = pod_id("web");
+    // PostgreSQL keeps microseconds.
+    let now = Utc::now().trunc_subsecs(6);
+    let total = DEFAULT_POD_HISTORY_LIMIT + 10;
+    w.db.process(InsertPodHealthRecords {
+        records: (0..total)
+            .map(|i| NewPodHealthRecord {
+                pod: pod.clone(),
+                status: PodHealthStatus::Ready,
+                message: String::new(),
+                report_time: now - TimeDelta::seconds(total - i),
+            })
+            .collect(),
+    })
+    .await?;
+
+    let watch = w
+        .live
+        .process(WatchPodHealth {
+            actor: operator(),
+            pod,
+            since: now - TimeDelta::hours(1),
+        })
+        .await?;
+    let times: Vec<_> = watch.records.iter().map(|r| r.report_time).collect();
+    assert_eq!(times.len(), DEFAULT_POD_HISTORY_LIMIT as usize);
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "oldest first");
+    assert_eq!(times.last(), Some(&(now - TimeDelta::seconds(1))), "the newest row is in");
+    assert_eq!(
+        times.first(),
+        Some(&(now - TimeDelta::seconds(DEFAULT_POD_HISTORY_LIMIT))),
+        "the oldest rows are the ones left out"
     );
     Ok(())
 }

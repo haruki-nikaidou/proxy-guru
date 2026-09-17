@@ -365,9 +365,15 @@ impl Processor<ListPodHealthHistory> for Db {
 }
 
 /// Pod records in `[start, end]`, oldest first: a live stream's opening
-/// snapshot and its recovery read. Unbounded like `ListServerHealthHistory`:
-/// pod rows are deployment events, a few per derivation, not a per-interval
-/// series.
+/// snapshot and its recovery read.
+///
+/// Pod rows are a per-interval series, not a handful of deployment events:
+/// every health report writes one row per reported pod, so a week at the
+/// default cadence is ~40,000 rows of one pod — over gRPC's default 4 MiB
+/// receive limit as a single snapshot once the rows carry a failure message.
+/// The snapshot therefore keeps only the newest `limit` rows, the page size
+/// `ListPodHealthHistory` answers with; the recovery read after a gap passes
+/// `None` and gets every row since the watermark, one message each.
 ///
 /// `report_time` alone is the stream's watermark. Every writer
 /// (`InsertPodHealthRecords` from the derive hook, `AckConfig`,
@@ -380,6 +386,8 @@ pub struct ListPodHealthSince {
     pub pod: PodId,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    /// The newest rows to keep; `None` keeps them all.
+    pub limit: Option<i64>,
 }
 
 impl Processor<ListPodHealthSince> for Db {
@@ -387,14 +395,20 @@ impl Processor<ListPodHealthSince> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query:ListPodHealthSince", skip_all, err)]
     async fn process(&self, input: ListPodHealthSince) -> Result<Self::Output, Self::Error> {
+        // `LIMIT NULL` is no limit at all.
         Ok(sqlx::query_as(
-            "SELECT * FROM pod_health_record
-             WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
+            "SELECT * FROM (
+                 SELECT * FROM pod_health_record
+                 WHERE pod = $1 AND report_time >= $2 AND report_time <= $3
+                 ORDER BY report_time DESC, id DESC
+                 LIMIT $4
+             ) newest
              ORDER BY report_time ASC, id ASC",
         )
         .bind(input.pod)
         .bind(input.start)
         .bind(input.end)
+        .bind(input.limit)
         .fetch_all(self.db())
         .await?)
     }
