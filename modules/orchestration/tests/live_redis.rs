@@ -13,13 +13,17 @@ mod common;
 
 use common::*;
 use kanau::processor::Processor;
+use orchestration::events::live::{CanvasChangeKind, LiveMessage};
 use orchestration::hooks::live::{LiveBus, LiveEvent, run_redis_subscriber};
 use orchestration::services::canvas::CreateCanvas;
 use orchestration::services::live::{LiveService, ViewValue};
 use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
+use std::sync::Arc;
 use std::time::Duration;
 use testcontainers_modules::redis::Redis;
+use testcontainers_modules::testcontainers::ImageExt;
+use testcontainers_modules::testcontainers::core::IntoContainerPort;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +36,106 @@ async fn first_event(events: &mut broadcast::Receiver<LiveEvent>) -> LiveEvent {
         .await
         .expect("an event arrived")
         .expect("the bus is alive")
+}
+
+/// Waits for the next message on a bus, skipping resyncs.
+async fn next_message(events: &mut broadcast::Receiver<LiveEvent>) -> Arc<LiveMessage> {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if let LiveEvent::Message(message) = events.recv().await.expect("the bus is alive") {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("a message arrived")
+}
+
+/// Waits for the next resync on a bus, skipping messages.
+async fn next_resync(events: &mut broadcast::Receiver<LiveEvent>) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if let LiveEvent::Resync = events.recv().await.expect("the bus is alive") {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("a resync arrived")
+}
+
+fn canvas_changed(canvas: &str) -> LiveMessage {
+    LiveMessage::CanvasChanged {
+        canvas: canvas.to_string(),
+        kind: CanvasChangeKind::CanvasUpdated,
+        ids: Vec::new(),
+    }
+}
+
+fn canvas_of(message: &LiveMessage) -> &str {
+    match message {
+        LiveMessage::CanvasChanged { canvas, .. } => canvas,
+        other => panic!("not a canvas change: {other:?}"),
+    }
+}
+
+/// The first publish after a broker restart is the one that finds the
+/// publisher's socket dead: the connection manager only learns of the loss
+/// from the command that fails on it and does not retry that command, so
+/// without the notifier's own retry the first edit after every Redis restart
+/// reached no dashboard. The subscriber is back (its resync is awaited) before
+/// the publish, so delivery here is the publish itself, not a later resync.
+#[tokio::test]
+async fn the_first_publish_after_a_broker_restart_is_delivered() -> TestResult {
+    // A fixed host port: Docker may hand a `0`-mapped port to somebody else
+    // across a stop/start, and the clients hold the URL.
+    let host_port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let server = Redis::default()
+        .with_mapped_port(host_port, 6379.tcp())
+        .start()
+        .await?;
+    let url = format!("redis://{}:{host_port}/", server.get_host().await?);
+    let client = redis::Client::open(url.as_str())?;
+
+    let replica = LiveBus::new();
+    let mut events = replica.subscribe();
+    let shutdown = CancellationToken::new();
+    let subscriber = tokio::spawn(run_redis_subscriber(
+        client.clone(),
+        replica.clone(),
+        shutdown.clone(),
+    ));
+    next_resync(&mut events).await;
+
+    // The publisher connects while Redis is up and then goes quiet, which is
+    // what leaves it holding a dead socket across the restart.
+    let publisher = Notifier {
+        amqp: None,
+        live: Some(LivePublisher::Redis(
+            redis::aio::ConnectionManager::new(client.clone()).await?,
+        )),
+    };
+    publisher.live(canvas_changed("before")).await;
+    assert_eq!(canvas_of(&*next_message(&mut events).await), "before");
+
+    server.stop_with_timeout(Some(0)).await?;
+    server.start().await?;
+    // The subscriber reconnects on its own and announces it: from here on
+    // there is somebody to deliver to.
+    next_resync(&mut events).await;
+
+    publisher.live(canvas_changed("after")).await;
+    assert_eq!(
+        canvas_of(&*next_message(&mut events).await),
+        "after",
+        "the first publish on the stale connection is retried on the new one"
+    );
+
+    shutdown.cancel();
+    subscriber.await?;
+    Ok(())
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
