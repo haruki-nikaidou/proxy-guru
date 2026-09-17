@@ -46,6 +46,10 @@ export function reconcileFlowNodes(previous: FlowNode[], next: FlowNode[]): Node
 			return node;
 		}
 		if (previous[index]?.id !== node.id) changed = true;
+		// A snapshot that lands mid-drag (the previous drop's own move, someone
+		// else's edit) must not move the card under the pointer; the server wins
+		// for every other node.
+		if (old.dragging) return old;
 		if (
 			sameJson(old.data, node.data) &&
 			sameJson(old.position, node.position) &&

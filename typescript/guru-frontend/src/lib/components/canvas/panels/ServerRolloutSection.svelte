@@ -27,12 +27,10 @@ import ConfirmDeleteDialog from '#lib/components/ConfirmDeleteDialog.svelte';
  * read the rendered TOML, and (as an Admin) declare the server dead.
  */
 let {
-	canvasId,
 	server,
 	admin,
 	serverNames
 }: {
-	canvasId: string;
 	server: ServerDto;
 	/** `ForgetServerApplied` is admin-only in the control plane. */
 	admin: boolean;
@@ -118,7 +116,7 @@ const waitingName = (id: string): string => serverNames.get(id) ?? id;
 
 const forget = () =>
 	writes.run(async () => {
-		await forgetServerApplied({ canvasId, serverId: server.id });
+		await forgetServerApplied({ serverId: server.id });
 		forgetOpen = false;
 	}, m.editor_rollout_forgotten());
 </script>

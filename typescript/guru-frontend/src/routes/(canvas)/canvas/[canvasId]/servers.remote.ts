@@ -28,7 +28,6 @@ import {
 	serverQuicSchema
 } from '#lib/server/topology/schemas.js';
 import { command, query } from '$app/server';
-import { getCanvasGraph } from './graph.remote.js';
 
 export const createServerNode = command(
 	v.object({ canvasId: idSchema, name: nameSchema, x: coordSchema, y: coordSchema }),
@@ -51,14 +50,12 @@ export const createServerNode = command(
 				{ metadata }
 			)
 		);
-		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };
 	}
 );
 
 export const updateServerNode = command(
 	v.object({
-		canvasId: idSchema,
 		serverId: idSchema,
 		name: nameSchema,
 		icon: v.optional(v.string(), ''),
@@ -72,7 +69,6 @@ export const updateServerNode = command(
 		quic: serverQuicSchema
 	}),
 	async ({
-		canvasId,
 		serverId,
 		name,
 		icon,
@@ -110,7 +106,6 @@ export const updateServerNode = command(
 				{ metadata }
 			)
 		);
-		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };
 	}
 );
@@ -120,24 +115,22 @@ export const updateServerNode = command(
  * The key is in the reply exactly once; issuing again replaces it.
  */
 export const issueServerAgentInstall = command(
-	v.object({ canvasId: idSchema, serverId: idSchema, unit: agentUnitSchema }),
-	async ({ canvasId, serverId, unit }): Promise<AgentInstallDto> => {
+	v.object({ serverId: idSchema, unit: agentUnitSchema }),
+	async ({ serverId, unit }): Promise<AgentInstallDto> => {
 		const metadata = sessionMetadata(requireSessionId());
 		const reply = await callGrpc(() =>
 			orchestrationClient().issueServerAgentInstall({ serverId, unit }, { metadata })
 		);
-		await getCanvasGraph({ canvasId }).refresh();
 		return { command: reply.command, unit: reply.unit, version: reply.version };
 	}
 );
 
 /** Asks the server's worker to move to the published release at its next poll. */
 export const requestAgentUpdate = command(
-	v.object({ canvasId: idSchema, serverId: idSchema }),
-	async ({ canvasId, serverId }) => {
+	v.object({ serverId: idSchema }),
+	async ({ serverId }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() => orchestrationClient().requestAgentUpdate({ serverId }, { metadata }));
-		await getCanvasGraph({ canvasId }).refresh();
 		return { ok: true as const };
 	}
 );
@@ -160,15 +153,11 @@ export const getAgentRelease = query(async (): Promise<AgentReleaseDto> => {
  * removes them first, in one graph batch it shows the operator, and calls this
  * once that batch went through.
  */
-export const deleteServerNode = command(
-	v.object({ canvasId: idSchema, serverId: idSchema }),
-	async ({ canvasId, serverId }) => {
-		const metadata = sessionMetadata(requireSessionId());
-		await callGrpc(() => orchestrationClient().deleteServer({ serverId }, { metadata }));
-		await getCanvasGraph({ canvasId }).refresh();
-		return { ok: true as const };
-	}
-);
+export const deleteServerNode = command(v.object({ serverId: idSchema }), async ({ serverId }) => {
+	const metadata = sessionMetadata(requireSessionId());
+	await callGrpc(() => orchestrationClient().deleteServer({ serverId }, { metadata }));
+	return { ok: true as const };
+});
 
 /**
  * Where one server stands between the config the control plane derived and the
@@ -218,14 +207,11 @@ export const getServerConfigToml = query(
  * with the rollout, because forgetting re-derives every dependant.
  */
 export const forgetServerApplied = command(
-	v.object({ canvasId: idSchema, serverId: idSchema }),
-	async ({ canvasId, serverId }) => {
+	v.object({ serverId: idSchema }),
+	async ({ serverId }) => {
 		const metadata = sessionMetadata(requireSessionId());
 		await callGrpc(() => orchestrationClient().forgetServerApplied({ serverId }, { metadata }));
-		await Promise.all([
-			getServerRollout({ serverId }).refresh(),
-			getCanvasGraph({ canvasId }).refresh()
-		]);
+		await getServerRollout({ serverId }).refresh();
 		return { ok: true as const };
 	}
 );

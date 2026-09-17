@@ -40,6 +40,7 @@ import { toast } from 'svelte-sonner';
 import { goto, replaceState } from '$app/navigation';
 import { page } from '$app/state';
 import BoundaryError from '#lib/components/BoundaryError.svelte';
+import LiveBadge from '#lib/components/LiveBadge.svelte';
 import CanvasMenubar from '#lib/components/canvas/CanvasMenubar.svelte';
 import CanvasProblems from '#lib/components/canvas/CanvasProblems.svelte';
 import {
@@ -47,8 +48,8 @@ import {
 	createServerNode,
 	deleteServerNode,
 	deleteSubcanvas,
-	getCanvasGraph,
-	moveCanvasItems
+	moveCanvasItems,
+	watchCanvasGraph
 } from '#lib/components/canvas/commands.js';
 import { paletteColor, setCanvasContext } from '#lib/components/canvas/context.svelte.js';
 import AddExitDialog from '#lib/components/canvas/dialogs/AddExitDialog.svelte';
@@ -94,7 +95,7 @@ import { reportError } from '#lib/report.js';
 let { canvasId, editable, admin }: { canvasId: string; editable: boolean; admin: boolean } =
 	$props();
 
-const query = $derived(getCanvasGraph({ canvasId }));
+const query = $derived(watchCanvasGraph({ canvasId }));
 const graph = $derived(query.current);
 const drawing = $derived(graph ? draw(graph, canvasId) : undefined);
 const problems = $derived(graph && drawing ? problemIndex(graph, drawing) : undefined);
@@ -184,7 +185,34 @@ $effect.pre(() => {
 	});
 });
 
-const refresh = () => getCanvasGraph({ canvasId }).refresh();
+/** Re-opens the live stream, which answers with a fresh snapshot. */
+const refresh = () => watchCanvasGraph({ canvasId }).reconnect();
+
+/** How long a committed edit waits for its own snapshot before the caller moves on. */
+const SETTLE_TIMEOUT = 3000;
+
+/**
+ * Resolves once the live graph has reached `generation`, or after
+ * SETTLE_TIMEOUT. A write's own snapshot follows it by one Redis hop; waiting
+ * for it keeps a second edit in quick succession from carrying a stale
+ * `expectedGeneration`.
+ */
+function settled(generation: number): Promise<void> {
+	if ((graph?.generation ?? 0) >= generation) return Promise.resolve();
+	return new Promise(resolve => {
+		const timer = setTimeout(done, SETTLE_TIMEOUT);
+		const stop = $effect.root(() => {
+			$effect(() => {
+				if ((graph?.generation ?? 0) >= generation) done();
+			});
+		});
+		function done() {
+			clearTimeout(timer);
+			stop();
+			resolve();
+		}
+	});
+}
 
 /** Reports what went wrong with a gesture or a write. */
 function report(err: unknown) {
@@ -218,6 +246,8 @@ async function commit(
 			return false;
 		}
 		if (success) toast.success(success);
+		// A groups-only batch leaves the generation where it was and resolves at once.
+		await settled(outcome.generation);
 		return true;
 	} catch (err) {
 		report(err);
@@ -479,7 +509,7 @@ function requestRemoval(nodeIds: string[], busIds: string[]) {
 			canvases: names(canvasIds, current.canvases)
 		},
 		after: async () => {
-			for (const serverId of serverIds) await deleteServerNode({ canvasId, serverId });
+			for (const serverId of serverIds) await deleteServerNode({ serverId });
 			for (const subcanvasId of canvasIds) await deleteSubcanvas({ canvasId, subcanvasId });
 		},
 		success: m.editor_deleted()
@@ -701,7 +731,7 @@ $effect(() => {
 						<Background />
 						<MiniMap />
 
-						<Panel position="top-left">
+						<Panel position="top-left" class="flex items-center gap-2">
 							<CanvasMenubar
 								{editable}
 								{view}
@@ -709,6 +739,7 @@ $effect(() => {
 								onAddExit={() => (exitOpen = true)}
 								onAddSubcanvas={() => (subcanvasOpen = true)}
 							/>
+							<LiveBadge {query} />
 						</Panel>
 
 						<Panel position="bottom-left">

@@ -17,8 +17,7 @@ import AgentInstallDialog from './AgentInstallDialog.svelte';
  * The worker on this server: the version it registered as, the version that is
  * published, and the command that installs it.
  */
-let { canvasId, server, editable }: { canvasId: string; server: ServerDto; editable: boolean } =
-	$props();
+let { server, editable }: { server: ServerDto; editable: boolean } = $props();
 
 const writes = panelWrites();
 let installOpen = $state(false);
@@ -38,10 +37,7 @@ const suggestedUnit = $derived.by(() => {
 });
 
 const updateAgent = () =>
-	writes.run(
-		() => requestAgentUpdate({ canvasId, serverId: server.id }),
-		m.editor_agent_update_requested()
-	);
+	writes.run(() => requestAgentUpdate({ serverId: server.id }), m.editor_agent_update_requested());
 </script>
 
 <!-- The worker on this server: the version it registered as, the version that
@@ -133,7 +129,6 @@ const updateAgent = () =>
 
 <AgentInstallDialog
 	bind:open={installOpen}
-	{canvasId}
 	serverId={server.id}
 	unit={server.agentUnit || suggestedUnit}
 	replacing={server.agentKeyIssuedAt !== ''}
