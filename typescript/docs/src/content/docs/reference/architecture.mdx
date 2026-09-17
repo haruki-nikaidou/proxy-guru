@@ -12,11 +12,12 @@ import { FileTree } from '@astrojs/starlight/components';
 | `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP hooks — the derivation hook and every periodic job), `cron` (clock: publishes one execution signal per due periodic job). |
 | `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on `SIGHUP`) or in agent mode, streaming configs from the master. |
 | `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`. |
+| `lib/guru_topology` | The forwarding topology as a graph of pods: checks a graph and compiles it into each server's forwardings. Pure, no I/O. |
 | `lib/guru_worker_config` | The worker config model, shared by both planes. |
 | `lib/rpguru_sdk` | Generated gRPC/protobuf types (Rust) from `proto/`. |
 | `lib/db_types` | `table_record!` and `text_enum!`: typed row ids and text-backed enums. |
 | `modules/auth` | Accounts, sessions, API keys, RBAC. |
-| `modules/orchestration` | Canvases, servers, nodes, edges; topology validation, config derivation, worker rollout. |
+| `modules/orchestration` | Canvases, servers and the pod graph; graph checks, config derivation, worker rollout. |
 | `modules/notify` | Notification module — scaffolded from `base`, not implemented yet. |
 | `modules/base` | Shared foundations and the layout every module mirrors. |
 

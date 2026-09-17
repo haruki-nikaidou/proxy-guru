@@ -34,35 +34,24 @@ all — see [Independent Worker Deployment](/guides/independent-worker/).
 
 ## Topology vocabulary
 
-Each forwarding has a **listener** and a **destination**.
+A canvas tree holds one **pod graph**:
 
-- Listener: `raw`, `tls`, or an inbound relay.
-- Destination: a direct **exit**, a **relay** to another node over TLS-over-TCP or QUIC, or a
-  **load-balance** group.
+- A **server** is a machine running `guru-worker`, and the set of pods that run on it.
+- A **pod** is one listener on one server. A *client* pod takes connections from clients directly
+  (raw TCP, or TLS terminated with an ACME certificate, optionally receiving PROXY); a *relay* pod
+  takes traffic other pods relay to it over TCP, TLS or QUIC.
+- An **exit** is a `host:port` outside the fabric where traffic leaves.
+- An **edge** is one way a pod's traffic goes on — to a relay pod, dialed in the protocol that pod
+  listens with, or to an exit.
+- A pod's **route** balances by weight or fails over in tiers between its own edges, nested freely.
 
-PROXY protocol v1 and v2 are supported on both ends.
+Say ten rules enter on one box and should spread over four transit servers: that is ten client pods,
+each with four edges to a relay pod of its own on every transit server, whose edges lead to the
+exits. The canvas draws the four balances that choose alike as one splitter and the forty edges as
+a handful of buses; see [Canvas](/reference/canvas/) for how it is drawn and edited.
 
-### Servers, pods and addresses
-
-A **server** is a machine running `guru-worker`. A **pod** is one listening port on one server —
-one rule's socket. Your ingress rules are pods you add (say, `1080` for a SOCKS entry). A pod
-binds every address of the host by default; it can be restricted to IPv4 or pinned to one
-interface.
-
-Every server also comes with a **universal pod**: the place other servers' traffic lands without
-drawing a pod per rule. Connect your ingress pods to the channel handle of a **load balance
-(distribute)** node (one strategy and one relay protocol for all of them), bundle it to the
-universal pods of your transit servers, and bundle those to a **load balance (aggregate)** node,
-which grows one coloured input per rule to connect to an exit. Each rule is a *channel* with its
-own colour along the whole path; a bundle is one thick line carrying every channel. Behind the
-scenes the control plane generates the real pods, relays and load balancers ("lanes") — the
-landing pod of each rule on each transit server shows up in that server's panel with an editable
-port. The rule is yours: a distribute node's **members** are the bundles it splits into, one per
-transit server, named by you (four AWS boxes are four members; a fifth is one more), and the
-aggregate node's members are the bundles it joins. A
-distribute node bundled *into* fans everything out again (a second tier, or a nested strategy), and
-an entry pod can be drawn straight into a server's universal pod when one hop with no balancing is
-all a rule needs.
+A pod binds every address of the host by default; it can be restricted to IPv4 or pinned to one
+interface, and a pod saved without a port gets a free one between 40000 and 59999.
 
 Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
 it registers (and every minute after, if they change), the master remembers where the registration
@@ -77,7 +66,7 @@ Business logic lives in `modules/`, one crate per feature:
 | Module | Scope |
 |---|---|
 | `auth` | Accounts, sessions, API keys, RBAC |
-| `orchestration` | Canvases, servers, nodes, edges; topology validation, config derivation, worker rollout |
+| `orchestration` | Canvases, servers and the pod graph; graph checks, config derivation, worker rollout |
 | `notify` | Notification module — scaffolded from `base`, not implemented yet |
 | `base` | Shared foundations and the layout every module mirrors |
 
@@ -93,8 +82,8 @@ under `typescript/` sharing one generated API client.
 
 - [Local Development](/guides/local-development/) — bring up the whole stack on one
   machine.
-- [Nodes](/reference/nodes/) — every node kind on the canvas, handle by handle.
+- [Canvas](/reference/canvas/) — the pod graph, how the canvas draws it, and every edit gesture.
 - [Architecture](/reference/architecture/) — crate roles and layer rules.
-- [Rollout Model](/reference/rollout/) — how a canvas edit reaches a worker.
+- [Rollout Model](/reference/rollout/) — how an edit reaches a worker.
 - [Independent Worker Deployment](/guides/independent-worker/) — run a worker from a
   TOML file, without a master.

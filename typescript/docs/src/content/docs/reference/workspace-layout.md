@@ -10,6 +10,7 @@ bin/              # Rust binaries — wiring only, no business logic
   manage-tool/        # admin CLI
 lib/
   rpguru_sdk/         # generated gRPC/protobuf types (Rust)
+  guru_topology/      # the pod graph: checks and compiles it (pure, no I/O)
   guru_worker_config/ # worker config model, shared by both planes
   db_types/           # table_record! and text_enum!: typed row ids, text-backed enums
 modules/          # business logic, one crate per feature
@@ -19,6 +20,7 @@ database/         # PostgreSQL schema: sqlx migrations (database/migrations)
 typescript/       # Bun workspace: all frontend / TypeScript packages
   app-protobuf/       # generated gRPC/protobuf TypeScript code (shared)
   guru-frontend/      # SvelteKit dashboard
+  guru-graph/         # what a canvas draws, and every edit as one batch (pure TS)
   docs/               # this documentation site (Astro Starlight)
 package.json      # root of the Bun workspace (workspaces: ["typescript/*"])
 ```

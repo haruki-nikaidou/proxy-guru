@@ -1,14 +1,15 @@
 ---
 title: Rollout Model
-description: How a canvas edit becomes a config revision applied by a worker.
+description: How an edit of the pod graph becomes a config revision applied by a worker.
 ---
 
 ## From edit to applied config
 
-Mutations bump the canvas generation and publish `CanvasDirty`; a worker's ack, registration or
+An edit is one checked batch of graph changes (`ApplyGraph`, see [Canvas](/reference/canvas/)); it
+bumps the root canvas's generation and publishes `CanvasDirty`. A worker's ack, registration or
 changed address report bumps a counter on its own server's config view instead, so a fleet
 acknowledging at once never contends on the canvas row. The derivation hook re-derives the whole
-canvas; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches anything a
+canvas tree; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches anything a
 lost message missed by comparing both counters with what the last pass stamped. Both triggers are broker messages, so the backstop is not
 broker-independent: a canvas whose `CanvasDirty` was lost waits for delivery to resume, and a
 master with no broker reachable derives nothing at all.
@@ -21,7 +22,7 @@ reporting revision `0` — a fresh install, a wiped state directory — has `app
 stream hands the desired revision out again rather than treating the server as converged.
 
 ```text
-canvas mutation ──▶ CanvasDirty ──┐
+graph edit ───────▶ CanvasDirty ──┐
                                   ├──▶ derivation hook (--mode consumer)
 cron: derive_stale_canvases ──────┘
                                        │
@@ -45,7 +46,7 @@ A revision is applied **per pod**: the worker commits every `[[forwarding]]` tha
 binds, keeps the previous listener of any that fails, and acknowledges the outcome of each. The
 master then stores `applied` as the snapshot of that mix (the new shape for the pods that applied,
 the previous one for those that failed), records the failed pods on the server's view and marks
-the server `Degraded` and the affected nodes `Failed` with the worker's message. A revision that
+the server `Degraded` and each failed pod `Failed` with the worker's message. A revision that
 cannot be applied at all (unparsable TOML, unwritable certificate files) changes nothing on the
 worker and is recorded as an `apply_error`.
 
@@ -54,16 +55,15 @@ worker and is recorded as an `apply_error`.
 Every worker streams one `HealthReport` per `--health-interval` (default 15 s) over `ReportHealth`:
 the running revision, upload/download bytes and connection counts since the previous report (max
 is the high-water mark), and one `PodStatus` per running forwarding. Each report becomes one
-`server_health_record` row and one `node_health_record` row per node the report touches (the pod
-and every node it was derived through — Entry/Relay on the listen side, exits, relays and load
-balancers on the destination side; a node shared by several pods gets one row with the worst
-status). Node statuses: `Ready` (the pod runs what `desired` asks), `Deploying` (a newer revision
-involving the node is derived but not applied yet — written the moment a derivation publishes it),
-`Failed` (the pod failed to apply or to run). Server statuses: `Online`, `Degraded` (lagging
-`desired` past the grace period, or the last acknowledged revision failed for some pod), `Offline`
-(the health stream closed, or no report for three intervals — the `sweep_liveness` pass). Both
-histories are raw and trimmed by the `trim_health_history` pass;
-`ListServerHealthHistory` / `ListNodeHealthHistory` read a time range.
+`server_health_record` row and one `pod_health_record` row per pod (a forwarding's tag is its pod's
+id; a pod held under two listeners while its dependants switch keeps the worst status). Pod
+statuses: `Ready` (the pod runs what `desired` asks), `Deploying` (a newer revision involving the
+pod is derived but not applied yet — written the moment a derivation publishes it), `Failed` (the
+pod failed to apply or to run). Server statuses: `Online`, `Degraded` (lagging `desired` past the
+grace period, or the last acknowledged revision failed for some pod), `Offline` (the health stream
+closed, or no report for three intervals — the `sweep_liveness` pass). Both histories are raw and
+trimmed by the `trim_health_history` pass;
+`ListServerHealthHistory` / `ListPodHealthHistory` read a time range.
 
 Both passes run in `--mode consumer`, on a signal the `cron` scheduler publishes when the job comes
 due. The scheduler holds no state beyond its own clock; the consumer claims each run in one
@@ -75,19 +75,18 @@ In the dashboard, a canvas's **Health** page reads both histories over a selecte
 that window and the peak, plus two charts — throughput from the per-report upload/download deltas,
 and connections against the high-water mark. Nothing on the page is live: every number is a stored
 report, so an `Offline` server still shows whatever it last sent. Each card's *Pod events* tab
-lists that server's pods' node-health rows, including the `message` a `Failed` row carries, and a
-canvas-wide *Node events* card covers the other side of the recording rule — the entries, relays,
-exits and load balancers a report was derived through. Both are fetched only once opened.
+lists the events of every pod running on that server, including the `message` a `Failed` row
+carries; it is fetched only once opened.
 
 ## Certificates
 
-An Entry with a `tls` block (`sni`, DNS provider, `domain_id`, optional ACME directory — empty means
+A TLS client pod (`sni`, DNS provider, `domain_id`, optional ACME directory — empty means
 the stored `orchestration` config's `default_acme_directory`, Let's Encrypt) resolves to one
 `certificate` row per
 `(sni, acme_directory)`. The ACME pass creates the row, runs a DNS-01 challenge through the DNS
 provider (Cloudflare: `domain_id` is the zone id; Vercel: `domain_id` is the domain, the provider's
 `account_id` is the team id), waits for the TXT record to be visible on public resolvers, and stores
-the chain and the encrypted key. Until then the pod behind the Entry is an `invalid_pods` entry
+the chain and the encrypted key. Until then the pod is an `invalid_pods` entry
 ("certificate for <sni> is pending"), never a server failure. Renewal happens 30 days before expiry;
 a renewal bumps the row's version, and because every snapshot pins the versions its TOML references,
 every server serving that certificate gets a new revision with the same file paths and new
@@ -105,8 +104,8 @@ The dashboard's **TLS** page is the Admin-facing side of this: DNS providers are
 (an empty API token keeps the stored one) and deleted there, and the certificate table shows each
 row's status, resolved provider, validity window with an expiry hint, and the `last_error` of a
 failure, with *Retry* (clear a failure or force a renewal) and *Delete* per row. It never issues a
-certificate: a row appears once the derivation pass reads an Entry's `tls` block, which is edited
-on the Entry node in the canvas editor.
+certificate: a row appears once the derivation pass reads a TLS client pod's certificate settings,
+which are edited in the pod's panel on the canvas.
 
 ## Inspecting a derived config
 
@@ -126,8 +125,6 @@ belongs to: the desired, in-flight and applied revisions with their timestamps, 
 table of pod, listen address and error. `ForgetServerApplied` sits there too, Admin-only and behind
 a confirmation, since it declares the server dead while it may still be serving.
 
-## Forwarding shapes
-
 ## Listener identity
 
 Convergence matches listeners by `(server, port, protocol)`, never by address. A server's
@@ -138,15 +135,16 @@ per-pod derivation failure names the pod's listener as `bind:port` (`[::]:port` 
 bind), and a relay whose target server has no known address yet is reported there as
 `server … has no address yet`.
 
-A pod whose listener moves — a new port, or a relay protocol change re-rolling a landing port —
-serves both listeners until every dependant has switched. The worker keys listeners by tag, so the
-held one appears in the TOML under its socket, `osaka-hop (9443/relay_tcp)`, and leaves with that
-tag once nothing points at it.
+A pod whose listener moves — a new port — serves both listeners until every dependant has
+switched. The worker keys listeners by tag, and a pod's tag is its id, so the held one appears in
+the TOML under its socket, `<pod id> (9443/relay_tcp)`, and leaves with that tag once nothing
+points at it. A protocol change on a port some server still dials has no seamless path: the edit
+is refused, and the pod needs a new port instead.
 
-Each forwarding pairs a listener with a destination:
+## Forwarding shapes
 
-- **Listener** — `raw`, `tls`, or an inbound relay.
-- **Destination** — a direct **exit**, a **relay** to another node over TLS-over-TCP or QUIC, or a
-  **load-balance** group.
-
-PROXY protocol v1 and v2 are supported on both ends.
+Each pod becomes one `[[forwarding]]`: its listener (`raw`, `tls`, or an inbound relay) and its
+route. A worker that reports the `route_table` capability receives the route as a table of groups
+and upstreams; an older worker receives an inline tree, with weights as repeated members, a failover
+as `fallback` and a sticky balance as `ip_hash`. PROXY protocol v1 and v2 are supported on both
+ends. See the [configuration reference](/reference/configuration/#route-tables).

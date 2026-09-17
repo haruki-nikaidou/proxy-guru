@@ -12,11 +12,12 @@ import { FileTree } from '@astrojs/starlight/components';
 | `bin/guru-master` | コントロールプレーン。1 つのバイナリに 4 つのモード（`--mode`）: `dashboard_grpc`（オペレーター API）、`workers_grpc`（ワーカー API + config view ポーラー）、`consumer`（AMQP フック — 導出フックとすべての定期ジョブ）、`cron`（クロック: 実行時刻を迎えた定期ジョブごとに実行シグナルを 1 件発行）。 |
 | `bin/guru-worker` | データプレーン。リスナーを終端しトラフィックを転送します。TOML ファイルから単独で動作する（`SIGHUP` で再読み込み）か、エージェントモードで master から設定をストリーミング受信します。 |
 | `bin/manage-tool` | 管理 CLI: `create-admin` によるブートストラップ、`orchestration export-config`。 |
+| `lib/guru_topology` | ポッドのグラフとしての転送トポロジー。グラフを検査し、各サーバーの転送設定にコンパイルします。純粋な計算で I/O はありません。 |
 | `lib/guru_worker_config` | 両プレーンで共有されるワーカー設定モデル。 |
 | `lib/rpguru_sdk` | `proto/` から生成された gRPC/protobuf 型（Rust）。 |
 | `lib/db_types` | `table_record!` と `text_enum!`: 型付きの行 ID と、テキストで保存する enum。 |
 | `modules/auth` | アカウント、セッション、API キー、RBAC。 |
-| `modules/orchestration` | キャンバス、サーバー、ノード、エッジ。トポロジー検証、設定導出、ワーカーへのロールアウト。 |
+| `modules/orchestration` | キャンバス、サーバー、ポッドグラフ。グラフの検査、設定導出、ワーカーへのロールアウト。 |
 | `modules/notify` | 通知モジュール — `base` から雛形を作成しただけで、まだ未実装です。 |
 | `modules/base` | 共通基盤と、すべてのモジュールが踏襲するレイアウト。 |
 

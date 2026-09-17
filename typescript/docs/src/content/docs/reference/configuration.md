@@ -70,7 +70,7 @@ like an edit does, and a job that hangs cannot stop the clock.
 |---|---|---|---|---|
 | `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 s | `sweep_interval_secs` (30) | Re-derives every canvas whose `generation` ran ahead of its `derived_generation` |
 | `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 s | `liveness_interval_secs` (30) | Marks a server `Offline` when it has not reported for `health_report_interval_secs × health_offline_after_intervals` |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes `server_health_record` / `node_health_record` rows older than `server_health_ttl_secs` / `node_health_ttl_secs` |
+| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes `server_health_record` / `pod_health_record` rows older than `server_health_ttl_secs` / `pod_health_ttl_secs` |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs` (60) | ACME issuance and renewal: renews `acme_renew_before_secs` before expiry, retries a failed attempt after `acme_retry_after_secs` |
 | `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs` (3600) | Re-issues relay leaves within `relay_cert_renew_before_secs` of expiry and re-derives their canvases |
 | `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 s | `country_lookup_interval_secs` (60) | Looks up the country of every server IPv4 address that has none through `country_lookup_url`: a new or changed address at once, a failed lookup again after `country_lookup_retry_after_secs` |
@@ -239,7 +239,7 @@ relay_type = "tcp"                    # "tcp" | "tls" | "quic"
 `key` and `full_chain` are PEM paths parsed when the config is applied, which is what makes
 certificate renewal a reload rather than a restart. In standalone mode nothing provisions them. In
 agent mode the master ships them with every revision (`ConfigRevision.files`) as paths relative to
-`--state-dir` — `certs/acme/<certificate>/{full_chain,key}.pem` for an Entry with TLS,
+`--state-dir` — `certs/acme/<certificate>/{full_chain,key}.pem` for a TLS client pod,
 `certs/relay/<pod>/{full_chain,key}.pem` for a `tls`/`quic` relay listener and `certs/ca.pem` for
 the internal CA — and the worker writes them (key files `0600`, each directory swapped atomically)
 before applying. A relative path in the file is resolved against `--state-dir`.
@@ -298,6 +298,55 @@ per connection under `ipv6_resolve`. `fallback` tries members in order until one
 strategies pick one. A relay hop always writes a PROXY v2 header to the next worker — only `exit`
 has an optional `send_proxy_protocol`, because only there is the peer someone else's backend.
 
+### Route tables
+
+Instead of an inline tree, `to` may name one of the forwarding's own **groups** or **upstreams**.
+Every next hop is an upstream, every choice between next hops a group, and a group lists its
+members by id — so a failover over balances, or a balance over failovers, is a group whose members
+are groups. This is the form the master sends to a worker that reports the `route_table`
+capability; the inline tree remains the form every worker reads.
+
+```toml
+[[forwarding]]
+tag = "web"
+listen = "[::]:443"
+listen_as = "raw"
+to = "g"                                # the group or upstream traffic starts at
+
+[[forwarding.group]]
+id = "g"
+failover = ["g.0", "u:backup"]          # the first member that is alive, in order
+
+[[forwarding.group]]
+id = "g.0"
+balance = [{ to = "u:hk-1", weight = 2 }, { to = "u:hk-2" }]   # weight defaults to 1
+sticky = "client_ip"                    # optional, balance only
+
+[[forwarding.upstream]]
+id = "u:hk-1"
+relay = { protocol = "quic", destination = "203.0.113.1:40000", sni = "hk-1.relay.guru.internal", confirm = true }
+
+[[forwarding.upstream]]
+id = "u:hk-2"
+relay = { protocol = "tcp", destination = "203.0.113.2:40000" }
+
+[[forwarding.upstream]]
+id = "u:backup"
+exit = { destination = "backend.internal:8080", send_proxy_protocol = "v2" }
+```
+
+A balance spreads connections over the members that are alive in proportion to their weights —
+smooth round robin, or, with `sticky = "client_ip"`, a weighted rendezvous hash of the client
+address, so a client stays on its member while that member is alive. A failover uses the first
+member that is alive. Both pass over members whose every hop is dead, and a failed attempt moves on
+to the next choice within the same client connection. An upstream that fails three times in a row
+is dead; after ten seconds one connection at a time may try it again.
+
+`confirm = true` on a relay upstream asks the relay to answer once its *own* next hop connected, so
+a dead exit behind a live relay fails the hop at the dialer and the choice moves on. Only set it
+toward a worker that reports `relay_confirm`; the master does so on its own. A `quic` table on a
+relay upstream is that hop's side of the link, as on a tree `relay`.
+
 ### What is rejected, and what is only warned about
 
 Loading fails — the file is never partially applied — on any of:
@@ -309,6 +358,11 @@ Loading fails — the file is never partially applied — on any of:
 | `forwarding <tag> relay to tls/quic requires sni` | A `tls`/`quic` relay hop without `sni`, at any depth |
 | `forwarding <tag> has an empty load-balance group` | `members = []`, at any depth |
 | `invalid remote '…'` / `invalid port in remote '…'` | A `destination` that is not `host:port` |
+| `forwarding <tag> refers to route id <id>, which it does not define` | `to` or a group member naming an id no group or upstream of the forwarding has |
+| `forwarding <tag> defines route id <id> more than once` | Two groups or upstreams sharing an id |
+| `forwarding <tag> has an empty group <id>` / `gives <id> a weight of zero` | A group without members, a zero weight |
+| `forwarding <tag> has a group cycle through <id>` | Groups that contain each other |
+| `forwarding <tag> has groups or upstreams but an inline to tree` | The two forms mixed in one forwarding |
 
 These are logged as warnings and keep running:
 
@@ -324,7 +378,8 @@ another process — reported as `<tag>: <reason>`. That is an apply error, not a
 is *per pod*: every other `[[forwarding]]` is committed, the failed one keeps whatever listener it
 had before (or none). In standalone mode a failed startup aborts, and a failed `SIGHUP` reload logs
 the failed entries and keeps their previous listeners; in agent mode the outcome of every pod is
-acknowledged to the master, which records the failed pods on the server and the affected nodes.
+acknowledged to the master, which records the failed pods on the server and a `Failed` health
+event for each of them.
 
 ## `manage-tool`
 
@@ -369,7 +424,7 @@ needs no redeploy, only a restart. Two keys exist today:
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `node_health_ttl_secs`, `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it), `country_lookup_url` (default `https://api.country.is/{ip}`: where the country of a server's IPv4 address is looked up for its flag, with `{ip}` replaced by the address; the answer may be a JSON object with a two-letter `country` field or just the two letters, so `https://get.geojs.io/v1/ip/country/{ip}` works as well; empty turns the lookup off), `country_lookup_interval_secs` (default 60), `country_lookup_retry_after_secs` (default 3600: how long a failed lookup waits before the same address is asked about again) |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `pod_health_ttl_secs` (the stored `node_health_ttl_secs` of older documents is still read), `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it), `country_lookup_url` (default `https://api.country.is/{ip}`: where the country of a server's IPv4 address is looked up for its flag, with `{ip}` replaced by the address; the answer may be a JSON object with a two-letter `country` field or just the two letters, so `https://get.geojs.io/v1/ip/country/{ip}` works as well; empty turns the lookup off), `country_lookup_interval_secs` (default 60), `country_lookup_retry_after_secs` (default 3600: how long a failed lookup waits before the same address is asked about again) |
 
 Run `manage-tool config seed` after `manage-tool db migrate` to write the defaults, and
 `manage-tool config list` to see what is stored. `list` and `get` print the row verbatim — they do

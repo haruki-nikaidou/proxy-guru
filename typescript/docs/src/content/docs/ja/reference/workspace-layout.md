@@ -10,6 +10,7 @@ bin/              # Rust バイナリ — 配線のみ、ビジネスロジッ�
   manage-tool/        # 管理 CLI
 lib/
   rpguru_sdk/         # 生成された gRPC/protobuf 型（Rust）
+  guru_topology/      # ポッドグラフの検査とコンパイル（純粋、I/O なし）
   guru_worker_config/ # ワーカー設定モデル、両プレーンで共有
   db_types/           # 型付き行 ID とテキスト列挙のための table_record! / text_enum! マクロ
 modules/          # ビジネスロジック、機能ごとに 1 クレート
@@ -19,6 +20,7 @@ database/         # PostgreSQL のスキーマ: sqlx マイグレーション（
 typescript/       # Bun ワークスペース: すべてのフロントエンド / TypeScript パッケージ
   app-protobuf/       # 生成された gRPC/protobuf の TypeScript コード（共有）
   guru-frontend/      # SvelteKit ダッシュボード
+  guru-graph/         # キャンバスの描画と、編集をひとつのバッチにする処理（純粋な TS）
   docs/               # このドキュメントサイト（Astro Starlight）
 package.json      # Bun ワークスペースのルート（workspaces: ["typescript/*"]）
 ```

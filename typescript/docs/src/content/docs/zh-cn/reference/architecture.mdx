@@ -12,11 +12,12 @@ import { FileTree } from '@astrojs/starlight/components';
 | `bin/guru-master` | 控制平面。单个二进制，四种模式（`--mode`）：`dashboard_grpc`（运维 API）、`workers_grpc`（Worker API + 配置视图轮询器）、`consumer`（AMQP 钩子 —— 配置派生钩子以及所有周期任务）、`cron`（时钟：为每个到期的周期任务发布一条执行信号）。 |
 | `bin/guru-worker` | 数据平面。终结监听器并转发流量。既可以基于 TOML 文件独立运行（收到 `SIGHUP` 时重新加载），也可以以 agent 模式运行，从 master 流式获取配置。 |
 | `bin/manage-tool` | 管理 CLI：`create-admin` 初始化引导、`orchestration export-config`。 |
+| `lib/guru_topology` | 以 Pod 为点的转发拓扑图：检查图，并把它编译成每台服务器的转发配置。纯计算，无 I/O。 |
 | `lib/guru_worker_config` | Worker 配置模型，由两个平面共享。 |
 | `lib/rpguru_sdk` | 由 `proto/` 生成的 gRPC/protobuf 类型（Rust）。 |
 | `lib/db_types` | `table_record!` 与 `text_enum!`：带类型的行 id 和以文本存储的枚举。 |
 | `modules/auth` | 账号、会话、API key、RBAC。 |
-| `modules/orchestration` | 画布、服务器、节点、连线；拓扑校验、配置派生、Worker 发布。 |
+| `modules/orchestration` | 画布、服务器和 Pod 图；图的检查、配置派生、Worker 发布。 |
 | `modules/notify` | 通知模块 —— 已按 `base` 搭好骨架，尚未实现。 |
 | `modules/base` | 共享基础设施，以及所有模块共同遵循的目录布局。 |
 

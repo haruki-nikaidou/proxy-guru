@@ -1,8 +1,8 @@
-# `orchestration` — canvases, servers, nodes and worker rollout
+# `orchestration` — canvases, the pod graph and worker rollout
 
-The control plane of the proxy fabric. Operators build a **canvas** of servers
-and nodes; this module validates the topology, derives one `guru-worker` config
-per server, and streams every new revision to the workers that registered for it.
+The control plane of the proxy fabric. Operators edit a **pod graph** on a tree of
+canvases; this module checks it, derives one `guru-worker` config per server, and
+streams every new revision to the workers that registered for it.
 
 ## Layout
 
@@ -13,62 +13,53 @@ src/
 │                   # and periodic-interval knobs
 ├── utils/          # ids (wire string → typed id), secret (master-key encryption)
 ├── entities/
-│   └── db/         # canvas, server, node, port, connection, view, topology,
-│                   # health, dns, certificate (ACME), ca (internal CA, relay leaves)
-├── services/       # CRUD, topology rules, derivation, convergence, rollout, agent, watch, ca
-├── events/         # `CanvasDirty` plus the five periodic execution signals
+│   └── db/         # canvas, tree, fence, server, pod, exit, edge, group, graph
+│                   # (load / batch write), view, health, dns, certificate (ACME),
+│                   # ca (internal CA, relay leaves), job_run, agent_release
+├── services/       # graph (read, check, apply), derive, converge, rollout, agent,
+│                   # canvas, server, health, ca, acme, dns, live, watch
+├── events/         # `CanvasDirty`, the periodic execution signals, live messages
 ├── hooks/          # schedule.rs (the `cron` clock and the run claim), derive.rs
 │                   # (derivation, stale-canvas sweep, relay leaf rotation),
 │                   # health.rs (liveness sweep, retention), acme.rs (issuance/renewal)
 └── rpc/            # the operator API and the worker API, plus refresh-key middleware
 ```
 
-## Node kinds
+## The pod graph
 
-A canvas is a bipartite dataflow over two independent port kinds:
+A canvas tree's forwarding topology is a directed acyclic graph, checked and
+compiled by `lib/guru_topology`:
 
-- **DeriveListen** flows `Pod(out) → Entry|Relay(in)`: what a pod's listener looks
-  like on the wire.
-- **DeriveDestination** flows `Exit(out) → … → Pod(in)`: where a pod's traffic goes,
-  possibly through load balancers and relays.
+- A **pod** (`orchestration_pod`) is one listener on one server: a port (0 on a
+  write picks a free one in 40000–59999), an optional bind address (unset binds
+  every address of the host, `[::]` dual-stack), an optional advertise address,
+  and its **ingress** — `client_raw` or `client_tls` (clients connect directly;
+  PROXY may be received, TLS is terminated with an ACME certificate) or
+  `relay_tcp` / `relay_tls` / `relay_quic` (other pods relay to it in that
+  protocol). A server is only the set of pods that run on it.
+- An **exit** (`orchestration_exit`) is a `host:port` outside the fabric,
+  optionally sent PROXY.
+- An **edge** (`orchestration_edge`) is one way a pod's traffic goes on: to a
+  relay pod (dialed in the protocol that pod listens with, at the edge's override
+  address and port if set, else the pod's advertise address or its server's
+  effective address, and the pod's port) or to an exit. Parallel edges are
+  allowed; a client pod cannot be led into.
+- Each pod's **route** (`route jsonb`) is a tree over exactly its own out-edges:
+  `{"edge": id}`, `{"balance": [{"weight": 2, "to": …}], "sticky": "client_ip"}`
+  or `{"failover": [ … ]}`, nested freely.
+- **Groups** (`orchestration_group` / `_member`) are what the dashboard keeps
+  about its drawing (the layout of splitters and aggregators, say). Nothing is
+  derived from them.
 
-Every port carries at most one edge.
-
-### Servers, pods and addresses
-
-A **pod** is one listener on one server: `{ server, port, bind_ip?, advertise_ip? }`.
-The `server` link is what attributes the pod to a server (the schema asserts it
-resolves within the canvas tree). `bind_ip` unset binds every address of the
-host (`[::]` dual-stack; the worker falls back to `0.0.0.0` without IPv6),
-`0.0.0.0` restricts it to IPv4, a literal pins one interface. An unwired pod
-derives nothing and is not a problem.
-
-Every new server also gets its **universal pod** (`universal_pod`), the node
-bundles land on. The load-balance nodes carry the operator's rule as their
-**members** (`members: [{slot, name}]` in the spec, 1–256, one `bundle` port
-`member_<slot>` each, in the order listed): a **distribute** node
-(`load_balance_distribute`: one mode, one relay `protocol`) takes entry pods as
-*channels* on `chan:<pod>` ports and bundles all of them out through each
-member to a universal pod (or to another distribute node); each universal pod
-lands every channel it receives on a generated pod of its server (random port
-in 40000–59999, editable) and bundles on through its fixed `bundle_out`, to
-another universal pod, to a distribute node, or onto a member of an
-**aggregate** node (`load_balance_aggregate`), which grows one `chan:<pod>`
-input per channel for an exit. Bundles are collected automatically where they
-arrive at a universal pod or a distribute node (`bundle_in:<source>`, created
-by the connect); a member's slot is stable, so renaming or reordering members
-keeps the bundle drawn on the port, and dropping a wired member is refused.
-None of this is a new traffic model: `services::universal` expands the bundles
-into ordinary pod / relay / load-balance **lanes** (rows tagged with `lane`,
-laid out thin from a count rather than from members) and ordinary edges in the
-same transaction as the edit that changed them (`ApplyTopologyBatch`), and
-derivation, convergence and certificates only ever see the flat graph. The
-`chan:` ports are paired with hidden `lane:` ports that `Index::peer` looks
-through, exactly like an import/export boundary. Lanes are keyed
-(`group:channel:role:source`), so an edit keeps every lane whose identity
-survives it, with its port ids and its listening port; only a protocol change
-on the distribute node re-rolls the landing ports, since a listener cannot
-change protocol in place.
+`services::graph` is the edit path. `GetGraph` loads the whole tree with the
+diagnostics it checks with. `ApplyGraph` takes one batch of puts and deletes,
+applies it to the tree in memory, allocates ports, runs `guru_topology::check`
+and the switch-safety check, and writes the batch in one transaction fenced on
+the root's generation (`entities::db::fence::touch_checked`) — or refuses all of
+it when any diagnostic is an error. `dry_run` answers the diagnostics without
+writing; `expected_generation` refuses a batch computed against a tree that has
+moved on. A batch of groups alone takes no fence and dirties nothing.
+`MoveItems` places servers, exits and subcanvases.
 
 A server's addresses are learned, not typed: the worker reports its public
 IPv4/IPv6 (looked up through `--public-ipv4-urls` / `--public-ipv6-urls`) and interface addresses on
@@ -78,9 +69,8 @@ registration came from (`x-real-ip` behind the documented proxy, see
 (`override_v4`/`override_v6`) or add `extra_addresses`. What another server
 dials is `ServerEntity::effective_address`: v4 pin → reported v4 → observed v4
 → the same chain for v6; a pod may name one of the known addresses as
-`advertise_ip` instead, and a relay's `override_ip_address` still wins. A server
-with no address at all is a warning, and every pod on *other* servers that dials
-it stays in `invalid_pods` until one is known.
+`advertise_ip` instead, and an edge's `override_ip` still wins. A pod dialing a
+pod whose server has no address at all is invalid until one is known.
 
 The dashboard's flag is the country of the first IPv4 of that chain
 (`ServerEntity::v4_address`). No worker reports it: the `resolve_server_countries`
@@ -93,34 +83,25 @@ Listener identity — the `ListenerCap` convergence matches on — is
 `(server, port, protocol)`, never an address, so an address change re-derives
 destinations without breaking the seamless-switch protocol.
 
+`Register` also records the worker's **capabilities**: a worker reporting
+`route_table` gets each pod's route as a table of groups and upstreams, anything
+older the tree form (weights as repetitions, failover as fallback, sticky as
+`ip_hash`); relays are asked to confirm only on workers reporting
+`relay_confirm`.
+
 ## Subcanvases
 
-A `CanvasImport` node embeds another canvas as one node; a `CanvasExport` node
-inside that canvas is one boundary port. Nesting is arbitrarily deep and stored
-only on the import node (`spec.config.canvas`); root, ancestors and tree are
-computed by `fn::orchestration_root` / `_ancestors` / `_tree` in the schema.
+A canvas may have a `parent`, and is drawn at `position` on it. Nesting only
+organises the drawing: edges cross canvas boundaries freely, and a pod may be
+drawn on any canvas of its server's tree.
 
-- **Import ports are derived.** An import node has one port per export node of
-  its target: key = the export node's record id, kind copied, direction
-  mirrored (an `InputIntoCanvas` export emits inside, so the import port is an
-  input), ordered by the export's `position.y`. Creating, retiring, re-kinding or
-  moving an export reshapes the importer's ports in the same transaction
-  (`fn::orchestration_reshape_ports`); a port whose key survives keeps its edges,
-  a retired export silently drops the parent edge on its mirrored port.
-- **The tree is the unit of everything.** Topology checks, switch safety and
-  derivation load the whole tree and look *through* boundaries
-  (`topology::Index::peer`), so a nested graph derives byte-identical TOML to
-  its flattened equivalent. Only the root's `generation` counts: every operator
-  edit calls `fn::orchestration_touch`, and the derivation hook resolves the
-  root of whatever canvas it is told about. Workers never touch it (see
-  *Rollout*).
-- **Rules.** A canvas cannot import itself or an ancestor, is imported at most
-  once (unique index on `spec.config.canvas`), and an import node's target is
-  immutable (retire and import again). An imported canvas cannot be deleted
-  until its import is retired; deleting a root deletes its whole tree.
-- **Servers stay put.** A parent sees a child canvas as a black box, but the
-  tree is one graph: a pod anywhere in a tree may listen on any server of that
-  tree (`spec.config.server` is asserted against the tree, not the canvas).
+- **The tree is the unit of everything.** Checks, switch safety and derivation
+  load the whole tree (`entities::db::graph::LoadCanvasGraph`). Only the root's
+  `generation` counts: every edit bumps it (`fence::touch_checked`), and the
+  derivation hook resolves the root of whatever canvas it is told about. Workers
+  never touch it (see *Rollout*).
+- **Deleting** a canvas deletes its subtree in one transaction, and is refused
+  while a pod outside still leads into it or runs on a server inside it.
 
 ## The config view
 
@@ -134,11 +115,11 @@ it points at.
 ## Rollout
 
 ```
-mutation ─► validate projected topology ─► write rows + bump canvas generation
+ApplyGraph ─► apply batch in memory ─► check ─► write rows + bump root generation
                                                             │
                                                     publish CanvasDirty
                                                             │
-       hooks::derive ─► derive + converge every server ─────┴─► desired snapshot
+       hooks::derive ─► compile + converge every server ────┴─► desired snapshot
                        (derive_stale_canvases re-derives what the message missed)
                                                                         │
 worker: Register ─► WatchConfig (stream) ─► apply ─► AckConfig ─────────┘
@@ -212,14 +193,15 @@ may serve *now*, given what every other server is running:
   already serves — otherwise the previous shape is held and the server is
   recorded as `waiting_for` the target;
 - a listener is kept alive for as long as any snapshot still points at it, even
-  after the canvas stopped asking for it. A pod whose listener moved therefore
+  after the graph stopped asking for it. A pod whose listener moved therefore
   runs two for a while; the held one is tagged after its socket
-  (`osaka-hop (9443/relay_tcp)`), since a worker keys its listeners by tag.
+  (`<pod id> (9443/relay_tcp)`), since a worker keys its listeners by tag and a
+  pod's tag is its id.
 
 A multi-hop change therefore converges in as many passes as it has hops, with no
 coordinator and no ordering. An edit that would put a *different protocol* on an
-server/port some server still dials has no seamless path at all and is rejected at
-edit time. A server that is gone for good is cleared with `ForgetServerApplied`
+server/port some server still dials has no seamless path at all and is refused by
+`ApplyGraph` with a diagnostic. A server that is gone for good is cleared with `ForgetServerApplied`
 (Admin only, like the other operations that bypass a safety invariant), so its
 dependants stop waiting for it.
 
@@ -251,8 +233,8 @@ failed pods on the view (`failed_pods`, `failed_revision`).
 Workers stream `HealthReport`s over `ReportHealth` (refresh-key authenticated,
 one per interval); `services::health` turns each into a `server_health_record`
 row (byte and connection deltas, status `Online`/`Degraded`) and one
-`node_health_record` per node the report touches — the pod and every node in its
-`ForwardingDeps.nodes`, worst status wins for a node shared by several pods.
+`pod_health_record` per pod the report names — a forwarding's tag is its pod's
+id, and a pod held under two listeners keeps the worst status.
 `Deploying` rows are also written the moment a derivation publishes a new
 revision, and `Failed`/`Ready` rows the moment an ack lands, so status never
 waits for the next report. Every write is one transaction fenced on the
@@ -271,9 +253,9 @@ denormalised on `orchestration_server.health_status` for listings.
 
 ## Certificates
 
-Derivation takes a `DerivationCertificates` input next to the topology: the
-ACME rows of every SNI a TLS Entry asks for, the relay leaf of every pod behind
-a TLS/QUIC relay, and whether the internal CA exists. A pod whose material is
+Derivation takes a `DerivationCertificates` input next to the graph: the
+ACME rows of every SNI a TLS client pod asks for, the relay leaf of every
+`relay_tls` / `relay_quic` pod, and whether the internal CA exists. A pod whose material is
 missing is an `invalid_pods` entry naming the state (`certificate for <sni> is
 pending`, `internal CA not initialised`, `relay certificate not issued yet`),
 never a server-level failure. Edit-time switch safety derives with

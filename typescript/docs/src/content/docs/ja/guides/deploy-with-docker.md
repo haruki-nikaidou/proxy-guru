@@ -27,7 +27,7 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 そのため、ワーカーノード向けの Docker イメージは提供していません。
 :::
 
-永続的な状態が存在する場所はちょうど 2 か所です: **PostgreSQL**（キャンバス、サーバー、ノード、エッジ、
+永続的な状態が存在する場所はちょうど 2 か所です: **PostgreSQL**（キャンバス、サーバー、ポッドグラフ、
 アカウント、設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、
 定期ジョブごとに 1 本）。**Redis** は 3 つ目のデータストアであり、唯一何も保持しないものです。単一の pub/sub
 チャンネルで、オペレーター API のライブイベントを master のレプリカ間に運ぶだけで、永続化は一切設定しません。
@@ -623,7 +623,7 @@ subscriber が再接続した時点で元どおりに動きます。
 | master が `this mode opens the database: set GURU_DATABASE_URL` で終了する | URL が未設定か空です。デフォルト値はありません。これを必要としない唯一のモードが `cron` です。 |
 | master が `master key: GURU_MASTER_KEY is not set`（あるいは `must be 32 bytes`）で終了する | `dashboard_grpc`、`workers_grpc`、`consumer` はこのキーを必要とします（`cron` は読みません）。`manage-tool generate-master-key` で生成してください。環境変数からのみ読み込まれます。 |
 | master が `stored config for key ... does not match its type` で終了する | 保存されているドキュメントが壊れているか、フィールド名の変更より古いものです。`manage-tool config get <key>` で確認し、`config set` で書き直してください。 |
-| TLS Entry の Pod が `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
+| TLS クライアントポッドが `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
 | リレーの Pod が `internal CA not initialised` のまま `invalid_pods` に留まる | `manage-tool orchestration init-ca` を一度実行してください。 |
 | master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。4 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
 | master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` は不要です）。 |

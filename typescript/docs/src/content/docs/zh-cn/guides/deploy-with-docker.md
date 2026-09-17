@@ -26,7 +26,7 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 因此，我们不提供 Worker 节点的 Docker 镜像。
 :::
 
-状态只存在两个地方：**PostgreSQL**（画布、服务器、节点、边、账号、配置视图）和 **RabbitMQ**
+状态只存在两个地方：**PostgreSQL**（画布、服务器、Pod 图、账号、配置视图）和 **RabbitMQ**
 （一个持久队列承载"这个画布变了"的提示，外加每个周期任务一个队列）。容器文件系统上不保存任何东西，
 所以每个容器都是可丢弃的。**Redis** 也是必需的，但它不持有状态：它在单一 pub/sub 频道上，把运维 API
 的实时事件在各个 master 副本之间传递，并且不配置任何持久化，重启它最多丢掉正在路上的那几个事件。
@@ -583,7 +583,7 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 | master 以 `this mode opens the database: set GURU_DATABASE_URL` 退出 | URL 未设置或为空；它没有默认值。`cron` 是唯一不需要它的模式。 |
 | master 以 `master key: GURU_MASTER_KEY is not set`（或 `must be 32 bytes`）退出 | `dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要这个密钥（`cron` 不读取它）。用 `manage-tool generate-master-key` 生成一个；它只从环境变量读取。 |
 | master 以 `stored config for key ... does not match its type` 退出 | 存储的文档损坏，或早于某次字段重命名。用 `manage-tool config get <key>` 检查它，并用 `config set` 重写。 |
-| 某个 TLS Entry 的 pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
+| 某个 TLS 客户端 Pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
 | 某个 relay pod 一直停在 `invalid_pods`，提示 `internal CA not initialised` | 执行一次 `manage-tool orchestration init-ca`。 |
 | master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。四种模式都需要 broker。检查 URI 结尾的 `/`。 |
 | master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 不需要。 |
