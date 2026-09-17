@@ -11,7 +11,7 @@ import * as v from 'valibot';
 import type { ApplyOutcomeDto, CanvasGraph } from '#lib/dto/topology.js';
 import { callGrpc } from '#lib/server/errors.js';
 import { orchestrationClient } from '#lib/server/grpc.js';
-import { GrpcStreams, streamFailure } from '#lib/server/live.js';
+import { GrpcStreams, liveSessionId, streamFailure } from '#lib/server/live.js';
 import { idSchema } from '#lib/server/schemas.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { toApplyOutcome, toCanvasGraph } from '#lib/server/topology/decode.js';
@@ -27,16 +27,24 @@ import { command, getRequestEvent, query } from '$app/server';
 export const watchCanvasGraph = query.live(
 	v.object({ canvasId: idSchema }),
 	async function* ({ canvasId }): AsyncGenerator<CanvasGraph> {
-		const metadata = sessionMetadata(requireSessionId());
+		const sessionId = liveSessionId();
+		if (!sessionId) return;
+		const metadata = sessionMetadata(sessionId);
 		const streams = new GrpcStreams<GraphEvent>(getRequestEvent().request.signal);
 		streams.open('graph', signal =>
 			orchestrationClient().watchGraph({ canvasId }, { metadata, signal })
 		);
+		let yielded = false;
 		try {
 			for await (const item of streams) {
-				if ('error' in item) streamFailure(item.error);
+				if ('error' in item) {
+					if (streamFailure(item.error, yielded) === 'end') return;
+					continue;
+				}
 				// A keep-alive carries nothing to yield.
-				if (item.event.snapshot) yield toCanvasGraph(item.event.snapshot);
+				if (!item.event.snapshot) continue;
+				yield toCanvasGraph(item.event.snapshot);
+				yielded = true;
 			}
 		} finally {
 			streams.closeAll();

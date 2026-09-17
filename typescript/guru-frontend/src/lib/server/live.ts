@@ -9,7 +9,9 @@
  * so the live query fails like a unary call would instead of hanging.
  */
 import { ClientError, Status } from 'nice-grpc';
+import { getRequestEvent } from '$app/server';
 import { grpcFailure } from './errors.js';
+import { SESSION_COOKIE } from './session.js';
 
 export type StreamSource<E> = (signal: AbortSignal) => AsyncIterable<E>;
 export type StreamItem<E> = { key: string; event: E } | { key: string; error: unknown };
@@ -129,8 +131,30 @@ export class GrpcStreams<E> {
 	}
 }
 
-/** What a stream item's `error` means for the live query: a gRPC status is mapped like a unary call. */
-export function streamFailure(error: unknown): never {
+/**
+ * The session a live query runs as, or `undefined` when the cookie is gone.
+ * The layout load gates every page's first render, so a missing cookie here is
+ * a reconnect after a logout, and the query ends quietly — see
+ * [`streamFailure`] for why it must not redirect.
+ */
+export function liveSessionId(): string | undefined {
+	return getRequestEvent().cookies.get(SESSION_COOKIE);
+}
+
+/**
+ * What a stream failure does to the live query: a gRPC status is mapped like
+ * a unary call, so a session cut mid-stream throws the redirect that sends the
+ * page to `/auth`. The exception is a session already gone before the query
+ * has yielded anything: that query is the reconnect the client opens at once
+ * after a redirect frame, and redirecting it again would repeat without end
+ * (the client backs off on nothing but transport errors, and keeps a live
+ * query until its proxy is garbage-collected). Ending it instead is what stops
+ * the client, so the caller returns on `'end'`.
+ */
+export function streamFailure(error: unknown, yielded: boolean): 'end' {
+	if (!yielded && error instanceof ClientError && error.code === Status.UNAUTHENTICATED) {
+		return 'end';
+	}
 	if (error instanceof ClientError) grpcFailure(error);
 	throw error;
 }
