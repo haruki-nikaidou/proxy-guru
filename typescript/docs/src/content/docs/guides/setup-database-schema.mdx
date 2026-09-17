@@ -16,7 +16,7 @@ What is in the repository:
 
 | Path | Contents |
 |---|---|
-| `database/migrations/*.sql` | The migrations, applied in filename order and never edited once applied |
+| `migrations/*.sql` | The migrations, applied in filename order and never edited once applied |
 
 Prerequisites: a reachable PostgreSQL ≥ 16 and the connection URL for it — both from
 [Prerequisites](/guides/prerequisites/).
@@ -103,7 +103,7 @@ back to defaults could move ACME from staging to the production directory.
 
 ## 4. Later schema changes
 
-A schema change is a new file in `database/migrations/`; an applied migration is never edited,
+A schema change is a new file in `migrations/`; an applied migration is never edited,
 because the database records which ones it has run, not what they said.
 
 <Steps>

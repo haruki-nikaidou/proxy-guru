@@ -16,7 +16,7 @@ lib/
 modules/          # ビジネスロジック、機能ごとに 1 クレート
   auth/  orchestration/  notify/  base/
 proto/            # protobuf 定義（モジュール単位でグループ化）— API の唯一の定義元
-database/         # PostgreSQL のスキーマ: sqlx マイグレーション（database/migrations）
+migrations/       # PostgreSQL のスキーマ: sqlx マイグレーション
 typescript/       # Bun ワークスペース: すべてのフロントエンド / TypeScript パッケージ
   app-protobuf/       # 生成された gRPC/protobuf の TypeScript コード（共有）
   guru-frontend/      # SvelteKit ダッシュボード

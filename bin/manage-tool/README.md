@@ -36,7 +36,7 @@ environment fallback.
 
 ## Schema
 
-The PostgreSQL schema lives in [`database/migrations`](../../database/migrations)
+The PostgreSQL schema lives in [`migrations/`](../../migrations)
 as sqlx migrations, embedded into the binaries as `base::db::MIGRATOR`.
 `db migrate` applies them; everything else here reads and writes rows through
 the module entities.

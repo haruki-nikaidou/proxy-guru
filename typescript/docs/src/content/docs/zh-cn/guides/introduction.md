@@ -67,7 +67,7 @@ Pod 默认绑定主机的所有地址；也可以限制为仅 IPv4，或固定�
 
 基于 Tokio 的 Rust 2024、[`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau)（一切皆 `Processor`）、通过 Tonic 提供的 gRPC、用于
-存储的 PostgreSQL（sqlx；migration 位于 `database/migrations`）、承载运维 API 实时 `Watch*` 流的
+存储的 PostgreSQL（sqlx；migration 位于 `migrations/`）、承载运维 API 实时 `Watch*` 流的
 Redis pub/sub、用于模块间事件的 AMQP、用于链路追踪的 OpenTelemetry，以及 `typescript/` 下共享
 同一份生成的 API 客户端的 Bun 工作区。
 

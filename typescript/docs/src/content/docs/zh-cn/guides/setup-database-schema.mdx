@@ -15,7 +15,7 @@ Schema 是仓库中一组 SQL migration，在编译期被嵌入到二进制文�
 
 | 路径 | 内容 |
 |---|---|
-| `database/migrations/*.sql` | 各个 migration，按文件名顺序应用，一旦应用过就不再修改 |
+| `migrations/*.sql` | 各个 migration，按文件名顺序应用，一旦应用过就不再修改 |
 
 前置条件：一个可访问的 PostgreSQL ≥ 16，以及它的连接 URL —— 两者都来自
 [前置条件](/zh-cn/guides/prerequisites/)。
@@ -96,7 +96,7 @@ export GURU_DATABASE_URL
 
 ## 4. 后续的 Schema 变更
 
-一次 Schema 变更就是在 `database/migrations/` 下新增一个文件；已经应用过的 migration 绝不再修改，
+一次 Schema 变更就是在 `migrations/` 下新增一个文件；已经应用过的 migration 绝不再修改，
 因为数据库记录的是它运行过哪些 migration，而不是这些 migration 的内容。
 
 <Steps>

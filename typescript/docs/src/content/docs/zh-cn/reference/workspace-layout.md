@@ -16,7 +16,7 @@ lib/
 modules/          # 业务逻辑，每个功能一个 crate
   auth/  orchestration/  notify/  base/
 proto/            # protobuf 定义（按模块分组）—— 唯一的 API 来源
-database/         # PostgreSQL Schema：sqlx migration（database/migrations）
+migrations/       # PostgreSQL Schema：sqlx migration
 typescript/       # Bun 工作区：所有前端 / TypeScript 包
   app-protobuf/       # 生成的 gRPC/protobuf TypeScript 代码（共享）
   guru-frontend/      # SvelteKit 控制台
