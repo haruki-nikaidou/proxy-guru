@@ -20,9 +20,9 @@ pub use wakuwaku::sqlx::DatabaseProcessor as Db;
 
 /// The schema, applied by `guru-master` at startup and by `manage-tool db migrate`.
 ///
-/// Declared once, here, so the path to `database/migrations` is spelled in one
+/// Declared once, here, so the path to `migrations` is spelled in one
 /// place; `#[sqlx::test(migrator = "base::db::MIGRATOR")]` reuses it.
-pub static MIGRATOR: Migrator = sqlx::migrate!("../../database/migrations");
+pub static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
 
 /// How a process opens the database.
 #[derive(Debug, Clone)]
