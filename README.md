@@ -15,24 +15,36 @@ up every new revision automatically.
 | `bin/guru-master` | Control plane. One binary, four modes (`--mode`): `dashboard_grpc` (operator API), `workers_grpc` (worker API + config-view poller), `consumer` (AMQP hooks — derivation and every periodic job), `cron` (clock: publishes one execution signal per due job). |
 | `bin/guru-worker` | Data plane. Terminates listeners and forwards traffic. Runs standalone from a TOML file (reloaded on SIGHUP) or in agent mode, streaming configs from the master; in agent mode it is installed and updated from the dashboard (`bin/guru-worker/deploy/` holds the installer, unit and start guard). |
 | `bin/manage-tool` | Admin CLI: `create-admin` bootstrap, `orchestration export-config`, `agent publish` (serve a worker build for the dashboard's install command and updates). |
+| `lib/guru_topology` | The forwarding topology as a graph of pods: checks a graph and compiles it into each server's forwardings. Pure, no I/O. |
 | `lib/guru_worker_config` | The worker config model, shared by both planes: the master derives it, the worker consumes it. |
 | `lib/rpguru_sdk` | Generated gRPC/protobuf types (Rust) from `proto/`. |
 | `modules/auth` | Accounts, sessions, API keys, RBAC. |
-| `modules/orchestration` | Canvases, servers, nodes, edges; topology validation, config derivation and worker rollout. |
+| `modules/orchestration` | Canvases, servers and the pod graph; graph checks, config derivation and worker rollout. |
+| `typescript/guru-graph` | The dashboard's view of the pod graph: what a canvas draws, and every edit gesture as one change batch. Pure TypeScript. |
 | `modules/notify` | Notification module — scaffolded from `base`, not implemented yet. |
 | `modules/base` | Shared foundations and the layout every module mirrors. |
 
+## Topology
+
+A canvas tree holds a directed acyclic graph of **pods**. A pod is one listener
+on one server; clients connect to it directly (raw TCP, or TLS terminated with
+an ACME certificate), or other pods relay to it over TCP, TLS or QUIC. Every
+**edge** is one way a pod's traffic goes on — to another pod, dialed in the
+protocol that pod listens with, or to an **exit** outside the fabric — and each
+pod's **route** balances by weight or fails over in tiers between its own edges,
+nested freely. PROXY protocol v1/v2 is supported on both ends.
+
 ## Data plane
 
-Each forwarding has a listener (`raw`, `tls`, or an inbound relay) and a
-destination: a direct **exit**, a **relay** to another node over TLS-over-TCP or
-QUIC, or a **load-balance** group. PROXY protocol v1/v2 is supported on both
-ends.
+Each forwarding is one pod: its listener and its route, compiled into groups and
+upstreams. Workers choose between members by what is alive, and a relay asked to
+confirm answers only once its own next hop connected, so a dead exit behind a
+live relay moves the choice on at the dialer.
 
 ## Rollout model
 
-Mutations bump the canvas generation and publish `CanvasDirty`; the derivation
-hook re-derives the whole canvas. A lost message is caught by the periodic
+An edit — one checked batch of graph changes — bumps the root canvas's generation
+and publishes `CanvasDirty`; the derivation hook re-derives the whole canvas tree. A lost message is caught by the periodic
 `derive_stale_canvases` signal, which the same hook consumes. Every server has
 one config view holding three snapshots — `desired`, `in_flight`, `applied`. A
 worker stream promotes `desired` → `in_flight`, and its `AckConfig` promotes

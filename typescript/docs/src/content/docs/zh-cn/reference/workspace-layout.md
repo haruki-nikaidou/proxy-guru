@@ -10,6 +10,7 @@ bin/              # Rust 二进制 —— 只做装配，不含业务逻辑
   manage-tool/        # 管理 CLI
 lib/
   rpguru_sdk/         # 生成的 gRPC/protobuf 类型（Rust）
+  guru_topology/      # Pod 图的检查与编译（纯计算，无 I/O）
   guru_worker_config/ # worker 配置模型，由两个平面共享
   db_types/           # table_record! 与 text_enum!：带类型的行 id 和文本枚举
 modules/          # 业务逻辑，每个功能一个 crate
@@ -19,6 +20,7 @@ database/         # PostgreSQL Schema：sqlx migration（database/migrations）
 typescript/       # Bun 工作区：所有前端 / TypeScript 包
   app-protobuf/       # 生成的 gRPC/protobuf TypeScript 代码（共享）
   guru-frontend/      # SvelteKit 控制台
+  guru-graph/         # 画布的绘制，以及把每次编辑变成一个批次（纯 TS）
   docs/               # 本文档站点（Astro Starlight）
 package.json      # Bun 工作区根（workspaces: ["typescript/*"]）
 ```

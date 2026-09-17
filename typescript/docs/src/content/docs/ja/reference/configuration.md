@@ -69,7 +69,7 @@ PostgreSQL によってキャンセルされ、エッジはそれを障害では
 |---|---|---|---|---|
 | `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 秒 | `sweep_interval_secs`（30） | `generation` が `derived_generation` を追い越したすべてのキャンバスを再導出します |
 | `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 秒 | `liveness_interval_secs`（30） | `health_report_interval_secs × health_offline_after_intervals` の間レポートのないサーバーを `Offline` にします |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 秒 | `health_retention_interval_secs`（300） | `server_health_ttl_secs` / `node_health_ttl_secs` より古い `server_health_record` / `node_health_record` 行を削除します |
+| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 秒 | `health_retention_interval_secs`（300） | `server_health_ttl_secs` / `pod_health_ttl_secs` より古い `server_health_record` / `pod_health_record` 行を削除します |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | 60 秒 | `acme_interval_secs`（60） | ACME の発行と更新: 有効期限の `acme_renew_before_secs` 前に更新し、失敗した試行は `acme_retry_after_secs` 後に再試行します |
 | `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 秒 | `relay_rotation_interval_secs`（3600） | 有効期限まで `relay_cert_renew_before_secs` 以内になったリレーのリーフ証明書を再発行し、そのキャンバスを再導出します |
 | `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 秒 | `country_lookup_interval_secs`（60） | 国がまだ分からないサーバーの IPv4 アドレスについて、`country_lookup_url` で国を調べます。新しいアドレスや変わったアドレスはすぐに、失敗した照会は `country_lookup_retry_after_secs` 後に再度調べます |
@@ -229,7 +229,7 @@ relay_type = "tcp"                    # "tcp" | "tls" | "quic"
 `key` と `full_chain` は PEM ファイルのパスで、設定を適用するときにパースされます。これが、証明書の更新を
 再起動ではなく再読み込みで済ませられる理由です。スタンドアロンモードでは、これらを用意する仕組みはありません。
 エージェントモードでは、マスターがすべてのリビジョンにこれらを同梱し（`ConfigRevision.files`）、`--state-dir` からの
-相対パスとして渡します — TLS 付きの Entry には `certs/acme/<certificate>/{full_chain,key}.pem`、`tls`/`quic` の
+相対パスとして渡します — TLS クライアントポッドには `certs/acme/<certificate>/{full_chain,key}.pem`、`tls`/`quic` の
 リレーリスナーには `certs/relay/<pod>/{full_chain,key}.pem`、内部 CA には `certs/ca.pem` — ワーカーは適用前に
 これらを書き出します（鍵ファイルは `0600`、各ディレクトリはアトミックに差し替え）。ファイル内の相対パスは
 `--state-dir` を基準に解決されます。
@@ -285,6 +285,54 @@ destination = "backend.internal:8080"
 `send_proxy_protocol` が任意指定として存在するのは `exit` だけで、対向が他人のバックエンドになるのは
 そこだけだからです。
 
+### ルートテーブル
+
+`to` にはインラインのツリーの代わりに、その forwarding 自身の **グループ** または **アップストリーム** の
+id を書くこともできます。次のホップはすべてアップストリーム、次のホップの間の選択はすべてグループで、グループは
+メンバーを id で並べます。つまりロードバランスを束ねたフェイルオーバーも、フェイルオーバーを束ねたロード
+バランスも、メンバーがグループであるグループにすぎません。マスターが `route_table` 機能を報告するワーカーに
+送るのはこの形式で、インラインのツリーはすべてのワーカーが読める形式として残っています。
+
+```toml
+[[forwarding]]
+tag = "web"
+listen = "[::]:443"
+listen_as = "raw"
+to = "g"                                # トラフィックが最初に入るグループまたはアップストリーム
+
+[[forwarding.group]]
+id = "g"
+failover = ["g.0", "u:backup"]          # 生きている最初のメンバーを順に使う
+
+[[forwarding.group]]
+id = "g.0"
+balance = [{ to = "u:hk-1", weight = 2 }, { to = "u:hk-2" }]   # weight の既定値は 1
+sticky = "client_ip"                    # 任意、balance のみ
+
+[[forwarding.upstream]]
+id = "u:hk-1"
+relay = { protocol = "quic", destination = "203.0.113.1:40000", sni = "hk-1.relay.guru.internal", confirm = true }
+
+[[forwarding.upstream]]
+id = "u:hk-2"
+relay = { protocol = "tcp", destination = "203.0.113.2:40000" }
+
+[[forwarding.upstream]]
+id = "u:backup"
+exit = { destination = "backend.internal:8080", send_proxy_protocol = "v2" }
+```
+
+balance は生きているメンバーに重みに比例して接続を振り分けます — スムーズラウンドロビン、あるいは
+`sticky = "client_ip"` ならクライアントアドレスの重み付きランデブーハッシュで、メンバーが生きている間は
+クライアントが同じメンバーにとどまります。failover は生きている最初のメンバーを使います。どちらも
+すべてのホップが死んでいるメンバーを飛ばし、失敗した試行は同じクライアント接続のまま次の選択へ進みます。
+3 回続けて失敗したアップストリームは死んだものとみなされ、10 秒後から一度に 1 接続だけが再び試せます。
+
+リレーアップストリームの `confirm = true` は、リレーに *自分の* 次のホップへ接続できた時点で応答するよう
+求めます。これにより、生きているリレーの先にある死んだエグジットはダイヤル側でホップの失敗となり、選択が
+次へ進みます。`relay_confirm` を報告するワーカーに向けてだけ設定してください。マスターは自動でそうします。
+リレーアップストリームの `quic` テーブルは、ツリーの `relay` と同じく、そのホップ側のリンク設定です。
+
 ### 拒否されるもの、警告だけで済むもの
 
 以下のいずれかに当てはまると読み込みは失敗し、ファイルが部分的に適用されることはありません:
@@ -296,6 +344,11 @@ destination = "backend.internal:8080"
 | `forwarding <tag> relay to tls/quic requires sni` | `sni` のない `tls`/`quic` リレーホップ（ネストの深さは問いません） |
 | `forwarding <tag> has an empty load-balance group` | `members = []`（ネストの深さは問いません） |
 | `invalid remote '…'` / `invalid port in remote '…'` | `destination` が `host:port` になっていません |
+| `forwarding <tag> refers to route id <id>, which it does not define` | `to` やグループのメンバーが、その forwarding のどのグループにもアップストリームにもない id を指しています |
+| `forwarding <tag> defines route id <id> more than once` | 2 つのグループまたはアップストリームが同じ id を持っています |
+| `forwarding <tag> has an empty group <id>` / `gives <id> a weight of zero` | メンバーのないグループ、重み 0 |
+| `forwarding <tag> has a group cycle through <id>` | 互いを含み合うグループ |
+| `forwarding <tag> has groups or upstreams but an inline to tree` | 1 つの forwarding で 2 つの形式が混在しています |
 
 次のものは警告としてログに記録され、動作は継続します:
 
@@ -311,7 +364,8 @@ destination = "backend.internal:8080"
 なく適用エラーで、しかも*pod 単位*です。他のすべての `[[forwarding]]` はコミットされ、失敗したものは以前の
 リスナー（あるいは何もない状態）をそのまま維持します。スタンドアロンモードでは起動時の失敗は中断となり、
 `SIGHUP` による再読み込みの失敗は失敗したエントリをログに出して以前のリスナーを維持します。エージェント
-モードでは各 pod の結果がマスターに ack され、マスターは失敗した pod をサーバーと該当ノードに記録します。
+モードでは各 pod の結果がマスターに ack され、マスターは失敗した pod をサーバーに記録し、それぞれに `Failed` の
+ヘルスイベントを残します。
 
 ## `manage-tool`
 
@@ -356,7 +410,7 @@ destination = "backend.internal:8080"
 | キー | 構造体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます）、`country_lookup_url`（デフォルトは `https://api.country.is/{ip}`: サーバーの国旗のために IPv4 アドレスの国を調べる先で、`{ip}` がアドレスに置き換わります。応答は 2 文字の `country` フィールドを持つ JSON オブジェクトでも 2 文字だけでもよいので、`https://get.geojs.io/v1/ip/country/{ip}` も使えます。空にすると照会しません）、`country_lookup_interval_secs`（デフォルトは 60）、`country_lookup_retry_after_secs`（デフォルトは 3600: 失敗した照会の後、同じアドレスを再び調べるまでの時間） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`pod_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます）、`country_lookup_url`（デフォルトは `https://api.country.is/{ip}`: サーバーの国旗のために IPv4 アドレスの国を調べる先で、`{ip}` がアドレスに置き換わります。応答は 2 文字の `country` フィールドを持つ JSON オブジェクトでも 2 文字だけでもよいので、`https://get.geojs.io/v1/ip/country/{ip}` も使えます。空にすると照会しません）、`country_lookup_interval_secs`（デフォルトは 60）、`country_lookup_retry_after_secs`（デフォルトは 3600: 失敗した照会の後、同じアドレスを再び調べるまでの時間） |
 
 `manage-tool db migrate` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
 `manage-tool config list` で保存されている内容を確認できます。`list` と `get` は行をそのまま出力し、

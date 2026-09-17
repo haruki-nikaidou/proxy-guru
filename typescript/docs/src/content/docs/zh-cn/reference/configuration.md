@@ -62,7 +62,7 @@ Worker 实际运行的内容。
 |---|---|---|---|---|
 | `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 s | `sweep_interval_secs`（30） | 重新派生所有 `generation` 超前于 `derived_generation` 的画布 |
 | `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 s | `liveness_interval_secs`（30） | 当某台服务器在 `health_report_interval_secs × health_offline_after_intervals` 内没有上报时，将其标记为 `Offline` |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `node_health_ttl_secs` 的 `server_health_record` / `node_health_record` 记录 |
+| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `pod_health_ttl_secs` 的 `server_health_record` / `pod_health_record` 记录 |
 | `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs`（60） | ACME 签发与续期：在到期前 `acme_renew_before_secs` 续期，失败后经过 `acme_retry_after_secs` 重试 |
 | `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs`（3600） | 重新签发距到期不足 `relay_cert_renew_before_secs` 的中继叶证书，并重新派生其所属画布 |
 | `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 s | `country_lookup_interval_secs`（60） | 通过 `country_lookup_url` 查询还不知道国家的服务器 IPv4 地址：新地址或变化了的地址立即查询，查询失败的地址经过 `country_lookup_retry_after_secs` 后再查 |
@@ -207,7 +207,7 @@ relay_type = "tcp"                    # "tcp" | "tls" | "quic"
 
 `key` 和 `full_chain` 是 PEM 文件路径，在配置被应用时解析，这正是证书续期只需重新加载而不必重启的原因。
 独立模式下没有任何组件会为你准备这些文件。agent 模式下，master 会随每个修订版本一起下发它们
-（`ConfigRevision.files`），路径相对于 `--state-dir` —— 带 TLS 的 Entry 对应
+（`ConfigRevision.files`），路径相对于 `--state-dir` —— TLS 客户端 Pod 对应
 `certs/acme/<certificate>/{full_chain,key}.pem`，`tls`/`quic` 中继监听器对应
 `certs/relay/<pod>/{full_chain,key}.pem`，内部 CA 对应 `certs/ca.pem` —— Worker 会在应用之前写入它们
 （密钥文件权限 `0600`，每个目录都是原子替换）。文件中的相对路径按 `--state-dir` 解析。
@@ -260,6 +260,51 @@ destination = "backend.internal:8080"
 尝试各个成员，直到有一个连接成功；其他策略则从中挑选一个。中继跳总是会向下一个 Worker 写出 PROXY v2
 头部 —— 只有 `exit` 才有可选的 `send_proxy_protocol`，因为只有在那里对端才是别人的后端。
 
+### 路由表
+
+`to` 也可以不写内联树，而是写这个 forwarding 自己的某个 **分组（group）** 或 **上游（upstream）** 的 id。
+每个下一跳都是一个上游，每个在下一跳之间的选择都是一个分组，分组按 id 列出成员 —— 所以在负载均衡之上做
+故障转移，或者在故障转移之上做负载均衡，都只是成员为分组的分组。master 发给报告了 `route_table` 能力的
+Worker 的就是这种形式；内联树仍是所有 Worker 都能读的形式。
+
+```toml
+[[forwarding]]
+tag = "web"
+listen = "[::]:443"
+listen_as = "raw"
+to = "g"                                # 流量开始进入的分组或上游
+
+[[forwarding.group]]
+id = "g"
+failover = ["g.0", "u:backup"]          # 按顺序使用第一个存活的成员
+
+[[forwarding.group]]
+id = "g.0"
+balance = [{ to = "u:hk-1", weight = 2 }, { to = "u:hk-2" }]   # weight 默认为 1
+sticky = "client_ip"                    # 可选，仅限 balance
+
+[[forwarding.upstream]]
+id = "u:hk-1"
+relay = { protocol = "quic", destination = "203.0.113.1:40000", sni = "hk-1.relay.guru.internal", confirm = true }
+
+[[forwarding.upstream]]
+id = "u:hk-2"
+relay = { protocol = "tcp", destination = "203.0.113.2:40000" }
+
+[[forwarding.upstream]]
+id = "u:backup"
+exit = { destination = "backend.internal:8080", send_proxy_protocol = "v2" }
+```
+
+balance 按权重比例把连接分给存活的成员 —— 平滑轮询；设置 `sticky = "client_ip"` 时则对客户端地址做加权
+一致性（rendezvous）哈希，只要成员存活，客户端就一直落在同一个成员上。failover 使用第一个存活的成员。
+两者都会跳过所有跳都已失效的成员，一次失败的尝试会在同一个客户端连接内转向下一个选择。连续失败三次的
+上游被视为失效；十秒后每次只允许一个连接重新尝试它。
+
+中继上游上的 `confirm = true` 要求中继在它 *自己的* 下一跳连通后再应答，于是存活中继背后失效的出口会在
+拨号端被判定为这一跳失败，选择随之转向下一个。只应对报告了 `relay_confirm` 的 Worker 设置它；master
+会自动这样做。中继上游上的 `quic` 表与树形 `relay` 中的一样，是这一跳这一端的链路设置。
+
 ### 哪些会被拒绝，哪些只是警告
 
 出现下列任一情况时加载失败 —— 配置文件绝不会被部分应用：
@@ -271,6 +316,11 @@ destination = "backend.internal:8080"
 | `forwarding <tag> relay to tls/quic requires sni` | 任意嵌套层级上出现了没有 `sni` 的 `tls`/`quic` 中继跳 |
 | `forwarding <tag> has an empty load-balance group` | 任意嵌套层级上出现 `members = []` |
 | `invalid remote '…'` / `invalid port in remote '…'` | `destination` 不是 `host:port` 形式 |
+| `forwarding <tag> refers to route id <id>, which it does not define` | `to` 或分组成员引用的 id 不是这个 forwarding 中任何分组或上游的 id |
+| `forwarding <tag> defines route id <id> more than once` | 两个分组或上游使用了同一个 id |
+| `forwarding <tag> has an empty group <id>` / `gives <id> a weight of zero` | 没有成员的分组、权重为 0 |
+| `forwarding <tag> has a group cycle through <id>` | 互相包含的分组 |
+| `forwarding <tag> has groups or upstreams but an inline to tree` | 同一个 forwarding 混用了两种形式 |
 
 下面这些只会记录为警告，进程继续运行：
 
@@ -284,7 +334,7 @@ destination = "backend.internal:8080"
 `<tag>: <reason>`。这属于应用错误而非配置错误，而且是*按 pod* 计的：其他每个 `[[forwarding]]` 都会
 照常提交，失败的那个保留它此前的监听器（或者什么都没有）。独立模式下启动失败会直接终止进程，而
 `SIGHUP` 重新加载失败时会记录失败的条目并保留它们原有的监听器；agent 模式下每个 pod 的结果都会确认给
-master，由 master 在服务器和受影响的节点上记录失败的 pod。
+master，由 master 在服务器上记录失败的 pod，并为每个失败的 pod 写一条 `Failed` 健康事件。
 
 ## `manage-tool`
 
@@ -327,7 +377,7 @@ master，由 master 在服务器和受影响的节点上记录失败的 pod。
 | 键 | 结构体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
-| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`node_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址）、`country_lookup_url`（默认 `https://api.country.is/{ip}`：为服务器的国旗查询其 IPv4 地址所在国家的地址，`{ip}` 会替换成该地址；返回值可以是带两字母 `country` 字段的 JSON 对象，也可以只是两个字母，所以 `https://get.geojs.io/v1/ip/country/{ip}` 也能用；留空则不查询）、`country_lookup_interval_secs`（默认 60）、`country_lookup_retry_after_secs`（默认 3600：查询失败后，要隔多久才再次查询同一个地址） |
+| `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`pod_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址）、`country_lookup_url`（默认 `https://api.country.is/{ip}`：为服务器的国旗查询其 IPv4 地址所在国家的地址，`{ip}` 会替换成该地址；返回值可以是带两字母 `country` 字段的 JSON 对象，也可以只是两个字母，所以 `https://get.geojs.io/v1/ip/country/{ip}` 也能用；留空则不查询）、`country_lookup_interval_secs`（默认 60）、`country_lookup_retry_after_secs`（默认 3600：查询失败后，要隔多久才再次查询同一个地址） |
 
 在 `manage-tool db migrate` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
 查看已存储的内容。`list` 和 `get` 会原样打印该行 —— 它们不做解码，因此即便某份文档会让 master 启动时

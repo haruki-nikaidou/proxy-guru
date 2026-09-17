@@ -27,7 +27,7 @@ Because of the nature of a TCP reverse proxy server, deploying a worker inside a
 is bad practice. Therefore, we do not provide a Docker image for worker nodes.
 :::
 
-Durable state lives in exactly two places: **PostgreSQL** (canvases, servers, nodes, edges, accounts,
+Durable state lives in exactly two places: **PostgreSQL** (canvases, servers, the pod graph, accounts,
 config views) and **RabbitMQ** (one durable queue for "this canvas changed" hints, plus one per
 periodic job). **Redis** is the third datastore and the only one that keeps nothing: it carries the
 operator API's live events between master replicas on a single pub/sub channel, with no persistence
@@ -622,7 +622,7 @@ usual Docker log driver.
 | Master exits with `this mode opens the database: set GURU_DATABASE_URL` | The URL is unset or empty; it has no default. `cron` is the one mode that does not need it. |
 | Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | `dashboard_grpc`, `workers_grpc` and `consumer` need the key (`cron` does not read it). Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
 | Master exits with `stored config for key ... does not match its type` | The stored document is corrupt or predates a renamed field. Inspect it with `manage-tool config get <key>` and rewrite it with `config set`. |
-| A TLS Entry's pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
+| A TLS client pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
 | Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All four modes require the broker. Check the trailing `/` on the URI. |
 | Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` does not. |
