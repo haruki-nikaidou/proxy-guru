@@ -9,7 +9,7 @@ graph on every edit and derives one config per server from it (see
 [Rollout Model](/reference/rollout/)). Everything else the canvas shows — splitters, aggregators,
 buses — is how that graph is *drawn*, computed from it on the fly.
 
-![The main canvas: a Hangzhou server whose two client pods feed one splitter, which fans out over five Hong Kong servers; an aggregator gathers their buses into two exits](/img/canvas/canvas-overview.avif)
+![The main canvas: two client pods on a Hangzhou server each send their own line into one splitter, which fans out to relay pods on five Hong Kong servers; an aggregator gathers their lines into two exits](/img/canvas/canvas-overview.avif)
 
 ## The model
 
@@ -43,19 +43,20 @@ A few rules follow from the model:
 
 ### Servers
 
-![A server card for 杭州移动: a Chinese flag, a green Online badge, its IPv4 and IPv6 addresses, the last report, and two client pods m_hk7_145 and tutusgak with their listen addresses](/img/canvas/card-server-client.avif)
+![A server card for 杭州移动: a Chinese flag, a green Online badge, its IPv4 and IPv6 addresses, the last report, and two client pods m_hk7_145 and tutusgak with their listen addresses and a blue handle each](/img/canvas/card-server-client.avif)
 
 A server card shows its health badge, the addresses other servers dial it at, the time of its last
 health report and the worker version, then one row per pod drawn on this canvas: the colours of the
 rules that pass through it, its name, how it listens (a client pod carries an arrow into a box) and
 its listen address.
 
-![A server card for gcore-hk-1 with two QUIC relay pods, each with a handle on the left and on the right](/img/canvas/card-server-relay.avif)
+![A server card for gcore-hk-1 with two QUIC relay pods, each with a red handle on the left and a blue one on the right](/img/canvas/card-server-relay.avif)
 
-Every pod row has a handle on the **right** — drag from it to give the pod a new way on. A relay
-pod's row also has one on the **left**, where a way on may land. The two handles in the card's
-header are the card's own: the left one lands a way on as a new relay pod of this server, and buses
-attach to both. A server of another canvas whose pods are drawn here appears with a dashed border.
+Every pod row has a blue handle on the **right**: the pod's lines leave from it, and dragging from it
+gives the pod a new way on. A relay pod's row also has a red handle on the **left**, where the lines
+into the pod land and where a way on may be dropped. The red handle in the card's header lands a way
+on as a new relay pod of this server. A server of another canvas whose pods are drawn here appears
+with a dashed border.
 
 The server's panel holds its settings (name, icon, log level, IPv6 policy, QUIC rates, pinned and
 extra addresses), the list of its pods with a row to add one, the agent that runs on it and where it
@@ -69,14 +70,13 @@ An exit card shows its destination, the rules that reach it and how many edges l
 
 ### Splitters
 
-![A splitter card: Balance, 2 routes, five members gcore-hk-1 to gcore-hk-5 each weighted ×1, and a + member handle](/img/canvas/card-splitter.avif)
+![A splitter card: Balance, 2 routes, five members gcore-hk-1 to gcore-hk-5 with their weights, and a + member handle](/img/canvas/card-splitter.avif)
 
 A splitter is a group of a route — a balance or a failover. Groups that choose the same way between
 the same cards are drawn as **one** splitter however many pods they belong to: two rules fanned out
 over the same five servers are one splitter standing for two routes. Each row is one member, with
 its weight (`×2`) or its tier (`#1`) and where it leads; a member that is itself a group leads to a
-nested splitter. The faint **+ member** handle adds a member to every route the splitter stands
-for. Its panel changes the policy, stickiness, weights and order of all of them at once.
+nested splitter. The **+ member** handle adds a member to every route the splitter stands for. Its panel changes the policy, stickiness, weights and order of all of them at once.
 
 ### Aggregators
 
@@ -88,11 +88,21 @@ stored, and it cannot be edited or deleted.
 
 ### Buses and rules
 
-A **bus** is every edge that takes the same way between two cards, drawn as one cable with a thin
-line inside it per **rule** in the rule's colour, and a count when it stands for several edges.
+A **bus** is every edge that takes the same way between two handles, drawn as one cable with a thin
+line inside it per **rule** in the rule's colour, and a count when it stands for several edges. Lines
+leave at blue handles and land at red ones: a pod's lines start at its own row and end at the row of
+the relay pod they dial, or at a splitter, an aggregator, an exit or a subcanvas. A line between two
+pods of one server loops round under the card.
+
 A rule is a client pod — where traffic enters the fabric — and it colours everything its traffic
 can pass through. The legend in the top-right corner lists the rules of the canvas; clicking one
 fades everything that does not carry it.
+
+Click a bus to open its panel: where it runs, the rules riding it — each in its line's colour, with
+how many of the bus's edges carry it — and every edge with its id, the rules it carries, where it
+leads and the address it dials.
+
+![The panel of the line from m_hk7_145 into the splitter: from m_hk7_145 · 杭州移动 to Balance, one rule in green riding 5 edges, and the five edges to the relay pods on gcore-hk-1 to gcore-hk-5, each with its edge ID](/img/canvas/panel-bus.avif)
 
 ### Subcanvases and portals
 
@@ -122,13 +132,13 @@ pod listens, and a port — leave it empty for one picked for you.
 
 ### Connecting
 
-Drag from the handle on the right of a pod row and drop it:
+Drag from the blue handle on the right of a pod row and drop it on a red one:
 
 | Drop on | Result |
 |---|---|
-| the left handle of a relay pod | an edge to that pod |
+| a relay pod's row | an edge to that pod |
 | an exit | an edge to the exit |
-| a server card | a new relay pod on that server, listening in the protocol you choose |
+| a server card's header | a new relay pod on that server, listening in the protocol you choose |
 | a splitter | the pod joins it: its route gains a copy of the splitter's group, landing on relay pods of its own on the same servers |
 | a subcanvas or a portal | a relay pod, an exit or a new relay pod on a server inside it, as you pick |
 
