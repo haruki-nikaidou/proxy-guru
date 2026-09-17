@@ -294,7 +294,7 @@ index and one transaction fails, which the caller retries.
   `services::watch` so nothing below the edge depends on the edge.
 - `services` depend on `entities`; every query is a `Processor` in
   `entities/db`.
-- The schema lives in `database/migrations`; the integration tests run the same
+- The schema lives in `migrations/`; the integration tests run the same
   migrator against a real PostgreSQL database, one per test.
 
 See `AGENTS.md` at the workspace root for the full authoring guide.

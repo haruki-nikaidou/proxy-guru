@@ -29,7 +29,7 @@ lib/
 modules/          # business logic, one crate per feature
   base/           # foundational + template module
 proto/            # protobuf definitions (grouped by module) — the single API source
-database/         # PostgreSQL schema: sqlx migrations (database/migrations)
+migrations/       # PostgreSQL schema: sqlx migrations
 vendor/           # patched third-party crates, wired in by [patch.crates-io] in the
                   # root Cargo.toml; each carries a PATCH.md with the diff and why
 typescript/       # Bun workspace: all frontend / TypeScript packages
@@ -191,7 +191,7 @@ src/
   files there, register them in `rpguru_sdk`'s `build.rs` (Rust side), and
   regenerate the TypeScript side with `bun run generate:proto`. Never hand-edit
   or duplicate generated code.
-- **Schema:** the PostgreSQL schema lives in `database/migrations/*.sql`,
+- **Schema:** the PostgreSQL schema lives in `migrations/*.sql`,
   embedded by `sqlx::migrate!` as `base::db::MIGRATOR` and applied by
   `guru-master` at startup (advisory-locked, so replicas may start together) and
   by `manage-tool db migrate`. Every change is a new migration file; an applied
@@ -201,7 +201,7 @@ src/
 
 1. Copy the `modules/base` directory layout into `modules/<name>`.
 2. Add the crate to the workspace `members` in the root `Cargo.toml`.
-3. Add the tables in a new `database/migrations/<n>_<name>.sql` and the API
+3. Add the tables in a new `migrations/<n>_<name>.sql` and the API
    in `proto/` (register it in `rpguru_sdk`).
 4. Implement, from the inside out: `entities` → `services` → `rpc`/`hooks`.
 5. Wire the new services/hooks into `bin/guru-master`'s workers.

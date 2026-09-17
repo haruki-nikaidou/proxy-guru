@@ -34,7 +34,7 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 ## 2. Schema
 
-Schema 是 `database/migrations/` 下的一组 sqlx migration，它们被嵌入到二进制文件里。
+Schema 是 `migrations/` 下的一组 sqlx migration，它们被嵌入到二进制文件里。
 `guru-master` 启动时会应用所有尚未应用的 migration；如果要手动执行：
 
 ```sh

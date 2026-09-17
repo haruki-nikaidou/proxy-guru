@@ -16,7 +16,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 | パス | 内容 |
 |---|---|
-| `database/migrations/*.sql` | マイグレーション。ファイル名順に適用され、一度適用したものは決して編集しません |
+| `migrations/*.sql` | マイグレーション。ファイル名順に適用され、一度適用したものは決して編集しません |
 
 前提条件: 到達可能な PostgreSQL ≥ 16 と、その接続 URL —
 いずれも[前提条件](/ja/guides/prerequisites/)を参照してください。
@@ -103,7 +103,7 @@ export GURU_DATABASE_URL
 
 ## 4. その後のスキーマ変更
 
-スキーマ変更とは `database/migrations/` に新しいファイルを追加することです。適用済みのマイグレーションを
+スキーマ変更とは `migrations/` に新しいファイルを追加することです。適用済みのマイグレーションを
 編集することは決してありません。データベースが記録しているのは、どのマイグレーションを実行したかであって、
 その内容ではないからです。
 

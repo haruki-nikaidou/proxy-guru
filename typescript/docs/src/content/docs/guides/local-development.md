@@ -36,7 +36,7 @@ name that port in `REDIS_URL`.
 
 ## 2. Schema
 
-The schema is a set of sqlx migrations in `database/migrations/`, embedded into the binaries.
+The schema is a set of sqlx migrations in `migrations/`, embedded into the binaries.
 `guru-master` applies what is pending when it starts; to do it by hand:
 
 ```sh

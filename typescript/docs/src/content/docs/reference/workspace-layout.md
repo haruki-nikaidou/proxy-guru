@@ -16,7 +16,7 @@ lib/
 modules/          # business logic, one crate per feature
   auth/  orchestration/  notify/  base/
 proto/            # protobuf definitions (grouped by module) — the single API source
-database/         # PostgreSQL schema: sqlx migrations (database/migrations)
+migrations/       # PostgreSQL schema: sqlx migrations
 typescript/       # Bun workspace: all frontend / TypeScript packages
   app-protobuf/       # generated gRPC/protobuf TypeScript code (shared)
   guru-frontend/      # SvelteKit dashboard
