@@ -131,8 +131,9 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 3 つのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
 ストリームへの配信だけで、それ以外は何も止まりません。編集は適用され、キャンバスは導出され、ワーカーは
 設定を受け取り続けます。subscriber は自力で再接続し、すべての watcher にデータベースの再読み込みを求めます。
-同梱のダッシュボードはまだこれらのストリームを利用していないため、現時点では Redis を失ってもブラウザーからは
-まったく見えません。
+ダッシュボードはこれらのストリームを追従しているため、Redis が停止している間は開いているキャンバスページや
+ヘルスページの更新が止まり、Redis が復旧すれば自動的に追いつきます。それらのページの *ライブ* バッジは
+ブラウザー自身の接続を示すもので、その間も緑のままです。
 
 ## 6. スキーマを適用する
 
@@ -573,10 +574,9 @@ nc -z <host> 50052 && echo "workers_grpc reachable"
 # 5. プロキシ経由のダッシュボード（/auth へ 303）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. ライブバス: ダッシュボードレプリカごとに 1 行、起動時と Redis への再接続ごとに
-#    出力されます。オペレーター API の `Watch*` ストリームはここから配信されており、
-#    ダッシュボードはまだそれを利用していないため、バスが健全かどうかを教えてくれるのは
-#    ブラウザーではなく、このログ行です。
+# 6. Live bus: one line per dashboard replica, printed at startup and after every
+#    Redis reconnect. It is what the `Watch*` streams of the operator API — and
+#    so the dashboard's live canvas and health pages — are served from.
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. 管理者アカウントでログインする — ダッシュボード → オペレーター API → データベースを
@@ -632,7 +632,7 @@ subscriber が再接続した時点で元どおりに動きます。
 | `manage-tool` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が `GURU_DATABASE_URL` を与えていました。常に `--database-url` を渡してください。 |
 | キャンバスの編集がワーカーに届かない | `consumer` が停止しています: 編集フックと古いキャンバスのスイープの両方を実行するため、これなしでは何も導出されません。`consumer` が起動している場合は `cron` を確認してください — 時計がなければスイープは発火せず、`CanvasDirty` が生きている編集だけが導出されます。 |
 | 定期ジョブが動かなくなる（`Offline` にならない、更新も走らない） | RabbitMQ が停止しているか、`cron` が停止しています。両方必要です: 時計がシグナルを発行し、consumer がそれを実行します。 |
-| `Watch*` ストリームがスナップショットを配信しなくなる（同じ内容を unary API で読むと変更が見える） | Redis が停止しているか、そのストリームを提供している `dashboard_grpc` レプリカから到達できません。そのレプリカのログで `live bus connected` を探してください。編集自体は適用され、導出も走ります。止まっているのはライブ配信だけで、再接続すれば再開します。 |
+| 開いているキャンバスページやヘルスページの更新が止まる（再読み込みすると変更が見える）、または `Watch*` ストリームがスナップショットを配信しなくなる | Redis が停止しているか、そのストリームを提供している `dashboard_grpc` レプリカから到達できません。そのレプリカのログで `live bus connected` を探してください。編集自体は適用され、導出も走ります。止まっているのはライブ配信だけで、再接続すれば再開します。 |
 
 すべてのフラグと変数については[設定](/ja/reference/configuration/)を、「導出」が実際に何をするのかについては
 [ロールアウトモデル](/ja/reference/rollout/)を参照してください。

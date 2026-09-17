@@ -136,8 +136,9 @@ liveness and certificate renewal — and the masters reach the database with the
 the third: required by the three modes that open a database connection, and far cheaper to lose.
 An outage stops delivery on open `Watch*` streams and nothing else — edits still apply, canvases
 still derive, workers still get their config — and the subscriber reconnects on its own, then has
-every watcher re-read the database. The bundled dashboard does not consume those streams yet, so
-losing Redis is currently invisible in the browser.
+every watcher re-read the database. The dashboard follows those streams, so while Redis is down an
+open canvas or health page stops updating and catches up on its own once it is back; the *Live*
+badge on those pages shows the browser's own connection and stays green meanwhile.
 
 ## 6. Apply the schema
 
@@ -574,9 +575,8 @@ nc -z <host> 50052 && echo "workers_grpc reachable"
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
 # 6. Live bus: one line per dashboard replica, printed at startup and after every
-#    Redis reconnect. It is what the `Watch*` streams of the operator API are
-#    served from; the dashboard does not consume them yet, so this log line —
-#    not the browser — is what tells you the bus is healthy.
+#    Redis reconnect. It is what the `Watch*` streams of the operator API — and
+#    so the dashboard's live canvas and health pages — are served from.
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. Log in with the admin account — this is the only check that exercises
@@ -626,7 +626,7 @@ usual Docker log driver.
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
 | Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All four modes require the broker. Check the trailing `/` on the URI. |
 | Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` does not. |
-| A `Watch*` stream stops delivering snapshots (the same read over the unary API shows the change) | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
+| An open canvas or health page stops updating (a reload shows the change), or a `Watch*` stream stops delivering snapshots | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
 | `consumer` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
 | `relation "…" does not exist` right after a clean install | The migrations never ran: the role in `GURU_DATABASE_URL` may lack `CREATE` on the database. Run `manage-tool db migrate` and read its error. |
 | `manage-tool` wrote to the wrong database | A `.env` in the working directory supplied `GURU_DATABASE_URL`. Always pass `--database-url`. |

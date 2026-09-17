@@ -400,8 +400,8 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a &
 #   → schema is up to date
 
 # 3. Control plane: one banner per mode, no restart loop, and one `live bus connected`
-#    from dashboard_grpc — the operator API's `Watch*` streams are served from it
-#    (the dashboard does not consume them yet, so this line is the check)
+#    from dashboard_grpc — the operator API's `Watch*` streams, and so the
+#    dashboard's live canvas and health pages, are served from it
 journalctl -u 'guru-master@*' -n 20
 
 # 4. Dashboard behind nginx (303 to /auth)

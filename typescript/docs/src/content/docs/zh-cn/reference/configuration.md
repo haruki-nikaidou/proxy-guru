@@ -37,8 +37,9 @@ RDB。Redis 中断只会让已打开的 `Watch*` 流收不到投递——订阅�
 watcher 重新读取数据库，因此它一恢复就不会有任何内容停留在旧状态——但它绝不会影响派生，也不会影响
 Worker 实际运行的内容。
 
-随包发布的控制台目前还不消费这些流；它读取一元（unary）API，并在页面跳转时刷新。它们是为需要推送的
-客户端准备的 gRPC API，因此检查这条总线靠的是日志行 `live bus connected`，而不是盯着浏览器。
+控制台跟随这些流：画布编辑器、健康状况页面及其 Pod 事件都会就地更新，每个页面通过一条
+server-sent-events 连接完成，由控制台把它桥接到 gRPC 流上。这些页面上的 *实时* 徽章显示的是这条浏览器
+连接；而检查总线本身靠的是日志行 `live bus connected`。
 
 `GURU_MASTER_KEY` 用于加密所有静态存储的密钥材料——DNS 提供商 API 令牌、ACME 账户密钥、证书和 CA
 私钥——凡是需要读取密钥材料的三种模式都必须提供：`dashboard_grpc`、`workers_grpc` 和 `consumer`。
