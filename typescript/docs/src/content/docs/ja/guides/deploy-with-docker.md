@@ -625,9 +625,9 @@ curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
 # 5. プロキシ経由のダッシュボード（/auth へ 303）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. Live bus: one line per dashboard replica, printed at startup and after every
-#    Redis reconnect. It is what the `Watch*` streams of the operator API — and
-#    so the dashboard's live canvas and health pages — are served from.
+# 6. ライブバス: ダッシュボードレプリカごとに 1 行、起動時と Redis への再接続ごとに
+#    出力されます。オペレーター API の `Watch*` ストリーム — ひいてはダッシュボードで
+#    ライブ更新されるキャンバスページとヘルスページ — はここから配信されています。
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. 管理者アカウントでログインする — ダッシュボード → オペレーター API → データベースを

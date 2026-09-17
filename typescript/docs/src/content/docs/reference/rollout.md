@@ -73,10 +73,15 @@ are up.
 In the dashboard, a canvas's **Health** page reads both histories over a selected window (1 h / 6 h
 / 24 h / 7 d): one card per server showing its status, the connection count *at its last report* in
 that window and the peak, plus two charts — throughput from the per-report upload/download deltas,
-and connections against the high-water mark. Nothing on the page is live: every number is a stored
-report, so an `Offline` server still shows whatever it last sent. Each card's *Pod events* tab
-lists the events of every pod running on that server, including the `message` a `Failed` row
-carries; it is fetched only once opened.
+and connections against the high-water mark. The page follows the control plane's streams and
+updates in place, without reloading. A server's status badge and the summary counts follow status
+changes at once. New report points reach the charts every 2 s on the 1 h window, every 10 s on 6 h,
+30 s on 24 h and 2 min on 7 d (longer windows repaint less often). Points that fall out of the
+selected window drop off even when a server has gone silent. Every number is still a stored report,
+so an `Offline` server keeps showing what it last sent until that ages out of the window. Each
+card's *Pod events* tab lists the events of every pod on that server, including the `message` a
+`Failed` row carries. It is streamed only while the tab is open, shows at most the newest 500
+events per pod, and new events appear within about 2 s.
 
 ## Certificates
 

@@ -584,9 +584,8 @@ curl --http2 -sS -D - -o /dev/null -X POST -H 'content-type: application/grpc' \
 # 5. 经反向代理访问控制台（303 跳到 /auth）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. Live bus: one line per dashboard replica, printed at startup and after every
-#    Redis reconnect. It is what the `Watch*` streams of the operator API — and
-#    so the dashboard's live canvas and health pages — are served from.
+# 6. 实时总线：每个 `dashboard_grpc` 副本一行，在启动时以及每次 Redis 重连后打印。运维 API 的
+#    `Watch*` 流 —— 因而也包括控制台上实时更新的画布和健康状况页面 —— 都是由它来提供的。
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. 用管理员账号登录 —— 这是唯一能端到端走通
