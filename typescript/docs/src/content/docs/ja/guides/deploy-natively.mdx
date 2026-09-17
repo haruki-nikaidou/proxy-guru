@@ -306,10 +306,9 @@ sudo -iu guru bash -lc 'cd /path/to/proxy-guru && set -a && . ./.env && set +a &
   ./target/release/manage-tool db migrate'
 #   → schema is up to date
 
-# 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと、そして
-#    dashboard_grpc から `live bus connected` が 1 行 — オペレーター API の `Watch*`
-#    ストリームはここから配信されます（ダッシュボードはまだそれを利用していないため、
-#    確認手段はこの行です）
+# 3. Control plane: one banner per mode, no restart loop, and one `live bus connected`
+#    from dashboard_grpc — the operator API's `Watch*` streams, and so the
+#    dashboard's live canvas and health pages, are served from it
 journalctl -u 'guru-master@*' -n 20
 
 # 4. nginx 背後のダッシュボード（/auth へ 303）

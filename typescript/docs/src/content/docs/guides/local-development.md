@@ -114,9 +114,10 @@ starts, and with `cron` or the `consumer` down, no periodic job happens. `--redi
 `REDIS_URL`) is required by the three modes above that open a database connection, and unused by
 `cron`; without it they abort with
 `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/`. It
-is the live bus behind the operator API's `Watch*` streams: with Redis down, an open stream stops
-receiving, while edits and derivation carry on as usual. The dashboard does not consume those
-streams yet, so a browser notices nothing either way.
+is the live bus behind the operator API's `Watch*` streams, which the dashboard's canvas editor and
+health page follow: with Redis down, an open page stops updating (its *Live* badge stays green — that
+badge is the browser's own connection) while edits and derivation carry on as usual, and it catches up
+by itself once Redis is back.
 
 To make a periodic job run without waiting for its interval, delete its claim row — the table is
 `orchestration_job_run`, one row per job keyed by the job name, so

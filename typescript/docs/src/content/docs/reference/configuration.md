@@ -39,9 +39,10 @@ persistence, no AOF and no RDB from this server. A Redis outage costs open `Watc
 deliveries — the subscriber reconnects with backoff and asks every watcher to re-read the database,
 so nothing stays stale once it returns — but it never affects derivation or what a worker runs.
 
-The bundled dashboard does not consume these streams yet; it reads the unary API and refreshes on
-navigation. They are a gRPC API for clients that want push, and the log line `live bus connected`
-is how you check the bus rather than watching a browser.
+The dashboard follows these streams: the canvas editor, the health page and its pod events update in
+place, over one server-sent-events connection per page that the dashboard bridges to the gRPC
+streams. The *Live* badge on those pages shows that browser connection; the log line
+`live bus connected` is how you check the bus itself.
 
 `GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
 certificate and CA private keys — and is required in the three modes that read one:

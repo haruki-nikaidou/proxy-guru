@@ -118,8 +118,9 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 用 `/srv/guru/.env` 里的角色连接数据库，第 7 节中的 `x-master` 锚点会把它拼成一个 URL；
 而 Redis 在会打开数据库连接的那三种模式下必填（`cron` 不用它），丢掉它的代价也小得多。
 中断只会让已打开的 `Watch*` 流停止投递，除此之外别无影响 —— 编辑照样生效，画布照样派生，Worker 照样
-拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。随包发布的控制台目前
-还不消费这些流，所以丢掉 Redis 在浏览器里暂时是看不出来的。
+拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。控制台跟随这些流，
+因此 Redis 停机期间，已打开的画布或健康状况页面会停止更新，并在它恢复后自行追上最新状态；这些页面上的
+*实时* 徽章表示的是浏览器自己的连接，此期间会一直保持绿色。
 
 ## 6. 应用 Schema
 
@@ -536,9 +537,9 @@ nc -z <host> 50052 && echo "workers_grpc reachable"
 # 5. 经反向代理访问控制台（303 跳到 /auth）
 curl -s -o /dev/null -w '%{http_code}\n' https://guru.example.com/
 
-# 6. 实时总线：每个 `dashboard_grpc` 副本一行，在启动时以及每次 Redis 重连后打印。运维 API 的
-#    `Watch*` 流正是由它来提供的；控制台目前还不消费这些流，所以判断总线是否健康靠的是
-#    这行日志，而不是浏览器。
+# 6. Live bus: one line per dashboard replica, printed at startup and after every
+#    Redis reconnect. It is what the `Watch*` streams of the operator API — and
+#    so the dashboard's live canvas and health pages — are served from.
 docker compose logs master-dashboard | grep 'live bus connected'
 
 # 7. 用管理员账号登录 —— 这是唯一能端到端走通
@@ -587,7 +588,7 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 | 某个 relay pod 一直停在 `invalid_pods`，提示 `internal CA not initialised` | 执行一次 `manage-tool orchestration init-ca`。 |
 | master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。四种模式都需要 broker。检查 URI 结尾的 `/`。 |
 | master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 不需要。 |
-| 某个 `Watch*` 流不再投递快照（用一元 API 读同一份数据却能看到那次变更） | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
+| 已打开的画布或健康状况页面停止更新（刷新页面却能看到那次变更），或某个 `Watch*` 流不再投递快照 | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
 | `consumer` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
 | 全新安装后立刻出现 `relation "…" does not exist` | migration 从未运行：`GURU_DATABASE_URL` 中的角色可能对该数据库没有 `CREATE` 权限。执行 `manage-tool db migrate` 并阅读它的报错。 |
 | `manage-tool` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了 `GURU_DATABASE_URL`。请始终显式传入 `--database-url`。 |
