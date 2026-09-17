@@ -142,7 +142,7 @@ Drag from the blue handle on the right of a pod row and drop it on a red one:
 | a relay pod's row | an edge to that pod |
 | an exit | an edge to the exit |
 | a server card's header | a new relay pod on that server, listening in the protocol you choose |
-| a splitter | the pod joins it: its route gains a copy of the splitter's group, landing on relay pods of its own on the same servers |
+| a splitter | the pod joins it: its route gains a copy of the splitter's group, landing on relay pods of its own on the same servers. Those have no way on yet: connect one, and the notice offers to connect the rest |
 | a subcanvas or a portal | a relay pod, an exit or a new relay pod on a server inside it, as you pick |
 
 A new way on joins the pod's route: the first one is the route, a second one makes a balance of the
