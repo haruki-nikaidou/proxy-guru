@@ -9,7 +9,8 @@ use crate::entities::db::view::TakeInFlight;
 use crate::events::live::RolloutScope;
 use crate::rpc::agent_middleware::{agent_from_request, peer_address};
 use crate::services::agent::{
-    AckConfig, AgentService, PodResult, PollAgentUpdate, RegisterCredential, RegisterWorker,
+    AckConfig, AgentIdentity, AgentService, PodResult, PollAgentUpdate, RegisterCredential,
+    RegisterWorker,
 };
 use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
@@ -161,6 +162,7 @@ impl WorkerAgentGrpc {
                 revision: snapshot.revision,
                 toml: snapshot.toml,
                 files,
+                keep_alive: false,
             }))
             .await
             .is_ok())
@@ -179,6 +181,61 @@ impl WorkerAgentGrpc {
             })
             .await
             .map_err(|e| Status::internal(e.to_string()))
+    }
+
+    /// Records each report as it arrives and answers it, until the stream ends,
+    /// breaks, or carries no report for the offline threshold.
+    async fn record_reports(
+        &self,
+        agent: &AgentIdentity,
+        mut reports: tonic::Streaming<pb::HealthReport>,
+        tx: &mpsc::Sender<Result<pb::ReportHealthReply, Status>>,
+    ) -> HealthEnd {
+        let silence = self.health.config.health_offline_after();
+        loop {
+            let next = match tokio::time::timeout(silence, reports.message()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    return HealthEnd::Silent(Status::deadline_exceeded(format!(
+                        "no health report within {}s",
+                        silence.as_secs()
+                    )));
+                }
+            };
+            let report = match next {
+                Ok(Some(report)) => report,
+                Ok(None) => return HealthEnd::Closed,
+                Err(status) => return HealthEnd::Broken(status),
+            };
+            // Bounded: nothing cancels this task, so a write that never returns
+            // would hold the stream open forever.
+            let recorded = bounded(
+                "ReportHealth",
+                self.health.process(RecordHealthReport {
+                    agent: agent.clone(),
+                    report: HealthReportInput {
+                        running_revision: report.running_revision,
+                        upload_bytes: report.upload_bytes,
+                        download_bytes: report.download_bytes,
+                        current_connections: report.current_connections,
+                        max_connections: report.max_connections,
+                        pods: report.pods.into_iter().map(pod_result).collect(),
+                        reported: report.reported_addresses.map(reported_from_proto),
+                    },
+                }),
+            )
+            .await;
+            if let Err(status) = recorded {
+                return HealthEnd::Unrecorded(status);
+            }
+            // A full channel holds replies the worker has not read yet; one more
+            // is not worth holding up the next report for.
+            if let Err(mpsc::error::TrySendError::Closed(_)) =
+                tx.try_send(Ok(pb::ReportHealthReply {}))
+            {
+                return HealthEnd::Closed;
+            }
+        }
     }
 
     /// Best effort: a lease that outlives its stream only delays the next
@@ -230,6 +287,8 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
             .unwrap_or(u32::MAX),
             agent_update_poll_secs: u32::try_from(self.health.config.agent_update_poll_secs)
                 .unwrap_or(u32::MAX),
+            stream_keepalive_secs: u32::try_from(self.health.config.stream_keepalive().as_secs())
+                .unwrap_or(u32::MAX),
         }))
     }
 
@@ -240,6 +299,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         request: Request<pb::WatchConfigRequest>,
     ) -> Result<Response<Self::WatchConfigStream>, Status> {
         let agent = agent_from_request(&request)?;
+        let keep_alive = request.get_ref().keep_alive;
         // Claim the server's single watch session. The claim is conditional on the
         // generation still being current, so a request that authenticated just
         // before a registration rotated the key cannot open a stream afterwards.
@@ -279,6 +339,11 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
             let mut heartbeat = tokio::time::interval(this.lease.heartbeat);
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             heartbeat.tick().await; // the claim already took the lease
+            // Its first tick is not skipped: the keep-alive right after the hand-over
+            // attempt is what carries the response headers out, since a proxy may
+            // hold bare headers until the stream's first data.
+            let mut keepalive = tokio::time::interval(this.health.config.stream_keepalive());
+            keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // `Err` ends the stream: the worker reconnects with backoff and starts
             // from the row again, so a failed read is never a silently lost revision.
             let ended: Result<(), Status> = async {
@@ -298,6 +363,17 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
                             if !this.renew(&server_id, fence).await? {
                                 return Err(Status::aborted("watch session lease lost"));
                             }
+                            continue;
+                        }
+                        // A proxy cuts a stream that stays silent (Cloudflare after
+                        // about two minutes); a revision may not come for days. A full
+                        // channel already has data waiting, and a keep-alive must
+                        // never hold up the lease renewal above.
+                        _ = keepalive.tick(), if keep_alive => {
+                            let _ = tx.try_send(Ok(pb::ConfigRevision {
+                                keep_alive: true,
+                                ..Default::default()
+                            }));
                             continue;
                         }
                         signal = subscription.rx.recv() => signal,
@@ -385,67 +461,91 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         }))
     }
 
-    /// Records every report as it arrives; the stream ending, however it ends,
-    /// is the worker going away. The Offline mark is fenced on this session's
-    /// generation, so a stream outlived by a re-registration cannot clobber the
-    /// successor's status.
+    type ReportHealthStream = ReceiverStream<Result<pb::ReportHealthReply, Status>>;
+
+    /// Records every report as it arrives and answers each one, so the reply
+    /// stream is never silent to a proxy and the worker can tell its reports
+    /// land. The reply stream opens at once, before any report is recorded.
     ///
-    /// A stream that stays open but falls silent past the offline threshold is
-    /// ended here too: a worker whose reporting stalled gets a failed call to
-    /// restart its session on, instead of a stream that looks fine to it forever.
+    /// The stream ending is not the worker going away — a proxy cuts streams for
+    /// reasons of its own, and a worker back within the offline threshold never
+    /// was offline — so it leaves the verdict to the liveness sweep. Silence is:
+    /// a stream that carries no report for `health_offline_after()` is ended here
+    /// with `DEADLINE_EXCEEDED` and marks the server `Offline`, fenced on this
+    /// session's generation so a stream outlived by a re-registration cannot
+    /// clobber the successor's status.
+    ///
+    /// The loop runs in a task of its own: hyper drops a handler whose stream the
+    /// peer reset, and that must not cut a verdict or a write short.
     async fn report_health(
         &self,
         request: Request<tonic::Streaming<pb::HealthReport>>,
-    ) -> Result<Response<pb::ReportHealthReply>, Status> {
+    ) -> Result<Response<Self::ReportHealthStream>, Status> {
         let agent = agent_from_request(&request)?;
-        let mut reports = request.into_inner();
-        let silence = self.health.config.health_offline_after();
-        let ended = loop {
-            let next = match tokio::time::timeout(silence, reports.message()).await {
-                Ok(next) => next,
-                Err(_) => {
-                    break Err(Status::deadline_exceeded(format!(
-                        "no health report within {}s",
-                        silence.as_secs()
-                    )));
-                }
+        let reports = request.into_inner();
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let ended = tokio::select! {
+                // The worker's end of the replies is gone: nobody is left to answer.
+                _ = tx.closed() => HealthEnd::Closed,
+                ended = this.record_reports(&agent, reports, &tx) => ended,
             };
-            match next {
-                Ok(Some(report)) => {
-                    let recorded = self
-                        .health
-                        .process(RecordHealthReport {
-                            agent: agent.clone(),
-                            report: HealthReportInput {
-                                running_revision: report.running_revision,
-                                upload_bytes: report.upload_bytes,
-                                download_bytes: report.download_bytes,
-                                current_connections: report.current_connections,
-                                max_connections: report.max_connections,
-                                pods: report.pods.into_iter().map(pod_result).collect(),
-                                reported: report.reported_addresses.map(reported_from_proto),
-                            },
-                        })
-                        .await;
-                    if let Err(e) = recorded {
-                        break Err(Status::from(e));
-                    }
-                }
-                Ok(None) => break Ok(()),
-                Err(status) => break Err(status),
+            tracing::info!(
+                server = %agent.server,
+                generation = agent.generation,
+                ended = %ended,
+                "health stream ended"
+            );
+            if let HealthEnd::Silent(_) = ended
+                && let Err(e) = this
+                    .health
+                    .process(MarkServerOffline {
+                        server: agent.server.clone(),
+                        generation: Some(agent.generation),
+                    })
+                    .await
+            {
+                tracing::warn!(error = %e, "marking a silent server offline failed");
             }
-        };
-        if let Err(e) = self
-            .health
-            .process(MarkServerOffline {
-                server: agent.server,
-                generation: Some(agent.generation),
-            })
-            .await
-        {
-            tracing::warn!(error = %e, "marking the server offline after its health stream ended failed");
+            if let Some(status) = ended.into_status() {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// How one health stream ended. Only `Silent` marks the server offline.
+enum HealthEnd {
+    /// The worker half-closed or reset it, or a proxy on the path did.
+    Closed,
+    /// The request stream broke underneath the master.
+    Broken(Status),
+    /// No report within the offline threshold: the master's own verdict.
+    Silent(Status),
+    /// A report arrived and could not be recorded.
+    Unrecorded(Status),
+}
+
+impl HealthEnd {
+    /// What the worker is told, if the stream did not simply close.
+    fn into_status(self) -> Option<Status> {
+        match self {
+            Self::Closed => None,
+            Self::Broken(status) | Self::Silent(status) | Self::Unrecorded(status) => Some(status),
         }
-        ended.map(|()| Response::new(pb::ReportHealthReply {}))
+    }
+}
+
+impl std::fmt::Display for HealthEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("closed"),
+            Self::Broken(status) => write!(f, "broken: {}", status.message()),
+            Self::Silent(status) => write!(f, "silent: {}", status.message()),
+            Self::Unrecorded(status) => write!(f, "unrecorded: {}", status.message()),
+        }
     }
 }
 

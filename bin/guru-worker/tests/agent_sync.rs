@@ -53,7 +53,7 @@ use rpguru_sdk::orchestration_agent::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -114,6 +114,15 @@ async fn boot_master(
     pool: sqlx::PgPool,
     lease: SessionLease,
 ) -> Result<(Master, String), Box<dyn std::error::Error>> {
+    boot_master_with(pool, lease, OrchestrationConfig::default()).await
+}
+
+/// [`boot_master`] with the master's settings chosen by the test.
+async fn boot_master_with(
+    pool: sqlx::PgPool,
+    lease: SessionLease,
+    config: OrchestrationConfig,
+) -> Result<(Master, String), Box<dyn std::error::Error>> {
     let sp = Db::new(pool);
 
     let hasher = Argon2PasswordAlgorithm::default();
@@ -138,7 +147,7 @@ async fn boot_master(
 
     let hub = WatchHub::default();
     let shutdown = CancellationToken::new();
-    let addr = serve(&sp, &hub, &shutdown, lease).await?;
+    let addr = serve(&sp, &hub, &shutdown, lease, config).await?;
     Ok((
         Master {
             db: sp,
@@ -156,6 +165,7 @@ async fn serve(
     hub: &WatchHub,
     shutdown: &CancellationToken,
     lease: SessionLease,
+    config: OrchestrationConfig,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let hasher = Argon2PasswordAlgorithm::default();
     let sessions = SessionService {
@@ -169,10 +179,9 @@ async fn serve(
         hub: hub.clone(),
         lease,
         notifier: Notifier::default(),
-        config: OrchestrationConfig::default(),
+        config: config.clone(),
     };
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
-    let config = OrchestrationConfig::default();
     let service = WorkerAgentGrpc {
         agents: agents.clone(),
         health: HealthService {
@@ -581,7 +590,7 @@ async fn watch(
     client: &mut WorkerAgentClient<tonic::transport::Channel>,
     refresh_key: &str,
 ) -> Result<(tonic::Streaming<ConfigRevision>, ConfigRevision), Box<dyn std::error::Error>> {
-    let mut request = tonic::Request::new(WatchConfigRequest {});
+    let mut request = tonic::Request::new(WatchConfigRequest::default());
     request
         .metadata_mut()
         .insert("x-refresh-key", refresh_key.parse()?);
@@ -808,7 +817,14 @@ async fn a_refresh_key_survives_a_master_restart(pool: sqlx::PgPool) -> TestResu
     master.shutdown.cancel();
     tokio::time::sleep(Duration::from_millis(50)).await;
     let restart = CancellationToken::new();
-    let addr = serve(&master.db, &master.hub, &restart, SessionLease::default()).await?;
+    let addr = serve(
+        &master.db,
+        &master.hub,
+        &restart,
+        SessionLease::default(),
+        OrchestrationConfig::default(),
+    )
+    .await?;
     let mut client = within(
         "a channel to the restarted master",
         WorkerAgentClient::connect(format!("http://{addr}")),
@@ -841,9 +857,311 @@ async fn a_refresh_key_survives_a_master_restart(pool: sqlx::PgPool) -> TestResu
     Ok(())
 }
 
+/// Registers once the previous session let the server go: the lease is released by
+/// the stream's own task, a moment after the stream is dropped.
+async fn register_when_free(
+    client: &mut WorkerAgentClient<tonic::transport::Channel>,
+    server_key: &str,
+    api_key: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match register(client, server_key, api_key).await {
+            Ok(key) => return Ok(key),
+            Err(e)
+                if e.code() == tonic::Code::FailedPrecondition
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// Opens `ReportHealth` the way a current worker does, before sending anything:
+/// the sender its reports go through, and the master's replies.
+async fn open_health(
+    client: &mut WorkerAgentClient<tonic::transport::Channel>,
+    refresh_key: &str,
+) -> Result<
+    (
+        mpsc::Sender<HealthReport>,
+        tonic::Streaming<ReportHealthReply>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let (reports, rx) = mpsc::channel(4);
+    let mut request = tonic::Request::new(ReceiverStream::new(rx));
+    request
+        .metadata_mut()
+        .insert("x-refresh-key", refresh_key.parse()?);
+    let replies = within("the health replies to open", client.report_health(request))
+        .await?
+        .into_inner();
+    Ok((reports, replies))
+}
+
+async fn server_row(db: &Db, server: &ServerId) -> orchestration::entities::db::server::ServerEntity {
+    db.process(FindServerById { id: server.clone() })
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_config_stream_carries_keep_alives_only_when_asked(pool: sqlx::PgPool) -> TestResult {
+    // Two seconds between keep-alives: one that comes sooner can only be the first,
+    // sent right after the hand-over rather than a period later.
+    let config = OrchestrationConfig {
+        stream_keepalive_secs: 2,
+        ..OrchestrationConfig::default()
+    };
+    let (master, api_key) = boot_master_with(pool, SessionLease::default(), config).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+
+    // A stream that did not ask — every worker built before keep-alives — is sent
+    // nothing past its revision: such a worker would apply one as an empty config.
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let (mut quiet, _) = watch(&mut client, &key).await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(2500), quiet.message())
+            .await
+            .is_err(),
+        "a stream that did not ask for keep-alives was sent a message"
+    );
+    drop(quiet);
+
+    let key = register_when_free(&mut client, &server_key, &api_key).await?;
+    let mut request = tonic::Request::new(WatchConfigRequest { keep_alive: true });
+    request.metadata_mut().insert("x-refresh-key", key.parse()?);
+    let opened = std::time::Instant::now();
+    let mut stream = within("WatchConfig", client.watch_config(request))
+        .await?
+        .into_inner();
+    let mut keep_alives = Vec::new();
+    while keep_alives.len() < 2 {
+        let message = within("a keep-alive", stream.message())
+            .await?
+            .expect("the stream stays open");
+        if message.keep_alive {
+            keep_alives.push((opened.elapsed(), message));
+        }
+    }
+    let (first_at, first) = &keep_alives[0];
+    assert!(
+        *first_at < Duration::from_millis(1500),
+        "the first keep-alive waited for a period: {first_at:?}"
+    );
+    assert_eq!(
+        first,
+        &ConfigRevision {
+            keep_alive: true,
+            ..ConfigRevision::default()
+        },
+        "a keep-alive carries nothing else"
+    );
+
+    drop(stream);
+    master.shutdown.cancel();
+    Ok(())
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn health_replies_open_at_once_and_answer_every_report(pool: sqlx::PgPool) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let (_stream, _) = watch(&mut client, &key).await?;
+
+    // `open_health` returns before a single report went out.
+    let (reports, mut replies) = open_health(&mut client, &key).await?;
+    for _ in 0..3 {
+        reports.send(HealthReport::default()).await?;
+        within("the reply to a report", replies.message())
+            .await?
+            .expect("every report is answered");
+    }
+    assert_ne!(
+        server_row(&master.db, &canvas.server).await.health_status,
+        ServerHealthStatus::Offline
+    );
+
+    master.shutdown.cancel();
+    Ok(())
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_health_stream_that_just_closes_leaves_the_server_to_the_sweep(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let (_stream, _) = watch(&mut client, &key).await?;
+    let (reports, mut replies) = open_health(&mut client, &key).await?;
+    reports.send(HealthReport::default()).await?;
+    within("the reply", replies.message())
+        .await?
+        .expect("the report is answered");
+    let before = server_row(&master.db, &canvas.server).await.health_status;
+    assert_ne!(before, ServerHealthStatus::Offline);
+
+    // The worker — or a proxy on its path — closes the stream. That is no verdict on
+    // the worker: a proxy does this on its own, and the sweep judges a worker that
+    // does not come back.
+    drop(reports);
+    assert!(
+        within("the stream to end", replies.message())
+            .await?
+            .is_none(),
+        "a closed stream ends cleanly"
+    );
+    let row = server_row(&master.db, &canvas.server).await;
+    assert_eq!(row.health_status, before);
+    assert!(
+        row.session_lease_until.is_some(),
+        "the session still holds its server"
+    );
+
+    master.shutdown.cancel();
+    Ok(())
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_silent_health_stream_marks_the_server_offline(pool: sqlx::PgPool) -> TestResult {
+    // Offline after two seconds without a report.
+    let config = OrchestrationConfig {
+        health_report_interval_secs: 1,
+        health_offline_after_intervals: 2,
+        ..OrchestrationConfig::default()
+    };
+    let (master, api_key) = boot_master_with(pool, SessionLease::default(), config).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let (mut stream, _) = watch(&mut client, &key).await?;
+    let (reports, mut replies) = open_health(&mut client, &key).await?;
+    reports.send(HealthReport::default()).await?;
+    within("the reply", replies.message())
+        .await?
+        .expect("the report is answered");
+    assert_ne!(
+        server_row(&master.db, &canvas.server).await.health_status,
+        ServerHealthStatus::Offline
+    );
+
+    // Then nothing, on a stream that stays open: the master gives up on it.
+    let status = within("the silence verdict", replies.message())
+        .await
+        .expect_err("a silent stream is ended");
+    assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+    let row = server_row(&master.db, &canvas.server).await;
+    assert_eq!(row.health_status, ServerHealthStatus::Offline);
+    assert!(
+        row.session_lease_until.is_none(),
+        "going offline hands the session back"
+    );
+    // ...which fences the session's config stream as well.
+    let fenced = within("the config stream to end", stream.message())
+        .await
+        .expect_err("the config stream is fenced");
+    assert_eq!(fenced.code(), tonic::Code::Aborted);
+
+    drop(reports);
+    master.shutdown.cancel();
+    Ok(())
+}
+
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_worker_built_before_health_replies_still_waits_for_the_stream_to_end(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let config = OrchestrationConfig {
+        health_report_interval_secs: 1,
+        health_offline_after_intervals: 2,
+        ..OrchestrationConfig::default()
+    };
+    let (master, api_key) = boot_master_with(pool, SessionLease::default(), config).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let (_stream, _) = watch(&mut client, &key).await?;
+
+    // What a 0.4 worker runs: tonic's client-streaming call, which takes one reply
+    // and then drains the stream to its end.
+    let channel = within(
+        "a raw channel to the master",
+        tonic::transport::Endpoint::from_shared(format!("http://{}", master.addr))?.connect(),
+    )
+    .await?;
+    let mut grpc = tonic::client::Grpc::new(channel);
+    within("the channel to be ready", grpc.ready()).await?;
+    let (reports, rx) = mpsc::channel(4);
+    reports.send(HealthReport::default()).await?;
+    let mut request = tonic::Request::new(ReceiverStream::new(rx));
+    request.metadata_mut().insert("x-refresh-key", key.parse()?);
+    let call = grpc.client_streaming(
+        request,
+        tonic::codegen::http::uri::PathAndQuery::from_static(
+            "/guru.orchestration.agent.WorkerAgent/ReportHealth",
+        ),
+        tonic_prost::ProstCodec::<HealthReport, ReportHealthReply>::default(),
+    );
+    tokio::pin!(call);
+    // The report is answered at once, and still the call does not return: to such a
+    // worker the stream ending is what ends the call, as it always was.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1000), &mut call)
+            .await
+            .is_err(),
+        "a reply ended an old worker's health call"
+    );
+    let status = within("the silence verdict", call)
+        .await
+        .expect_err("the master ends a silent stream");
+    assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+
+    drop(reports);
+    master.shutdown.cancel();
+    Ok(())
+}
+
 /// The master reduced to the worker-facing contract: hands out one fixed revision and
 /// records what the worker sends back. Exercises the file and health paths without a
 /// database — the real master's side of both is covered in the orchestration crate.
+///
+/// As built, it is a master from before keep-alives: `Register` announces none, and
+/// `ReportHealth` is read to its end before the one reply, which is all such a master
+/// ever sent. `stream_keepalive_secs` makes it a current one.
 struct FakeMaster {
     revision: ConfigRevision,
     acks: mpsc::UnboundedSender<AckConfigRequest>,
@@ -856,6 +1174,22 @@ struct FakeMaster {
     /// database answer looks like from the worker's side.
     hang_polls: bool,
     hang_acks: bool,
+    /// What `Register` announces. Non-zero: `ReportHealth` opens its replies at once
+    /// and, with `answer_reports`, answers every report.
+    stream_keepalive_secs: u32,
+    /// How often a config stream that asked for keep-alives is sent one (and once
+    /// ahead of the revision); `None` sends none.
+    keepalive_every: Option<Duration>,
+    answer_reports: bool,
+    /// Whether a `WatchConfig` request asked for keep-alives.
+    asked_for_keep_alives: Arc<AtomicBool>,
+}
+
+fn keep_alive() -> Result<ConfigRevision, Status> {
+    Ok(ConfigRevision {
+        keep_alive: true,
+        ..ConfigRevision::default()
+    })
 }
 
 impl FakeMaster {
@@ -872,6 +1206,10 @@ impl FakeMaster {
             registrations: Arc::default(),
             hang_polls: false,
             hang_acks: false,
+            stream_keepalive_secs: 0,
+            keepalive_every: None,
+            answer_reports: true,
+            asked_for_keep_alives: Arc::default(),
         }
     }
 
@@ -905,6 +1243,7 @@ impl WorkerAgent for FakeMaster {
             refresh_key: "fake".to_string(),
             health_report_interval_secs: 0,
             agent_update_poll_secs: 0,
+            stream_keepalive_secs: self.stream_keepalive_secs,
         }))
     }
 
@@ -924,12 +1263,33 @@ impl WorkerAgent for FakeMaster {
 
     async fn watch_config(
         &self,
-        _: Request<WatchConfigRequest>,
+        request: Request<WatchConfigRequest>,
     ) -> Result<Response<Self::WatchConfigStream>, Status> {
+        let keep_alives = request.get_ref().keep_alive;
+        if keep_alives {
+            self.asked_for_keep_alives.store(true, Ordering::SeqCst);
+        }
+        let every = self.keepalive_every.filter(|_| keep_alives);
         let (tx, rx) = mpsc::channel(4);
+        if every.is_some() {
+            tx.send(keep_alive())
+                .await
+                .map_err(|_| Status::internal("stream"))?;
+        }
         tx.send(Ok(self.revision.clone()))
             .await
             .map_err(|_| Status::internal("stream"))?;
+        if let Some(every) = every {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(every).await;
+                    if tx.send(keep_alive()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
         self.streams.lock().push(tx);
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -945,15 +1305,35 @@ impl WorkerAgent for FakeMaster {
         Ok(Response::new(AckConfigReply {}))
     }
 
+    type ReportHealthStream = ReceiverStream<Result<ReportHealthReply, Status>>;
+
     async fn report_health(
         &self,
         request: Request<tonic::Streaming<HealthReport>>,
-    ) -> Result<Response<ReportHealthReply>, Status> {
+    ) -> Result<Response<Self::ReportHealthStream>, Status> {
         let mut reports = request.into_inner();
-        while let Some(report) = reports.message().await? {
-            let _ = self.health.send(report);
+        let (tx, rx) = mpsc::channel(4);
+        if self.stream_keepalive_secs == 0 {
+            // No reply, and no response headers, before the worker is done.
+            while let Some(report) = reports.message().await? {
+                let _ = self.health.send(report);
+            }
+            tx.send(Ok(ReportHealthReply {}))
+                .await
+                .map_err(|_| Status::internal("stream"))?;
+            return Ok(Response::new(ReceiverStream::new(rx)));
         }
-        Ok(Response::new(ReportHealthReply {}))
+        let health = self.health.clone();
+        let answer = self.answer_reports;
+        tokio::spawn(async move {
+            while let Ok(Some(report)) = reports.message().await {
+                let _ = health.send(report);
+                if answer && tx.send(Ok(ReportHealthReply {})).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
@@ -1002,6 +1382,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
                 pem: cert.pem(),
             },
         ],
+        keep_alive: false,
     };
 
     let (acks_tx, mut acks) = mpsc::unbounded_channel();
@@ -1073,11 +1454,17 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
     .await
     .expect("the handshake against the delivered certificate succeeds");
 
-    // Health reports name the running revision and every pod.
-    let report = within("a health report", health.recv())
-        .await
-        .expect("a report arrives");
-    assert_eq!(report.running_revision, 7);
+    // Health reports name the running revision and every pod — once it runs:
+    // reporting starts with the session, so the earliest may still say `0`.
+    let report = within("a report of the applied revision", async {
+        loop {
+            let report = health.recv().await.expect("a report arrives");
+            if report.running_revision == 7 {
+                return report;
+            }
+        }
+    })
+    .await;
     assert_eq!(report.pods, vec![edge_ok()]);
 
     // What is persisted for a restart is the running config with its paths resolved.
@@ -1121,6 +1508,7 @@ fn raw_revision(revision: i64) -> Result<ConfigRevision, Box<dyn std::error::Err
         revision,
         toml: cfg.to_toml_string()?,
         files: Vec::new(),
+        keep_alive: false,
     })
 }
 
@@ -1139,6 +1527,17 @@ impl FakeRun {
         update_poll: Duration,
         unary_timeout: Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_with(master, update_poll, unary_timeout, Duration::from_millis(100)).await
+    }
+
+    /// [`FakeRun::start`] reporting health every `health_interval`: the reply watchdog
+    /// gives up after three of them, which must not race a loaded test machine.
+    async fn start_with(
+        master: FakeMaster,
+        update_poll: Duration,
+        unary_timeout: Duration,
+        health_interval: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (master_addr, master_shutdown) = master.serve().await?;
         let state_dir = std::env::temp_dir().join(format!("guru-worker-fake-{}", free_port()));
         let _ = std::fs::remove_dir_all(&state_dir);
@@ -1151,7 +1550,7 @@ impl FakeRun {
                 server_id: "edge-server".to_string(),
                 state_dir: state_dir.clone(),
                 applied_revision: Arc::new(AtomicI64::new(0)),
-                health_interval: Duration::from_millis(100),
+                health_interval,
                 sources: guru_worker::addresses::Sources::none(),
                 update_poll,
                 self_update: false,
@@ -1195,10 +1594,12 @@ async fn a_poll_the_master_never_answers_does_not_stall_health_reports() -> Test
     // is well past the test's horizon so the hang itself is what is exercised.
     let run = FakeRun::start(master, Duration::from_millis(100), Duration::from_secs(60)).await?;
 
-    let first = within("the first report", health.recv())
-        .await
-        .expect("a report arrives");
-    assert_eq!(first.running_revision, 3);
+    // Reporting starts with the session, before the revision is in: the first
+    // reports may still say `0`, and one soon says what now runs.
+    within("a report of the applied revision", async {
+        while health.recv().await.expect("a report arrives").running_revision != 3 {}
+    })
+    .await;
     // Twenty more reports: two seconds of a loop that used to freeze at the
     // first poll, a tenth of a second in.
     for _ in 0..20 {
@@ -1243,6 +1644,127 @@ async fn an_ack_the_master_never_answers_ends_the_session() -> TestResult {
     assert!(
         registrations.load(Ordering::SeqCst) >= 2,
         "the replacement session registered"
+    );
+    run.stop().await;
+    Ok(())
+}
+
+
+/// A current master sends keep-alives, ahead of the revision and after it: the worker
+/// skips them — none is applied as an empty config or acknowledged — and a session
+/// whose streams carry keep-alives and replies outlasts both watchdogs.
+#[tokio::test]
+async fn keep_alives_are_skipped_and_a_live_session_outlasts_the_watchdogs() -> TestResult {
+    let (acks_tx, mut acks) = mpsc::unbounded_channel();
+    let (health_tx, mut health) = mpsc::unbounded_channel();
+    let mut master = FakeMaster::new(raw_revision(5)?, acks_tx, health_tx);
+    master.stream_keepalive_secs = 1;
+    master.keepalive_every = Some(Duration::from_millis(200));
+    let registrations = master.registrations.clone();
+    let asked = master.asked_for_keep_alives.clone();
+    let run = FakeRun::start_with(
+        master,
+        Duration::from_secs(60),
+        Duration::from_secs(5),
+        Duration::from_millis(250),
+    )
+    .await?;
+
+    let ack = within("the ack", acks.recv())
+        .await
+        .expect("an ack arrives");
+    assert_eq!((ack.revision, ack.error), (5, None));
+    // Past the config stream's three seconds, and many times the replies' window.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        asked.load(Ordering::SeqCst),
+        "the worker asked for keep-alives"
+    );
+    assert_eq!(
+        registrations.load(Ordering::SeqCst),
+        1,
+        "the session was never given up"
+    );
+    assert!(
+        acks.try_recv().is_err(),
+        "a keep-alive was acknowledged as a revision"
+    );
+    assert_eq!(
+        run.sup.lock().await.running_config().forwardings.len(),
+        1,
+        "the revision still runs"
+    );
+    let mut reports = 0;
+    while health.try_recv().is_ok() {
+        reports += 1;
+    }
+    assert!(reports >= 10, "reports kept flowing: {reports}");
+    run.stop().await;
+    Ok(())
+}
+
+/// Keep-alives announced but never sent: the config stream is a dead path, and the
+/// session ends on its watchdog — three periods of one second — although every
+/// health report is answered.
+#[tokio::test]
+async fn a_config_stream_that_falls_silent_ends_the_session() -> TestResult {
+    let (acks_tx, _acks) = mpsc::unbounded_channel();
+    let (health_tx, _health) = mpsc::unbounded_channel();
+    let mut master = FakeMaster::new(raw_revision(6)?, acks_tx, health_tx);
+    master.stream_keepalive_secs = 1;
+    let registrations = master.registrations.clone();
+    let started = std::time::Instant::now();
+    let run = FakeRun::start_with(
+        master,
+        Duration::from_secs(60),
+        Duration::from_secs(5),
+        Duration::from_millis(250),
+    )
+    .await?;
+
+    within("the replacement session", async {
+        while registrations.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "the session ended before the config stream's watchdog was due: {:?}",
+        started.elapsed()
+    );
+    run.stop().await;
+    Ok(())
+}
+
+/// Reports the master takes but never answers: after three intervals without a reply
+/// the session ends, while keep-alives keep its config stream alive.
+#[tokio::test]
+async fn health_reports_the_master_never_answers_end_the_session() -> TestResult {
+    let (acks_tx, _acks) = mpsc::unbounded_channel();
+    let (health_tx, mut health) = mpsc::unbounded_channel();
+    let mut master = FakeMaster::new(raw_revision(7)?, acks_tx, health_tx);
+    master.stream_keepalive_secs = 1;
+    master.keepalive_every = Some(Duration::from_millis(200));
+    master.answer_reports = false;
+    let registrations = master.registrations.clone();
+    let run = FakeRun::start_with(
+        master,
+        Duration::from_secs(60),
+        Duration::from_secs(5),
+        Duration::from_millis(250),
+    )
+    .await?;
+
+    within("the replacement session", async {
+        while registrations.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        health.try_recv().is_ok(),
+        "the reports went out; only the replies were missing"
     );
     run.stop().await;
     Ok(())

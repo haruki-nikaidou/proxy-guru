@@ -338,10 +338,12 @@ fn pod_records(
     verdicts.into_records(now)
 }
 
-/// The worker is gone: its report stream closed, or it fell silent past the
-/// threshold. `generation` set means "only if the server still belongs to this
-/// session": a stream that lost its server to a re-registration must not mark
-/// the successor's server offline. Already `Offline` is a no-op.
+/// The worker is gone: its report stream carried nothing past the threshold.
+/// A stream that merely closed is not this — a proxy cuts streams of its own
+/// accord, and the sweep judges a worker that does not come back. `generation`
+/// set means "only if the server still belongs to this session": a stream that
+/// lost its server to a re-registration must not mark the successor's server
+/// offline. Already `Offline` is a no-op.
 ///
 /// Going offline also releases the watch session (lease dropped, epoch bumped):
 /// the worker's config stream ends and its next registration is accepted at

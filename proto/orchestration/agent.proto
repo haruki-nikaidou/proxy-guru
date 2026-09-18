@@ -8,12 +8,21 @@ package guru.orchestration.agent;
 // (`x-refresh-key`) that `Register` returned.
 service WorkerAgent {
   rpc Register(RegisterRequest) returns (RegisterReply);
+  // Sends a keep-alive every `RegisterReply.stream_keepalive_secs` to a worker
+  // that asked for them, so no proxy on the path sees a silent stream.
   rpc WatchConfig(WatchConfigRequest) returns (stream ConfigRevision);
   rpc AckConfig(AckConfigRequest) returns (AckConfigReply);
-  // One report per interval for as long as the worker lives; the master treats
-  // the stream closing as the liveness signal. The reply arrives only when the
-  // worker half-closes.
-  rpc ReportHealth(stream HealthReport) returns (ReportHealthReply);
+  // One report per interval for as long as the worker lives, one reply per
+  // report the master recorded; the reply stream opens before the first report
+  // is recorded. The stream closing does not mark the server offline — a proxy
+  // cutting it is not the worker going away. Silence does: no report for
+  // `health_offline_after`, and the master ends the stream with
+  // `DEADLINE_EXCEEDED` and marks the server `Offline`.
+  //
+  // A worker built before the replies (tonic 0.14 `client_streaming`) takes
+  // the first reply and drains the rest, so its call still ends only when the
+  // stream does.
+  rpc ReportHealth(stream HealthReport) returns (stream ReportHealthReply);
   // Asked every `agent_update_poll_secs`: whether the operator requested an
   // update for this server, and how the previous attempt went.
   rpc PollAgentUpdate(PollAgentUpdateRequest) returns (PollAgentUpdateReply);
@@ -59,8 +68,19 @@ message RegisterReply {
   // How often the worker should ask `PollAgentUpdate`; `0` leaves the worker's
   // own default.
   uint32 agent_update_poll_secs = 3;
+  // How often `WatchConfig` sends a keep-alive to a worker that asked for them.
+  // Non-zero also means `ReportHealth` answers every recorded report, so the
+  // worker may end a session whose streams stay silent for three of these (or
+  // three health intervals). `0`: a master built before either; the worker
+  // expects neither.
+  uint32 stream_keepalive_secs = 4;
 }
-message WatchConfigRequest {}
+message WatchConfigRequest {
+  // The worker skips `ConfigRevision.keep_alive` messages. A worker built
+  // before them sends `false` and is sent none: it would apply one as an empty
+  // config.
+  bool keep_alive = 1;
+}
 // A file the worker writes under its state directory before applying `toml`.
 // `path` is relative to the state directory and is exactly what the TOML's
 // `key` / `full_chain` / `relay_ca` fields reference.
@@ -72,6 +92,9 @@ message ConfigRevision {
   int64 revision = 1;
   string toml = 2;
   repeated CertificateFile files = 3;
+  // Set on a keep-alive, which carries nothing else and is neither applied nor
+  // acknowledged. Only sent on a stream whose request set `keep_alive`.
+  bool keep_alive = 4;
 }
 // The outcome of one `[[forwarding]]` (keyed by its `tag`, the pod name).
 // Unset `error` means the pod runs the shape the revision asked for.
@@ -104,6 +127,7 @@ message HealthReport {
   // Set only on a report whose address discovery changed something.
   ReportedAddresses reported_addresses = 7;
 }
+// One per `HealthReport` the master recorded, in order.
 message ReportHealthReply {}
 // A non-empty `last_error` is why the previous update attempt failed (download,
 // checksum, install, or self-update disabled on the host); the master records

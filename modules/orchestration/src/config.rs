@@ -71,8 +71,10 @@ pub struct OrchestrationConfig {
     /// directly, or a worker could spoof its observed address.
     pub trust_proxy_address_headers: bool,
     /// How often an idle `Watch*` stream sends an empty keep-alive and
-    /// re-checks the session that opened it. Keep it under any proxy idle
-    /// timeout in front of the dashboard API.
+    /// re-checks the session that opened it, and how often a worker's
+    /// `WatchConfig` stream carries one. Keep it under the idle timeout of any
+    /// proxy in front of either API (Cloudflare cuts a silent stream after
+    /// about two minutes).
     pub stream_keepalive_secs: u64,
     /// The public origin workers dial and the install command downloads from,
     /// e.g. `https://guru.example.com`. Empty means the dashboard cannot render

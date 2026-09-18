@@ -877,7 +877,7 @@ async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> 
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors(
+async fn a_silent_stream_marks_its_own_server_offline_but_not_a_successors(
     pool: sqlx::PgPool,
 ) -> TestResult {
     let w = world(pool).await?;
@@ -909,7 +909,7 @@ async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors(
     assert_eq!(row.health_status, ServerHealthStatus::Offline);
     assert_eq!(
         row.session_lease_until, None,
-        "the stream's end frees the server"
+        "the silence verdict frees the server"
     );
     assert_eq!(row.watch_epoch, held.watch_epoch + 1);
     assert!(
@@ -921,7 +921,7 @@ async fn a_closing_stream_marks_its_own_server_offline_but_not_a_successors(
             .await?,
         "already offline is a no-op"
     );
-    // ack (Online), report (Online), stream close (Offline); no-ops add nothing.
+    // ack (Online), report (Online), silence (Offline); no-ops add nothing.
     assert_eq!(server_history(&w, &f.server).await.len(), 3);
     Ok(())
 }

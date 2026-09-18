@@ -11,8 +11,9 @@ use crate::state::{self, LastKnownGood};
 use crate::supervisor::{ApplyOutcome, Supervisor};
 use crate::update::{self, UpdateOptions, UpdatePlan};
 use rpguru_sdk::orchestration_agent::{
-    AckConfigRequest, HealthReport, PodStatus, PollAgentUpdateRequest, RegisterRequest,
-    ReportedAddresses, WatchConfigRequest, worker_agent_client::WorkerAgentClient,
+    AckConfigRequest, ConfigRevision, HealthReport, PodStatus, PollAgentUpdateRequest,
+    RegisterRequest, ReportHealthReply, ReportedAddresses, WatchConfigRequest,
+    worker_agent_client::WorkerAgentClient,
 };
 use std::collections::HashSet;
 use std::future::Future;
@@ -67,6 +68,15 @@ pub const CAPABILITIES: &[&str] = &["route_table", "relay_confirm"];
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
+/// A session that lived this long proved the path to the master, so the one after
+/// it starts the backoff over instead of inheriting the capped delay of whatever
+/// failures came before it.
+const SESSION_PROVEN: Duration = Duration::from_secs(5 * 60);
+/// How many keep-alive periods (or health intervals) a stream may stay silent
+/// before the session is given up. The HTTP/2 pings below only reach the first
+/// hop — a proxy answers them for a path whose far end is gone — so only data
+/// the master itself sent proves the whole path.
+const WATCHDOG_BEATS: u32 = 3;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTTP/2 PING cadence towards whatever answers `--master` — the master itself or a
 /// TLS-terminating proxy in front of it. A path that stops answering is torn down after
@@ -131,6 +141,7 @@ pub async fn run(
         if shutdown.is_cancelled() {
             return Ok(());
         }
+        let started = tokio::time::Instant::now();
         // Every RPC in a session is unbounded on its own, so the whole session — not
         // just the stream — is raced against shutdown to keep SIGTERM prompt.
         let outcome = tokio::select! {
@@ -141,6 +152,7 @@ pub async fn run(
             Ok(()) => return Ok(()),
             Err(e) => tracing::error!(error = %e, "agent session ended"),
         }
+        backoff = backoff_after(backoff, started.elapsed());
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
             _ = tokio::time::sleep(jitter(backoff)) => {}
@@ -202,25 +214,31 @@ async fn session(
         master: opts.master.clone(),
         done: opts.update_done.clone(),
     };
+    // Non-zero: the config stream carries keep-alives and every health report is
+    // answered, so silence on either means the path is gone. `0` is a master built
+    // before both, whose streams may rightly stay silent.
+    let keepalive = match reply.stream_keepalive_secs {
+        0 => None,
+        secs => Some(Duration::from_secs(u64::from(secs))),
+    };
     tracing::info!(
         server = %opts.server_id,
         running_revision,
         version = VERSION,
         health_interval_secs = health_interval.as_secs(),
+        keepalive_secs = keepalive.map_or(0, |k| k.as_secs()),
         "registered with master"
     );
-
-    let mut watch = tonic::Request::new(WatchConfigRequest {});
-    watch
-        .metadata_mut()
-        .insert("x-refresh-key", refresh_key.clone());
-    let mut stream = client.watch_config(watch).await?.into_inner();
 
     // The health stream lives exactly as long as this session: the guard cancels it on
     // every way out of here, and its ending — the master closing it, or the session
     // key being rotated away — ends the session so the next one reconnects both.
     // Cancellation is cooperative, so both side tasks are also aborted on the way
     // out: one stuck inside a call it will never return from must not outlive us.
+    //
+    // It starts before the config stream opens: the first report must not wait for
+    // that stream's response headers, which a proxy may hold back until the stream
+    // carries data.
     let health_token = CancellationToken::new();
     let _health_guard = health_token.clone().drop_guard();
     let mut health = AbortOnDrop(tokio::spawn(report_health(
@@ -231,6 +249,7 @@ async fn session(
         opts.applied_revision.clone(),
         opts.sources.clone(),
         discovered,
+        keepalive.is_some(),
         health_token.clone(),
     )));
     // Update polls are the health task's business no longer: one that the master
@@ -243,6 +262,15 @@ async fn session(
         health_token,
     )));
 
+    let mut watch = tonic::Request::new(WatchConfigRequest { keep_alive: true });
+    watch
+        .metadata_mut()
+        .insert("x-refresh-key", refresh_key.clone());
+    let mut stream = bounded(opts.unary_timeout, "WatchConfig", client.watch_config(watch))
+        .await?
+        .into_inner();
+    let silence = keepalive.map(|k| k.saturating_mul(WATCHDOG_BEATS));
+
     loop {
         let message = tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
@@ -253,11 +281,14 @@ async fn session(
                     Err(e) => format!("health task: {e}").into(),
                 });
             }
-            message = stream.message() => message?,
+            message = next_revision(&mut stream, silence) => message?,
         };
         let Some(revision) = message else {
             return Err("config stream ended".into());
         };
+        if revision.keep_alive {
+            continue;
+        }
 
         let (error, pods) = match apply_revision(opts, sup, &revision).await {
             Ok(outcome) => {
@@ -308,7 +339,7 @@ async fn session(
 async fn apply_revision(
     opts: &AgentOptions,
     sup: &Arc<Mutex<Supervisor>>,
-    revision: &rpguru_sdk::orchestration_agent::ConfigRevision,
+    revision: &ConfigRevision,
 ) -> Result<ApplyOutcome, String> {
     let mut cfg = guru_worker_config::Config::from_toml_str(&revision.toml)
         .map_err(|e| format!("config: {e}"))?;
@@ -380,12 +411,39 @@ async fn apply_revision(
     Ok(outcome)
 }
 
+/// The config stream's next message. With keep-alives negotiated (`silence` set), a
+/// stream that carries nothing at all for that long is a dead path.
+async fn next_revision(
+    stream: &mut tonic::Streaming<ConfigRevision>,
+    silence: Option<Duration>,
+) -> Result<Option<ConfigRevision>, BoxError> {
+    let Some(limit) = silence else {
+        return Ok(stream.message().await?);
+    };
+    match tokio::time::timeout(limit, stream.message()).await {
+        Ok(message) => Ok(message?),
+        Err(_) => Err(format!("config stream silent for {}s", limit.as_secs()).into()),
+    }
+}
+
+/// The health stream's next reply; pending until the master's response opens.
+async fn next_reply(
+    replies: &mut Option<tonic::Streaming<ReportHealthReply>>,
+) -> Result<Option<ReportHealthReply>, tonic::Status> {
+    match replies {
+        Some(replies) => replies.message().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Streams one `HealthReport` per interval until `token` is cancelled or the master
 /// ends the stream. The first report goes out at once.
 ///
 /// Nothing in this loop may wait on the master: a report is handed to the stream
-/// and the loop moves on, so a master that stops answering is noticed by the stream
-/// ending, never by a report that cannot be sent.
+/// and the loop moves on. With `answered` (a master that replies to every report it
+/// records), reports left unanswered for three intervals end the session, so a path
+/// whose far end is gone is noticed even while the first hop keeps answering pings;
+/// a master built before the replies is noticed by the stream ending.
 #[allow(clippy::too_many_arguments)]
 async fn report_health(
     mut client: WorkerAgentClient<Channel>,
@@ -395,6 +453,7 @@ async fn report_health(
     applied_revision: Arc<AtomicI64>,
     sources: Sources,
     mut last_addresses: Discovered,
+    answered: bool,
     token: CancellationToken,
 ) -> Result<(), BoxError> {
     let (tx, rx) = tokio::sync::mpsc::channel::<HealthReport>(1);
@@ -404,6 +463,11 @@ async fn report_health(
         .insert("x-refresh-key", refresh_key.clone());
     let call = client.report_health(request);
     tokio::pin!(call);
+    // The master's replies, once its response opens — at once for a master that
+    // answers every report, only when it ends the stream for one built before.
+    let mut replies = None;
+    let unanswered = interval.saturating_mul(WATCHDOG_BEATS);
+    let mut last_reply = tokio::time::Instant::now();
 
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -414,15 +478,34 @@ async fn report_health(
     address_ticker.tick().await; // the immediate first tick was covered by Register
     let mut pending_addresses: Option<ReportedAddresses> = None;
     // The first report that gets through proves this binary: it runs, connects
-    // and authenticates, so a swap that installed it is confirmed.
+    // and authenticates, so a swap that installed it is confirmed. A reply proves
+    // it; without replies, handing the report to the stream is the best there is.
     let mut confirmed = false;
     let stats = sup.lock().await.stats();
     loop {
         tokio::select! {
             _ = token.cancelled() => return Ok(()),
-            reply = &mut call => {
-                reply?;
-                return Err("master closed the health stream".into());
+            opened = &mut call, if replies.is_none() => {
+                replies = Some(opened?.into_inner());
+            }
+            reply = next_reply(&mut replies) => {
+                if reply?.is_none() {
+                    return Err("master closed the health stream".into());
+                }
+                last_reply = tokio::time::Instant::now();
+                if answered && !confirmed {
+                    confirmed = true;
+                    update::confirm_pending();
+                }
+            }
+            // A sleep of its own, not a check on the report tick: that tick can sit
+            // behind the supervisor lock or a full stream.
+            _ = tokio::time::sleep(unanswered.saturating_sub(last_reply.elapsed())), if answered => {
+                return Err(format!(
+                    "no reply to a health report for {}s",
+                    unanswered.as_secs()
+                )
+                .into());
             }
             _ = address_ticker.tick() => {
                 let discovered = addresses::discover(&sources).await;
@@ -454,7 +537,7 @@ async fn report_health(
                     // iteration observes the reply.
                     continue;
                 }
-                if !confirmed {
+                if !answered && !confirmed {
                     confirmed = true;
                     update::confirm_pending();
                 }
@@ -541,6 +624,18 @@ fn clamp(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
+/// The delay before the next session, given the current one and how long the session
+/// that just ended lived. Only a success that proves something resets the ladder: an
+/// applied and acknowledged revision (in `session`), or a session that outlived
+/// [`SESSION_PROVEN`] — neither can turn a failure loop into a re-registration storm.
+fn backoff_after(backoff: Duration, lived: Duration) -> Duration {
+    if lived >= SESSION_PROVEN {
+        BACKOFF_START
+    } else {
+        backoff
+    }
+}
+
 /// Spreads a reconnect delay over +/-20% so a fleet restarted together does not
 /// re-register in lockstep. Cheap process-local xorshift; no dependency needed.
 fn jitter(backoff: Duration) -> Duration {
@@ -562,4 +657,29 @@ fn jitter(backoff: Duration) -> Duration {
     let width = spread.saturating_mul(2).saturating_add(1);
     let offset = x.checked_rem(width).unwrap_or(0);
     Duration::from_millis(base.saturating_sub(spread).saturating_add(offset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_proven_session_starts_the_backoff_over() {
+        let capped = BACKOFF_CAP;
+        assert_eq!(backoff_after(capped, SESSION_PROVEN), BACKOFF_START);
+        assert_eq!(
+            backoff_after(capped, SESSION_PROVEN.saturating_mul(12)),
+            BACKOFF_START
+        );
+    }
+
+    #[test]
+    fn a_short_session_keeps_climbing() {
+        let lived = SESSION_PROVEN.saturating_sub(Duration::from_secs(1));
+        assert_eq!(backoff_after(BACKOFF_CAP, lived), BACKOFF_CAP);
+        assert_eq!(
+            backoff_after(Duration::from_secs(4), Duration::ZERO),
+            Duration::from_secs(4)
+        );
+    }
 }

@@ -48,6 +48,9 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 orchestration = { path = "../../modules/orchestration" }
+# The codec a raw `client_streaming` call needs: the tests speak ReportHealth the way
+# a worker built before its replies does.
+tonic-prost = { workspace = true }
 guru_topology = { path = "../../lib/guru_topology" }
 auth = { path = "../../modules/auth" }
 base = { path = "../../modules/base" }

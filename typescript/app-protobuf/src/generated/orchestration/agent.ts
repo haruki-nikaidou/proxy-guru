@@ -62,9 +62,23 @@ export interface RegisterReply {
    * own default.
    */
   agentUpdatePollSecs: number;
+  /**
+   * How often `WatchConfig` sends a keep-alive to a worker that asked for them.
+   * Non-zero also means `ReportHealth` answers every recorded report, so the
+   * worker may end a session whose streams stay silent for three of these (or
+   * three health intervals). `0`: a master built before either; the worker
+   * expects neither.
+   */
+  streamKeepaliveSecs: number;
 }
 
 export interface WatchConfigRequest {
+  /**
+   * The worker skips `ConfigRevision.keep_alive` messages. A worker built
+   * before them sends `false` and is sent none: it would apply one as an empty
+   * config.
+   */
+  keepAlive: boolean;
 }
 
 /**
@@ -81,6 +95,11 @@ export interface ConfigRevision {
   revision: bigint;
   toml: string;
   files: CertificateFile[];
+  /**
+   * Set on a keep-alive, which carries nothing else and is neither applied nor
+   * acknowledged. Only sent on a stream whose request set `keep_alive`.
+   */
+  keepAlive: boolean;
 }
 
 /**
@@ -123,6 +142,7 @@ export interface HealthReport {
   reportedAddresses: ReportedAddresses | undefined;
 }
 
+/** One per `HealthReport` the master recorded, in order. */
 export interface ReportHealthReply {
 }
 
@@ -450,7 +470,7 @@ export const RegisterRequest: MessageFns<RegisterRequest> = {
 };
 
 function createBaseRegisterReply(): RegisterReply {
-  return { refreshKey: "", healthReportIntervalSecs: 0, agentUpdatePollSecs: 0 };
+  return { refreshKey: "", healthReportIntervalSecs: 0, agentUpdatePollSecs: 0, streamKeepaliveSecs: 0 };
 }
 
 export const RegisterReply: MessageFns<RegisterReply> = {
@@ -463,6 +483,9 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     }
     if (message.agentUpdatePollSecs !== 0) {
       writer.uint32(24).uint32(message.agentUpdatePollSecs);
+    }
+    if (message.streamKeepaliveSecs !== 0) {
+      writer.uint32(32).uint32(message.streamKeepaliveSecs);
     }
     return writer;
   },
@@ -498,6 +521,14 @@ export const RegisterReply: MessageFns<RegisterReply> = {
           message.agentUpdatePollSecs = reader.uint32();
           continue;
         }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.streamKeepaliveSecs = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -524,6 +555,11 @@ export const RegisterReply: MessageFns<RegisterReply> = {
         : isSet(object.agent_update_poll_secs)
         ? globalThis.Number(object.agent_update_poll_secs)
         : 0,
+      streamKeepaliveSecs: isSet(object.streamKeepaliveSecs)
+        ? globalThis.Number(object.streamKeepaliveSecs)
+        : isSet(object.stream_keepalive_secs)
+        ? globalThis.Number(object.stream_keepalive_secs)
+        : 0,
     };
   },
 
@@ -538,6 +574,9 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     if (message.agentUpdatePollSecs !== 0) {
       obj.agentUpdatePollSecs = Math.round(message.agentUpdatePollSecs);
     }
+    if (message.streamKeepaliveSecs !== 0) {
+      obj.streamKeepaliveSecs = Math.round(message.streamKeepaliveSecs);
+    }
     return obj;
   },
 
@@ -549,16 +588,20 @@ export const RegisterReply: MessageFns<RegisterReply> = {
     message.refreshKey = object.refreshKey ?? "";
     message.healthReportIntervalSecs = object.healthReportIntervalSecs ?? 0;
     message.agentUpdatePollSecs = object.agentUpdatePollSecs ?? 0;
+    message.streamKeepaliveSecs = object.streamKeepaliveSecs ?? 0;
     return message;
   },
 };
 
 function createBaseWatchConfigRequest(): WatchConfigRequest {
-  return {};
+  return { keepAlive: false };
 }
 
 export const WatchConfigRequest: MessageFns<WatchConfigRequest> = {
-  encode(_: WatchConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+  encode(message: WatchConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.keepAlive !== false) {
+      writer.uint32(8).bool(message.keepAlive);
+    }
     return writer;
   },
 
@@ -569,6 +612,14 @@ export const WatchConfigRequest: MessageFns<WatchConfigRequest> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.keepAlive = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -578,20 +629,30 @@ export const WatchConfigRequest: MessageFns<WatchConfigRequest> = {
     return message;
   },
 
-  fromJSON(_: any): WatchConfigRequest {
-    return {};
+  fromJSON(object: any): WatchConfigRequest {
+    return {
+      keepAlive: isSet(object.keepAlive)
+        ? globalThis.Boolean(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? globalThis.Boolean(object.keep_alive)
+        : false,
+    };
   },
 
-  toJSON(_: WatchConfigRequest): unknown {
+  toJSON(message: WatchConfigRequest): unknown {
     const obj: any = {};
+    if (message.keepAlive !== false) {
+      obj.keepAlive = message.keepAlive;
+    }
     return obj;
   },
 
   create(base?: DeepPartial<WatchConfigRequest>): WatchConfigRequest {
     return WatchConfigRequest.fromPartial(base ?? {});
   },
-  fromPartial(_: DeepPartial<WatchConfigRequest>): WatchConfigRequest {
+  fromPartial(object: DeepPartial<WatchConfigRequest>): WatchConfigRequest {
     const message = createBaseWatchConfigRequest();
+    message.keepAlive = object.keepAlive ?? false;
     return message;
   },
 };
@@ -673,7 +734,7 @@ export const CertificateFile: MessageFns<CertificateFile> = {
 };
 
 function createBaseConfigRevision(): ConfigRevision {
-  return { revision: 0n, toml: "", files: [] };
+  return { revision: 0n, toml: "", files: [], keepAlive: false };
 }
 
 export const ConfigRevision: MessageFns<ConfigRevision> = {
@@ -689,6 +750,9 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     }
     for (const v of message.files) {
       CertificateFile.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.keepAlive !== false) {
+      writer.uint32(32).bool(message.keepAlive);
     }
     return writer;
   },
@@ -724,6 +788,14 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
           message.files.push(CertificateFile.decode(reader, reader.uint32()));
           continue;
         }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.keepAlive = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -738,6 +810,11 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
       revision: isSet(object.revision) ? BigInt(object.revision) : 0n,
       toml: isSet(object.toml) ? globalThis.String(object.toml) : "",
       files: globalThis.Array.isArray(object?.files) ? object.files.map((e: any) => CertificateFile.fromJSON(e)) : [],
+      keepAlive: isSet(object.keepAlive)
+        ? globalThis.Boolean(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? globalThis.Boolean(object.keep_alive)
+        : false,
     };
   },
 
@@ -752,6 +829,9 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     if (message.files?.length) {
       obj.files = message.files.map((e) => CertificateFile.toJSON(e));
     }
+    if (message.keepAlive !== false) {
+      obj.keepAlive = message.keepAlive;
+    }
     return obj;
   },
 
@@ -763,6 +843,7 @@ export const ConfigRevision: MessageFns<ConfigRevision> = {
     message.revision = (object.revision !== undefined && object.revision !== null) ? BigInt(object.revision) : 0n;
     message.toml = object.toml ?? "";
     message.files = object.files?.map((e) => CertificateFile.fromPartial(e)) || [];
+    message.keepAlive = object.keepAlive ?? false;
     return message;
   },
 };
@@ -1476,6 +1557,10 @@ export const WorkerAgentDefinition = {
       responseStream: false,
       options: {},
     },
+    /**
+     * Sends a keep-alive every `RegisterReply.stream_keepalive_secs` to a worker
+     * that asked for them, so no proxy on the path sees a silent stream.
+     */
     watchConfig: {
       name: "WatchConfig",
       requestType: WatchConfigRequest as typeof WatchConfigRequest,
@@ -1493,16 +1578,23 @@ export const WorkerAgentDefinition = {
       options: {},
     },
     /**
-     * One report per interval for as long as the worker lives; the master treats
-     * the stream closing as the liveness signal. The reply arrives only when the
-     * worker half-closes.
+     * One report per interval for as long as the worker lives, one reply per
+     * report the master recorded; the reply stream opens before the first report
+     * is recorded. The stream closing does not mark the server offline — a proxy
+     * cutting it is not the worker going away. Silence does: no report for
+     * `health_offline_after`, and the master ends the stream with
+     * `DEADLINE_EXCEEDED` and marks the server `Offline`.
+     *
+     * A worker built before the replies (tonic 0.14 `client_streaming`) takes
+     * the first reply and drains the rest, so its call still ends only when the
+     * stream does.
      */
     reportHealth: {
       name: "ReportHealth",
       requestType: HealthReport as typeof HealthReport,
       requestStream: true,
       responseType: ReportHealthReply as typeof ReportHealthReply,
-      responseStream: false,
+      responseStream: true,
       options: {},
     },
     /**
@@ -1522,20 +1614,31 @@ export const WorkerAgentDefinition = {
 
 export interface WorkerAgentServiceImplementation<CallContextExt = {}> {
   register(request: RegisterRequest, context: CallContext & CallContextExt): Promise<DeepPartial<RegisterReply>>;
+  /**
+   * Sends a keep-alive every `RegisterReply.stream_keepalive_secs` to a worker
+   * that asked for them, so no proxy on the path sees a silent stream.
+   */
   watchConfig(
     request: WatchConfigRequest,
     context: CallContext & CallContextExt,
   ): ServerStreamingMethodResult<DeepPartial<ConfigRevision>>;
   ackConfig(request: AckConfigRequest, context: CallContext & CallContextExt): Promise<DeepPartial<AckConfigReply>>;
   /**
-   * One report per interval for as long as the worker lives; the master treats
-   * the stream closing as the liveness signal. The reply arrives only when the
-   * worker half-closes.
+   * One report per interval for as long as the worker lives, one reply per
+   * report the master recorded; the reply stream opens before the first report
+   * is recorded. The stream closing does not mark the server offline — a proxy
+   * cutting it is not the worker going away. Silence does: no report for
+   * `health_offline_after`, and the master ends the stream with
+   * `DEADLINE_EXCEEDED` and marks the server `Offline`.
+   *
+   * A worker built before the replies (tonic 0.14 `client_streaming`) takes
+   * the first reply and drains the rest, so its call still ends only when the
+   * stream does.
    */
   reportHealth(
     request: AsyncIterable<HealthReport>,
     context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<ReportHealthReply>>;
+  ): ServerStreamingMethodResult<DeepPartial<ReportHealthReply>>;
   /**
    * Asked every `agent_update_poll_secs`: whether the operator requested an
    * update for this server, and how the previous attempt went.
@@ -1548,20 +1651,31 @@ export interface WorkerAgentServiceImplementation<CallContextExt = {}> {
 
 export interface WorkerAgentClient<CallOptionsExt = {}> {
   register(request: DeepPartial<RegisterRequest>, options?: CallOptions & CallOptionsExt): Promise<RegisterReply>;
+  /**
+   * Sends a keep-alive every `RegisterReply.stream_keepalive_secs` to a worker
+   * that asked for them, so no proxy on the path sees a silent stream.
+   */
   watchConfig(
     request: DeepPartial<WatchConfigRequest>,
     options?: CallOptions & CallOptionsExt,
   ): AsyncIterable<ConfigRevision>;
   ackConfig(request: DeepPartial<AckConfigRequest>, options?: CallOptions & CallOptionsExt): Promise<AckConfigReply>;
   /**
-   * One report per interval for as long as the worker lives; the master treats
-   * the stream closing as the liveness signal. The reply arrives only when the
-   * worker half-closes.
+   * One report per interval for as long as the worker lives, one reply per
+   * report the master recorded; the reply stream opens before the first report
+   * is recorded. The stream closing does not mark the server offline — a proxy
+   * cutting it is not the worker going away. Silence does: no report for
+   * `health_offline_after`, and the master ends the stream with
+   * `DEADLINE_EXCEEDED` and marks the server `Offline`.
+   *
+   * A worker built before the replies (tonic 0.14 `client_streaming`) takes
+   * the first reply and drains the rest, so its call still ends only when the
+   * stream does.
    */
   reportHealth(
     request: AsyncIterable<DeepPartial<HealthReport>>,
     options?: CallOptions & CallOptionsExt,
-  ): Promise<ReportHealthReply>;
+  ): AsyncIterable<ReportHealthReply>;
   /**
    * Asked every `agent_update_poll_secs`: whether the operator requested an
    * update for this server, and how the previous attempt went.
