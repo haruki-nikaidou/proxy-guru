@@ -61,6 +61,11 @@ The server's panel holds its settings (name, icon, log level, IPv6 policy, QUIC 
 extra addresses), the list of its pods with a row to add one, the agent that runs on it and where it
 stands in a rollout.
 
+Its pods are listed by name until you arrange them: drag a pod by the round handle at the start of its
+row, or focus the handle and press the arrow keys. The card on the canvas lists its rows in the same
+order, and a pod added later goes to the end. The order is only how the dashboard draws the server: it
+changes no route and deploys nothing.
+
 ## Exits
 
 ![An exit card: example.com, destination example.com:80, five edges lead here](/img/canvas/card-exit.avif)
