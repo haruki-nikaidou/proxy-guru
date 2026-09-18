@@ -182,7 +182,8 @@ impl Supervisor {
     /// is its shape, not the previous top-level settings: those are the config's for
     /// every pod, so the kept shape is compiled again under them. Only listeners that
     /// no tag of the config still runs are stopped, and they stop accepting without
-    /// dropping in-flight connections.
+    /// dropping in-flight connections; `apply` returns once their sockets are released,
+    /// so the next config may bind the same addresses.
     ///
     /// The outcome names every forwarding of the config with the error that kept it
     /// from taking its new shape, in config order. The config's `[log] level`
@@ -289,15 +290,26 @@ impl Supervisor {
             }
         }
 
+        // Listeners no tag runs any more are closed the way a takeover closes them in
+        // `place`: a handle merely dropped detaches its accept loop, which keeps the
+        // socket until it gets round to ending, and the next config's bind of the same
+        // address fails on it. They close side by side, so a config that drops several
+        // QUIC listeners waits one `CLOSE_TIMEOUT` at most, not one each.
         let owned: HashSet<ListenKey> = self.running.values().copied().collect();
-        self.listeners.retain(|key, h| {
-            if owned.contains(key) {
-                return true;
+        let removed: Vec<ListenKey> = self
+            .listeners
+            .keys()
+            .filter(|key| !owned.contains(*key))
+            .copied()
+            .collect();
+        let mut closing = tokio::task::JoinSet::new();
+        for key in removed {
+            if let Some(h) = self.listeners.remove(&key) {
+                tracing::info!(addr = ?key.0, transport = ?key.1, "listener removed");
+                closing.spawn(h.close());
             }
-            h.token.cancel();
-            tracing::info!(addr = ?key.0, transport = ?key.1, "listener removed");
-            false
-        });
+        }
+        while closing.join_next().await.is_some() {}
 
         let pods: Vec<PodStatus> = cfg
             .forwardings

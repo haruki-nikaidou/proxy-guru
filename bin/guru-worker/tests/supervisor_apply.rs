@@ -449,3 +449,23 @@ async fn a_failed_forwarding_keeps_its_shape_under_the_new_top_level_settings() 
     sup.shutdown_all();
     drop(foreign);
 }
+
+/// A listener no tag runs any more has let go of its socket when `apply` returns, so
+/// the very next config may bind the address again. Nothing between the two applies
+/// gives a merely cancelled accept loop the chance to run on this single-threaded
+/// runtime, so only a close the first apply waited for can have freed it.
+#[tokio::test]
+async fn a_removed_listener_frees_its_address_for_the_next_config() {
+    let addr = local(free_port());
+
+    let mut sup = Supervisor::new();
+    assert_all_applied(&sup.apply(&config(vec![forwarding("first", addr)])).await);
+    accepts(addr, "the first listener").await;
+
+    assert_all_applied(&sup.apply(&config(Vec::new())).await);
+    assert_all_applied(&sup.apply(&config(vec![forwarding("second", addr)])).await);
+    accepts(addr, "the listener that took the removed one's address").await;
+    assert_eq!(listen_of(&sup.running_config(), "second"), addr);
+
+    sup.shutdown_all();
+}
