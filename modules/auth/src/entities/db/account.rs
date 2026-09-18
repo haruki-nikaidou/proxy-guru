@@ -169,18 +169,19 @@ pub struct UpdateAccountRole {
 }
 
 impl Processor<UpdateAccountRole> for Db {
-    type Output = ();
+    /// `false` when no account has the id.
+    type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateAccountRole", skip_all, err)]
     async fn process(&self, input: UpdateAccountRole) -> Result<Self::Output, Self::Error> {
-        sqlx::query!(
-            "UPDATE auth_account SET role = $2 WHERE id = $1",
+        let updated: Option<AccountId> = sqlx::query_scalar!(
+            r#"UPDATE auth_account SET role = $2 WHERE id = $1 RETURNING id AS "id: AccountId""#,
             input.id as _,
             input.role as _
         )
-        .execute(self.db())
+        .fetch_optional(self.db())
         .await?;
-        Ok(())
+        Ok(updated.is_some())
     }
 }
 
@@ -190,13 +191,17 @@ pub struct DeleteAccount {
 }
 
 impl Processor<DeleteAccount> for Db {
-    type Output = ();
+    /// `false` when no account has the id.
+    type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteAccount", skip_all, err)]
     async fn process(&self, input: DeleteAccount) -> Result<Self::Output, Self::Error> {
-        sqlx::query!("DELETE FROM auth_account WHERE id = $1", input.id as _)
-            .execute(self.db())
-            .await?;
-        Ok(())
+        let deleted: Option<AccountId> = sqlx::query_scalar!(
+            r#"DELETE FROM auth_account WHERE id = $1 RETURNING id AS "id: AccountId""#,
+            input.id as _
+        )
+        .fetch_optional(self.db())
+        .await?;
+        Ok(deleted.is_some())
     }
 }

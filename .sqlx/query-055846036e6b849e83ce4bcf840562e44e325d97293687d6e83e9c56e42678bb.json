@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_account SET role = $2 WHERE id = $1 RETURNING id AS \"id: AccountId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "055846036e6b849e83ce4bcf840562e44e325d97293687d6e83e9c56e42678bb"
+}

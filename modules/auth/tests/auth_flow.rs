@@ -6,11 +6,13 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use auth::config::AuthConfig;
-use auth::entities::db::account::{AccountRole, CreateAccount, UpdateAccountEmail};
+use auth::entities::db::account::{
+    AccountId, AccountRole, CreateAccount, FindAccountById, UpdateAccountEmail,
+};
 use auth::entities::db::session::FindSessionById;
 use auth::services::account::{
     AccountService, ChangeEmailResult, ChangeOwnEmail, ChangeOwnPassword, ChangePasswordResult,
-    RegisterAccount, RegisterResult, SetAccountRole,
+    DeleteAccount, RegisterAccount, RegisterResult, SetAccountRole,
 };
 use auth::services::api_key::{ApiKeyService, AuthenticateApiKey, CreateApiKey};
 use auth::services::identity::{Identity, IdentityKind};
@@ -458,5 +460,61 @@ async fn changing_to_another_accounts_address_is_taken(pool: sqlx::PgPool) -> Te
         change("alice@example.org").await?,
         ChangeEmailResult::Changed
     ));
+    Ok(())
+}
+
+/// Changing the role of, or deleting, an account that does not exist is `NotFound`,
+/// not a success that changed nothing; deleting one that exists removes it.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn changing_or_deleting_a_missing_account_is_not_found(pool: sqlx::PgPool) -> TestResult {
+    let (sp, accounts, _sessions, _api_keys) = setup(pool);
+    let admin = create(
+        &sp,
+        "admin@example.com",
+        "admin-password",
+        AccountRole::Admin,
+    )
+    .await?;
+    let missing = AccountId::new();
+    assert!(matches!(
+        accounts
+            .process(SetAccountRole {
+                actor: admin.clone(),
+                target: missing.clone(),
+                role: AccountRole::Observer,
+            })
+            .await,
+        Err(wakuwaku::Error::NotFound)
+    ));
+    assert!(matches!(
+        accounts
+            .process(DeleteAccount {
+                actor: admin.clone(),
+                target: missing,
+            })
+            .await,
+        Err(wakuwaku::Error::NotFound)
+    ));
+
+    let observer = create(
+        &sp,
+        "observer@example.com",
+        "observer-password",
+        AccountRole::Observer,
+    )
+    .await?;
+    accounts
+        .process(DeleteAccount {
+            actor: admin,
+            target: observer.account_id.clone(),
+        })
+        .await?;
+    assert!(
+        sp.process(FindAccountById {
+            id: observer.account_id
+        })
+        .await?
+        .is_none()
+    );
     Ok(())
 }

@@ -96,12 +96,16 @@ impl Processor<SetAccountRole> for AccountService {
     #[tracing::instrument(name = "Service:SetAccountRole", skip_all, err)]
     async fn process(&self, input: SetAccountRole) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
-        self.db
+        let updated = self
+            .db
             .process(UpdateAccountRole {
                 id: input.target,
                 role: input.role,
             })
             .await?;
+        if !updated {
+            return Err(wakuwaku::Error::NotFound);
+        }
         Ok(())
     }
 }
@@ -118,9 +122,13 @@ impl Processor<DeleteAccount> for AccountService {
     #[tracing::instrument(name = "Service:DeleteAccount", skip_all, err)]
     async fn process(&self, input: DeleteAccount) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
-        self.db
+        let deleted = self
+            .db
             .process(DeleteAccountEntity { id: input.target })
             .await?;
+        if !deleted {
+            return Err(wakuwaku::Error::NotFound);
+        }
         Ok(())
     }
 }

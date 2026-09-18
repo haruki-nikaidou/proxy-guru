@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM auth_account WHERE id = $1 RETURNING id AS \"id: AccountId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7d6933191d74d7767d1fd2ee99a8afcdbafe645c09c550b3cff5cc18a1cae546"
+}
