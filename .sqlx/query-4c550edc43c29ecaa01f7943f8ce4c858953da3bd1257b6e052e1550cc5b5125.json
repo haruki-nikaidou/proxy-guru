@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- The server row's health fields, locked for the transaction that reads them,\n-- plus the two labels a notification needs — read here so nothing downstream\n-- has to re-read a server that may since have moved.\nSELECT canvas AS \"canvas: CanvasId\", name,\n       (SELECT name FROM orchestration_canvas\n        WHERE id = orchestration_server.canvas) AS \"canvas_name!\",\n       health_status AS \"health_status: ServerHealthStatus\",\n       refresh_key_generation\nFROM orchestration_server\nWHERE id = $1\nFOR UPDATE\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "canvas_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "health_status: ServerHealthStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "health_status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "refresh_key_generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "orchestration_server",
+            "name": "refresh_key_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "4c550edc43c29ecaa01f7943f8ce4c858953da3bd1257b6e052e1550cc5b5125"
+}

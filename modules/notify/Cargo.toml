@@ -8,6 +8,11 @@ license.workspace = true
 [dependencies]
 # Internal
 rpguru_sdk  = { path = "../../lib/rpguru_sdk" }
+db_types = { path = "../../lib/db_types" }
+auth = { path = "../auth" }
+base = { path = "../base" }
+# The health facts this module notifies on, and the canvas/account ids they name.
+orchestration = { path = "../orchestration" }
 
 # Framework
 wakuwaku = { workspace = true }
@@ -15,32 +20,32 @@ kanau = { workspace = true }
 tokio = { workspace = true }
 
 # Persistence
-redis = { workspace = true }
+sqlx = { workspace = true }
 
 # Messaging
 amqprs = { workspace = true }
 
 # gRPC / transport
 tonic = { workspace = true }
-tonic-prost = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
 
 # Serialization
 rkyv = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
+
+# Delivery channels
+lettre = { workspace = true }
+reqwest = { workspace = true }
 
 # Data types
-uuid = { workspace = true }
 chrono = { workspace = true }
-rust_decimal = { workspace = true }
-compact_str = { workspace = true }
-smallvec = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
 
-# Algorithm
-itertools = { workspace = true }
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

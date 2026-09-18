@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package guru.notify;
+
+import "base/config.proto";
+
+// Notification settings, in two scopes, both keyed by canvas ("workspace"):
+// the canvas row carries the destinations the whole workspace shares, and an
+// account row carries one operator's own channels.
+//
+// Optional values are encoded uniformly: a `*_UNSPECIFIED` enum value and an
+// empty `string` both mean "none".
+
+enum NotifyLanguage {
+  NOTIFY_LANGUAGE_UNSPECIFIED = 0;
+  EN = 1;
+  JA = 2;
+  ZH_CN = 3;
+}
+
+// What a notice is about. A setting's `events` is the set of kinds it wants;
+// the empty set — the default — notifies nobody.
+enum HealthNoticeKind {
+  HEALTH_NOTICE_KIND_UNSPECIFIED = 0;
+  SERVER_ONLINE = 1;
+  SERVER_DEGRADED = 2;
+  SERVER_OFFLINE = 3;
+  POD_READY = 4;
+  POD_DEPLOYING = 5;
+  POD_FAILED = 6;
+}
+
+// The destinations a workspace shares. Requires `ViewWorkspace` to read and
+// `EditWorkspace` to replace.
+message CanvasNotifySetting {
+  string canvas = 1;
+  NotifyLanguage language = 2;
+  repeated HealthNoticeKind events = 3;
+  repeated string emails = 4;
+  repeated string telegram_chats = 5;
+}
+
+// One account's own channels for one canvas. `canvas` empty names the account's
+// default row, which serves every canvas that has none; `telegram_chat` empty
+// means unset. Mail goes to the account's own address, so only the switch is
+// stored. An account may only read and write its own rows: the account is taken
+// from the caller's identity, never from the request.
+message PersonalNotifySetting {
+  string canvas = 1;
+  NotifyLanguage language = 2;
+  repeated HealthNoticeKind events = 3;
+  bool email_enabled = 4;
+  string telegram_chat = 5;
+}
+
+message GetCanvasNotifySettingRequest {
+  string canvas = 1;
+}
+// A canvas with no row answers the defaults — the configured default language
+// and no events — not `NOT_FOUND`.
+message GetCanvasNotifySettingReply {
+  CanvasNotifySetting setting = 1;
+}
+// Replaces the whole row; `setting.canvas` names it.
+message SetCanvasNotifySettingRequest {
+  CanvasNotifySetting setting = 1;
+}
+message SetCanvasNotifySettingReply {
+  CanvasNotifySetting setting = 1;
+}
+
+message GetPersonalNotifySettingRequest {
+  string canvas = 1;
+}
+// The setting that is in force for `canvas`: the caller's row for it, its
+// default row when the canvas has none, and the defaults when it has neither.
+// `setting.canvas` echoes the request, not the row the answer came from.
+message GetPersonalNotifySettingReply {
+  PersonalNotifySetting setting = 1;
+}
+// Replaces the caller's row for `setting.canvas` (its default row when that is
+// empty).
+message SetPersonalNotifySettingRequest {
+  PersonalNotifySetting setting = 1;
+}
+message SetPersonalNotifySettingReply {
+  PersonalNotifySetting setting = 1;
+}
+
+// Sends one notice to the caller's own channels, as they are in force for
+// `canvas`, so an operator can prove the delivery path works. `FAILED_PRECONDITION`
+// when the caller has no channel set up.
+message SendTestNotificationRequest {
+  string canvas = 1;
+}
+message SendTestNotificationReply {
+  bool sent = 1;
+}
+
+// The `notify` configuration document. Admin only, like every other config
+// pair: the whole installation reads these values.
+message GetNotifyConfigRequest {}
+message GetNotifyConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+// `json` replaces the whole document. It is decoded into `NotifyConfig` first,
+// so a payload of the wrong shape is rejected and the row keeps its previous
+// contents. Masters pick the new value up on restart.
+message SetNotifyConfigRequest {
+  string json = 1;
+}
+message SetNotifyConfigReply {
+  guru.base.ConfigDocument config = 1;
+}
+
+service Notify {
+  rpc GetCanvasNotifySetting(GetCanvasNotifySettingRequest) returns (GetCanvasNotifySettingReply);
+  rpc SetCanvasNotifySetting(SetCanvasNotifySettingRequest) returns (SetCanvasNotifySettingReply);
+  rpc GetPersonalNotifySetting(GetPersonalNotifySettingRequest) returns (GetPersonalNotifySettingReply);
+  rpc SetPersonalNotifySetting(SetPersonalNotifySettingRequest) returns (SetPersonalNotifySettingReply);
+  rpc SendTestNotification(SendTestNotificationRequest) returns (SendTestNotificationReply);
+  rpc GetNotifyConfig(GetNotifyConfigRequest) returns (GetNotifyConfigReply);
+  rpc SetNotifyConfig(SetNotifyConfigRequest) returns (SetNotifyConfigReply);
+}

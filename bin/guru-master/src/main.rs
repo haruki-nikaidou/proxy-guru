@@ -1,12 +1,15 @@
 //! # `guru-master`
 //!
-//! The control plane. One binary, four run modes selected with `--mode`:
+//! The control plane. One binary, five run modes selected with `--mode`:
 //!
-//! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration`), including
-//!   the live `Watch*` streams, which it feeds from Redis pub/sub so a change
-//!   made on one replica reaches the dashboards attached to the others,
+//! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration` + `Notify`),
+//!   including the live `Watch*` streams, which it feeds from Redis pub/sub so a
+//!   change made on one replica reaches the dashboards attached to the others,
 //! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller,
-//! - `consumer` — the AMQP derivation hook and every periodic job,
+//! - `consumer` — the AMQP derivation hook, every periodic job, and the
+//!   notification fan-out,
+//! - `notifier` — the notification *delivery*: exactly one instance, which it
+//!   enforces with a PostgreSQL advisory lock,
 //! - `cron` — the scheduler: it publishes one execution signal per due job and
 //!   opens neither a database connection nor the master key.
 //!
@@ -31,10 +34,22 @@ use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
 use kanau::message::MessageDe;
 use kanau::processor::Processor;
+use notify::config::NotifyConfig;
+use notify::events::{HealthNotifyGroupEvent, HealthNotifyPersonalEvent};
+use notify::hooks::delivery::NoticeDelivery;
+use notify::hooks::fanout::HealthFanout;
+use notify::rpc::NotifyGrpc;
+use notify::services::config::NotifyConfigService;
+use notify::services::delivery::DeliveryService;
+use notify::services::fanout::{FanoutService, NoticePublisher};
+use notify::services::setting::SettingService;
+use notify::utils::lock::hold_notifier_lock;
+use notify::utils::secret::NotifySecrets;
 use orchestration::config::OrchestrationConfig;
 use orchestration::events::{
-    CanvasDirty, DeriveStaleCanvasesSignal, RenewCertificatesSignal, ResolveServerCountriesSignal,
-    RotateRelayCertificatesSignal, SweepLivenessSignal, TrimHealthHistorySignal,
+    CanvasDirty, DeriveStaleCanvasesSignal, HealthChanged, RenewCertificatesSignal,
+    ResolveServerCountriesSignal, RotateRelayCertificatesSignal, SweepLivenessSignal,
+    TrimHealthHistorySignal,
 };
 use orchestration::hooks::acme::AcmeCronHook;
 use orchestration::hooks::country::CountryCronHook;
@@ -60,6 +75,7 @@ use orchestration::services::server::ServerService;
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::auth::auth_server::AuthServer;
+use rpguru_sdk::notify::notify_server::NotifyServer;
 use rpguru_sdk::orchestration::orchestration_server::OrchestrationServer;
 use rpguru_sdk::orchestration_agent::worker_agent_server::WorkerAgentServer;
 use std::net::SocketAddr;
@@ -83,6 +99,10 @@ enum WorkerMode {
     WorkersGrpc,
     #[value(name = "consumer")]
     Consumer,
+    /// Notification delivery. Run exactly one: the mode takes a PostgreSQL
+    /// advisory lock and refuses to start beside a peer that holds it.
+    #[value(name = "notifier")]
+    Notifier,
     #[value(name = "cron")]
     Cron,
 }
@@ -197,9 +217,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Every serving instance runs the migrations at startup; the migrator takes
     // an advisory lock, so four instances starting together apply them once.
     base::db::MIGRATOR.run(db.db()).await?;
-    // Environment only, never argv: the key would otherwise be visible in process
-    // listings. `manage-tool generate-master-key` prints a fresh one.
-    let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;
     // Operator-tunable settings live in the database, so every process in the
     // fleet runs the same values without any matching environment. An unseeded
     // installation reads the defaults; a corrupt row fails startup rather than
@@ -213,7 +230,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .process(LoadConfig::new())
         .await
         .map_err(|e| e.to_string())?;
-    tracing::debug!(?auth_config, ?config, "loaded configuration");
+    let notify_config: NotifyConfig = configs
+        .process(LoadConfig::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::debug!(
+        ?auth_config,
+        ?config,
+        ?notify_config,
+        "loaded configuration"
+    );
+
+    // Dispatched before the master key and the live bus: delivery decrypts
+    // nothing and publishes nothing, so handing a notifier host the key that
+    // opens every stored secret would widen the blast radius for no gain.
+    if let WorkerMode::Notifier = cli.mode {
+        return run_notifier(&cli, &db, notify_config).await;
+    }
+
+    // Environment only, never argv: the key would otherwise be visible in process
+    // listings. `manage-tool generate-master-key` prints a fresh one.
+    let secrets = SecretKey::from_env().map_err(|e| format!("master key: {e}"))?;
 
     let hasher = Argon2PasswordAlgorithm::default();
     let sessions = SessionService {
@@ -310,7 +347,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 accounts,
                 sessions: sessions.clone(),
                 api_keys: api_keys.clone(),
-                configs: AuthConfigService { configs },
+                configs: AuthConfigService {
+                    configs: configs.clone(),
+                },
+            };
+            // Settings only: the dashboard publishes a test notice on the same
+            // exchange the fan-out does, and the notifier delivers it.
+            let notify = NotifyGrpc {
+                settings: SettingService {
+                    db: db.clone(),
+                    config: notify_config,
+                },
+                fanout: FanoutService {
+                    db: db.clone(),
+                    publisher: NoticePublisher::Amqp(pool.clone()),
+                },
+                configs: NotifyConfigService { configs },
             };
             tracing::info!(addr = %cli.dashboard_addr, "serving operator API");
             // Keepalive is load-bearing for the `Watch*` streams: a browser or
@@ -322,6 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(AuthLayer::new(sessions, api_keys))
                 .add_service(AuthServer::new(auth))
                 .add_service(OrchestrationServer::new(orchestration))
+                .add_service(NotifyServer::new(notify))
                 .serve_with_shutdown(cli.dashboard_addr, shutdown());
             let lost = tokio::select! {
                 served = serving => {
@@ -419,6 +472,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
             let health = HealthCronHook { health };
+            let fanout = HealthFanout {
+                fanout: FanoutService {
+                    db: db.clone(),
+                    publisher: NoticePublisher::Amqp(pool.clone()),
+                },
+            };
             // Every channel is kept alive for the lifetime of the mode: dropping
             // one cancels its consumer without a word.
             let channels = vec![
@@ -429,6 +488,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bind_consumer::<TrimHealthHistorySignal, _>(&pool, &health).await?,
                 bind_consumer::<RenewCertificatesSignal, _>(&pool, &acme).await?,
                 bind_consumer::<ResolveServerCountriesSignal, _>(&pool, &country).await?,
+                bind_consumer::<HealthChanged, _>(&pool, &fanout).await?,
             ];
             let lost = tokio::select! {
                 () = shutdown() => false,
@@ -443,6 +503,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("closing the AMQP connection failed: {e}"))?;
         }
+        // Dispatched above, before the master key and the live bus: delivery
+        // needs neither. Reaching it would mean that early return was removed,
+        // which is a wiring bug, not a mode.
+        WorkerMode::Notifier => {
+            return Err("notifier is dispatched before the master key: \
+                        the early return in main was lost"
+                .into());
+        }
         // Dispatched above, before any of the setup this arm would otherwise
         // share: the scheduler opens no database. Reaching it would mean that
         // early return was removed, which is a wiring bug, not a mode.
@@ -452,6 +520,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into());
         }
     }
+    Ok(())
+}
+
+/// `--mode notifier`: the one instance that delivers notices.
+///
+/// It holds no secret but the channels' own credentials, publishes nothing, and
+/// subscribes to no live bus — so it takes neither `GURU_MASTER_KEY` nor
+/// `REDIS_URL`, only the database (for the single-instance lock and the
+/// `notify` config it was handed) and the broker.
+async fn run_notifier(
+    cli: &Cli,
+    db: &base::db::Db,
+    config: NotifyConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Exactly one instance delivers: two would double every notice a restart
+    // overlapped. The lock lives as long as this connection, so a killed
+    // notifier does not block its successor.
+    let _lock = hold_notifier_lock(db).await.map_err(|e| e.to_string())?;
+    let secrets = NotifySecrets::from_env();
+    let delivery = NoticeDelivery {
+        delivery: DeliveryService::new(&config, &secrets).map_err(|e| e.to_string())?,
+    };
+    for channel in delivery.delivery.channels() {
+        tracing::info!(channel, "notification channel");
+    }
+    let (connection, pool) = amqp_pool(amqp_uri(cli.amqp_uri.as_deref())?).await?;
+    let channels = vec![
+        bind_consumer::<HealthNotifyGroupEvent, _>(&pool, &delivery).await?,
+        bind_consumer::<HealthNotifyPersonalEvent, _>(&pool, &delivery).await?,
+    ];
+    let lost = tokio::select! {
+        () = shutdown() => false,
+        _ = connection.listen_network_io_failure() => true,
+    };
+    if lost {
+        return Err(BROKER_LOST.into());
+    }
+    drop(channels);
+    connection
+        .close()
+        .await
+        .map_err(|e| format!("closing the AMQP connection failed: {e}"))?;
     Ok(())
 }
 
@@ -618,7 +728,7 @@ where
     Ok(channel)
 }
 
-/// Opens an AMQP connection and its channel pool, declaring the exchange.
+/// Opens an AMQP connection and its channel pool, declaring both exchanges.
 ///
 /// The connection is returned so the caller can keep it alive: dropping it closes
 /// every pooled channel.
@@ -636,6 +746,12 @@ async fn amqp_pool(uri: &str) -> Result<(Connection, AmqpPool), Box<dyn std::err
     CanvasDirty::ensure_exchange(&pool)
         .await
         .map_err(|e| format!("declaring the orchestration exchange failed: {e}"))?;
+    // `AmqpMessageSend::send` does not declare, so the `notify` exchange needs
+    // its own call: a dashboard publishing a test notice would otherwise fail
+    // until a notifier had run once.
+    HealthNotifyGroupEvent::ensure_exchange(&pool)
+        .await
+        .map_err(|e| format!("declaring the notify exchange failed: {e}"))?;
     Ok((connection, pool))
 }
 

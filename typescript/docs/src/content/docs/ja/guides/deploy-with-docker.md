@@ -12,7 +12,7 @@ description: GHCR のイメージからコントロールプレーンを動か�
 
 ## 1. 何をデプロイするのか
 
-**1 つ**のイメージから動く 4 つのプロセスと、ダッシュボードです:
+**1 つ**のイメージから動く 5 つのプロセスと、ダッシュボードです:
 
 | コンポーネント | 実行モード | 通信相手 |
 |---|---|---|
@@ -20,6 +20,7 @@ description: GHCR のイメージからコントロールプレーンを動か�
 | ワーカー API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
 | 定期ジョブ + 導出フック | `consumer` | PostgreSQL、RabbitMQ、Redis |
 | スケジューラー | `cron` | RabbitMQ |
+| 通知の配信 | `notifier` | PostgreSQL、RabbitMQ（**インスタンスはちょうど 1 つ**） |
 | ダッシュボード | — | オペレーター API（gRPC） |
 
 :::note
@@ -37,6 +38,12 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 実行シグナルを 1 件発行するだけで、データベース接続は一切開きません。`consumer` は実際の処理 — 導出フック
 *および*すべての定期ジョブ — を実行するため、スイープ、生存確認、証明書更新は、キャンバス編集とまったく同じ
 ようにスケールし、フェイルオーバーします。
+
+`notifier` は 3 つ目のフックモードで、「自由にスケールさせてよい」という原則の唯一の例外です。`consumer` の
+ファンアウトが publish したメールと Telegram メッセージを送るモードであり、2 つ目のインスタンスがあると、
+再起動が重なった分の通知をすべて二重に送ってしまいます。そのため PostgreSQL のアドバイザリロックを取得し、
+それを保持しているピアの隣では起動を拒否します。また、`GURU_MASTER_KEY` も `REDIS_URL` も必要としない
+唯一のモードです（[通知](/ja/features/notifications/)）。
 
 ポートと、そこに到達してよい相手:
 
@@ -125,9 +132,9 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
 このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 3 つあります: ブローカーは
-**4 つすべて**の master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、
+**5 つすべて**の master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、
 証明書更新を止めてしまいます — master は `/srv/guru/.env` にあるロールでデータベースへ到達し、
-セクション 7 の `x-master` アンカーがそれを URL に組み立てます。そして Redis はデータベース接続を開く
+セクション 7 の `x-master` アンカーがそれを URL に組み立てます。そして Redis は提供と導出を行う
 3 つのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
 ストリームへの配信だけで、それ以外は何も止まりません。編集は適用され、キャンバスは導出され、ワーカーは
 設定を受け取り続けます。subscriber は自力で再接続し、すべての watcher にデータベースの再読み込みを求めます。
@@ -138,7 +145,7 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ## 6. スキーマを適用する
 
 各 master は起動時に未適用のものを適用するので、初回インストールではこのセクションは任意です — ただし先に
-実行しておけば、スキーマの問題が 4 つの再起動するコンテナの中ではなくここで表面化します。
+実行しておけば、スキーマの問題が 5 つの再起動するコンテナの中ではなくここで表面化します。
 **[データベーススキーマのセットアップ](/ja/guides/setup-database-schema/)** に従ってください:
 
 ```sh
@@ -161,18 +168,18 @@ export GURU_DATABASE_URL
 
 master キーは一度生成し、データベースの認証情報と一緒に保管してください — これはすべての DNS プロバイダー
 トークンと証明書の鍵を保存時に暗号化するもので、これがなければ復元する方法はありません。シークレットを読む
-3 つのモードではこれが必要です。`cron` は決して読みませんが、以下のアンカーは単純に同じ環境変数を 4 つすべてに
-渡します。`manage-tool` は `master-v*` リリースからダウンロードするか、チェックアウトからビルドします
+3 つのモードではこれが必要です。`cron` と `notifier` は決して読みませんが、以下のアンカーは単純に同じ環境変数を
+5 つすべてに渡します。`manage-tool` は `master-v*` リリースからダウンロードするか、チェックアウトからビルドします
 （手順 8 と手順 10 を参照）。このサブコマンドはデータベースを必要としません:
 
 ```sh
 ./target/release/manage-tool generate-master-key
 ```
 
-`REDIS_URL` のモードの範囲も master キーと同じです。データベース接続を開く 3 つのモード
-（`dashboard_grpc`、`workers_grpc`、`consumer`）で必須で、`cron` は使いません。
+`REDIS_URL` のモードの範囲も似たようなものです。提供と導出を行う 3 つのモード
+（`dashboard_grpc`、`workers_grpc`、`consumer`）で必須で、`cron` と `notifier` は使いません。
 
-同じ `docker-compose.yml` を拡張します: `x-master` アンカーは `services:` の上に、4 つのサービスは
+同じ `docker-compose.yml` を拡張します: `x-master` アンカーは `services:` の上に、5 つのサービスは
 その中の `postgres`、`rabbitmq`、`redis` の隣に置きます:
 
 ```yaml
@@ -223,6 +230,16 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: cron
+
+  # Exactly one: the mode takes an advisory lock and a second replica exits.
+  master-notifier:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: notifier
+      # Both optional; each unset value disables its channel.
+      GURU_SMTP_PASSWORD: "${GURU_SMTP_PASSWORD}"
+      GURU_TELEGRAM_BOT_TOKEN: "${GURU_TELEGRAM_BOT_TOKEN}"
 ```
 
 各モードの役割と、そのスケール方法:
@@ -252,6 +269,13 @@ services:
   そしてそれは、これなしでは動けない唯一のものでもあります。スケールさせるものは何もありません:
   レプリカ 1 つで十分で、2 つ目があっても consumer 側の実行権主張が重複を破棄するので無害です。
   ジョブが実際に実行されうる間隔はフラグではなく保存された設定です — 手順 8 を参照してください。
+- **`notifier`** — 通知の配信であり、**ちょうど 1 つだけ**動かすべき唯一のモードです: `consumer` の
+  ファンアウトが publish する 2 本の通知キューを consume し、各通知を SMTP と Telegram Bot API で送ります。
+  その前にセッションスコープの PostgreSQL アドバイザリロックを取得するため、2 つ目のレプリカは
+  `another notifier already holds the advisory lock; run exactly one` を出力して非ゼロで終了します —
+  これにより `deploy: replicas: 1` は慣習ではなく確実な保証になります。`GURU_MASTER_KEY` も `REDIS_URL` も
+  必要とせず、必要なのは外向きの SMTP と `telegram_api_base` への HTTPS だけです。停止している間、通知は
+  それぞれのキューで待ちます。
 
 TLS または QUIC 上のリレーリンクは、その Pod が導出される前に内部 CA を必要とします。master が使うものと
 同じ `GURU_MASTER_KEY` を使い、オペレーターマシンから一度だけ実行してください:
@@ -266,7 +290,7 @@ CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバ�
 
 コードから導かれる運用上の注意が 3 つあります:
 
-- `consumer` と `cron` モードは、**AMQP 接続が切れると非ゼロで終了します**（クライアントは再接続せず、
+- `consumer`、`notifier`、`cron` モードは、**AMQP 接続が切れると非ゼロで終了します**（クライアントは再接続せず、
   黙って死んだ consumer や、どこにも発行しない時計は、再起動より悪いからです）:
   `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`。
   これを自己修復にしているのが `restart: unless-stopped` です — 取り除かないでください。
@@ -282,7 +306,7 @@ CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバ�
 
 ```sh
 docker compose up -d
-docker compose logs master-dashboard master-workers master-consumer master-cron
+docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
 正常な起動はこのように見えます。consumer はバインドしたキューごとに 1 行、スケジューラーは発行する各周期を
@@ -298,7 +322,11 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_swee
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
 master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
 ```
 
 スケジューラーはその後は静かです: 各発行は `DEBUG`
@@ -676,9 +704,10 @@ subscriber が再接続した時点で元どおりに動きます。
 | master が `stored config for key ... does not match its type` で終了する | 保存されているドキュメントが壊れているか、フィールド名の変更より古いものです。`manage-tool config get <key>` で確認し、`config set` で書き直してください。 |
 | TLS クライアントポッドが `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
 | リレーの Pod が `internal CA not initialised` のまま `invalid_pods` に留まる | `manage-tool orchestration init-ca` を一度実行してください。 |
-| master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。4 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
-| master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` は不要です）。 |
-| `consumer` または `cron` が定期的に再起動する | ブローカー喪失時には想定される挙動です: クライアントは再接続しないのでプロセスが終了し、再起動ポリシーが立て直します。master ではなくブローカーを調べてください。 |
+| master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。5 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
+| master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` と `notifier` は不要です）。 |
+| `consumer`、`notifier`、`cron` のいずれかが定期的に再起動する | ブローカー喪失時には想定される挙動です: クライアントは再接続しないのでプロセスが終了し、再起動ポリシーが立て直します。master ではなくブローカーを調べてください。 |
+| 2 つ目の `notifier` が `another notifier already holds the advisory lock; run exactly one` で終了する | 想定される挙動です: 配信は単一インスタンスです。レプリカ数を 1 にするか、ロックを保持しているピアを停止してください。 |
 | クリーンインストール直後に `relation "…" does not exist` が出る | マイグレーションが実行されていません。`GURU_DATABASE_URL` のロールにそのデータベースへの `CREATE` 権限がない可能性があります。`manage-tool db migrate` を実行し、そのエラーを読んでください。 |
 | `manage-tool` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が `GURU_DATABASE_URL` を与えていました。常に `--database-url` を渡してください。 |
 | キャンバスの編集がワーカーに届かない | `consumer` が停止しています: 編集フックと古いキャンバスのスイープの両方を実行するため、これなしでは何も導出されません。`consumer` が起動している場合は `cron` を確認してください — 時計がなければスイープは発火せず、`CanvasDirty` が生きている編集だけが導出されます。 |

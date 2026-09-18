@@ -20,6 +20,7 @@ use base::services::config::{
 };
 use clap::{Parser, Subcommand};
 use kanau::processor::Processor;
+use notify::config::NotifyConfig;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::agent_release::PublishAgentRelease;
 use orchestration::entities::db::ca::{FindInternalCa, ListRelayCertificatesByPods};
@@ -199,15 +200,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Debug, Clone, Copy)]
 enum ConfigKey {
     Auth,
+    Notify,
     Orchestration,
 }
 
 impl ConfigKey {
-    const ALL: [Self; 2] = [Self::Auth, Self::Orchestration];
+    const ALL: [Self; 3] = [Self::Auth, Self::Notify, Self::Orchestration];
 
     fn name(self) -> &'static str {
         match self {
             Self::Auth => AuthConfig::KEY,
+            Self::Notify => NotifyConfig::KEY,
             Self::Orchestration => OrchestrationConfig::KEY,
         }
     }
@@ -230,6 +233,7 @@ impl ConfigKey {
     async fn seed(self, store: &ConfigStore) -> Result<bool, ConfigError> {
         match self {
             Self::Auth => store.process(SeedConfig::<AuthConfig>::new()).await,
+            Self::Notify => store.process(SeedConfig::<NotifyConfig>::new()).await,
             Self::Orchestration => {
                 store
                     .process(SeedConfig::<OrchestrationConfig>::new())
@@ -246,6 +250,11 @@ impl ConfigKey {
                     .process(StoreConfig(decode::<AuthConfig>(content)?))
                     .await
             }
+            Self::Notify => {
+                store
+                    .process(StoreConfig(decode::<NotifyConfig>(content)?))
+                    .await
+            }
             Self::Orchestration => {
                 store
                     .process(StoreConfig(decode::<OrchestrationConfig>(content)?))
@@ -259,6 +268,7 @@ impl ConfigKey {
     fn defaults(self) -> Result<serde_json::Value, ConfigError> {
         match self {
             Self::Auth => defaults::<AuthConfig>(),
+            Self::Notify => defaults::<NotifyConfig>(),
             Self::Orchestration => defaults::<OrchestrationConfig>(),
         }
     }

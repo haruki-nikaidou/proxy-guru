@@ -12,7 +12,7 @@ control plane. This guide only gets the binary onto a machine you can distribute
 
 ## 1. What you are deploying
 
-Four processes, all from **one** image, plus the dashboard:
+Five processes, all from **one** image, plus the dashboard:
 
 | Component | Run mode | Talks to |
 |---|---|---|
@@ -20,6 +20,7 @@ Four processes, all from **one** image, plus the dashboard:
 | Worker API | `workers_grpc` | PostgreSQL, RabbitMQ, Redis |
 | Periodic + derivation hooks | `consumer` | PostgreSQL, RabbitMQ, Redis |
 | Scheduler | `cron` | RabbitMQ |
+| Notification delivery | `notifier` | PostgreSQL, RabbitMQ (**exactly one instance**) |
 | Dashboard | — | Operator API (gRPC) |
 
 :::note
@@ -37,6 +38,12 @@ The two hook modes are the split to understand before you size anything. `cron` 
 publishes one execution signal per due job and opens no database connection at all. `consumer`
 runs the work — the derivation hook *and* every periodic job — so sweeps, liveness and certificate
 renewal scale and fail over exactly like a canvas edit.
+
+`notifier` is the third hook mode and the one exception to "scale it freely": it sends the emails
+and Telegram messages the `consumer`'s fan-out publishes, and a second instance would double every
+notice a restart overlapped, so it takes a PostgreSQL advisory lock and refuses to start beside a
+peer that holds it. It is also the only mode that needs neither `GURU_MASTER_KEY` nor `REDIS_URL`
+([Notifications](/features/notifications/)).
 
 Ports, and who is allowed to reach them:
 
@@ -130,10 +137,10 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
 Three consequences worth repeating here, because they shape this deployment: the broker is mandatory
-in **all four** master modes — periodic work is a message, so a broker outage stalls derivation,
+in **all five** master modes — periodic work is a message, so a broker outage stalls derivation,
 liveness and certificate renewal — and the masters reach the database with the role in
 `/srv/guru/.env`, which the `x-master` anchor in section 7 assembles into a URL. Redis is
-the third: required by the three modes that open a database connection, and far cheaper to lose.
+the third: required by the three modes that serve or derive, and far cheaper to lose.
 An outage stops delivery on open `Watch*` streams and nothing else — edits still apply, canvases
 still derive, workers still get their config — and the subscriber reconnects on its own, then has
 every watcher re-read the database. The dashboard follows those streams, so while Redis is down an
@@ -143,7 +150,7 @@ badge on those pages shows the browser's own connection and stays green meanwhil
 ## 6. Apply the schema
 
 Each master applies what is pending when it starts, so this section is optional on a first install —
-but running it first means a schema problem surfaces here rather than in four restarting containers.
+but running it first means a schema problem surfaces here rather than in five restarting containers.
 Follow **[Setup Database Schema](/guides/setup-database-schema/)**:
 
 ```sh
@@ -165,9 +172,9 @@ database instead (step 8), so replicas need no matching environment.
 
 Generate the master key once and keep it with the database credentials — it encrypts every DNS
 provider token and certificate key at rest, and there is no way to recover them without it. The
-three modes that read a secret need it; `cron` never does, and the anchor below simply hands the
-same environment to all four. `REDIS_URL` has that same scope — the three modes that open a
-database connection refuse to start without it, `cron` ignores it. `manage-tool` is either built
+three modes that read a secret need it; `cron` and `notifier` never do, and the anchor below simply
+hands the same environment to all five. `REDIS_URL` has a similar scope — the three modes that
+serve or derive refuse to start without it, `cron` and `notifier` ignore it. `manage-tool` is either built
 from your checkout or downloaded from a `master-v*` release (steps 8 and 10); this subcommand needs
 no database:
 
@@ -175,7 +182,7 @@ no database:
 ./target/release/manage-tool generate-master-key
 ```
 
-Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the four
+Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the five
 services inside it, next to `postgres`, `rabbitmq` and `redis`:
 
 ```yaml
@@ -226,6 +233,16 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: cron
+
+  # Exactly one: the mode takes an advisory lock and a second replica exits.
+  master-notifier:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: notifier
+      # Both optional; each unset value disables its channel.
+      GURU_SMTP_PASSWORD: "${GURU_SMTP_PASSWORD}"
+      GURU_TELEGRAM_BOT_TOKEN: "${GURU_TELEGRAM_BOT_TOKEN}"
 ```
 
 What each mode is for, and how it scales:
@@ -253,6 +270,13 @@ What each mode is for, and how it scales:
   in `AMQP_URI` — which is also the one thing it cannot run without. There is nothing to scale:
   one replica is enough, and a second is harmless because the consumer's run claim discards the
   duplicate. How often a job may actually run is a stored setting, not a flag — see step 8.
+- **`notifier`** — notification delivery, and the one mode to run **exactly once**: it consumes the
+  two notice queues the `consumer`'s fan-out publishes to and sends each notice over SMTP and the
+  Telegram Bot API. It takes a session-scoped PostgreSQL advisory lock first, so a second replica
+  exits non-zero with `another notifier already holds the advisory lock; run exactly one` — which
+  makes `deploy: replicas: 1` a hard guarantee rather than a convention. It needs neither
+  `GURU_MASTER_KEY` nor `REDIS_URL`, only outbound SMTP and HTTPS to `telegram_api_base`. While it
+  is down, notices wait in their queues.
 
 Relay links over TLS or QUIC need the internal CA before their pods derive. Run this once from the
 operator machine, with the same `GURU_MASTER_KEY` the master uses:
@@ -267,7 +291,7 @@ refuses to run twice.
 
 Three operational notes that follow from the code:
 
-- The `consumer` and `cron` modes **exit non-zero when the AMQP connection drops** (the client does
+- The `consumer`, `notifier` and `cron` modes **exit non-zero when the AMQP connection drops** (the client does
   not reconnect, and a silently dead consumer or a clock that publishes nowhere is worse than a
   restart): `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`.
   `restart: unless-stopped` is what makes that self-healing — do not remove it.
@@ -283,7 +307,7 @@ Start them:
 
 ```sh
 docker compose up -d
-docker compose logs master-dashboard master-workers master-consumer master-cron
+docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
 A healthy start looks like this. The consumer prints one line per queue it bound, the scheduler one
@@ -299,7 +323,11 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_swee
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
 master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
 ```
 
 The scheduler is quiet after that: each publication is logged at `DEBUG`
@@ -671,10 +699,11 @@ usual Docker log driver.
 | Master exits with `stored config for key ... does not match its type` | The stored document is corrupt or predates a renamed field. Inspect it with `manage-tool config get <key>` and rewrite it with `config set`. |
 | A TLS client pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
-| Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All four modes require the broker. Check the trailing `/` on the URI. |
-| Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` does not. |
+| Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All five modes require the broker. Check the trailing `/` on the URI. |
+| Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` and `notifier` do not. |
 | An open canvas or health page stops updating (a reload shows the change), or a `Watch*` stream stops delivering snapshots | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
-| `consumer` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
+| `consumer`, `notifier` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
+| A second `notifier` exits with `another notifier already holds the advisory lock; run exactly one` | Expected: delivery is single-instance. Scale it to one replica, or stop the peer that holds the lock. |
 | `relation "…" does not exist` right after a clean install | The migrations never ran: the role in `GURU_DATABASE_URL` may lack `CREATE` on the database. Run `manage-tool db migrate` and read its error. |
 | `manage-tool` wrote to the wrong database | A `.env` in the working directory supplied `GURU_DATABASE_URL`. Always pass `--database-url`. |
 | Canvas edits never reach a worker | `consumer` is down: it runs both the edit hook and the stale-canvas sweep, so nothing derives without it. If `consumer` is up, check `cron` — without the clock the sweep never fires and only edits with a live `CanvasDirty` derive. |

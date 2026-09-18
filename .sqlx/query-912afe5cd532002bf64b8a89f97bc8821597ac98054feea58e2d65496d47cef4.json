@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Writes the batch and reads back each row's labels in the same statement: the\n-- pod's name, its canvas, and the canvas's name, so a notification can be\n-- phrased without a second read (which could see a pod already moved).\nWITH ins AS (\n    INSERT INTO pod_health_record (id, pod, status, message, report_time)\n    SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])\n    RETURNING id, pod, status, message, report_time\n)\nSELECT ins.id AS \"id!: PodHealthRecordId\", ins.pod AS \"pod!: PodId\",\n       ins.status AS \"status!: PodHealthStatus\", ins.message AS \"message!\",\n       ins.report_time AS \"report_time!\",\n       p.name AS \"pod_name!\", p.canvas AS \"canvas!: CanvasId\", c.name AS \"canvas_name!\"\nFROM ins\nJOIN orchestration_pod p ON p.id = ins.pod\nJOIN orchestration_canvas c ON c.id = p.canvas\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: PodHealthRecordId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pod_health_record",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pod!: PodId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pod_health_record",
+            "name": "pod"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status!: PodHealthStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pod_health_record",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "message!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pod_health_record",
+            "name": "message"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "report_time!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "pod_health_record",
+            "name": "report_time"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "pod_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "canvas!: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_pod",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "canvas_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_canvas",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "912afe5cd532002bf64b8a89f97bc8821597ac98054feea58e2d65496d47cef4"
+}

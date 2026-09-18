@@ -17,6 +17,7 @@ use crate::entities::db::server::{
 use crate::entities::db::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
 };
+use crate::events::HealthFact;
 use crate::events::live::{CanvasChangeKind, LiveMessage, RolloutScope};
 use crate::services::OrchestrationError;
 use crate::services::health::{ParsedSnapshot, PodVerdicts, SnapshotEntry, parse_snapshot};
@@ -445,7 +446,7 @@ impl Processor<AckConfig> for AgentService {
         if !pod_rows.is_empty() {
             self.notifier
                 .live(LiveMessage::PodHealth {
-                    records: pod_rows.iter().map(Into::into).collect(),
+                    records: pod_rows.iter().map(|p| (&p.record).into()).collect(),
                 })
                 .await;
         }
@@ -459,6 +460,15 @@ impl Processor<AckConfig> for AgentService {
                 })
                 .await;
         }
+        // The ack's own facts: the pod verdicts it settled, plus the server's
+        // status if it flipped. `SetServerHealthStatus` writes no pod rows, so
+        // the two sets never overlap.
+        let facts: Vec<HealthFact> = pod_rows
+            .iter()
+            .map(HealthFact::pod)
+            .chain(health.as_ref().and_then(HealthFact::server))
+            .collect();
+        self.notifier.health_changed(facts).await;
         Ok(())
     }
 }

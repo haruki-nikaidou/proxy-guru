@@ -62,7 +62,7 @@ Pod 默认绑定主机的所有地址；也可以限制为仅 IPv4，或固定�
 |---|---|
 | `auth` | 账户、会话、API 密钥、RBAC |
 | `orchestration` | 画布、服务器和 Pod 图；图的检查、配置推导、Worker 发布 |
-| `notify` | 通知模块 —— 已从 `base` 生成骨架，尚未实现 |
+| `notify` | 按工作区和按账号的通知设置；健康状态变化的邮件与 Telegram 投递（见[通知](/zh-cn/features/notifications/)） |
 | `base` | 共享基础设施，以及所有模块共同遵循的布局 |
 
 ## 技术栈

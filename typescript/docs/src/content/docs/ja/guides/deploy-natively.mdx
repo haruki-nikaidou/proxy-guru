@@ -18,7 +18,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | PostgreSQL 16+ | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5432` |
 | RabbitMQ 4 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5672` |
 | Redis 7 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:6379` |
-| `guru-master` ×4 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
+| `guru-master` ×5 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | ダッシュボード | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 既存の nginx、server ブロック 1 つ | `:443` |
 
@@ -91,7 +91,7 @@ set -a; . ./.env; set +a       # the credentials you wrote above
 ./target/release/manage-tool config seed
 ```
 
-厳密に言えば、ここでの `db migrate` は任意です — 各マスターが起動時に未適用のものを適用します — が、いま実行しておけば、4 つのユニットが起動を試みる前にスキーマの問題が表面化します。`config seed` は書き込んだキーごとに 1 行を出力します（`seeded auth`、`seeded orchestration`）。
+厳密に言えば、ここでの `db migrate` は任意です — 各マスターが起動時に未適用のものを適用します — が、いま実行しておけば、5 つのユニットが起動を試みる前にスキーマの問題が表面化します。`config seed` は書き込んだキーごとに 1 行を出力します（`seeded auth`、`seeded notify`、`seeded orchestration`）。
 
 ### 内部 CA と最初の管理者
 
@@ -143,11 +143,13 @@ WantedBy=multi-user.target
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc \
-                            guru-master@consumer guru-master@cron
+                            guru-master@consumer guru-master@cron guru-master@notifier
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer` と `cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、PostgreSQL、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要としません — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
+`consumer`、`notifier`、`cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、PostgreSQL、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要とせず、`notifier` はデータベースを必要としますが Redis は不要です — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
+
+`guru-master@notifier` は、唯一つねに単一インスタンスでなければならないユニットです。起動時に PostgreSQL のアドバイザリロックを取得するため、これを動かす 2 台目のホストは、すべてのメッセージを二重に送る代わりに `another notifier already holds the advisory lock; run exactly one` で終了します（[通知](/ja/features/notifications/)）。このモードの 2 つのチャンネルのシークレット `GURU_SMTP_PASSWORD` と `GURU_TELEGRAM_BOT_TOKEN` は任意で、同じ `.env` に置きます。master キーは読みません。
 
 コード変更後の再デプロイはシェル 2 つでの作業です。`guru` としてビルドし、オペレーターとして再起動します。
 

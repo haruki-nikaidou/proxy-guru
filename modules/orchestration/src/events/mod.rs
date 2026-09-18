@@ -6,6 +6,9 @@
 
 pub mod live;
 
+use crate::entities::db::health::{
+    HealthWrite, PodHealthStatus, PodHealthWrite, ServerHealthStatus,
+};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
 use std::task::Poll;
 use time::OffsetDateTime;
@@ -39,6 +42,102 @@ impl AmqpRouting for CanvasDirty {
 }
 
 impl AmqpMessageSend for CanvasDirty {}
+
+/// **Public event**
+///
+/// The health facts one write settled: a server whose status flipped, and the
+/// pod rows a write produced.
+///
+/// Published by: [`crate::services::health::HealthService`] (report, stream
+/// close and liveness sweep), `AckConfig`
+/// ([`crate::services::agent::AgentService`]) and
+/// [`crate::hooks::derive::CanvasDeriver`].
+/// Consumed by: `notify`'s fan-out hook.
+/// Route: exchange `orchestration` (direct), key `health_changed`.
+///
+/// The facts carry their own labels (server, pod and canvas names) so a
+/// consumer can phrase a notification without a database of its own. A lost
+/// message costs one notification and never state: what the fleet runs is
+/// decided by the rows the publisher already committed.
+#[derive(
+    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
+)]
+pub struct HealthChanged {
+    pub facts: Vec<HealthFact>,
+}
+
+/// One health fact, as the publisher observed it.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum HealthFact {
+    /// A server's status differs from the one it held before the write.
+    Server {
+        server: String,
+        server_name: String,
+        canvas: String,
+        canvas_name: String,
+        status: ServerHealthStatus,
+        at_unix_micros: i64,
+    },
+    /// A pod row was written; whether it is a change is the consumer's call.
+    Pod {
+        pod: String,
+        pod_name: String,
+        canvas: String,
+        canvas_name: String,
+        status: PodHealthStatus,
+        message: String,
+        at_unix_micros: i64,
+    },
+}
+
+impl HealthFact {
+    /// The fact a server write settled, or `None` when the write only recorded
+    /// the status the server already held: a routine report is not news.
+    pub fn server(write: &HealthWrite) -> Option<Self> {
+        if write.previous_status == write.record.status {
+            return None;
+        }
+        Some(Self::Server {
+            server: write.record.server.to_string(),
+            server_name: write.server_name.clone(),
+            canvas: write.canvas.to_string(),
+            canvas_name: write.canvas_name.clone(),
+            status: write.record.status,
+            at_unix_micros: write.record.report_time.timestamp_micros(),
+        })
+    }
+
+    /// The fact one written pod row carries. Whether it is a change is the
+    /// consumer's call: a report writes one row per pod every interval.
+    pub fn pod(write: &PodHealthWrite) -> Self {
+        Self::Pod {
+            pod: write.record.pod.to_string(),
+            pod_name: write.pod_name.clone(),
+            canvas: write.canvas.to_string(),
+            canvas_name: write.canvas_name.clone(),
+            status: write.record.status,
+            message: write.record.message.clone(),
+            at_unix_micros: write.record.report_time.timestamp_micros(),
+        }
+    }
+}
+
+/// Every fact one server write settled: the status flip, if there was one, then
+/// the pod rows the write carried.
+pub fn health_facts(write: &HealthWrite) -> Vec<HealthFact> {
+    HealthFact::server(write)
+        .into_iter()
+        .chain(write.pods.iter().map(HealthFact::pod))
+        .collect()
+}
+
+impl AmqpRouting for HealthChanged {
+    const EXCHANGE: &'static str = "orchestration";
+    const EXCHANGE_TYPE: AmqpExchangeType = AmqpExchangeType::Direct;
+    const ROUTING_KEY: &'static str = "health_changed";
+}
+
+impl AmqpMessageSend for HealthChanged {}
 
 // --- periodic execution signals ----------------------------------------------
 

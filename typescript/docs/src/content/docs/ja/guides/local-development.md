@@ -109,11 +109,27 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
 ```
 
-4 つ目のモードは `workers_grpc` で、ワーカー API と設定ビューのポーラーを兼ねており、引数は `dashboard_grpc` と
+通知の配信は専用のモードが担い、そのインスタンスはちょうど 1 つだけです。マスターキーも Redis も必要とせず、
+キャンバスやアカウントに通知設定ができて初めて何かをします（[通知](/ja/features/notifications/)）:
+
+```sh
+env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
+  --mode notifier \
+  --database-url "$GURU_DATABASE_URL" \
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+```
+
+2 つ目の `notifier` は起動を拒否します — `another notifier already holds the advisory lock; run
+exactly one` — これはバグではなく、ロックが効いている証拠です。メールについては、`notify` の `smtp_host` を
+ローカルのシンクに向けてください（`docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit` の後に
+`manage-tool config set notify '{"smtp_host":"127.0.0.1","smtp_port":1025,"smtp_starttls":false}'`）。
+届いたメールは `http://127.0.0.1:8025` で読めます。
+
+5 つ目のモードは `workers_grpc` で、ワーカー API と設定ビューのポーラーを兼ねており、引数は `dashboard_grpc` と
 まったく同じです。すべてのモードはブローカーを必要とします。RabbitMQ が停止していれば何も起動せず、`cron` か
-`consumer` が停止していれば定期ジョブは一切実行されません。データベースに接続する 3 つのモード
-（`dashboard_grpc`、`workers_grpc`、`consumer`）は Redis も必要とし、`--redis-url`/`REDIS_URL` がなければ
-起動しません。`cron` は使いません。これはオペレーター API の `Watch*` ストリームを支えるライブバスで、
+`consumer` が停止していれば定期ジョブは一切実行されません。`--redis-url`/`REDIS_URL` は、上記のうち提供と導出を
+行う 3 つのモードで必須で、`cron` と `notifier` は使いません。これがなければそれらのモードは起動しません。
+これはオペレーター API の `Watch*` ストリームを支えるライブバスで、
 ダッシュボードのキャンバスエディターとヘルスページはこのストリームを追従しています。Redis が停止すると、
 開いているページは更新を停止しますが（*ライブ* バッジはブラウザー自身の接続を示すもので、緑のままです）、
 編集と導出はいつもどおり続き、Redis が復旧すればページは自動的に追いつきます。

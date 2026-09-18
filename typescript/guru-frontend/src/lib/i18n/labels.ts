@@ -1,5 +1,6 @@
 import type { IngressKind, IpFamily, ProxyVersion, RelayKind } from 'guru-graph';
 import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
+import type { NoticeKindName, NotifyLanguageName } from '#lib/dto/notify.js';
 import type {
 	Ipv6ResolveName,
 	LogLevelName,
@@ -161,3 +162,33 @@ export const serverHealthBadge = (
 			: status === 'offline'
 				? { variant: 'default', class: 'bg-red-600 text-white' }
 				: { variant: 'outline', class: 'text-muted-foreground' };
+
+/** The language a notice is rendered in. */
+export function notifyLanguageLabel(language: NotifyLanguageName): string {
+	switch (language) {
+		case 'ja':
+			return m.notify_language_ja();
+		case 'zh_cn':
+			return m.notify_language_zh_cn();
+		default:
+			return m.notify_language_en();
+	}
+}
+
+/** What a notice is about, as the two settings cards name it. */
+export function noticeKindLabel(kind: NoticeKindName): string {
+	switch (kind) {
+		case 'server_online':
+			return m.notify_kind_server_online();
+		case 'server_degraded':
+			return m.notify_kind_server_degraded();
+		case 'server_offline':
+			return m.notify_kind_server_offline();
+		case 'pod_ready':
+			return m.notify_kind_pod_ready();
+		case 'pod_deploying':
+			return m.notify_kind_pod_deploying();
+		default:
+			return m.notify_kind_pod_failed();
+	}
+}

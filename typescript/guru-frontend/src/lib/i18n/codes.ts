@@ -74,6 +74,14 @@ export function issueMessage(code: string): string {
 			return m.issue_config_json_required();
 		case 'config_json_invalid':
 			return m.issue_config_json_invalid();
+		case 'notify_language_invalid':
+			return m.issue_notify_language_invalid();
+		case 'notify_event_invalid':
+			return m.issue_notify_event_invalid();
+		case 'notify_chat_required':
+			return m.issue_notify_chat_required();
+		case 'notify_chat_too_long':
+			return m.issue_notify_chat_too_long();
 		case 'agent_unit_invalid':
 			return m.issue_agent_unit_invalid();
 		default:

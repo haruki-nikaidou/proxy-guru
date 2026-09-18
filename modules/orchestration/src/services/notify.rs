@@ -7,8 +7,8 @@
 //! messaging field.
 
 use crate::entities::db::canvas::CanvasId;
-use crate::events::CanvasDirty;
 use crate::events::live::{CanvasChangeKind, LIVE_CHANNEL, LiveMessage, RolloutScope};
+use crate::events::{CanvasDirty, HealthChanged, HealthFact};
 use crate::hooks::live::LiveBus;
 use kanau::message::MessageSer;
 use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
@@ -67,6 +67,22 @@ impl Notifier {
         };
         if let Err(e) = event.send(pool).await {
             tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once the broker is back");
+        }
+    }
+
+    /// Publishes the health facts one write settled, for the modules that
+    /// notify on them. Failure is logged: a lost fact costs one notification,
+    /// never state.
+    pub async fn health_changed(&self, facts: Vec<HealthFact>) {
+        if facts.is_empty() {
+            return;
+        }
+        let Some(pool) = &self.amqp else {
+            return;
+        };
+        let event = HealthChanged { facts };
+        if let Err(e) = event.send(pool).await {
+            tracing::warn!(error = %e, "publishing health_changed failed; the notification it carried is lost");
         }
     }
 

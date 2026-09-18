@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 proto_root.join("auth/auth.proto"),
                 proto_root.join("orchestration/orchestration.proto"),
                 proto_root.join("orchestration/agent.proto"),
+                proto_root.join("notify/notify.proto"),
             ],
             &[proto_root],
         )?;

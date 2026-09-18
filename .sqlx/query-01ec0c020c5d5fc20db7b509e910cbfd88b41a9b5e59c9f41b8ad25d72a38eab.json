@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notify_account_setting (account, canvas, language, events, email_enabled, telegram_chat)\nVALUES ($1, $2, $3, $4, $5, $6)\nON CONFLICT (account, canvas) DO UPDATE\n    SET language = EXCLUDED.language,\n        events = EXCLUDED.events,\n        email_enabled = EXCLUDED.email_enabled,\n        telegram_chat = EXCLUDED.telegram_chat\nRETURNING account AS \"account: AccountId\", canvas AS \"canvas?: CanvasId\",\n          language AS \"language: Language\", events AS \"events: Vec<NoticeKind>\",\n          email_enabled, telegram_chat\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "canvas?: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "language: Language",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "language"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "events: Vec<NoticeKind>",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "email_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "email_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "telegram_chat",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_setting",
+            "name": "telegram_chat"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "01ec0c020c5d5fc20db7b509e910cbfd88b41a9b5e59c9f41b8ad25d72a38eab"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Records the status and answers with the one it replaced.\n--\n-- Every sub-statement of a `WITH` sees the same snapshot, so `before` reads the\n-- row as it was even though `upsert` rewrites it. The upsert's own `WHERE`\n-- leaves `changed_at` alone when the status did not move, and the insert is\n-- conditional on the server still existing: a deleted one would otherwise fail\n-- the foreign key and requeue the delivery forever.\nWITH before AS (\n    SELECT status FROM notify_server_state WHERE server = $1\n), upsert AS (\n    INSERT INTO notify_server_state (server, status, changed_at)\n    SELECT $1, $2, $3\n    WHERE EXISTS (SELECT 1 FROM orchestration_server WHERE id = $1)\n    ON CONFLICT (server) DO UPDATE\n        SET status = EXCLUDED.status, changed_at = EXCLUDED.changed_at\n        WHERE notify_server_state.status <> EXCLUDED.status\n    RETURNING server\n)\nSELECT (SELECT status FROM before) AS \"previous?: ServerHealthStatus\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "previous?: ServerHealthStatus",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a4eaf3bacbb658413c522450d81e145b1fd209b57873ea72c8db98f85bfce643"
+}

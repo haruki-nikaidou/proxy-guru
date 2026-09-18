@@ -21,6 +21,7 @@ use crate::entities::db::server::{
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
 };
+use crate::events::health_facts;
 use crate::events::live::{CanvasChangeKind, LiveMessage};
 use crate::services::OrchestrationError;
 use crate::services::agent::{AgentIdentity, PodResult};
@@ -46,7 +47,8 @@ pub struct HealthService {
 
 impl HealthService {
     /// Puts one accepted health write on the live bus: the server record every
-    /// server-health stream follows, plus the pod rows it carried.
+    /// server-health stream follows, plus the pod rows it carried — and on the
+    /// broker, as the health facts the notifying modules react to.
     async fn publish(&self, server: &ServerId, write: &HealthWrite) {
         self.notifier
             .live(LiveMessage::ServerHealth {
@@ -59,10 +61,11 @@ impl HealthService {
         if !write.pods.is_empty() {
             self.notifier
                 .live(LiveMessage::PodHealth {
-                    records: write.pods.iter().map(Into::into).collect(),
+                    records: write.pods.iter().map(|p| (&p.record).into()).collect(),
                 })
                 .await;
         }
+        self.notifier.health_changed(health_facts(write)).await;
     }
 }
 

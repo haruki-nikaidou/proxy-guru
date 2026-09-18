@@ -11,7 +11,7 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 
 ## 1. 你要部署的是什么
 
-四个进程，全部来自**同一个**镜像，再加上控制台：
+五个进程，全部来自**同一个**镜像，再加上控制台：
 
 | 组件 | 运行模式 | 通信对象 |
 |---|---|---|
@@ -19,6 +19,7 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 | Worker API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
 | 周期任务 + 派生钩子 | `consumer` | PostgreSQL、RabbitMQ、Redis |
 | 调度器 | `cron` | RabbitMQ |
+| 通知投递 | `notifier` | PostgreSQL、RabbitMQ（**恰好一个实例**） |
 | 控制台 | — | 运维 API（gRPC） |
 
 :::note
@@ -34,6 +35,11 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 这两种钩子模式的分工，是你在做容量规划之前就应该理解的。`cron` 是一只时钟：它为每个到期任务发布一条执行
 信号，完全不打开数据库连接。`consumer` 才真正干活 —— 派生钩子*以及*所有周期任务 —— 因此清扫、存活检测和
 证书续期的扩缩容与故障转移方式，与一次画布编辑完全一致。
+
+`notifier` 是第三种钩子模式，也是“随便扩容”这条规则的唯一例外：它负责把 `consumer` 的扇出所发布的邮件
+和 Telegram 消息发出去，而第二个实例会把一次重启期间重叠的每条通知都发两遍，所以它会取得一把
+PostgreSQL advisory lock，并拒绝在已经持有它的同伴旁边启动。它也是唯一既不需要 `GURU_MASTER_KEY`
+也不需要 `REDIS_URL` 的模式（见[通知](/zh-cn/features/notifications/)）。
 
 端口，以及谁有权访问它们：
 
@@ -113,10 +119,10 @@ cd /srv/guru
 docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ```
 
-有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部四种** master 模式下消息中间件都是
+有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部五种** master 模式下消息中间件都是
 必需的 —— 周期性工作就是一条消息，所以 broker 中断会让派生、存活检测和证书续期一起停摆；master
 用 `/srv/guru/.env` 里的角色连接数据库，第 7 节中的 `x-master` 锚点会把它拼成一个 URL；
-而 Redis 在会打开数据库连接的那三种模式下必填（`cron` 不用它），丢掉它的代价也小得多。
+而 Redis 在提供服务与派生的那三种模式下必填（`cron` 和 `notifier` 都不用它），丢掉它的代价也小得多。
 中断只会让已打开的 `Watch*` 流停止投递，除此之外别无影响 —— 编辑照样生效，画布照样派生，Worker 照样
 拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。控制台跟随这些流，
 因此 Redis 停机期间，已打开的画布或健康状况页面会停止更新，并在它恢复后自行追上最新状态；这些页面上的
@@ -125,7 +131,7 @@ docker compose ps          # postgres healthy, rabbitmq healthy, redis up
 ## 6. 应用 Schema
 
 每个 master 启动时都会应用尚未应用的 migration，所以首次安装时这一节是可选的 —— 但先执行一遍，
-可以让 Schema 上的问题在这里暴露，而不是在四个不断重启的容器里暴露。
+可以让 Schema 上的问题在这里暴露，而不是在五个不断重启的容器里暴露。
 按 **[配置数据库 Schema](/zh-cn/guides/setup-database-schema/)** 操作：
 
 ```sh
@@ -145,15 +151,16 @@ export GURU_DATABASE_URL
 都改为存放在数据库里（第 8 节），因此副本之间不需要保持环境变量一致。
 
 master key 只生成一次，并与数据库凭据一起保管 —— 它在静态存储层面加密每一个 DNS provider token 和证书
-私钥，没有它就无法恢复这些数据。三种需要读取密钥的模式都必须有它；`cron` 从不读取，而下面的锚点只是把
-同一份环境变量交给全部四个服务。`manage-tool` 可以从某个 `master-v*` release 下载（第 10 节），也可以
-从你的检出目录构建（第 8 节）；这个子命令不需要数据库：
+私钥，没有它就无法恢复这些数据。三种需要读取密钥的模式都必须有它；`cron` 和 `notifier` 从不读取，而
+下面的锚点只是把同一份环境变量交给全部五个服务。`REDIS_URL` 的作用范围也类似 —— 提供服务与派生的那
+三种模式没有它就拒绝启动，`cron` 和 `notifier` 会忽略它。`manage-tool` 可以从某个 `master-v*`
+release 下载（第 10 节），也可以从你的检出目录构建（第 8 节）；这个子命令不需要数据库：
 
 ```sh
 ./target/release/manage-tool generate-master-key
 ```
 
-扩展同一个 `docker-compose.yml`：`x-master` 锚点放在 `services:` 上方，四个服务放在其中，与 `postgres`、
+扩展同一个 `docker-compose.yml`：`x-master` 锚点放在 `services:` 上方，五个服务放在其中，与 `postgres`、
 `rabbitmq` 和 `redis` 并列：
 
 ```yaml
@@ -204,6 +211,16 @@ services:
     environment:
       <<: *master-env
       GURU_WORKER_MODE: cron
+
+  # Exactly one: the mode takes an advisory lock and a second replica exits.
+  master-notifier:
+    <<: *master
+    environment:
+      <<: *master-env
+      GURU_WORKER_MODE: notifier
+      # Both optional; each unset value disables its channel.
+      GURU_SMTP_PASSWORD: "${GURU_SMTP_PASSWORD}"
+      GURU_TELEGRAM_BOT_TOKEN: "${GURU_TELEGRAM_BOT_TOKEN}"
 ```
 
 每种模式的用途，以及它如何扩缩容：
@@ -228,6 +245,12 @@ services:
   就是 `AMQP_URI` 里的 broker 凭据 —— 那也是它唯一离不开的东西。这里没有什么需要扩容的：一个副本就够了，
   多一个也无害，因为 consumer 的运行认领会丢弃重复的那一条。一个任务实际允许多久运行一次是存储在
   数据库里的设置，不是启动参数 —— 见第 8 节。
+- **`notifier`** —— 通知投递，也是唯一必须**恰好运行一次**的模式：它消费 `consumer` 的扇出所发布的那
+  两个通知队列，并把每条通知通过 SMTP 和 Telegram Bot API 发出去。它会先取得一把会话级的 PostgreSQL
+  advisory lock，因此第二个副本会以非零码退出并给出
+  `another notifier already holds the advisory lock; run exactly one` —— 这让 `deploy: replicas: 1`
+  从一条约定变成了硬保证。它既不需要 `GURU_MASTER_KEY` 也不需要 `REDIS_URL`，只需要出站 SMTP 以及到
+  `telegram_api_base` 的 HTTPS。它停机期间，通知会在各自的队列里等着。
 
 基于 TLS 或 QUIC 的 relay 链路在其 pod 派生之前需要内部 CA。请在运维机器上执行一次下面的命令，
 使用与 master 相同的 `GURU_MASTER_KEY`：
@@ -241,14 +264,14 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 
 从代码中可以直接得出的三条运维注意事项：
 
-- `consumer` 和 `cron` 模式在 **AMQP 连接断开时会以非零码退出**（客户端不会重连，而一个静默死掉的
-  consumer、或者一个把消息发到虚无处的时钟，比重启更糟）：
+- `consumer`、`notifier` 和 `cron` 模式在 **AMQP 连接断开时会以非零码退出**（客户端不会重连，而一个
+  静默死掉的 consumer、或者一个把消息发到虚无处的时钟，比重启更糟）：
   `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`。
   `restart: unless-stopped` 正是让它自愈的机制 —— 不要移除它。
 - **Redis 里没有任何需要保护的状态。** 它的 Compose 服务以 `--save "" --appendonly no` 运行，因为经过
   它的只有实时事件；重启它最多让已打开的 `Watch*` 流错过几次投递，订阅端每次重连都会打印一行
   `live bus connected`，随后让每个 watcher 重新读一遍数据库，所以不会有内容停留在旧状态。但它在启动时
-  必须可达：`REDIS_URL` 未设置或服务端连不上时，三种打开数据库连接的模式都会立即退出。
+  必须可达：`REDIS_URL` 未设置或服务端连不上时，提供服务与派生的那三种模式都会立即退出。
 - 镜像是 distroless 的：没有 shell，没有 `curl`。依赖调用 shell 的 Compose `healthcheck` 无法工作。
   请改从外部监控（TCP 连接 `50051`/`50052`，或采集日志）。
 
@@ -256,7 +279,7 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 
 ```sh
 docker compose up -d
-docker compose logs master-dashboard master-workers master-consumer master-cron
+docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
 健康的启动看起来是这样。consumer 为它绑定的每个队列打印一行，调度器打印一行列出它将使用的所有节奏：
@@ -271,7 +294,11 @@ master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_swee
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
 master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
+master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
 master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
+master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
 ```
 
 此后调度器是安静的：每次发布都记在 `DEBUG` 级别
@@ -632,10 +659,11 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 | master 以 `stored config for key ... does not match its type` 退出 | 存储的文档损坏，或早于某次字段重命名。用 `manage-tool config get <key>` 检查它，并用 `config set` 重写。 |
 | 某个 TLS 客户端 Pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
 | 某个 relay pod 一直停在 `invalid_pods`，提示 `internal CA not initialised` | 执行一次 `manage-tool orchestration init-ca`。 |
-| master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。四种模式都需要 broker。检查 URI 结尾的 `/`。 |
-| master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 不需要。 |
+| master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。五种模式都需要 broker。检查 URI 结尾的 `/`。 |
+| master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 和 `notifier` 不需要。 |
 | 已打开的画布或健康状况页面停止更新（刷新页面却能看到那次变更），或某个 `Watch*` 流不再投递快照 | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
-| `consumer` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
+| `consumer`、`notifier` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
+| 第二个 `notifier` 以 `another notifier already holds the advisory lock; run exactly one` 退出 | 属预期行为：投递是单实例的。请把它缩到一个副本，或者停掉持有那把锁的同伴。 |
 | 全新安装后立刻出现 `relation "…" does not exist` | migration 从未运行：`GURU_DATABASE_URL` 中的角色可能对该数据库没有 `CREATE` 权限。执行 `manage-tool db migrate` 并阅读它的报错。 |
 | `manage-tool` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了 `GURU_DATABASE_URL`。请始终显式传入 `--database-url`。 |
 | 画布编辑永远到不了 worker | `consumer` 挂了：编辑钩子和过期画布清扫都由它运行，没有它什么都不会派生。如果 `consumer` 是正常的，就检查 `cron` —— 没有时钟，清扫永远不会触发，只有带活跃 `CanvasDirty` 的编辑才会派生。 |

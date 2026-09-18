@@ -23,7 +23,7 @@ use orchestration::entities::db::server::{
     ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
-use orchestration::events::SweepLivenessSignal;
+use orchestration::events::{HealthFact, SweepLivenessSignal, health_facts};
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{
@@ -1333,5 +1333,81 @@ async fn deleting_a_server_after_an_ack_keeps_the_canvas_stale(pool: sqlx::PgPoo
     );
     w.derive(&canvas).await?;
     assert!(!is_stale(&w, &canvas).await?);
+    Ok(())
+}
+
+/// The facts a health write settles, which is what the notifying modules
+/// consume: the labels are read inside the write's own transaction, a status
+/// flip is announced once, and a routine report — the same status again — is
+/// announced not at all.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_health_write_carries_labels_and_announces_only_a_flip(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let agent = register(&w, &f.server).await?;
+    let report_time = Utc::now();
+    let online = async |report_time: DateTime<Utc>| {
+        w.db.process(InsertServerHealthRecord {
+            server: f.server.clone(),
+            generation: agent.generation,
+            status: ServerHealthStatus::Online,
+            report_time,
+            upload_bytes: 0,
+            download_bytes: 0,
+            current_connections: 0,
+            max_connections: 0,
+            pods: vec![NewPodHealthRecord {
+                pod: f.web.id.clone(),
+                status: PodHealthStatus::Ready,
+                message: String::new(),
+                report_time,
+            }],
+        })
+        .await
+    };
+
+    let write = online(report_time).await?.expect("the write lands");
+    assert_eq!(write.server_name, f.server_row.name);
+    assert_eq!(write.canvas_name, f.canvas_row.name);
+    let pod = write.pods.first().expect("the pod row was written");
+    assert_eq!(pod.pod_name, f.web.name);
+    assert_eq!(pod.canvas, f.canvas);
+    assert_eq!(pod.canvas_name, f.canvas_row.name);
+
+    // A fresh server was `Offline`, so this report is a flip: one server fact
+    // carrying the labels, plus the pod row the report wrote.
+    let facts = health_facts(&write);
+    assert!(
+        matches!(
+            facts.first(),
+            Some(HealthFact::Server { server_name, canvas_name, status, .. })
+                if server_name == &f.server_row.name
+                    && canvas_name == &f.canvas_row.name
+                    && *status == ServerHealthStatus::Online
+        ),
+        "{facts:?}"
+    );
+    assert!(
+        matches!(
+            facts.get(1),
+            Some(HealthFact::Pod { pod_name, canvas_name, status, .. })
+                if pod_name == &f.web.name
+                    && canvas_name == &f.canvas_row.name
+                    && *status == PodHealthStatus::Ready
+        ),
+        "{facts:?}"
+    );
+    assert_eq!(facts.len(), 2, "{facts:?}");
+
+    // The next report says the same thing: only the pod row is a fact, or every
+    // recipient would hear about every interval.
+    let again = online(report_time + TimeDelta::seconds(15))
+        .await?
+        .expect("the write lands");
+    let facts = health_facts(&again);
+    assert!(
+        matches!(facts.as_slice(), [HealthFact::Pod { .. }]),
+        "a routine report is not news: {facts:?}"
+    );
     Ok(())
 }

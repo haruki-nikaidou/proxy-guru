@@ -18,7 +18,7 @@
  * reload.
  */
 
-export type ConfigKeyName = 'auth' | 'orchestration';
+export type ConfigKeyName = 'auth' | 'notify' | 'orchestration';
 
 export type ConfigDocumentDto = {
 	key: ConfigKeyName;

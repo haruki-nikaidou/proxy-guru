@@ -66,3 +66,9 @@ pub mod orchestration {
 pub mod orchestration_agent {
     tonic::include_proto!("guru.orchestration.agent");
 }
+
+/// Generated types and service traits for `proto/notify/notify.proto`
+/// (`package guru.notify`).
+pub mod notify {
+    tonic::include_proto!("guru.notify");
+}

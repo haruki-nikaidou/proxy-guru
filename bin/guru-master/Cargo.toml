@@ -9,6 +9,7 @@ license.workspace = true
 # Internal
 auth = { path = "../../modules/auth" }
 base = { path = "../../modules/base" }
+notify = { path = "../../modules/notify" }
 orchestration = { path = "../../modules/orchestration" }
 reqwest = { workspace = true }
 rpguru_sdk = { path = "../../lib/rpguru_sdk" }

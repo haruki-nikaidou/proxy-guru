@@ -1,4 +1,5 @@
 import { AuthDefinition } from 'app-protobuf/auth/auth';
+import { NotifyDefinition } from 'app-protobuf/notify/notify';
 import { OrchestrationDefinition } from 'app-protobuf/orchestration/orchestration';
 import { ChannelCredentials, createChannel, createClient } from 'nice-grpc';
 import { GURU_GRPC_URL } from '$app/env/private';
@@ -12,3 +13,4 @@ const channel = createChannel(GURU_GRPC_URL, ChannelCredentials.createInsecure()
 /** Clients are thin proxies over the shared channel; create them per call. */
 export const authClient = () => createClient(AuthDefinition, channel);
 export const orchestrationClient = () => createClient(OrchestrationDefinition, channel);
+export const notifyClient = () => createClient(NotifyDefinition, channel);

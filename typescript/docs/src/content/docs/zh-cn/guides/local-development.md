@@ -105,10 +105,27 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
 ```
 
-`workers_grpc` 是第四种模式——即 Worker API 加上配置视图轮询器——它接受的参数与
+通知由它自己的模式投递，而这种模式恰好只有一个实例。它既不需要 master key 也不需要 Redis，而且只有
+在某个画布或某个账号已经有通知设置之后才会真正做事（见[通知](/zh-cn/features/notifications/)）：
+
+```sh
+env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
+  --mode notifier \
+  --database-url "$GURU_DATABASE_URL" \
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+```
+
+第二个 `notifier` 会拒绝启动 —— `another notifier already holds the advisory lock; run exactly one`
+—— 这是那把锁在起作用，不是 bug。要收邮件，就把 `notify` 的 `smtp_host` 指向一个本地接收端
+（`docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit`，然后
+`manage-tool config set notify '{"smtp_host":"127.0.0.1","smtp_port":1025,"smtp_starttls":false}'`），
+再到 `http://127.0.0.1:8025` 查看收到了什么。
+
+`workers_grpc` 是第五种模式——即 Worker API 加上配置视图轮询器——它接受的参数与
 `dashboard_grpc` 完全一致。所有模式都依赖消息代理：RabbitMQ 停机时什么都启动不了；
-而 `cron` 或 `consumer` 停机时，任何周期任务都不会发生。除 `cron` 之外的每种模式还需要 Redis：
-`REDIS_URL` 缺失或服务端连不上时它们会在启动阶段中止。它是运维 API `Watch*` 流背后的实时总线，
+而 `cron` 或 `consumer` 停机时，任何周期任务都不会发生。`--redis-url`（或 `REDIS_URL`）是上面那三种
+提供服务与派生的模式所必需的，`cron` 和 `notifier` 都不使用它；缺失或服务端连不上时它们会在启动阶段
+中止。它是运维 API `Watch*` 流背后的实时总线，
 控制台的画布编辑器和健康状况页面跟随的正是这些流：Redis 停机时，已打开的页面会停止更新（它的
 *实时* 徽章仍保持绿色——那个徽章表示的是浏览器自己的连接），而编辑与派生一切照旧；Redis 恢复后，
 页面会自行追上最新状态。

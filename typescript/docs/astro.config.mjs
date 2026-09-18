@@ -132,6 +132,11 @@ export default defineConfig({
 								'zh-CN': '基于 DNS 的 ACME'
 							},
 							link: '/features/acme-dns/'
+						},
+						{
+							label: 'Notifications',
+							translations: { ja: '通知', 'zh-CN': '通知' },
+							link: '/features/notifications/'
 						}
 					]
 				},

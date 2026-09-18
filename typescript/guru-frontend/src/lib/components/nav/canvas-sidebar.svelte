@@ -1,4 +1,5 @@
 <script lang="ts">
+import BellIcon from '@lucide/svelte/icons/bell';
 import CircleHelpIcon from '@lucide/svelte/icons/circle-help';
 import HeartPulseIcon from '@lucide/svelte/icons/heart-pulse';
 import SettingsIcon from '@lucide/svelte/icons/settings';
@@ -15,6 +16,7 @@ let { identity, canvasId }: { identity: Identity; canvasId: string } = $props();
 const items = $derived([
 	{ href: `/canvas/${canvasId}`, label: m.nav_canvas(), icon: WorkflowIcon },
 	{ href: `/canvas/${canvasId}/health`, label: m.nav_health(), icon: HeartPulseIcon },
+	{ href: `/canvas/${canvasId}/notifications`, label: m.nav_notifications(), icon: BellIcon },
 	{ href: `/canvas/${canvasId}/settings`, label: m.nav_settings(), icon: SettingsIcon },
 	{ href: `/canvas/${canvasId}/help`, label: m.nav_help(), icon: CircleHelpIcon }
 ]);

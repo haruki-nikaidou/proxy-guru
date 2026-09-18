@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notify_account_default\n             (account, language, events, email_enabled, telegram_chat)\n         VALUES ($1, 'ja', ARRAY['pod_failed'], false, '999')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a00a3f3d99f2dee5feeaea68b12cdf3ab64733ed70b7b16f8caf462e8feeec56"
+}

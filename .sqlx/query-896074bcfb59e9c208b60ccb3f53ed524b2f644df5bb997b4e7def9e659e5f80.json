@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- The batch form of `observe_server_status.sql`: records every pod's status and\n-- answers with the one it replaced. A pod that no longer exists is skipped by\n-- the join and reads as a first sighting.\nWITH given AS (\n    SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(pod, status)\n), before AS (\n    SELECT s.pod, s.status\n    FROM notify_pod_state s\n    JOIN given g ON g.pod = s.pod\n), upsert AS (\n    INSERT INTO notify_pod_state (pod, status, changed_at)\n    SELECT g.pod, g.status, $3\n    FROM given g\n    JOIN orchestration_pod p ON p.id = g.pod\n    ON CONFLICT (pod) DO UPDATE\n        SET status = EXCLUDED.status, changed_at = EXCLUDED.changed_at\n        WHERE notify_pod_state.status <> EXCLUDED.status\n    RETURNING pod\n)\nSELECT g.pod AS \"pod!: PodId\", b.status AS \"previous?: PodHealthStatus\"\nFROM given g\nLEFT JOIN before b ON b.pod = g.pod\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pod!: PodId",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "previous?: PodHealthStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_pod_state",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      true
+    ]
+  },
+  "hash": "896074bcfb59e9c208b60ccb3f53ed524b2f644df5bb997b4e7def9e659e5f80"
+}
