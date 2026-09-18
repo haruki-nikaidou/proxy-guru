@@ -9,8 +9,9 @@ carries the traffic counters the dashboard charts, and its silence is what marks
 
 ## What a worker reports
 
-One `HealthReport` per interval over `ReportHealth`, a client-streaming RPC on the `WorkerAgent`
-service, authenticated with the worker's current refresh key:
+One `HealthReport` per interval over `ReportHealth`, a bidirectional stream on the `WorkerAgent`
+service authenticated with the worker's current refresh key; the master answers every report it
+recorded:
 
 | Field | Meaning |
 |---|---|
@@ -23,12 +24,21 @@ service, authenticated with the worker's current refresh key:
 
 The interval is the master's: `Register` answers with `health_report_interval_secs` from the stored
 `orchestration` config (15 s by default), and the worker's own `--health-interval` applies only if
-the master sends `0`. The first report goes out immediately when the stream opens.
+the master sends `0`. The stream opens as soon as the worker has registered — it does not wait for
+the config stream — and the first report goes out immediately.
 
 The report task lives exactly as long as the session. If it ends for any reason the worker tears the
 session down and reconnects with capped exponential backoff, which means a fresh `Register`, a new
 refresh key and a re-negotiated interval. Counters do not survive that: the deltas of the lost
 interval are dropped and the connection gauge starts again from whatever is open.
+
+The master's replies are also how the worker knows the whole path still works. Its HTTP/2 pings only
+reach the first hop, which a proxy such as Cloudflare answers for a path whose far end is gone, so
+the worker counts on data the master itself sent: a session whose reports go unanswered for three
+intervals, or whose config stream carries nothing — not even the keep-alive it gets every
+`stream_keepalive_secs` — for three of those, is given up and started over. A master built before the
+replies announces `stream_keepalive_secs` as `0`, and then neither watchdog runs. After a session
+that lived five minutes, the reconnect backoff starts over at one second.
 
 ## What the master stores
 
@@ -70,6 +80,10 @@ health_offline_after_intervals` — **45 s** at the defaults:
   `no health report within 45s`;
 - the `sweep_liveness` pass flips every non-offline server whose last accepted report is older than
   the threshold.
+
+A stream that merely ends is neither: a proxy cuts streams of its own accord, and a worker that
+reconnects within the threshold never was offline. The stream's end lets the worker's next session in;
+the sweep judges a worker that does not come back.
 
 Going `Offline` also clears the server's session lease and bumps its watch epoch, so the config
 stream ends and the worker's next `Register` is accepted immediately instead of being refused as a
@@ -150,7 +164,7 @@ effect on restart:
 | `pod_health_ttl_secs` | 604800 (7 d) | Retention of pod records. |
 | `liveness_interval_secs` | 30 | Execution cadence of `sweep_liveness`. |
 | `health_retention_interval_secs` | 300 | Execution cadence of `trim_health_history`. |
-| `stream_keepalive_secs` | 15 | Keep-alive on the `Watch*` streams. |
+| `stream_keepalive_secs` | 15 | Keep-alive on the dashboard's `Watch*` streams and on a worker's `WatchConfig`. |
 
 On the worker, `--health-interval` / `GURU_HEALTH_INTERVAL_SECS` (default 15, minimum 1) is a
 fallback for a master that sends no interval. See the

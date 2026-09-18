@@ -240,16 +240,17 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        # WatchConfig is a server stream that may be silent for hours; ReportHealth a
-        # client stream carrying one message per 15 s. The grpc_* defaults are 60 s.
+        # Both worker streams live as long as the session. A current worker's carry
+        # data every 15 s; one built before keep-alives leaves WatchConfig silent for
+        # hours. The grpc_* defaults are 60 s.
         grpc_read_timeout 7d;
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         # ReportHealth is one request body that grows for the life of the session;
         # nginx counts it cumulatively, so any limit would eventually 413 the stream.
         client_max_body_size 0;
-        # Gap allowed between two ReportHealth frames (4 missed reports). With nginx
-        # in the path this is what bounds dead-worker detection.
+        # Gap allowed between two ReportHealth frames (4 missed reports); the master
+        # gives up on a silent stream after three.
         client_body_timeout 60s;
         grpc_set_header x-api-key     $http_x_api_key;
         grpc_set_header x-refresh-key $http_x_refresh_key;
@@ -285,12 +286,30 @@ sudo nginx -t && sudo systemctl reload nginx
 
 このうち 4 つの設定については、それぞれ一言説明しておきます。
 
-- **`grpc_read_timeout 7d`**。デフォルトの 60 秒では、nginx が毎分 `WatchConfig` を終了させ、ワーカーが再登録し、リフレッシュキーが毎分ローテーションします。自ら招いた再登録の嵐です。
-- **`client_max_body_size 0`**。`ReportHealth` はクライアントストリーミング RPC です。1 つの HTTP/2 リクエストのボディが、セッションが続く間、レポート 1 件ごとに伸び続けます。nginx はボディの上限を累積で判定するため、上限を設けると数週間後にヘルスストリームがリセットされてしまいます。
-- **`client_body_timeout 60s`**。マスターは自身の接続上の HTTP/2 PING で死んだワーカーを検出します。間に nginx が入ると、その PING には nginx が応答するため、FIN を返さずに消えたワーカーは、nginx がヘルスボディをタイムアウトしたときに初めて気づかれます。つまり 20 秒ではなく 1 分程度になります。許容範囲であり、調整したい場合はこの定数が対象です。
-- **`so_keepalive=60s:15s:4`**。`client_body_timeout` が効くのは、ヘルスストリームを開いているワーカーだけです。登録直後、最初のレポートより前に接続が切れたワーカーについては、nginx がタイムアウトさせられるものが何もありません。`WatchConfig` はリクエストを送り終えており、マスターにも送るデータがないため、ストリームは `grpc_read_timeout` まで開いたままになり、その間マスターはセッションのリースを更新し続け、そのワーカーの再試行をすべて拒否します。TCP keepalive はアイドルな接続を 60 秒後にプローブし、4 回応答がなければ切断します。合計でおよそ 2 分です。リッスンソケットのオプションなので、同じアドレスとポートのすべての server ブロックに適用され、アドレスとポートごとに一度しか書けません。マスターの生存確認スイープも、登録からレポート間隔 3 回分が過ぎたこうしたセッションを取り消します。
+- **`grpc_read_timeout 7d`**。現行のワーカーの `WatchConfig` は `stream_keepalive_secs` ごとにキープアライブを運びますが、キープアライブ以前にビルドされたワーカーではリビジョンの間は無音です。デフォルトの 60 秒では、nginx がそのストリームを毎分終了させ、ワーカーが再登録し、リフレッシュキーが毎分ローテーションします。自ら招いた再登録の嵐です。
+- **`client_max_body_size 0`**。`ReportHealth` は双方向ストリームで、そのリクエストは 1 つの HTTP/2 ボディです。そのボディが、セッションが続く間、レポート 1 件ごとに伸び続けます。nginx はボディの上限を累積で判定するため、上限を設けると数週間後にヘルスストリームがリセットされてしまいます。
+- **`client_body_timeout 60s`**。レポートが止まったワーカーには、マスターが自分で気づきます。レポートのない間隔が 3 回（デフォルトで 45 秒）続くとストリームを終了し、サーバーを `Offline` にします。このタイムアウトは、ワーカーが消えたストリームの nginx 側を解放するだけです。そのしきい値より長くしておいてください。
+- **`so_keepalive=60s:15s:4`**。登録直後、最初のレポートより前に接続が切れたワーカーについては、nginx が気づける手がかりがほとんどありません。`WatchConfig` はリクエストを送り終えており、マスターが送り返すもの（ときどきのキープアライブ、キープアライブ以前のワーカーには何もなし）は、TCP が再送をあきらめる何分も後になって初めて失敗します。その間マスターはセッションのリースを更新し続け、そのワーカーの再試行をすべて拒否します。TCP keepalive はアイドルな接続を 60 秒後にプローブし、4 回応答がなければ切断します。合計でおよそ 2 分です。リッスンソケットのオプションなので、同じアドレスとポートのすべての server ブロックに適用され、アドレスとポートごとに一度しか書けません。マスターの生存確認スイープも、登録からレポート間隔 3 回分が過ぎたこうしたセッションを取り消します。
 
 正しさのために必須なのは、ダッシュボードの location にある `Origin`／forwarded ヘッダーだけです（[ダッシュボードの注意](/ja/guides/deploy-with-docker/#9-ダッシュボードを動かす)を参照）。残りは長寿命ストリームを維持するための設定です。
+
+### Cloudflare の後ろで
+
+ホスト名は Cloudflare のプロキシ（オレンジクラウド）経由にできます。そのために必要なのは次の 3 点です。
+
+- **gRPC を有効にする**（ゾーンの Network 設定）。無効のままだと、Cloudflare はワーカー API をまったく通しません。
+- **`stream_keepalive_secs` を Cloudflare のアイドル上限より短く保つ。** Cloudflare はデータが約 100 秒流れないストリーミングレスポンスを切断し、HTTP/2 PING は 1 ホップしか越えないので数に入りません。そのため `WatchConfig` は `stream_keepalive_secs`（デフォルト 15 秒）ごとにキープアライブを運び、`ReportHealth` はレポート 1 件ごとに応答します。ストリームが 3 周期ぶん無音になったワーカーはセッションを捨てます。0.5.0-beta より前にビルドされたワーカーはキープアライブを求めないため、更新するまでプロキシ越しに数分おきに再接続します。
+- **クライアントアドレスを Cloudflare から受け取る。** すべての接続が Cloudflare のエッジから届くため、登録元のアドレス — サーバーの観測アドレスで、ワーカーが公開 IP を報告しない場合はピアがこれに接続します — が Cloudflare のものになってしまいます。nginx の `realip` モジュール（`--with-http_realip_module`）で、Cloudflare 自身のネットワークから来たリクエストに限って元に戻します。
+
+  ```nginx
+  # /etc/nginx/cloudflare-realip.conf, from https://www.cloudflare.com/ips-v4/ and /ips-v6/
+  set_real_ip_from 173.245.48.0/20;
+  # … one line per range Cloudflare publishes …
+  set_real_ip_from 2c0f:f248::/32;
+  real_ip_header CF-Connecting-IP;
+  ```
+
+  server ブロックに `include /etc/nginx/cloudflare-realip.conf;` を加えます。これでワーカー用 location の `X-Real-IP $remote_addr` がワーカー自身のアドレスを運び、アクセスログとダッシュボードの `X-Forwarded-For` も実際のクライアントを示します。Cloudflare が一覧を変えたら更新してください。一覧に漏れた範囲からのリクエストは、Cloudflare のアドレスのままになるだけです。
 
 ## 8. 動作確認
 

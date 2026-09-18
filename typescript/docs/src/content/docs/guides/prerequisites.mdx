@@ -435,10 +435,14 @@ rejects a login POST whose browser `Origin` does not match, which is why the pro
 `X-Forwarded-Proto` and `X-Forwarded-Host`.
 :::
 
-:::caution[Keep the hostname off Cloudflare's proxy]
-Cloudflare's proxy closes a streaming response after 100 s without data. `WatchConfig` is silent
-between revisions, so behind the orange cloud every worker would reconnect every couple of minutes.
-Leave the record DNS-only; TLS to your own nginx already protects the API key in transit.
+:::caution[Behind Cloudflare's proxy]
+The hostname may sit behind the orange cloud once gRPC is turned on in Cloudflare's Network
+settings. Cloudflare cuts a streaming response that carries no data for about 100 s, so the worker
+streams never go quiet: `WatchConfig` carries a keep-alive every `stream_keepalive_secs` (15 s) and
+`ReportHealth` answers every report — keep that setting well under the limit. Workers built before
+0.5.0-beta ask for no keep-alives and reconnect every couple of minutes until they are updated. nginx
+should also take the client address from Cloudflare, or every worker is recorded at a Cloudflare
+address: see [Deploy Natively → Behind Cloudflare](/guides/deploy-natively/#behind-cloudflare).
 :::
 
 ## 6. Next

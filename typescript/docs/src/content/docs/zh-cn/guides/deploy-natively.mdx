@@ -277,16 +277,17 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        # WatchConfig is a server stream that may be silent for hours; ReportHealth a
-        # client stream carrying one message per 15 s. The grpc_* defaults are 60 s.
+        # Both worker streams live as long as the session. A current worker's carry
+        # data every 15 s; one built before keep-alives leaves WatchConfig silent for
+        # hours. The grpc_* defaults are 60 s.
         grpc_read_timeout 7d;
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         # ReportHealth is one request body that grows for the life of the session;
         # nginx counts it cumulatively, so any limit would eventually 413 the stream.
         client_max_body_size 0;
-        # Gap allowed between two ReportHealth frames (4 missed reports). With nginx
-        # in the path this is what bounds dead-worker detection.
+        # Gap allowed between two ReportHealth frames (4 missed reports); the master
+        # gives up on a silent stream after three.
         client_body_timeout 60s;
         grpc_set_header x-api-key     $http_x_api_key;
         grpc_set_header x-refresh-key $http_x_refresh_key;
@@ -322,22 +323,48 @@ sudo nginx -t && sudo systemctl reload nginx
 
 其中四个配置项各值得说明一句：
 
-- **`grpc_read_timeout 7d`。** 如果用 60 秒的默认值，nginx 每分钟就会结束一次 `WatchConfig`，Worker
-  随之重新注册，刷新密钥每分钟轮换一次 —— 这等于自己制造了一场重新注册风暴。
-- **`client_max_body_size 0`。** `ReportHealth` 是客户端流式 RPC：一个 HTTP/2
-  请求，其请求体在整个会话期间每上报一次就增长一条消息。nginx 是按累计量来限制请求体大小的，所以任何限制都会在几周后重置健康流。
-- **`client_body_timeout 60s`。** master 通过自身连接上的 HTTP/2 PING 来检测失联的 Worker。中间加了 nginx 之后，这些 PING 由
-  nginx 应答，因此一个没有发 FIN 就消失的 Worker，只能在 nginx 让健康上报的请求体超时之后才被发现 ——
-  大约一分钟，而不是二十秒。这是可以接受的；要调整的常量就在这里。
-- **`so_keepalive=60s:15s:4`。** `client_body_timeout` 只管得到已经打开健康流的 Worker。如果 Worker
-  刚注册完、还没第一次上报连接就断了，nginx 就没有任何东西可以超时：`WatchConfig` 的请求已经发完，master
-  也没有要发的数据，这条流会一直开到 `grpc_read_timeout`，期间 master 不断续租会话，拒绝这个 Worker
+- **`grpc_read_timeout 7d`。** 当前版本 Worker 的 `WatchConfig` 每隔 `stream_keepalive_secs` 带一条保活消息，
+  但保活之前构建的 Worker 在两个修订版本之间是静默的。如果用 60 秒的默认值，nginx 每分钟就会结束一次这条流，
+  Worker 随之重新注册，刷新密钥每分钟轮换一次 —— 这等于自己制造了一场重新注册风暴。
+- **`client_max_body_size 0`。** `ReportHealth` 是双向流，它的请求是一个 HTTP/2
+  请求体，在整个会话期间每上报一次就增长一条消息。nginx 是按累计量来限制请求体大小的，所以任何限制都会在几周后重置健康流。
+- **`client_body_timeout 60s`。** 不再上报的 Worker 由 master 自己发现：连续三个间隔（默认 45 秒）没有上报，
+  master 就结束这条流并把服务器标记为 `Offline`。这个超时只负责释放 Worker 已经消失的那条流在 nginx 一侧的
+  资源；请让它大于那个阈值。
+- **`so_keepalive=60s:15s:4`。** 如果 Worker 刚注册完、还没第一次上报连接就断了，nginx 几乎没有线索能发现：
+  `WatchConfig` 的请求已经发完，而 master 发回去的东西（偶尔一条保活消息，对保活之前的 Worker 则什么都没有）
+  要等 TCP 放弃重传、也就是好几分钟之后才会失败。在此期间 master 不断续租会话，拒绝这个 Worker
   的每一次重试。TCP keepalive 在连接空闲 60 秒后开始探测，连续 4 次没有响应就断开，总共大约两分钟。
   它是监听 socket 的选项，所以对同一地址和端口上的所有 server 块都生效，而且每个地址和端口只能写一次。
   master 的存活巡检也会在注册满三个上报间隔后吊销这种会话。
 
 严格来说，只有控制台 location 上的 `Origin`/转发头是正确性所必需的（参见
 [控制台警告](/zh-cn/guides/deploy-with-docker/#9-运行控制台)）；其余配置是用来维持长连接流的。
+
+### 在 Cloudflare 后面
+
+该主机名可以走 Cloudflare 代理（橙色云朵）。需要做到三点：
+
+- **打开 gRPC**（在该 zone 的 Network 设置里）。不打开的话，Cloudflare 根本不会放行 Worker API。
+- **让 `stream_keepalive_secs` 小于 Cloudflare 的空闲上限。** Cloudflare 会切断约 100 秒没有数据的流式响应，
+  而 HTTP/2 PING 只跨一跳，不算数据。所以 `WatchConfig` 每隔 `stream_keepalive_secs`（默认 15 秒）带一条保活
+  消息，`ReportHealth` 对每条上报都回一条应答；流连续三个周期静默的 Worker 会放弃这次会话。0.5.0-beta 之前
+  构建的 Worker 不会请求保活，在更新之前隔着代理每隔几分钟就会重连一次。
+- **从 Cloudflare 取得客户端地址。** 现在每个连接都来自 Cloudflare 的边缘节点，于是注册来源地址 —— 即服务器的
+  观测地址，Worker 没有上报公网 IP 时对端会拨这个地址 —— 就会变成 Cloudflare 的地址。nginx 的 `realip` 模块
+  （`--with-http_realip_module`）可以把它还原，而且只对来自 Cloudflare 自己网段的请求生效：
+
+  ```nginx
+  # /etc/nginx/cloudflare-realip.conf, from https://www.cloudflare.com/ips-v4/ and /ips-v6/
+  set_real_ip_from 173.245.48.0/20;
+  # … one line per range Cloudflare publishes …
+  set_real_ip_from 2c0f:f248::/32;
+  real_ip_header CF-Connecting-IP;
+  ```
+
+  在 server 块里加上 `include /etc/nginx/cloudflare-realip.conf;`。这样 Worker location 里的
+  `X-Real-IP $remote_addr` 带的就是 Worker 自己的地址，访问日志和控制台的 `X-Forwarded-For` 也会显示真实客户端。
+  Cloudflare 更新网段列表时请同步更新；列表里漏掉的网段，只会让那些请求继续显示 Cloudflare 的地址。
 
 ## 8. 验证
 

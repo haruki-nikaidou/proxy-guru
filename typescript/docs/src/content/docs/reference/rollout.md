@@ -47,8 +47,9 @@ id; a pod held under two listeners while its dependants switch keeps the worst s
 statuses: `Ready` (the pod runs what `desired` asks), `Deploying` (a newer revision involving the
 pod is derived but not applied yet — written the moment a derivation publishes it), `Failed` (the
 pod failed to apply or to run). Server statuses: `Online`, `Degraded` (lagging `desired` past the
-grace period, or the last acknowledged revision failed for some pod), `Offline` (the health stream
-closed, or no report for three intervals — the `sweep_liveness` pass). Both histories are raw and
+grace period, or the last acknowledged revision failed for some pod), `Offline` (no report for three
+intervals: the master ends a health stream that falls silent, and the `sweep_liveness` pass catches a
+worker that is gone altogether; a stream that merely closes is no verdict). Both histories are raw and
 trimmed by the `trim_health_history` pass;
 `ListServerHealthHistory` / `ListPodHealthHistory` read a time range.
 

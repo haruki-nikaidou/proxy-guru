@@ -228,6 +228,8 @@ sudo systemctl daemon-reload
 | `guru-worker install: the published binary is x86_64 (glibc); this host is aarch64` | Only x86_64 glibc is built. |
 | `Missing identity` / `permission denied` at registration | The key in the env file is not the server's current one (regenerated since?) — generate a new command and re-run it. |
 | `another worker session is live for this server` right after an update | The old session's lease (30 s) has not lapsed; the new process retries with backoff. Harmless. |
+| `agent session ended … config stream silent for 45s` | The master promised keep-alives and none came for three periods: the path is gone past the first hop, while a proxy still answers the worker's pings. The worker reconnects on its own; if it keeps happening, look at the proxy and the master. |
+| `agent session ended … no reply to a health report for 45s` | The master took reports without answering for three intervals — a master stalled on its database, or a dead path. The worker reconnects on its own. |
 | `another worker session is live for this server` for minutes, server *Offline* | A registration whose connection died before its first report, its watch stream still held open by the proxy. The `sweep_liveness` pass revokes that session once the registration is three report intervals old; the next retry is accepted. |
 | Panel shows *The last update failed: … outside the master origin* | `agent_public_base_url` differs from what workers dial in `GURU_MASTER`; make them the same origin. |
 | Panel stays on *Updating to v…* | The worker is not polling: it is down, or too old to poll (installed before self-update existed) — re-run the install command once. |

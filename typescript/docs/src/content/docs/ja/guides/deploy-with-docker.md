@@ -464,7 +464,7 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_read_timeout 7d;     # WatchConfig of a worker built before keep-alives is silent for hours
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
@@ -500,8 +500,10 @@ server {
 
 ワーカー用 location の各設定については
 [ネイティブにデプロイ → nginx](/ja/guides/deploy-natively/#7-nginx-ダッシュボードとワーカー-api-を-1-つのホスト名に載せる)
-で説明しています。nginx のデフォルトである 60 秒のままだと、すべてのワーカーが 1 分ごとに再登録することに
-なります。その他に有用なもの: 実際のクライアント IP が欲しい場合は `ADDRESS_HEADER=x-forwarded-for`、
+で説明しています。nginx のデフォルトである 60 秒のままだと、キープアライブ以前にビルドされたワーカーが 1 分ごとに
+再登録することになります。Cloudflare の後ろに置く場合は
+[ネイティブにデプロイ → Cloudflare の後ろで](/ja/guides/deploy-natively/#cloudflare-の後ろで)を参照してください。
+その他に有用なもの: 実際のクライアント IP が欲しい場合は `ADDRESS_HEADER=x-forwarded-for`、
 非常に大きなキャンバスをインポートすることがある場合は `BODY_SIZE_LIMIT`（デフォルト `512K`）。
 
 あとは `https://guru.example.com/` を開くと `/auth` にリダイレクトされるので、セクション 8 のアカウントで

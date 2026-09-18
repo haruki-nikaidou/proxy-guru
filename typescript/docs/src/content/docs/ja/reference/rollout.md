@@ -44,8 +44,9 @@ generation を進め、`CanvasDirty` を publish します。ワーカーの ack
 pod のステータス: `Ready`（pod は `desired` が求めるものを実行しています）、`Deploying`（その pod を含む新しい
 リビジョンが導出済みでまだ適用されていません — 導出が publish された時点で書き込まれます）、`Failed`（pod の
 適用または実行に 失敗しました）。サーバーのステータス: `Online`、`Degraded`（猶予期間を超えて `desired` に遅れている、または
-最後に ack されたリビジョンがいずれかの pod で失敗した）、`Offline`（ヘルスストリームが閉じた、または
-3 間隔分レポートがない — `sweep_liveness` パス）。どちらの履歴も生のまま保持され、`trim_health_history` パスで
+最後に ack されたリビジョンがいずれかの pod で失敗した）、`Offline`（3 間隔分レポートがない。
+マスターは無音になったヘルスストリームを終了し、`sweep_liveness` パスは完全にいなくなったワーカーを
+拾います。ストリームが単に閉じただけでは判定になりません）。どちらの履歴も生のまま保持され、`trim_health_history` パスで
 切り詰められます。`ListServerHealthHistory` / `ListPodHealthHistory` は時間範囲を読み取ります。
 
 どちらのパスも `--mode consumer` で、ジョブの期限が来たときに `cron` スケジューラーが publish するシグナルに

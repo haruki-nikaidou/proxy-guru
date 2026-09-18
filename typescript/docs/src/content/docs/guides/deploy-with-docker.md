@@ -464,7 +464,7 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_read_timeout 7d;     # WatchConfig of a worker built before keep-alives is silent for hours
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
@@ -500,7 +500,8 @@ server {
 
 Each of the worker-location settings is explained in
 [Deploy Natively → nginx](/guides/deploy-natively/#7-nginx-dashboard-and-worker-api-on-one-hostname);
-with the 60 s nginx defaults every worker would re-register once a minute. Also useful:
+with the 60 s nginx defaults a worker built before keep-alives would re-register once a minute. Behind
+Cloudflare, see [Deploy Natively → Behind Cloudflare](/guides/deploy-natively/#behind-cloudflare). Also useful:
 `ADDRESS_HEADER=x-forwarded-for` if you want real client IPs, and `BODY_SIZE_LIMIT` (default
 `512K`) if you ever import very large canvases.
 

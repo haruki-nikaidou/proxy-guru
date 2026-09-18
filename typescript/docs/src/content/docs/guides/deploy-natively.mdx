@@ -299,16 +299,17 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        # WatchConfig is a server stream that may be silent for hours; ReportHealth a
-        # client stream carrying one message per 15 s. The grpc_* defaults are 60 s.
+        # Both worker streams live as long as the session. A current worker's carry
+        # data every 15 s; one built before keep-alives leaves WatchConfig silent for
+        # hours. The grpc_* defaults are 60 s.
         grpc_read_timeout 7d;
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         # ReportHealth is one request body that grows for the life of the session;
         # nginx counts it cumulatively, so any limit would eventually 413 the stream.
         client_max_body_size 0;
-        # Gap allowed between two ReportHealth frames (4 missed reports). With nginx
-        # in the path this is what bounds dead-worker detection.
+        # Gap allowed between two ReportHealth frames (4 missed reports); the master
+        # gives up on a silent stream after three.
         client_body_timeout 60s;
         grpc_set_header x-api-key     $http_x_api_key;
         grpc_set_header x-refresh-key $http_x_refresh_key;
@@ -344,29 +345,59 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Four of those settings deserve a sentence each:
 
-- **`grpc_read_timeout 7d`.** With the 60 s default, nginx ends `WatchConfig` every minute, the
-  worker re-registers, and its refresh key rotates every minute — a self-inflicted
-  re-registration storm.
-- **`client_max_body_size 0`.** `ReportHealth` is a client-streaming RPC: one HTTP/2 request whose
-  body grows by one message per report for as long as the session lives. nginx enforces the body
+- **`grpc_read_timeout 7d`.** A current worker's `WatchConfig` carries a keep-alive every
+  `stream_keepalive_secs`, but one built before keep-alives is silent between revisions. With the
+  60 s default, nginx would end that stream every minute, the worker would re-register, and its
+  refresh key would rotate every minute — a self-inflicted re-registration storm.
+- **`client_max_body_size 0`.** `ReportHealth` streams both ways, and its request is one HTTP/2 body
+  that grows by one message per report for as long as the session lives. nginx enforces the body
   limit cumulatively, so a limit would reset the health stream after a few weeks.
-- **`client_body_timeout 60s`.** The master detects a dead worker through HTTP/2 PINGs on its own
-  connection. With nginx in between those PINGs are answered by nginx, so a worker that vanished
-  without a FIN is noticed when nginx times out the health body instead — about a minute rather than
-  twenty seconds. Acceptable; this constant is where to tune it.
-- **`so_keepalive=60s:15s:4`.** `client_body_timeout` only reaches a worker with a health stream
-  open. One whose connection died right after it registered, before its first report, leaves nginx
-  nothing to time out: `WatchConfig` has sent its whole request and the master has nothing to send,
-  so the stream stays open until `grpc_read_timeout` while the master renews the session lease and
-  refuses every retry of that worker. TCP keepalive probes the idle connection after 60 s and drops
-  it after four unanswered probes, about two minutes in all. It is an option of the listening
-  socket, so it covers every server block on that address and port and may appear only once per
-  address and port. The master's liveness sweep revokes such a session as well, three report
-  intervals after the registration.
+- **`client_body_timeout 60s`.** The master notices on its own a worker that stopped reporting: three
+  intervals without a report (45 s by default) end the stream and mark the server `Offline`. This
+  timeout only frees nginx's side of a stream whose worker vanished; keep it above that threshold.
+- **`so_keepalive=60s:15s:4`.** A worker whose connection died right after it registered, before its
+  first report, leaves nginx little to notice: `WatchConfig` has sent its whole request, and what the
+  master sends back (a keep-alive now and then, nothing at all to a worker built before them) only
+  fails once TCP gives up retransmitting, many minutes later. Meanwhile the master renews the session
+  lease and refuses every retry of that worker. TCP keepalive probes the idle connection after 60 s
+  and drops it after four unanswered probes, about two minutes in all. It is an option of the
+  listening socket, so it covers every server block on that address and port and may appear only
+  once per address and port. The master's liveness sweep revokes such a session as well, three
+  report intervals after the registration.
 
 Only the `Origin`/forwarded headers on the dashboard location are mandatory for correctness (see the
 [dashboard warning](/guides/deploy-with-docker/#9-run-the-dashboard)); the rest is what keeps long-lived
 streams alive.
+
+### Behind Cloudflare
+
+The hostname may be proxied by Cloudflare (the orange cloud). Three things make that work:
+
+- **Turn gRPC on** in the zone's Network settings. Without it Cloudflare does not pass the worker
+  API at all.
+- **Keep `stream_keepalive_secs` under Cloudflare's idle limit.** Cloudflare cuts a streaming
+  response that carries no data for about 100 s, and HTTP/2 pings do not count: they only cross one
+  hop. So `WatchConfig` carries a keep-alive every `stream_keepalive_secs` (15 s by default) and
+  `ReportHealth` answers every report; a worker whose streams stay silent for three periods gives
+  the session up. Workers built before 0.5.0-beta ask for no keep-alives and reconnect every couple
+  of minutes behind the proxy until they are updated.
+- **Take the client address from Cloudflare.** Every connection now arrives from a Cloudflare edge,
+  so the address a registration came from — the server's observed address, which peers dial when a
+  worker reports no public IP — would be Cloudflare's. nginx's `realip` module (`--with-http_realip_module`)
+  restores it, for requests that come from Cloudflare's own networks only:
+
+  ```nginx
+  # /etc/nginx/cloudflare-realip.conf, from https://www.cloudflare.com/ips-v4/ and /ips-v6/
+  set_real_ip_from 173.245.48.0/20;
+  # … one line per range Cloudflare publishes …
+  set_real_ip_from 2c0f:f248::/32;
+  real_ip_header CF-Connecting-IP;
+  ```
+
+  Add `include /etc/nginx/cloudflare-realip.conf;` to the server block. `X-Real-IP $remote_addr` in
+  the worker location then carries the worker's own address, and the access log and the
+  dashboard's `X-Forwarded-For` show real clients as well. Refresh the list when Cloudflare changes
+  it; a range missing from it only means those requests keep a Cloudflare address.
 
 ### The agent download location
 

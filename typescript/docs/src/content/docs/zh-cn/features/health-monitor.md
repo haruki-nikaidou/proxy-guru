@@ -9,8 +9,8 @@ description: Worker 上报什么、master 如何把它变成服务器与 Pod 状
 
 ## Worker 上报什么
 
-每个间隔通过 `ReportHealth` 上报一个 `HealthReport` —— 这是 `WorkerAgent` 服务上的一个客户端流式
-RPC，用 Worker 当前的刷新密钥认证：
+每个间隔通过 `ReportHealth` 上报一个 `HealthReport` —— 这是 `WorkerAgent` 服务上的一条双向流，
+用 Worker 当前的刷新密钥认证；master 对它记录下的每条上报都回一条应答：
 
 | 字段 | 含义 |
 |---|---|
@@ -23,11 +23,17 @@ RPC，用 Worker 当前的刷新密钥认证：
 
 间隔由 master 说了算：`Register` 的应答中带有存储的 `orchestration` 配置里的
 `health_report_interval_secs`（默认 15 秒），而 Worker 自己的 `--health-interval` 只在 master 发送
-`0` 时才生效。流一打开就会立即发出第一次上报。
+`0` 时才生效。Worker 一注册完这条流就会打开 —— 不等配置流 —— 并立即发出第一次上报。
 
 上报任务的生命周期与会话完全一致。它若因任何原因结束，Worker 就会拆掉会话并以带上限的指数退避重
 连，这意味着一次新的 `Register`、一个新的刷新密钥和一个重新协商的间隔。计数器无法跨越这个过程：丢
 失的那个间隔的增量被丢弃，连接数瞬时量则从当时打开着的连接重新开始。
+
+master 的应答也是 Worker 判断整条链路是否还通的依据。Worker 的 HTTP/2 PING 只到第一跳，而像 Cloudflare
+这样的代理即使远端已经断了也照样应答，所以 Worker 只认 master 自己发来的数据：上报连续三个间隔没有应答，
+或者配置流连续三个周期什么都没带来 —— 连每隔 `stream_keepalive_secs` 一条的保活都没有 —— 这次会话就会被
+放弃并重新开始。应答之前构建的 master 会把 `stream_keepalive_secs` 报为 `0`，此时两个看门狗都不运行。
+一次活过五分钟的会话结束后，重连退避会从一秒重新开始。
 
 ## master 存储什么
 
@@ -65,6 +71,9 @@ RPC，用 Worker 当前的刷新密钥认证：
 - master 以该值作为每次上报的超时来读取这条流，并以 `no health report within 45s` 结束一条沉默的
   流；
 - `sweep_liveness` 任务会把最近一次被接受的上报早于该阈值的每一台非离线服务器翻转为离线。
+
+仅仅是流结束了，不属于其中任何一种：代理会出于自己的原因切断流，而在阈值之内重连的 Worker 从来就不算
+离线。流结束只是让 Worker 的下一次会话能够进来；一去不回的 Worker 由巡检来判定。
 
 进入 `Offline` 还会清除该服务器的会话租约并递增它的 watch epoch，于是配置流结束，Worker 的下一次
 `Register` 会被立即接受，而不是作为重复会话被拒绝。状态翻转会写入一行计数器全为零的
@@ -137,7 +146,7 @@ message 为 `revision <n> published` —— 包括 TOML 逐字节相同、但磁
 | `pod_health_ttl_secs` | 604800（7 天） | Pod 记录的保留时长。 |
 | `liveness_interval_secs` | 30 | `sweep_liveness` 的执行节奏。 |
 | `health_retention_interval_secs` | 300 | `trim_health_history` 的执行节奏。 |
-| `stream_keepalive_secs` | 15 | `Watch*` 流上的保活间隔。 |
+| `stream_keepalive_secs` | 15 | 控制台 `Watch*` 流和 Worker 的 `WatchConfig` 上的保活间隔。 |
 
 在 Worker 上，`--health-interval` / `GURU_HEALTH_INTERVAL_SECS`（默认 15，最小 1）是 master 不下发
 间隔时的兜底。完整文档见[配置参考](/zh-cn/reference/configuration/)，一个修订版本最初如何抵达

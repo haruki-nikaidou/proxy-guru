@@ -426,7 +426,7 @@ server {
     location ^~ /guru.orchestration.agent.WorkerAgent/ {
         grpc_pass grpc://127.0.0.1:50052;
         grpc_connect_timeout 5s;
-        grpc_read_timeout 7d;     # WatchConfig may be silent for hours
+        grpc_read_timeout 7d;     # WatchConfig of a worker built before keep-alives is silent for hours
         grpc_send_timeout 7d;
         grpc_socket_keepalive on;
         client_max_body_size 0;   # ReportHealth is one body that grows for the session's life
@@ -462,7 +462,8 @@ server {
 
 worker location 里的每一项设置都在
 [原生部署 → nginx](/zh-cn/guides/deploy-natively/#7-nginx把控制台和-worker-api-放在同一个主机名下)
-中逐条解释；按 nginx 默认的 60 秒超时，每个 worker 每分钟都会重新注册一次。另外两个有用的变量：
+中逐条解释；按 nginx 默认的 60 秒超时，保活之前构建的 worker 每分钟都会重新注册一次。放在 Cloudflare 后面时，
+参见[原生部署 → 在 Cloudflare 后面](/zh-cn/guides/deploy-natively/#在-cloudflare-后面)。另外两个有用的变量：
 如果你想拿到真实客户端 IP，可以设置 `ADDRESS_HEADER=x-forwarded-for`；如果你会导入非常大的画布，
 可以调整 `BODY_SIZE_LIMIT`（默认 `512K`）。
 

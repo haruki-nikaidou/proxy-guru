@@ -418,10 +418,12 @@ consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orch
 登录 POST，这就是反向代理必须转发 `X-Forwarded-Proto` 和 `X-Forwarded-Host` 的原因。
 :::
 
-:::caution[不要让该主机名走 Cloudflare 代理]
-Cloudflare 的代理会在 100 秒没有数据后关闭流式响应。`WatchConfig` 在两个修订版本之间是静默的，
-所以在橙色云朵后面，每个 Worker 都会每隔几分钟重连一次。请把该记录设为 DNS-only；
-到你自己 nginx 的 TLS 已经足以保护传输中的 API key。
+:::caution[走 Cloudflare 代理时]
+在 Cloudflare 的 Network 设置里打开 gRPC 后，该主机名就可以放在橙色云朵后面。Cloudflare 会切断约 100 秒
+没有数据的流式响应，所以 Worker 的流从不静默：`WatchConfig` 每隔 `stream_keepalive_secs`（15 秒）带一条
+保活消息，`ReportHealth` 对每条上报都回一条应答 —— 请让这个设置远小于上限。0.5.0-beta 之前构建的 Worker
+不会请求保活，在更新之前每隔几分钟就会重连一次。nginx 还应当从 Cloudflare 取得客户端地址，否则每个 Worker
+记录下来的都是 Cloudflare 的地址：参见[原生部署 → 在 Cloudflare 后面](/zh-cn/guides/deploy-natively/#在-cloudflare-后面)。
 :::
 
 ## 6. 下一步

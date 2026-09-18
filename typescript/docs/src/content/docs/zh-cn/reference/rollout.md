@@ -36,8 +36,8 @@ forwarding 对应的一个 `PodStatus`。每次上报会生成一行 `server_hea
 `pod_health_record`（forwarding 的 tag 就是它的 pod id；依赖方切换期间以两个监听器保留的 pod 取其中最差的状态）。
 pod 状态：`Ready`（pod 运行的正是 `desired` 要求的内容）、`Deploying`（涉及该 pod 的更新修订版本已派生但尚未
 应用 —— 在派生发布的那一刻就写入）、`Failed`（pod 应用失败或运行失败）。服务器状态：`Online`、`Degraded`
-（落后于 `desired` 且超过宽限期，或最近一次确认的修订版本在某个 pod 上失败）、`Offline`（健康流已关闭，
-或连续三个间隔没有上报 —— 即 `sweep_liveness` 任务的判定）。两份历史都是原始记录，由
+（落后于 `desired` 且超过宽限期，或最近一次确认的修订版本在某个 pod 上失败）、`Offline`（连续三个间隔没有上报：
+master 会结束一条变得沉默的健康流，`sweep_liveness` 任务则负责彻底消失的 Worker；仅仅是流关闭不构成判定）。两份历史都是原始记录，由
 `trim_health_history` 任务裁剪；`ListServerHealthHistory` / `ListPodHealthHistory` 按时间范围读取。
 
 这两个任务都在 `--mode consumer` 中运行，其触发信号由 `cron` 调度器在任务到期时发布。调度器除了自己的

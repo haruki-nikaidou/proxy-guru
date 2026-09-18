@@ -231,7 +231,7 @@ failed pods on the view (`failed_pods`, `failed_revision`).
 ## Health
 
 Workers stream `HealthReport`s over `ReportHealth` (refresh-key authenticated,
-one per interval); `services::health` turns each into a `server_health_record`
+one per interval, each answered once recorded); `services::health` turns each into a `server_health_record`
 row (byte and connection deltas, status `Online`/`Degraded`) and one
 `pod_health_record` per pod the report names — a forwarding's tag is its pod's
 id, and a pod held under two listeners keeps the worst status.
