@@ -106,7 +106,8 @@ addresses are learned from its worker (or pinned by an operator) and only decide
 the seamless-switch protocol, because the listener the dependants reference did not change. A
 per-pod derivation failure names the pod's listener as `bind:port` (`[::]:port` for a wildcard
 bind), and a relay whose target server has no known address yet is reported there as
-`server … has no address yet`.
+`pod … on server … has no address to dial` — `… has no IPv6 address to dial` when its edge
+insists on IPv6 and the server has none.
 
 A pod whose listener moves — a new port — serves both listeners until every dependant has
 switched. The worker keys listeners by tag, and a pod's tag is its id, so the held one appears in

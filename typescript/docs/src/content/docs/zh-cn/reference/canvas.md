@@ -29,8 +29,9 @@ description: 画布持有的 Pod 图、画布如何画它，以及每次编辑�
 规则就是客户端 Pod —— 流量进入转发网络的地方 —— 它会给这些流量可能经过的一切上色。右上角的图例列出画布上的规则；
 点击其中一条，不承载它的东西都会变淡。
 
-点击一条总线会打开它的面板：它从哪里到哪里，走在上面的规则 —— 每条用它细线的颜色显示，并写明总线里有几条边承载它
-—— 以及每条边的 id、它承载的规则、去向和拨号地址。
+点击一条总线会打开它的面板：它从哪里到哪里，其中连向 Pod 的边拨号用的 **IP 版本** —— 自动、IPv4 或 IPv6，一次
+改全部（不一致时显示*混合*）—— 控制平面在这些边上发现的问题，走在上面的规则 —— 每条用它细线的颜色显示，并写明
+总线里有几条边承载它 —— 以及每条边的 id、它承载的规则、去向和拨号地址。
 
 ![从 plain 进入分流器那条线的面板：从 plain · guru-test-sg 到 Balance，一条规则走在 2 条边上，以及连向 guru-test-us-1 上中继 Pod plain 和连向 example.com 的两条边，每条都带着连线 ID](/img/canvas/panel-bus.avif)
 
@@ -121,7 +122,9 @@ Pod 连同它们的去向一起删掉 —— 也就是为某条规则落在中�
 | `no_free_port` | 该服务器上 40000–59999 的端口全被占用 |
 | `edge_ends_changed` | 边的两端就是它的身份：删掉它，再加一条 |
 
-下面这些只是警告：`single_tier_failover`、`pod_without_edges`、`relay_pod_not_dialed`、`exit_not_reached`。
+下面这些只是警告：`single_tier_failover`、`pod_without_edges`、`relay_pod_not_dialed`、`exit_not_reached`，
+以及 `dial_family_unreachable` —— 设成 IPv4 或 IPv6 的边，目标服务器没有这个版本的地址，或者目标 Pod 只监听
+另一个版本。拨向它的 Pod 在能拨通之前保持正在跑的配置。
 
 被接受的批次会递增这棵树的 generation，控制平面则为这次改动涉及的每台服务器派生一份新的配置 —— 接下来发生
 什么，见[发布](/zh-cn/reference/rollout/)。

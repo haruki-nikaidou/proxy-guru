@@ -56,9 +56,10 @@ interface, and a pod saved without a port gets a free one between 40000 and 5999
 
 Nobody types a server's IP. The worker reports its public IPv4/IPv6 and interface addresses when
 it registers (and every minute after, if they change), the master remembers where the registration
-came from, and other servers dial whatever that yields — IPv4 first. Pin an address on the server
-only when the learned one is wrong for your network (NAT, an overlay), or on a single pod when
-that pod should be reached differently.
+came from, and other servers dial whatever that yields — IPv4 first, unless an edge asks for IPv4
+or IPv6 itself (a bus sets it for all of its edges at once). Pin an address on the server only when
+the learned one is wrong for your network (NAT, an overlay), or on a single pod when that pod
+should be reached differently.
 
 ## Modules
 

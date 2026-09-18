@@ -35,9 +35,11 @@ A rule is a client pod — where traffic enters the fabric — and it colours ev
 can pass through. The legend in the top-right corner lists the rules of the canvas; clicking one
 fades everything that does not carry it.
 
-Click a bus to open its panel: where it runs, the rules riding it — each in its line's colour, with
-how many of the bus's edges carry it — and every edge with its id, the rules it carries, where it
-leads and the address it dials.
+Click a bus to open its panel: where it runs, the **IP version** its edges into pods dial over —
+auto, IPv4 or IPv6, set for all of them at once (*Mixed* while they differ) — what the control plane
+finds wrong with its edges, the rules riding it — each in its line's colour, with how many of the
+bus's edges carry it — and every edge with its id, the rules it carries, where it leads and the
+address it dials.
 
 ![The panel of the line from plain into the splitter: from plain · guru-test-sg to Balance, one rule riding 2 edges, and the two edges — to the relay pod plain on guru-test-us-1 and to example.com — each with its edge ID](/img/canvas/panel-bus.avif)
 
@@ -143,7 +145,9 @@ These refuse a batch:
 | `edge_ends_changed` | An edge's ends are its identity: remove it and add another |
 
 These are only warnings: `single_tier_failover`, `pod_without_edges`, `relay_pod_not_dialed`,
-`exit_not_reached`.
+`exit_not_reached`, and `dial_family_unreachable` — edges set to IPv4 or IPv6 whose target server
+has no address of that version, or whose target pod listens on the other version only. The pods
+dialing over it keep what they already run until it can be reached.
 
 An accepted batch bumps the tree's generation, and the control plane derives a new config for every
 server the change touches — what happens next is [Rollout](/reference/rollout/).

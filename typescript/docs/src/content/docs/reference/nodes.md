@@ -17,7 +17,7 @@ these cards sit on and the gestures that edit them.
 | **Pod** | One listener on one server: a port, an optional bind address, an optional advertise address, and its **ingress**. Every pod is its own vertex. |
 | **Ingress** | How traffic arrives at a pod. *Client* pods take connections from clients directly — raw TCP, or TLS terminated with an ACME certificate — and may receive a PROXY header. *Relay* pods take traffic other pods relay to them, over TCP, TLS or QUIC. |
 | **Exit** | A `host:port` outside the fabric where traffic leaves, optionally with a PROXY header. Any number of pods may lead to one exit. |
-| **Edge** | One way a pod's traffic goes on: to a relay pod or to an exit. Two pods may be joined by several edges (to dial different addresses, say). |
+| **Edge** | One way a pod's traffic goes on: to a relay pod or to an exit. Two pods may be joined by several edges (to dial different addresses, say). An edge into a pod also says which IP version it dials over: auto, IPv4 or IPv6. |
 | **Route** | Each pod's own tree over exactly its out-edges: a **balance** spreads connections over its members by weight, a **failover** uses the first member that is alive. Either may hold the other, to any depth. |
 
 A few rules follow from the model:
@@ -26,7 +26,10 @@ A few rules follow from the model:
   change the pod's ingress and every pod leading to it dials the new way.
 - **The address of a hop** is the edge's override address, else the target pod's advertise
   address, else its server's effective address (learned from the worker: pinned, reported or
-  observed). The port is the edge's override port, else the target pod's port.
+  observed; IPv4 when the server has one). An edge set to **IPv4** or **IPv6** dials that version
+  instead: the advertise address only when it is of that version, else the server's address of
+  it. If the server has none, the pod dialing keeps what it already runs and the canvas warns
+  (`dial_family_unreachable`). The port is the edge's override port, else the target pod's port.
 - **A client pod cannot be led into**, and a pod may never be reached again by traffic that has
   already passed it: the graph stays acyclic.
 - **Ports are picked for you.** A pod saved with no port gets a free one between 40000 and 59999 on
@@ -106,7 +109,8 @@ pod, its port, bind and advertise address. Below that is its route, as a tree:
   failover of their own, and **Ungroup** a nested group back into its parent;
 - **Add way on** adds a member to that group (the target dialog of
   [Connecting](/reference/canvas/#connecting));
-- a way on's menu edits the edge's **dial address** — an override address or port — or removes it.
+- a way on's menu edits the edge's **dial address** — an override address or port, and the IP
+  version it dials over — or removes it.
 
 The shape of the route is a draft until you save it. Adding or removing a way on changes edges and
 is written at once, so it waits until the draft is saved or reset. The panel also lists the pods

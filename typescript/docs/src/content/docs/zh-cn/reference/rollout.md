@@ -84,7 +84,8 @@ in-flight 和 applied 三个修订版本及其时间戳、`derive_error` 和 `ap
 （或由运维人员固定指定），并且只决定中继*拨号*的目标；修改其中一个地址会重新派生所有指向该服务器的
 目的地，却不会触动无缝切换协议，因为依赖方引用的那个监听器并没有变化。按 pod 的派生失败会以 `bind:port`
 命名该 pod 的监听器（通配绑定为 `[::]:port`），而目标服务器尚无已知地址的中继会在那里报告为
-`server … has no address yet`。
+`pod … on server … has no address to dial` —— 边指定了 IPv6 而服务器没有时则是
+`… has no IPv6 address to dial`。
 
 监听器发生移动的 pod（换了端口）会同时提供新旧两个监听器，直到所有依赖方都切换完毕。Worker 按 tag 区分
 监听器，而 pod 的 tag 就是它的 id，所以被保留的旧监听器在 TOML 里以其套接字命名，如
