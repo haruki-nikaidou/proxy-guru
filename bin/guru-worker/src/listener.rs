@@ -23,7 +23,8 @@ pub async fn run_tcp(
                     // `::ffff:a.b.c.d`; every consumer (PROXY headers, ip_hash,
                     // logs) wants the plain IPv4 address.
                     let peer = canonical(peer);
-                    if let Err(error) = crate::keepalive::apply_tcp(&stream, &cfg.keepalive) {
+                    let keepalive = &cfg.settings.keepalive;
+                    if let Err(error) = crate::keepalive::apply_tcp(&stream, keepalive) {
                         tracing::warn!(%peer, %error, "keepalive not set on accepted socket");
                     }
                     tokio::spawn(crate::pipe::handle_tcp_connection(stream, peer, cfg));

@@ -1,12 +1,9 @@
 use crate::liveness::Liveness;
-use crate::prepared::PreparedForwarding;
+use crate::prepared::{PreparedForwarding, Settings};
 use crate::stats::Stats;
-use guru_worker_config::{
-    Config, Forwarding, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, Transport,
-};
+use guru_worker_config::{Config, Forwarding, LogConfig, Transport};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -131,14 +128,12 @@ pub struct Supervisor {
     running: HashMap<String, ListenKey>,
     /// Why a tag does not run the shape the last config asked of it.
     errors: HashMap<String, String>,
-    /// Top-level settings of the last applied config, re-emitted by [`running_config`].
+    /// Top-level settings of the last applied config, which every running listener
+    /// is compiled under, re-emitted by [`running_config`].
     ///
     /// [`running_config`]: Supervisor::running_config
-    ipv6_resolve: Ipv6Resolve,
+    settings: Settings,
     log: LogConfig,
-    relay_ca: Option<PathBuf>,
-    keepalive: KeepAlive,
-    quic: QuicTuning,
     stats: Arc<Stats>,
     /// What is known about every next hop, kept across applies.
     liveness: Arc<Liveness>,
@@ -156,11 +151,8 @@ impl Supervisor {
             listeners: HashMap::new(),
             running: HashMap::new(),
             errors: HashMap::new(),
-            ipv6_resolve: Ipv6Resolve::default(),
+            settings: Settings::default(),
             log: LogConfig::default(),
-            relay_ca: None,
-            keepalive: KeepAlive::default(),
-            quic: QuicTuning::default(),
             stats: Arc::new(Stats::default()),
             liveness: Arc::new(Liveness::default()),
         }
@@ -186,20 +178,20 @@ impl Supervisor {
     /// another tag ran on before, and only once that tag has moved successfully in this
     /// apply — otherwise the claimant fails and the incumbent stays. A forwarding that
     /// fails at any step keeps the listener its tag ran before, on whatever address
-    /// that was, even when the new config no longer names that address. Only listeners
-    /// that no tag of the config still runs are stopped, and they stop accepting
-    /// without dropping in-flight connections.
+    /// that was, even when the new config no longer names that address. What it keeps
+    /// is its shape, not the previous top-level settings: those are the config's for
+    /// every pod, so the kept shape is compiled again under them. Only listeners that
+    /// no tag of the config still runs are stopped, and they stop accepting without
+    /// dropping in-flight connections.
     ///
     /// The outcome names every forwarding of the config with the error that kept it
     /// from taking its new shape, in config order. The config's `[log] level`
     /// becomes the process log filter before anything else ([`crate::apply_log_level`]).
     pub async fn apply(&mut self, cfg: &Config) -> ApplyOutcome {
-        self.ipv6_resolve = cfg.ipv6_resolve;
         crate::apply_log_level(&cfg.log.level);
         self.log = cfg.log.clone();
-        self.relay_ca = cfg.relay_ca.clone();
-        self.keepalive = cfg.keepalive;
-        self.quic = cfg.quic;
+        let settings = Settings::of(cfg);
+        self.settings = settings.clone();
 
         // Tags the config dropped run nothing from here on; their listeners are stopped
         // once every surviving tag has been placed.
@@ -211,15 +203,7 @@ impl Supervisor {
         let mut candidates: Vec<(ListenKey, Arc<PreparedForwarding>)> = Vec::new();
         let mut errors: HashMap<String, String> = HashMap::new();
         for f in &cfg.forwardings {
-            match PreparedForwarding::build(
-                f,
-                cfg.ipv6_resolve,
-                cfg.relay_ca.as_deref(),
-                cfg.keepalive,
-                cfg.quic,
-                self.stats.tag(&f.tag),
-                &self.liveness,
-            ) {
+            match PreparedForwarding::build(f, &settings, self.stats.tag(&f.tag), &self.liveness) {
                 Ok(prepared) => candidates.push((f.listen_key(), Arc::new(prepared))),
                 Err(e) => {
                     errors.insert(f.tag.clone(), e.to_string());
@@ -277,6 +261,32 @@ impl Supervisor {
                 break;
             }
             pending = deferred;
+        }
+
+        // A tag that kept its previous listener runs its previous shape under this
+        // config's top-level settings: that is what `running_config` describes, what
+        // the master records as running and what the last-known-good config replays
+        // after a restart, so it has to be what serves now.
+        for key in self.running.values() {
+            let Some(h) = self.listeners.get(key) else {
+                continue;
+            };
+            let current = h.prepared();
+            if current.settings == settings {
+                continue;
+            }
+            match current.with_settings(&settings, &self.liveness) {
+                // Replaced even when the accept loop has ended, which `pod_statuses`
+                // reports on its own.
+                Ok(moved) => {
+                    h.cfg_tx.send_replace(Arc::new(moved));
+                }
+                Err(e) => tracing::error!(
+                    tag = %current.forwarding.tag,
+                    error = %e,
+                    "could not move a listener that kept its previous shape to the new top-level settings"
+                ),
+            }
         }
 
         let owned: HashSet<ListenKey> = self.running.values().copied().collect();
@@ -441,23 +451,31 @@ impl Supervisor {
 
     /// The config actually in service: every tag's running shape — the new one when it
     /// applied, the previous one when it did not — under the last config's top-level
-    /// settings. Forwardings are in tag order so the same mix renders the same TOML.
+    /// settings, which every running listener is compiled under. Forwardings are in tag
+    /// order so the same mix renders the same TOML.
     pub fn running_config(&self) -> Config {
         let mut tags: Vec<&String> = self.running.keys().collect();
         tags.sort_unstable();
         let forwardings: Vec<Forwarding> = tags
             .into_iter()
-            .filter_map(|tag| self.listeners.get(self.running.get(tag)?))
-            .map(|h| (*h.prepared().forwarding).clone())
+            .filter_map(|tag| self.prepared(tag))
+            .map(|prepared| (*prepared.forwarding).clone())
             .collect();
         Config {
-            ipv6_resolve: self.ipv6_resolve,
+            ipv6_resolve: self.settings.ipv6_resolve,
             log: self.log.clone(),
-            relay_ca: self.relay_ca.clone(),
-            keepalive: self.keepalive,
-            quic: self.quic,
+            relay_ca: self.settings.relay_ca.clone(),
+            keepalive: self.settings.keepalive,
+            quic: self.settings.quic,
             forwardings,
         }
+    }
+
+    /// The compiled forwarding the listener of `tag` serves.
+    pub fn prepared(&self, tag: &str) -> Option<Arc<PreparedForwarding>> {
+        self.listeners
+            .get(self.running.get(tag)?)
+            .map(ListenerHandle::prepared)
     }
 
     /// Every tag of the last config with the reason it is not serving what that config

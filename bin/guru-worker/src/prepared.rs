@@ -2,8 +2,8 @@ use crate::liveness::{self, Liveness};
 use crate::stats::TagStats;
 use guru_worker_config::table::{Policy, Target as TableTarget};
 use guru_worker_config::{
-    Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LoadBalanceStrategy, QuicTuning,
-    RelayHost, RelayProtocol, Remote, TcpProxyProtocol, To,
+    Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LoadBalanceStrategy,
+    QuicTuning, RelayHost, RelayProtocol, Remote, TcpProxyProtocol, To,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 /// Compiled ingest strategy for a listener (certs parsed once at apply time).
+#[derive(Clone)]
 pub enum Ingest {
     Raw,
     Tls(openssl::ssl::SslAcceptor),
@@ -81,29 +82,47 @@ pub enum Pick {
     Sticky,
 }
 
+/// The top-level settings of a config, which every forwarding of it is compiled
+/// under: they end up in its listener and in every hop of its route.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settings {
+    pub ipv6_resolve: Ipv6Resolve,
+    /// CA relay peers are verified against; `None` means the system roots.
+    pub relay_ca: Option<PathBuf>,
+    /// Probing for the sockets a listener accepts and every hop dials.
+    pub keepalive: KeepAlive,
+    /// The worker's default side of a QUIC link; a forwarding that carries its
+    /// own replaces it, listener and hop alike.
+    pub quic: QuicTuning,
+}
+
+impl Settings {
+    pub fn of(cfg: &Config) -> Self {
+        Self {
+            ipv6_resolve: cfg.ipv6_resolve,
+            relay_ca: cfg.relay_ca.clone(),
+            keepalive: cfg.keepalive,
+            quic: cfg.quic,
+        }
+    }
+}
+
 /// A ready-to-serve compiled form of one forwarding role.
 pub struct PreparedForwarding {
     pub forwarding: Arc<Forwarding>,
     pub ingest: Ingest,
     pub route: Arc<Route>,
     pub quic_server: Option<quinn::ServerConfig>,
-    /// Probing for the sockets this listener accepts; the dialed side carries its
-    /// own copy in every hop of `route`.
-    pub keepalive: KeepAlive,
+    /// The top-level settings it was compiled under.
+    pub settings: Settings,
     /// The tag's counters, shared with every earlier and later shape of the same tag.
     pub stats: Arc<TagStats>,
 }
 
 impl PreparedForwarding {
-    /// `quic` is the worker's default side of a QUIC link; a forwarding that
-    /// carries its own replaces it, listener and hop alike.
-    #[allow(clippy::too_many_arguments)]
     pub fn build(
         f: &Forwarding,
-        ipv6_resolve: Ipv6Resolve,
-        relay_ca: Option<&Path>,
-        keepalive: KeepAlive,
-        quic: QuicTuning,
+        settings: &Settings,
         stats: Arc<TagStats>,
         liveness: &Liveness,
     ) -> Result<PreparedForwarding, crate::BoxError> {
@@ -119,32 +138,82 @@ impl PreparedForwarding {
         let quic_server = match &f.listen_as {
             ListenAs::Relay(RelayHost::Quic(c)) => Some(crate::tls::quic_server_config(
                 c,
-                &keepalive,
-                &f.quic.unwrap_or(quic),
+                &settings.keepalive,
+                &listener_quic(f, settings),
             )?),
             _ => None,
         };
-        let compiler = Compiler {
-            ipv6_resolve,
-            relay_ca,
-            keepalive,
-            quic,
+        Self::assemble(
+            Arc::new(f.clone()),
+            ingest,
+            quic_server,
+            settings,
+            stats,
             liveness,
-            tag: &f.tag,
+        )
+    }
+
+    /// The same shape under other top-level settings: the route compiled again and
+    /// a QUIC listener's transport rebuilt, around the certificates this one
+    /// loaded. Nothing is read from disk: while a revision is being applied, a
+    /// certificate directory may already hold the material of a shape this
+    /// forwarding did not take.
+    pub fn with_settings(
+        &self,
+        settings: &Settings,
+        liveness: &Liveness,
+    ) -> Result<PreparedForwarding, crate::BoxError> {
+        let quic_server = self.quic_server.clone().map(|mut server| {
+            server.transport_config(crate::quic::transport::build(
+                &settings.keepalive,
+                Some(&listener_quic(&self.forwarding, settings)),
+            ));
+            server
+        });
+        Self::assemble(
+            self.forwarding.clone(),
+            self.ingest.clone(),
+            quic_server,
+            settings,
+            self.stats.clone(),
+            liveness,
+        )
+    }
+
+    fn assemble(
+        forwarding: Arc<Forwarding>,
+        ingest: Ingest,
+        quic_server: Option<quinn::ServerConfig>,
+        settings: &Settings,
+        stats: Arc<TagStats>,
+        liveness: &Liveness,
+    ) -> Result<PreparedForwarding, crate::BoxError> {
+        let compiler = Compiler {
+            ipv6_resolve: settings.ipv6_resolve,
+            relay_ca: settings.relay_ca.as_deref(),
+            keepalive: settings.keepalive,
+            quic: settings.quic,
+            liveness,
+            tag: &forwarding.tag,
         };
-        let route = match &f.to {
+        let route = match &forwarding.to {
             To::Tree(tree) => compiler.tree(tree, "t"),
-            To::Route(to) => compiler.table(f, to, &mut HashMap::new(), 0)?,
+            To::Route(to) => compiler.table(&forwarding, to, &mut HashMap::new(), 0)?,
         };
         Ok(PreparedForwarding {
-            forwarding: Arc::new(f.clone()),
+            forwarding,
             ingest,
             route,
             quic_server,
-            keepalive,
+            settings: settings.clone(),
             stats,
         })
     }
+}
+
+/// The tuning a forwarding's QUIC listener runs with: its own, else the worker's.
+fn listener_quic(f: &Forwarding, settings: &Settings) -> QuicTuning {
+    f.quic.unwrap_or(settings.quic)
 }
 
 /// How deep a route table may nest before compiling it is refused; config

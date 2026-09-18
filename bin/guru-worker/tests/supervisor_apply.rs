@@ -3,6 +3,7 @@
 //! `Supervisor::apply` commits a config per forwarding: every forwarding that can be
 //! bound serves, and one that cannot keeps whatever listener its tag had before.
 
+use guru_worker::prepared::{HopTarget, Route, Settings};
 use guru_worker::supervisor::{ApplyOutcome, PodStatus, Supervisor};
 use guru_worker_config::{
     Config, Forwarding, ForwardingTo, Ipv6Resolve, KeepAlive, ListenAs, LogConfig, QuicTuning,
@@ -384,4 +385,67 @@ async fn swapping_two_sockets_in_one_revision_fails_both_without_loss() {
     accepts(key2, "B's listener").await;
 
     sup.shutdown_all();
+}
+
+/// A tag that keeps its previous listener keeps its previous shape, not the previous
+/// top-level settings: `running_config` — and with it the last-known-good config a
+/// restart replays — pairs that shape with the new config's settings, so the listener
+/// has to serve exactly that.
+#[tokio::test]
+async fn a_failed_forwarding_keeps_its_shape_under_the_new_top_level_settings() {
+    let ports = free_ports(2);
+    let (good, bad_old) = (local(ports[0]), local(ports[1]));
+    let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken: SocketAddr = foreign.local_addr().unwrap();
+
+    let mut sup = Supervisor::new();
+    assert_all_applied(
+        &sup.apply(&config(vec![
+            forwarding("good", good),
+            forwarding("bad", bad_old),
+        ]))
+        .await,
+    );
+
+    let mut next = config(vec![forwarding("good", good), forwarding("bad", taken)]);
+    next.ipv6_resolve = Ipv6Resolve::Preferred;
+    next.keepalive.tcp_idle_secs = 120;
+    next.quic.send_mbps = 1000;
+    let outcome = sup.apply(&next).await;
+    assert_eq!(error_of(&outcome, "good"), None);
+    assert!(error_of(&outcome, "bad").is_some(), "{:?}", outcome.pods);
+    accepts(bad_old, "the failed tag's previous listener").await;
+
+    let running = sup.running_config();
+    assert_eq!(
+        listen_of(&running, "bad"),
+        bad_old,
+        "the failed tag keeps its shape"
+    );
+    assert_eq!(Settings::of(&running), Settings::of(&next));
+    for tag in ["good", "bad"] {
+        assert_eq!(
+            sup.prepared(tag).unwrap().settings,
+            Settings::of(&running),
+            "{tag} serves under the settings the running config names"
+        );
+    }
+    // Not only recorded: the kept shape's route is compiled under them.
+    let bad = sup.prepared("bad").unwrap();
+    let Route::Hop(hop) = &*bad.route else {
+        panic!("a single exit compiles to one hop");
+    };
+    let HopTarget::Exit {
+        ipv6_resolve,
+        keepalive,
+        ..
+    } = &hop.target
+    else {
+        panic!("the hop is an exit");
+    };
+    assert_eq!(*ipv6_resolve, Ipv6Resolve::Preferred);
+    assert_eq!(keepalive.tcp_idle_secs, 120);
+
+    sup.shutdown_all();
+    drop(foreign);
 }
