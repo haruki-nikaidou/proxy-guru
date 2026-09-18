@@ -443,3 +443,74 @@ async fn quic_relay_brutal_sends_at_the_configured_rate() {
     entry.shutdown_all();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A pooled link is closed once it has gone without a stream for its own
+/// `quic_idle_secs`, whichever link's dial runs the sweep: a dial on a link with a
+/// short idle period leaves a quiet link that may stay up longer alone, and a dial
+/// on the long one still retires the short one.
+#[tokio::test]
+async fn quic_pool_idles_each_link_out_on_its_own_timeout() {
+    let _ = quinn::rustls::crypto::ring::default_provider().install_default();
+    // A CA path of its own, so a pool of its own: `quic_client` keeps one per CA.
+    let dir = std::env::temp_dir().join(format!("guru-worker-quic-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pki = pki(&dir, "guru internal relay CA");
+    let echo = echo_server().await;
+    let relay_addr = free_ports(1)[0];
+
+    let mut relay = Supervisor::new();
+    assert_all_applied(
+        &relay
+            .apply(&relay_worker(
+                RelayProtocol::Quic,
+                relay_addr,
+                &pki.leaf,
+                echo,
+            ))
+            .await,
+    );
+    let client = guru_worker::tls::quic_client(Some(&pki.ca)).unwrap();
+    let tuning = QuicTuning::default();
+    let long = KeepAlive::default();
+    let short = KeepAlive {
+        quic_ping_secs: 1,
+        quic_idle_secs: 2,
+        ..KeepAlive::default()
+    };
+    let past_short_idle = Duration::from_millis(2_500);
+
+    drop(
+        client
+            .stream(relay_addr, RELAY_SNI, &long, &tuning)
+            .await
+            .unwrap(),
+    );
+    tokio::time::sleep(past_short_idle).await;
+    drop(
+        client
+            .stream(relay_addr, RELAY_SNI, &short, &tuning)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        client.connections(),
+        2,
+        "the short link's dial left the long link, quiet for less than its own idle period"
+    );
+
+    tokio::time::sleep(past_short_idle).await;
+    drop(
+        client
+            .stream(relay_addr, RELAY_SNI, &long, &tuning)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        client.connections(),
+        1,
+        "the long link's dial retired the short link, quiet past its own idle period"
+    );
+
+    relay.shutdown_all();
+    let _ = std::fs::remove_dir_all(&dir);
+}

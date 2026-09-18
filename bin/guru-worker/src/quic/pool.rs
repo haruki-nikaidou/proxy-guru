@@ -121,7 +121,7 @@ impl Pool {
     /// Opens a stream on the link `key` names, connecting it first when there is
     /// no usable connection.
     pub async fn stream(&self, key: Key) -> Result<Stream, BoxError> {
-        self.sweep(&key);
+        self.sweep();
         let slot = self.slots.lock().entry(key.clone()).or_default().clone();
         let mut slot = slot.lock().await;
         // A connection that died since the last dial fails its `open_bi`; the
@@ -209,11 +209,14 @@ impl Pool {
 
     /// Drops dead connections and closes idle ones: a link a config no longer
     /// names, or one merely quiet for `quic_idle_secs`, is not worth pinging.
-    fn sweep(&self, key: &Key) {
-        let idle = Duration::from_secs(u64::from(key.keepalive.quic_idle_secs));
+    ///
+    /// Every link is idle by its own key's `quic_idle_secs`, whichever dial runs
+    /// the sweep: links of two revisions may sit in the pool side by side.
+    fn sweep(&self) {
         let now = millis_since(self.epoch);
         let mut slots = self.slots.lock();
-        slots.retain(|_, slot| {
+        slots.retain(|key, slot| {
+            let idle = Duration::from_secs(u64::from(key.keepalive.quic_idle_secs));
             // A slot mid-handshake is busy by definition and stays.
             let Ok(mut slot) = slot.try_lock() else {
                 return true;
