@@ -81,23 +81,29 @@ impl Processor<ListServerHealthHistory> for Db {
 
 /// What a health write did, for the caller that has to publish it.
 ///
-/// The three pieces are all read inside the write's own transaction: the row it
+/// Everything here is read inside the write's own transaction: the row it
 /// created, the canvas the server belongs to (a live event is addressed by
-/// canvas, and re-reading the server row afterwards could see a moved one) and
-/// the status the server held *before* the update, which is the only way to tell
-/// a routine report from a status flip.
+/// canvas, and re-reading the server row afterwards could see a moved one), the
+/// status the server held *before* the update — the only way to tell a routine
+/// report from a status flip — and the two labels a notification needs, so the
+/// module that phrases one needs no database of its own.
 #[derive(Debug, Clone)]
 pub struct HealthWrite {
     pub record: ServerHealthRecordEntity,
     pub canvas: CanvasId,
+    pub server_name: String,
+    pub canvas_name: String,
     pub previous_status: ServerHealthStatus,
     /// The pod rows written alongside the report; empty for a status flip.
-    pub pods: Vec<PodHealthRecordEntity>,
+    pub pods: Vec<PodHealthWrite>,
 }
 
-/// The server row's health fields, locked for the transaction that reads them.
+/// The server row's health fields, locked for the transaction that reads them,
+/// plus the labels [`HealthWrite`] carries.
 struct ServerHealthBefore {
     canvas: CanvasId,
+    name: String,
+    canvas_name: String,
     health_status: ServerHealthStatus,
     refresh_key_generation: i64,
 }
@@ -106,12 +112,9 @@ async fn lock_server_health(
     conn: &mut PgConnection,
     server: &ServerId,
 ) -> Result<Option<ServerHealthBefore>, Error> {
-    Ok(sqlx::query_as!(
+    Ok(sqlx::query_file_as!(
         ServerHealthBefore,
-        r#"SELECT canvas AS "canvas: CanvasId",
-                  health_status AS "health_status: ServerHealthStatus",
-                  refresh_key_generation
-           FROM orchestration_server WHERE id = $1 FOR UPDATE"#,
+        "sql/lock_server_health.sql",
         server as _
     )
     .fetch_optional(conn)
@@ -207,6 +210,8 @@ impl Processor<InsertServerHealthRecord> for Db {
         Ok(Some(HealthWrite {
             record,
             canvas: before.canvas,
+            server_name: before.name,
+            canvas_name: before.canvas_name,
             previous_status: before.health_status,
             pods,
         }))
@@ -267,6 +272,8 @@ impl Processor<SetServerHealthStatus> for Db {
         Ok(Some(HealthWrite {
             record,
             canvas: before.canvas,
+            server_name: before.name,
+            canvas_name: before.canvas_name,
             previous_status: before.health_status,
             pods: Vec::new(),
         }))
@@ -414,11 +421,52 @@ pub struct NewPodHealthRecord {
     pub report_time: DateTime<Utc>,
 }
 
+/// A pod row written, with the labels a notification needs. They are read in
+/// the same statement as the insert, so nothing downstream has to re-read the
+/// pod — or find it already moved.
+#[derive(Debug, Clone)]
+pub struct PodHealthWrite {
+    pub record: PodHealthRecordEntity,
+    pub pod_name: String,
+    pub canvas: CanvasId,
+    pub canvas_name: String,
+}
+
+/// The flat shape the statement selects: `query_as!` matches columns to fields
+/// one for one, so the entity's nesting is done here in Rust.
+struct PodHealthWriteRow {
+    id: PodHealthRecordId,
+    pod: PodId,
+    status: PodHealthStatus,
+    message: String,
+    report_time: DateTime<Utc>,
+    pod_name: String,
+    canvas: CanvasId,
+    canvas_name: String,
+}
+
+impl From<PodHealthWriteRow> for PodHealthWrite {
+    fn from(row: PodHealthWriteRow) -> Self {
+        Self {
+            record: PodHealthRecordEntity {
+                id: row.id,
+                pod: row.pod,
+                status: row.status,
+                message: row.message,
+                report_time: row.report_time,
+            },
+            pod_name: row.pod_name,
+            canvas: row.canvas,
+            canvas_name: row.canvas_name,
+        }
+    }
+}
+
 /// Inserts pod records in one statement and returns the rows written.
 async fn insert_pod_records(
     conn: &mut PgConnection,
     records: &[NewPodHealthRecord],
-) -> Result<Vec<PodHealthRecordEntity>, Error> {
+) -> Result<Vec<PodHealthWrite>, Error> {
     if records.is_empty() {
         return Ok(Vec::new());
     }
@@ -428,7 +476,7 @@ async fn insert_pod_records(
     let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
     let times: Vec<DateTime<Utc>> = records.iter().map(|r| r.report_time).collect();
     Ok(sqlx::query_file_as!(
-        PodHealthRecordEntity,
+        PodHealthWriteRow,
         "sql/insert_pod_records.sql",
         &ids as _,
         &pods as _,
@@ -437,7 +485,10 @@ async fn insert_pod_records(
         &times as _
     )
     .fetch_all(conn)
-    .await?)
+    .await?
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 
 /// Inserts a batch of pod records in one statement. The derivation hook's
@@ -449,8 +500,9 @@ pub struct InsertPodHealthRecords {
 }
 
 impl Processor<InsertPodHealthRecords> for Db {
-    /// The rows written, so the caller can put them on the live bus.
-    type Output = Vec<PodHealthRecordEntity>;
+    /// The rows written, so the caller can put them on the live bus and
+    /// announce them.
+    type Output = Vec<PodHealthWrite>;
     type Error = Error;
     #[tracing::instrument(name = "Query:InsertPodHealthRecords", skip_all, err)]
     async fn process(&self, input: InsertPodHealthRecords) -> Result<Self::Output, Self::Error> {

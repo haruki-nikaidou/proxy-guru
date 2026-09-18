@@ -20,16 +20,23 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（必须 ≥ 1） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填*（仅支持环境变量；32 字节随机数据的 base64 编码 —— `manage-tool generate-master-key`） |
+| — | `GURU_SMTP_PASSWORD` | *可选，仅 `notifier`*（仅支持环境变量；未设置时以不认证的方式发送） |
+| — | `GURU_TELEGRAM_BOT_TOKEN` | *可选，仅 `notifier`*（仅支持环境变量；未设置时禁用 Telegram） |
 
 其余所有可由运维人员调整的项——健康阈值与保留期、默认 ACME 目录、续期窗口、各周期任务的运行频率——都存放在数据库中，而不是环境变量里。
 参见[模块配置](#模块配置)。
 
-`--mode` 接受 `dashboard_grpc`、`workers_grpc`、`consumer` 和 `cron`。消息代理 URI 形如
+`--mode` 接受 `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` 和 `cron`。消息代理 URI 形如
 `amqp://guru:guru@127.0.0.1:5672/`，末尾的 `/` 表示选用默认 vhost。**所有**模式都需要消息代理，
 `cron` 也不例外：周期性工作是以消息形式发布的，因此代理中断会让派生、存活检测和证书续期一直停滞，
 直到代理恢复。
 
-在会打开数据库连接的那三种模式下 Redis 同样必填，理由也属于同一类：它是运维 API `Watch*` 流背后的
+`notifier` 是[通知](/zh-cn/features/notifications/)的投递侧：恰好一个实例，由一把 PostgreSQL
+advisory lock 强制保证。它在启动时读取 `notify` 配置，并且只需要数据库和消息代理 —— 既不需要
+`GURU_MASTER_KEY`（它不解密任何东西），也不需要 `REDIS_URL`（它不发布任何实时事件）。它的两个渠道
+机密就是上面那两个环境变量。
+
+在提供服务与派生的那三种模式下 Redis 同样必填，理由也属于同一类：它是运维 API `Watch*` 流背后的
 实时总线。URL 形如 `redis://127.0.0.1:6379/`。每一次变更都会在频道 `guru:orchestration:live` 上发布
 一个事件，而每个 `dashboard_grpc` 副本只订阅它一次，因此在某个副本上做出的编辑也会到达由其他副本
 提供的那些流。这里什么都不会被存下来：整个集群不需要该服务器提供任何持久化，既不需要 AOF，也不需要
@@ -43,10 +50,11 @@ server-sent-events 连接完成，由控制台把它桥接到 gRPC 流上。这�
 
 `GURU_MASTER_KEY` 用于加密所有静态存储的密钥材料——DNS 提供商 API 令牌、ACME 账户密钥、证书和 CA
 私钥——凡是需要读取密钥材料的三种模式都必须提供：`dashboard_grpc`、`workers_grpc` 和 `consumer`。
-`cron` 从不接触密钥材料，也不会读取该密钥。它被有意设计成不提供命令行参数：argv 在进程列表中是可见的。
-丢失该密钥意味着必须重新录入每个 DNS 提供商令牌并重新签发所有证书；也不支持原地更换。
+`cron` 从不接触密钥材料，也不会读取该密钥，`notifier` 也不读取。它被有意设计成不提供命令行参数：
+argv 在进程列表中是可见的。丢失该密钥意味着必须重新录入每个 DNS 提供商令牌并重新签发所有证书；
+也不支持原地更换。
 
-`GURU_DATABASE_URL` 只在会建立连接的那三种模式下必填。`cron` 会忽略它，甚至完全不需要数据库 URL
+`GURU_DATABASE_URL` 只在会建立连接的那四种模式下必填。`cron` 会忽略它，甚至完全不需要数据库 URL
 即可启动：一个没有数据库 URL 就拒绝启动的时钟，等于背上了一个用不到的数据库依赖。在会打开连接的那些
 模式下，连接池最多持有 `GURU_DB_POOL_SIZE` 个连接，每条语句都由服务端按 `GURU_DB_STATEMENT_TIMEOUT_MS`
 限时——超时的语句会被 PostgreSQL 取消，边界层会把它报成 `UNAVAILABLE`，而不是一次故障。此外，每个
@@ -373,11 +381,12 @@ master，由 master 在服务器上记录失败的 pod，并为每个失败的 p
 
 可由运维人员调整的设置存放在数据库中：每个键一行 `app_config`，以 JSON 文档形式保存整份配置。数据库是
 唯一的事实来源 —— 没有缓存，也没有第二份副本 —— 因此集群中的每个 `guru-master` 都运行完全相同的设置，
-无需对齐环境变量；修改设置不需要重新部署，只需要重启。目前存在两个键：
+无需对齐环境变量；修改设置不需要重新部署，只需要重启。目前存在三个键：
 
 | 键 | 结构体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
+| `notify` | `notify::config::NotifyConfig` | `smtp_host`（默认为空，即禁用邮件）、`smtp_port`（587）、`smtp_starttls`（`true`；`false` 走明文 SMTP，仅适用于 localhost 上的中继或测试接收端）、`smtp_username`（为空则以不认证的方式发送）、`smtp_from`（`guru <noreply@example.com>`）、`telegram_api_base`（`https://api.telegram.org`）、`delivery_attempts`（3）、`delivery_retry_delay_secs`（5）、`default_language`（`en`；取 `en`、`ja`、`zh_cn` 之一 —— 从未指定过语言的设置行会以它渲染）。SMTP 密码和机器人令牌**不在**这里：它们是 `notifier` 上的 `GURU_SMTP_PASSWORD` 和 `GURU_TELEGRAM_BOT_TOKEN`，因为这份文档对每个 Admin 都可读 |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`pod_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（默认 `15`：一条空闲的 `Watch*` 流多久发送一次空的保活消息，并重新校验开启它的那个会话；请让它小于 `:50051` 前面任何代理的空闲超时）、`trust_proxy_address_headers`（默认 `true`：Worker API 会把 `x-real-ip` / `x-forwarded-for` 的第一跳记录为注册请求的来源地址；如果 `:50052` 在没有前述代理的情况下也可达，请关闭它，否则 Worker 可以伪造该地址）、`country_lookup_url`（默认 `https://api.country.is/{ip}`：为服务器的国旗查询其 IPv4 地址所在国家的地址，`{ip}` 会替换成该地址；返回值可以是带两字母 `country` 字段的 JSON 对象，也可以只是两个字母，所以 `https://get.geojs.io/v1/ip/country/{ip}` 也能用；留空则不查询）、`country_lookup_interval_secs`（默认 60）、`country_lookup_retry_after_secs`（默认 3600：查询失败后，要隔多久才再次查询同一个地址） |
 
 在 `manage-tool db migrate` 之后运行 `manage-tool config seed` 写入默认值，再用 `manage-tool config list`
@@ -397,14 +406,15 @@ manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
-这两份文档同样可以在控制台中读取和替换：**Admin**（且仅有 Admin —— 其他角色都不具备该权限，API 密钥
+这三份文档同样可以在控制台中读取和替换：**Admin**（且仅有 Admin —— 其他角色都不具备该权限，API 密钥
 则从来没有）能看到该行的存储原文、seed 会写入的载荷，以及一个用于替换整份文档的表单。它的校验与
 `manage-tool config set` 完全一致，因此形状错误的载荷会被拒绝，该行保留原有内容。从控制台保存同样不是
 热重载：新值要生效必须**重启 `guru-master`**。
 
-依赖数据库的那三种模式 —— `dashboard_grpc`、`workers_grpc` 和 `consumer` —— 只在启动期间读取这两个键
-一次，然后把取值交给各自的服务；不存在热重载。`cron` 不打开数据库连接，因此两个键都不读：它只发布执行
-信号，而收到信号的消费者会按存储的间隔执行。未执行过 seed 的安装运行的是默认值。无法反序列化的数据行
+依赖数据库的那四种模式 —— `dashboard_grpc`、`workers_grpc`、`consumer` 和 `notifier` —— 只在启动期间
+读取它们各自需要的键一次，然后把取值交给各自的服务；不存在热重载。`cron` 不打开数据库连接，因此这些
+键一个都不读：它只发布执行信号，而收到信号的消费者会按存储的间隔执行。未执行过 seed 的安装运行的是
+默认值。无法反序列化的数据行
 会导致启动失败并指出对应的键 —— 因为用默认值替代损坏的文档会悄悄换掉运维人员的整份配置，比如把 ACME
 从 staging 挪到生产目录。
 后续版本新增的字段会以其默认值读取，因此旧的数据行仍然可用。

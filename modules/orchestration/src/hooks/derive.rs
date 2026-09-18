@@ -41,7 +41,9 @@ use crate::entities::db::view::{
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
 use crate::events::live::{LiveMessage, RolloutScope};
-use crate::events::{CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertificatesSignal};
+use crate::events::{
+    CanvasDirty, DeriveStaleCanvasesSignal, HealthFact, RotateRelayCertificatesSignal,
+};
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
@@ -229,8 +231,11 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 if !rows.is_empty() {
                     self.notifier
                         .live(LiveMessage::PodHealth {
-                            records: rows.iter().map(Into::into).collect(),
+                            records: rows.iter().map(|p| (&p.record).into()).collect(),
                         })
+                        .await;
+                    self.notifier
+                        .health_changed(rows.iter().map(HealthFact::pod).collect())
                         .await;
                 }
                 return Ok(());

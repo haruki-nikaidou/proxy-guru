@@ -26,7 +26,7 @@ checkout. Nothing else is host-specific.
 | PostgreSQL 16+ | Native service, managed service, or container | `127.0.0.1:5432` by default |
 | RabbitMQ 4 | Native service, managed service, or container | `127.0.0.1:5672` by default |
 | Redis 7 | Native service, managed service, or container | `127.0.0.1:6379` by default |
-| `guru-master` ×4 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
+| `guru-master` ×5 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
 | dashboard | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | your existing nginx, one server block | `:443` |
 
@@ -124,8 +124,8 @@ set -a; . ./.env; set +a       # the credentials you wrote above
 ```
 
 Strictly speaking `db migrate` is optional here — each master applies what is pending when it
-starts — but running it now means a schema problem surfaces before four units try to start on it.
-`config seed` prints one line per key it wrote (`seeded auth`, `seeded orchestration`).
+starts — but running it now means a schema problem surfaces before five units try to start on it.
+`config seed` prints one line per key it wrote (`seeded auth`, `seeded notify`, `seeded orchestration`).
 
 ### The internal CA and the first administrator
 
@@ -184,16 +184,23 @@ Installing and starting units is operator work — run this block **from your su
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc \
-                            guru-master@consumer guru-master@cron
+                            guru-master@consumer guru-master@cron guru-master@notifier
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer` and `cron` exit non-zero when the broker connection drops; `Restart=always` is what heals
-them, so keep it. Have PostgreSQL, RabbitMQ and Redis running (or enabled at boot) before you enable
-these units: `dashboard_grpc`, `workers_grpc` and `consumer` refuse to start without a reachable
-`REDIS_URL` — `cron` needs neither it nor the database — and `Restart=always` is what carries them
-over a datastore that comes up later. Once a master is up, a Redis that dies is reconnected in
-place; only delivery on open `Watch*` streams pauses meanwhile.
+`consumer`, `notifier` and `cron` exit non-zero when the broker connection drops; `Restart=always`
+is what heals them, so keep it. Have PostgreSQL, RabbitMQ and Redis running (or enabled at boot)
+before you enable these units: `dashboard_grpc`, `workers_grpc` and `consumer` refuse to start
+without a reachable `REDIS_URL` — `cron` needs neither it nor the database, and `notifier` needs the
+database but no Redis — and `Restart=always` is what carries them over a datastore that comes up
+later. Once a master is up, a Redis that dies is reconnected in place; only delivery on open
+`Watch*` streams pauses meanwhile.
+
+`guru-master@notifier` is the one instance that must stay single: it takes a PostgreSQL advisory
+lock at startup, so a second host running it exits with `another notifier already holds the advisory
+lock; run exactly one` instead of doubling every message
+([Notifications](/features/notifications/)). Its two channel secrets, `GURU_SMTP_PASSWORD` and
+`GURU_TELEGRAM_BOT_TOKEN`, are optional and belong in the same `.env`; it reads no master key.
 
 Redeploying after a code change is two shells: build as `guru`, restart as the operator.
 

@@ -22,7 +22,7 @@ Worker 都能用 `--master https://guru.example.com` 接入，无需 VPN。
 | PostgreSQL 16+ | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:5432` |
 | RabbitMQ 4 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:5672` |
 | Redis 7 | 原生服务、托管服务或容器 | 默认为 `127.0.0.1:6379` |
-| `guru-master` ×4 | systemd 模板 `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
+| `guru-master` ×5 | systemd 模板 `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | 控制台 | systemd `guru-frontend` | `127.0.0.1:3100` |
 | nginx | 你现有的 nginx，一个 server 块 | `:443` |
 
@@ -109,8 +109,8 @@ set -a; . ./.env; set +a       # the credentials you wrote above
 ```
 
 严格来说，这里的 `db migrate` 是可选的 —— 每个 master 启动时都会应用尚未应用的 migration —— 但现在就执行它，
-可以让 Schema 上的问题在四个 unit 尝试基于它启动之前就暴露出来。`config seed` 每写入一个键就打印一行
-（`seeded auth`、`seeded orchestration`）。
+可以让 Schema 上的问题在五个 unit 尝试基于它启动之前就暴露出来。`config seed` 每写入一个键就打印一行
+（`seeded auth`、`seeded notify`、`seeded orchestration`）。
 
 ### 内部 CA 与第一个管理员
 
@@ -166,15 +166,22 @@ WantedBy=multi-user.target
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc \
-                            guru-master@consumer guru-master@cron
+                            guru-master@consumer guru-master@cron guru-master@notifier
 journalctl -u 'guru-master@*' -n 20
 ```
 
-当 broker 连接断开时，`consumer` 和 `cron` 会以非零状态退出；负责自愈的正是 `Restart=always`，所以请保留它。
-在启用这些 unit 之前，请先让 PostgreSQL、RabbitMQ 和 Redis 处于运行状态（或设为开机自启）：
-`dashboard_grpc`、`workers_grpc` 和 `consumer` 在 `REDIS_URL` 不可达时会拒绝启动 —— `cron` 既不需要它
-也不需要数据库 —— 而 `Restart=always` 正是把它们带过"数据存储稍后才起来"这一段的机制。master 起来之后，
-死掉的 Redis 会被就地重连；这期间暂停的只有已打开的 `Watch*` 流的投递。
+当 broker 连接断开时，`consumer`、`notifier` 和 `cron` 会以非零状态退出；负责自愈的正是
+`Restart=always`，所以请保留它。在启用这些 unit 之前，请先让 PostgreSQL、RabbitMQ 和 Redis 处于运行
+状态（或设为开机自启）：`dashboard_grpc`、`workers_grpc` 和 `consumer` 在 `REDIS_URL` 不可达时会拒绝
+启动 —— `cron` 既不需要它也不需要数据库，而 `notifier` 需要数据库但不需要 Redis —— 而
+`Restart=always` 正是把它们带过“数据存储稍后才起来”这一段的机制。master 起来之后，死掉的 Redis 会被
+就地重连；这期间暂停的只有已打开的 `Watch*` 流的投递。
+
+`guru-master@notifier` 是唯一必须保持单实例的那一个：它在启动时取得一把 PostgreSQL advisory lock，
+因此第二台运行它的主机会以 `another notifier already holds the advisory lock; run exactly one` 退出，
+而不是把每条消息都发两遍（见[通知](/zh-cn/features/notifications/)）。它的两个渠道机密
+`GURU_SMTP_PASSWORD` 和 `GURU_TELEGRAM_BOT_TOKEN` 都是可选的，放在同一份 `.env` 里；它不读取
+master key。
 
 代码变更后的重新部署要用两个 shell：以 `guru` 身份构建，以运维账户重启。
 

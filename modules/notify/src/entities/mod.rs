@@ -1,13 +1,10 @@
-//! Persistence layer: data types and the processors that read/write them.
+//! Persistence layer: the settings rows, and the fan-out's own memory.
 //!
-//! Entities are split by backing store:
+//! - [`db`] — PostgreSQL rows and the compile-time-checked queries on them:
+//!   [`db::setting`] holds what operators asked for, [`db::state`] holds what
+//!   was last announced about a subject.
 //!
-//! - [`db`] — PostgreSQL rows and the compile-time-checked queries that operate
-//!   on them.
-//! - [`redis`] — Redis key/value types used for caching and ephemeral state.
-//!
-//! Each query or command is a small input struct with a `Processor`
-//! implementation, so persistence logic stays testable and composable.
+//! Nothing here is cached in Redis: a notification is rare, and a setting read
+//! per notice is one point read.
 
 pub mod db;
-pub mod redis;

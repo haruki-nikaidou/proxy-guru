@@ -1,39 +1,13 @@
-//! Background reactors that run outside the request path.
+//! Background reactors: the two AMQP consumers this module runs.
 //!
-//! Hooks are where a module reacts to things instead of being called directly:
+//! - [`fanout`] runs in `--mode consumer`, alongside the orchestration hooks:
+//!   it consumes `orchestration`'s health facts and decides the audience.
+//! - [`delivery`] runs in `--mode notifier`, of which there is exactly one
+//!   instance: it consumes this module's own notices and sends them.
 //!
-//! - **AMQP consumers** — implement `AmqpMessageProcessor<E>` plus
-//!   `Processor<E>` to handle an [`event`](crate::events) delivered from the
-//!   queue.
-//! - **Cron jobs** — periodic tasks (cleanup, aggregation, reconciliation).
-//! - **Event loggers** — persist or forward events for audit/observability.
-//!
-//! Like services, a hook is a `Clone`-able struct that owns its dependencies.
-//! The `app-server` binary wires hooks into its consumer/cron workers.
-//!
-//! ```ignore
-//! use kanau::processor::Processor;
-//! use wakuwaku::amqp::AmqpMessageProcessor;
-//! use wakuwaku::redis::RedisConnection;
-//!
-//! use crate::events::ExampleHappened;
-//!
-//! #[derive(Clone)]
-//! pub struct ExampleHook {
-//!     pub redis: RedisConnection,
-//! }
-//!
-//! // Bind the hook to a durable queue name.
-//! impl AmqpMessageProcessor<ExampleHappened> for ExampleHook {
-//!     const QUEUE: &'static str = "app_base_example";
-//! }
-//!
-//! impl Processor<ExampleHappened> for ExampleHook {
-//!     type Output = ();
-//!     type Error = wakuwaku::Error;
-//!     async fn process(&self, input: ExampleHappened) -> Result<(), Self::Error> {
-//!         // react to the event...
-//!         Ok(())
-//!     }
-//! }
-//! ```
+//! Neither is gated on [`orchestration::entities::db::job_run::ClaimJobRun`]:
+//! these are event hooks, not periodic ones, and the broker's own delivery is
+//! what decides that a message is handled once.
+
+pub mod delivery;
+pub mod fanout;

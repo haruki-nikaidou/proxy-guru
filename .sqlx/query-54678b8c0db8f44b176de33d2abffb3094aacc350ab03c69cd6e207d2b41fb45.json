@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Every account that asked for this notice kind on this canvas.\n--\n-- The fallback is resolved here: an account with its own row for the canvas is\n-- served by that row, and one without is served by its default row — never by\n-- both. A row that subscribed to the kind but turned every channel off is not a\n-- recipient.\nSELECT a.id AS \"account!: AccountId\",\n       s.language AS \"language!: Language\",\n       CASE WHEN s.email_enabled THEN a.email END AS \"email?\",\n       s.telegram_chat AS \"telegram_chat?\"\nFROM auth_account a\nJOIN LATERAL (\n    SELECT language, events, email_enabled, telegram_chat\n    FROM notify_account_setting\n    WHERE account = a.id AND canvas = $2\n    UNION ALL\n    SELECT language, events, email_enabled, telegram_chat\n    FROM notify_account_default\n    WHERE account = a.id\n      AND NOT EXISTS (\n          SELECT 1 FROM notify_account_setting\n          WHERE account = a.id AND canvas = $2\n      )\n) s ON true\nWHERE $1 = ANY (s.events)\n  AND (s.email_enabled OR s.telegram_chat IS NOT NULL)\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account!: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "language!: Language",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "email?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "telegram_chat?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "54678b8c0db8f44b176de33d2abffb3094aacc350ab03c69cd6e207d2b41fb45"
+}

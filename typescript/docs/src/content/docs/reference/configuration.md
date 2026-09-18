@@ -20,17 +20,24 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
+| — | `GURU_SMTP_PASSWORD` | *optional, `notifier` only* (environment only; unset sends unauthenticated) |
+| — | `GURU_TELEGRAM_BOT_TOKEN` | *optional, `notifier` only* (environment only; unset disables Telegram) |
 
 Everything else an operator can tune — health thresholds and retention, the default ACME directory,
 the renewal window, how often each periodic job runs — lives in the database, not in the
 environment. See [Module configuration](#module-configuration).
 
-`--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer` and `cron`. A broker URI looks like
-`amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost. The broker is
-required in **every** mode, `cron` included: periodic work is published as a message, so a broker
-outage stalls derivation, liveness and certificate renewal until the broker returns.
+`--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer`, `notifier` and `cron`. A broker URI
+looks like `amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost. The
+broker is required in **every** mode, `cron` included: periodic work is published as a message, so a
+broker outage stalls derivation, liveness and certificate renewal until the broker returns.
 
-Redis is required in the three modes that open a database connection, and for the same kind of
+`notifier` is the delivery side of [Notifications](/features/notifications/): exactly one instance,
+enforced with a PostgreSQL advisory lock. It reads the `notify` config at startup and takes only the
+database and the broker — no `GURU_MASTER_KEY` (it decrypts nothing) and no `REDIS_URL` (it
+publishes no live events). Its two channel secrets are the environment variables above.
+
+Redis is required in the three modes that serve or derive, and for the same kind of
 reason: it is the live bus behind the operator API's `Watch*` streams. A URL looks like
 `redis://127.0.0.1:6379/`. Every mutation publishes one event on the channel
 `guru:orchestration:live`, and every `dashboard_grpc` replica subscribes to it once, so an edit made
@@ -47,11 +54,11 @@ streams. The *Live* badge on those pages shows that browser connection; the log 
 `GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
 certificate and CA private keys — and is required in the three modes that read one:
 `dashboard_grpc`, `workers_grpc` and `consumer`. `cron` never touches a secret and never reads the
-key. It is deliberately not a flag: argv is visible in process listings. Losing the key means
-re-entering every DNS provider token and re-issuing every certificate; changing it is not supported
-in place.
+key, and neither does `notifier`. It is deliberately not a flag: argv is visible in process
+listings. Losing the key means re-entering every DNS provider token and re-issuing every
+certificate; changing it is not supported in place.
 
-`GURU_DATABASE_URL` is required only in the three modes that open a connection. `cron` ignores it
+`GURU_DATABASE_URL` is required only in the four modes that open a connection. `cron` ignores it
 and starts without a database URL at all: a clock that refused to start without one would carry a
 database dependency, just an unused one. In the modes that do open it, the pool holds up to
 `GURU_DB_POOL_SIZE` connections and every statement is bounded by the server at
@@ -420,11 +427,12 @@ the dashboard must be served over HTTPS (except on `localhost`).
 Operator-tunable settings live in the database, one `app_config` row per key holding the whole
 config as a JSON document. The database is the only source of truth — no cache, no second copy — so
 every `guru-master` in a fleet runs identical settings with no matching environment, and a change
-needs no redeploy, only a restart. Two keys exist today:
+needs no redeploy, only a restart. Three keys exist today:
 
 | Key | Struct | Contents |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
+| `notify` | `notify::config::NotifyConfig` | `smtp_host` (default empty, which disables email), `smtp_port` (587), `smtp_starttls` (`true`; `false` speaks plain SMTP and is for a relay on localhost or a test sink only), `smtp_username` (empty sends unauthenticated), `smtp_from` (`guru <noreply@example.com>`), `telegram_api_base` (`https://api.telegram.org`), `delivery_attempts` (3), `delivery_retry_delay_secs` (5), `default_language` (`en`; one of `en`, `ja`, `zh_cn` — the language a settings row that never named one is rendered in). The SMTP password and the bot token are **not** here: they are `GURU_SMTP_PASSWORD` and `GURU_TELEGRAM_BOT_TOKEN` on the `notifier`, because this document is readable by every Admin |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`, `health_offline_after_intervals`, `degraded_grace_secs`, `server_health_ttl_secs`, `pod_health_ttl_secs` (the stored `node_health_ttl_secs` of older documents is still read), `default_acme_directory`, `acme_renew_before_secs`, `acme_retry_after_secs`, `relay_cert_valid_secs`, `relay_cert_renew_before_secs`, `sweep_interval_secs`, `liveness_interval_secs`, `health_retention_interval_secs`, `acme_interval_secs`, `relay_rotation_interval_secs`, `stream_keepalive_secs` (default `15`: how often an idle `Watch*` stream sends an empty keep-alive and re-checks the session that opened it; keep it under the idle timeout of any proxy in front of `:50051`), `trust_proxy_address_headers` (default `true`: the worker API records `x-real-ip` / the first `x-forwarded-for` hop as the address a registration came from; turn off when `:50052` is reachable without the documented proxy, or a worker could spoof it), `agent_public_base_url` (default empty: the origin workers dial and the dashboard's install command downloads from, e.g. `https://guru.example.com`; until it is set the dashboard cannot render an install command), `agent_download_path` (default `/agent`: the path under that origin nginx serves `manage-tool agent publish`'s output from), `agent_update_poll_secs` (default 60: how often a live worker asks whether an update was requested for it), `country_lookup_url` (default `https://api.country.is/{ip}`: where the country of a server's IPv4 address is looked up for its flag, with `{ip}` replaced by the address; the answer may be a JSON object with a two-letter `country` field or just the two letters, so `https://get.geojs.io/v1/ip/country/{ip}` works as well; empty turns the lookup off), `country_lookup_interval_secs` (default 60), `country_lookup_retry_after_secs` (default 3600: how long a failed lookup waits before the same address is asked about again) |
 
 Run `manage-tool config seed` after `manage-tool db migrate` to write the defaults, and
@@ -447,17 +455,18 @@ one database row shared by every consumer.
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
-The same two documents are readable and replaceable from the dashboard: an **Admin** (and only an
+All three documents are readable and replaceable from the dashboard: an **Admin** (and only an
 Admin — no other role holds the permission, and an API key never does) gets the row as stored, the
 payload seeding would write, and a form that replaces the whole document. It validates exactly as
 `manage-tool config set` does, so a payload of the wrong shape is rejected and the row keeps its
 previous contents. Saving from the dashboard is not a live reload either: **restart `guru-master`**
 for the new values to take effect.
 
-The three database-backed modes — `dashboard_grpc`, `workers_grpc` and `consumer` — read both keys
-once, during startup, and hand the values to their services; there is no live reload. `cron` opens
-no database connection and so reads neither key: it only publishes execution signals, and the
-consumer that receives one applies the stored interval. An unseeded installation runs the defaults.
+The four database-backed modes — `dashboard_grpc`, `workers_grpc`, `consumer` and `notifier` — read
+the keys they need once, during startup, and hand the values to their services; there is no live
+reload. `cron` opens no database connection and so reads none of them: it only publishes execution
+signals, and the consumer that receives one applies the stored interval. An unseeded installation
+runs the defaults.
 A row that does not deserialize fails startup naming the key — substituting defaults for a corrupt
 document would silently swap an operator's whole config, for instance moving ACME from staging to
 the production directory.

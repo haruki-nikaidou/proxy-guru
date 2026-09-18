@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account AS \"account: AccountId\", NULL::text AS \"canvas?: CanvasId\",\n                      language AS \"language: Language\", events AS \"events: Vec<NoticeKind>\",\n                      email_enabled, telegram_chat\n               FROM notify_account_default WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_default",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "canvas?: CanvasId",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "language: Language",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_default",
+            "name": "language"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "events: Vec<NoticeKind>",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_account_default",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "email_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "notify_account_default",
+            "name": "email_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "telegram_chat",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_account_default",
+            "name": "telegram_chat"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "78dea0ae8a96fe8785214f5339f89c52eed26385c03b65eee6e2e1aec0c388a3"
+}

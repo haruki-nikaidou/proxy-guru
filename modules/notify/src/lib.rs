@@ -1,31 +1,37 @@
-//! # `base` — the foundational module
+//! # `notify` — notifications about the fleet's health
 //!
-//! `base` is the reference/shared module of this workspace. Every business
-//! feature lives in its own `modules/<name>` crate that mirrors the layout of
-//! this crate and depends on `base` for the types and helpers shared across the
-//! whole application (common entities, error types, config primitives,
-//! utilities, and so on).
+//! Turns the health facts `orchestration` publishes
+//! ([`orchestration::events::HealthChanged`]) into messages an operator
+//! receives by email or Telegram, in the language their settings name.
 //!
-//! ## Module layout (the convention every module follows)
+//! Two scopes, both keyed by canvas ("workspace"):
 //!
-//! - [`entities`] — persistence layer. Plain data types plus the
-//!   `Processor` implementations that read and
-//!   write them. Split into [`entities::db`] (PostgreSQL rows and queries) and
-//!   [`entities::redis`] (Redis key/value types).
-//! - [`services`] — business logic. Stateful `Processor`s that own their
-//!   dependencies (database, Redis, message queue, other services) and
-//!   orchestrate entities to fulfil a use case.
-//! - [`rpc`] — the transport edge. gRPC service implementations that translate
-//!   protobuf requests into service/entity calls and back.
-//! - [`events`] — AMQP message payloads this module publishes or consumes,
-//!   together with their routing.
-//! - [`hooks`] — background reactors: AMQP consumers, cron jobs, and event
-//!   loggers that run outside the request path.
-//! - [`config`] — strongly typed configuration for the module, stored in the
-//!   database under a stable key and loaded through `base`'s config store.
-//! - [`utils`] — small, dependency-light helpers local to the module.
+//! - the **canvas** row carries the destinations a whole workspace shares
+//!   (a list of addresses and a list of chat ids),
+//! - an **account** row carries one operator's own channels, with one default
+//!   row serving every canvas the account has no row for.
 //!
-//! See `AGENTS.md` at the workspace root for the full authoring guide.
+//! Both name the set of notice kinds they want, and both default to the empty
+//! set: installing this module notifies nobody until an operator opts in.
+//!
+//! ## The path one notice takes
+//!
+//! 1. [`hooks::fanout::HealthFanout`] consumes `HealthChanged`, and
+//!    [`services::fanout::FanoutService`] drops every fact that does not change
+//!    what was last announced about its subject ([`entities::db::state`]).
+//! 2. What survives becomes one [`events::HealthNotifyGroupEvent`] per canvas
+//!    with matching destinations, and one [`events::HealthNotifyPersonalEvent`]
+//!    per matching account.
+//! 3. [`hooks::delivery::NoticeDelivery`] — the single-instance `notifier` mode
+//!    of `guru-master` — renders each notice once ([`utils::message`]) and
+//!    sends it to every destination it carries.
+//!
+//! The channels' secrets (the SMTP password, the Telegram bot token) come from
+//! the environment ([`utils::secret::NotifySecrets`]), never from
+//! [`config::NotifyConfig`]: the config document is readable by an Admin in the
+//! dashboard, and a bot token is not a setting.
+//!
+//! See `AGENTS.md` at the workspace root for the layout every module follows.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]

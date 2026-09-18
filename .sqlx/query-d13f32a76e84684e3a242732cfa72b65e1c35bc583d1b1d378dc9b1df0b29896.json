@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_server\n                 (id, canvas, name, icon, comment, position_x, position_y, ipv6_resolve, log_level)\n             VALUES ($1, $2, $3, '', '', 0, 0, 'tolerated', 'info')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d13f32a76e84684e3a242732cfa72b65e1c35bc583d1b1d378dc9b1df0b29896"
+}

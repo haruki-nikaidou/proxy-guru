@@ -20,17 +20,24 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（1 以上である必要があります） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | — | `GURU_MASTER_KEY` | *`dashboard_grpc`、`workers_grpc`、`consumer` では必須*（環境変数のみ。32 バイトのランダム値を base64 エンコードしたもの — `manage-tool generate-master-key`） |
+| — | `GURU_SMTP_PASSWORD` | *任意、`notifier` のみ*（環境変数のみ。未設定の場合は認証なしで送信します） |
+| — | `GURU_TELEGRAM_BOT_TOKEN` | *任意、`notifier` のみ*（環境変数のみ。未設定の場合は Telegram を無効にします） |
 
 オペレーターが調整できるそれ以外の設定 — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、
 更新ウィンドウ、各定期ジョブの実行頻度 — は、環境変数ではなくデータベースに保存されます。
 [モジュール設定](#モジュール設定)を参照してください。
 
-`--mode` は `dashboard_grpc`、`workers_grpc`、`consumer`、`cron` を受け付けます。ブローカー URI は
+`--mode` は `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier`、`cron` を受け付けます。ブローカー URI は
 `amqp://guru:guru@127.0.0.1:5672/` のような形式で、末尾の `/` がデフォルトの vhost を選択します。ブローカーは
 `cron` を含む**すべて**のモードで必須です。定期処理はメッセージとして publish されるため、ブローカーが停止すると、
 復旧するまで導出・liveness・証明書更新が止まります。
 
-Redis は、データベース接続を開く 3 つのモードで必須であり、その理由も同じ種類のものです。これは
+`notifier` は[通知](/ja/features/notifications/)の配信側で、インスタンスはちょうど 1 つだけです。これは
+PostgreSQL のアドバイザリロックで強制されます。起動時に `notify` 設定を読み、必要とするのはデータベースと
+ブローカーだけです — `GURU_MASTER_KEY`（何も復号しません）も `REDIS_URL`（ライブイベントを publish しません）も
+受け取りません。このモードが使う 2 つのチャンネルのシークレットは、上の表にある環境変数です。
+
+Redis は、提供と導出を行う 3 つのモードで必須であり、その理由も同じ種類のものです。これは
 オペレーター API の `Watch*` ストリームを支えるライブバスです。URL は `redis://127.0.0.1:6379/` のような
 形式です。すべての変更はチャンネル `guru:orchestration:live` にイベントを 1 件 publish し、各
 `dashboard_grpc` レプリカはこれを一度だけ subscribe します。そのため、あるレプリカに対して行われた編集は、
@@ -47,11 +54,11 @@ Redis は、データベース接続を開く 3 つのモードで必須であ�
 `GURU_MASTER_KEY` は保存時のすべてのシークレット — DNS プロバイダーの API トークン、ACME アカウントキー、
 証明書と CA の秘密鍵 — を暗号化するもので、シークレットを読み取る 3 つのモード
 `dashboard_grpc`、`workers_grpc`、`consumer` では必須です。`cron` はシークレットに触れず、このキーも読みません。
-これをフラグにしていないのは意図的です。argv はプロセス一覧から見えてしまいます。キーを失うと、すべての
-DNS プロバイダートークンを再入力し、すべての証明書を再発行することになります。また、キーをその場で変更する
-ことはサポートされていません。
+`notifier` も同様です。これをフラグにしていないのは意図的です。argv はプロセス一覧から見えてしまいます。キーを
+失うと、すべての DNS プロバイダートークンを再入力し、すべての証明書を再発行することになります。また、キーを
+その場で変更することはサポートされていません。
 
-`GURU_DATABASE_URL` が必要なのは、接続を開く 3 つのモードだけです。`cron` はこれを無視し、データベース URL を
+`GURU_DATABASE_URL` が必要なのは、接続を開く 4 つのモードだけです。`cron` はこれを無視し、データベース URL を
 まったく持たずに起動します。URL がなければ起動を拒む時計は、使われないだけのデータベース依存を抱えることに
 なるからです。接続を開くモードでは、プールが最大 `GURU_DB_POOL_SIZE` 本の接続を保持し、すべての
 ステートメントはサーバー側で `GURU_DB_STATEMENT_TIMEOUT_MS` に制限されます。これを超えたステートメントは
@@ -406,11 +413,12 @@ balance は生きているメンバーに重みに比例して接続を振り分
 オペレーターが調整できる設定はデータベースに置かれ、キーごとに `app_config` の 1 行が設定全体を JSON
 ドキュメントとして保持します。データベースが唯一の真実の源で、キャッシュも二重のコピーもありません。そのため、
 フリート内のすべての `guru-master` は環境変数を揃えなくても同一の設定で動作し、変更には再デプロイではなく
-再起動だけが必要です。現在のキーは 2 つです:
+再起動だけが必要です。現在のキーは 3 つです:
 
 | キー | 構造体 | 内容 |
 |---|---|---|
 | `auth` | `auth::config::AuthConfig` | `session_idle_ttl_secs` |
+| `notify` | `notify::config::NotifyConfig` | `smtp_host`（デフォルトは空で、その場合メールは完全に無効になります）、`smtp_port`（587）、`smtp_starttls`（`true`。`false` はプレーンな SMTP で話すため、localhost のリレーやテスト用のシンクにだけ使います）、`smtp_username`（空の場合は認証なしで送信します）、`smtp_from`（`guru <noreply@example.com>`）、`telegram_api_base`（`https://api.telegram.org`）、`delivery_attempts`（3）、`delivery_retry_delay_secs`（5）、`default_language`（`en`。`en`、`ja`、`zh_cn` のいずれかで、言語を指定していない設定行がどの言語でレンダリングされるかを決めます）。SMTP のパスワードとボットトークンはここには**ありません**。これらは `notifier` の `GURU_SMTP_PASSWORD` と `GURU_TELEGRAM_BOT_TOKEN` です。このドキュメントはすべての Admin が読めるからです |
 | `orchestration` | `orchestration::config::OrchestrationConfig` | `health_report_interval_secs`、`health_offline_after_intervals`、`degraded_grace_secs`、`server_health_ttl_secs`、`pod_health_ttl_secs`、`default_acme_directory`、`acme_renew_before_secs`、`acme_retry_after_secs`、`relay_cert_valid_secs`、`relay_cert_renew_before_secs`、`sweep_interval_secs`、`liveness_interval_secs`、`health_retention_interval_secs`、`acme_interval_secs`、`relay_rotation_interval_secs`、`stream_keepalive_secs`（デフォルトは `15`: アイドル状態の `Watch*` ストリームが空のキープアライブを送り、そのストリームを開いたセッションを再確認する間隔です。`:50051` の手前にプロキシがある場合は、そのアイドルタイムアウトより短くしてください）、`trust_proxy_address_headers`（デフォルトは `true`: ワーカー API は登録元のアドレスとして `x-real-ip` または `x-forwarded-for` の最初のホップを記録します。ドキュメント化されたプロキシを経由せずに `:50052` へ到達できる場合は無効にしてください。そうでなければワーカーが偽装できてしまいます）、`country_lookup_url`（デフォルトは `https://api.country.is/{ip}`: サーバーの国旗のために IPv4 アドレスの国を調べる先で、`{ip}` がアドレスに置き換わります。応答は 2 文字の `country` フィールドを持つ JSON オブジェクトでも 2 文字だけでもよいので、`https://get.geojs.io/v1/ip/country/{ip}` も使えます。空にすると照会しません）、`country_lookup_interval_secs`（デフォルトは 60）、`country_lookup_retry_after_secs`（デフォルトは 3600: 失敗した照会の後、同じアドレスを再び調べるまでの時間） |
 
 `manage-tool db migrate` の後に `manage-tool config seed` を実行するとデフォルト値が書き込まれ、
@@ -432,17 +440,18 @@ manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
 ```
 
-同じ 2 つのドキュメントは、ダッシュボードからも参照・置き換えできます。**Admin**（そして Admin だけです —
+3 つのドキュメントはいずれも、ダッシュボードからも参照・置き換えできます。**Admin**（そして Admin だけです —
 他のロールはこの権限を持たず、API キーが持つこともありません）は、保存されているとおりの行、seed が
 書き込むはずのペイロード、そしてドキュメント全体を置き換えるフォームを見られます。検証は
 `manage-tool config set` とまったく同じなので、形の違うペイロードは拒否され、行は以前の内容を保ちます。
 ダッシュボードからの保存もライブリロードではありません。新しい値を反映するには**`guru-master` を再起動**
 してください。
 
-データベースを使う 3 つのモード — `dashboard_grpc`、`workers_grpc`、`consumer` — は起動時に両方のキーを
-一度だけ読み、その値を各サービスへ渡します。ライブリロードはありません。`cron` はデータベース接続を開かず、
-どちらのキーも読みません。実行シグナルを publish するだけで、それを受け取った consumer が保存された
-間隔を適用します。seed されていない環境ではデフォルト値で動作します。デシリアライズできない行はキー名を
+データベースを使う 4 つのモード — `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` — は起動時に、
+自分が必要とするキーを一度だけ読み、その値を各サービスへ渡します。ライブリロードはありません。`cron` は
+データベース接続を開かず、どのキーも読みません。実行シグナルを publish するだけで、それを受け取った
+consumer が保存された間隔を適用します。seed されていない環境ではデフォルト値で動作します。
+デシリアライズできない行はキー名を
 示して起動を失敗させます。これは意図的です。壊れたドキュメントをデフォルト値で代用すれば、オペレーターの
 設定全体を黙って入れ替えてしまい、たとえば ACME をステージングから本番のディレクトリへ移してしまう
 かもしれません。

@@ -3,11 +3,11 @@ import type { ConfigDocument } from 'app-protobuf/base/config';
 import * as v from 'valibot';
 import type { ConfigDocumentDto, ConfigKeyName } from '#lib/dto/config.js';
 import { callGrpc } from '#lib/server/errors.js';
-import { authClient, orchestrationClient } from '#lib/server/grpc.js';
+import { authClient, notifyClient, orchestrationClient } from '#lib/server/grpc.js';
 import { requireSessionId, sessionMetadata } from '#lib/server/session.js';
 import { command, query } from '$app/server';
 
-const keySchema = v.picklist(['auth', 'orchestration'] as const, 'config_key_invalid');
+const keySchema = v.picklist(['auth', 'notify', 'orchestration'] as const, 'config_key_invalid');
 /**
  * Only syntax is checked here — that answer needs no round trip. The document's
  * *shape* belongs to the control plane: it decodes the payload into the config
@@ -48,17 +48,22 @@ function toDto(key: ConfigKeyName, document: ConfigDocument | undefined): Config
 }
 
 /**
- * Both stored documents, in a stable order. Each key lives on its own module's
- * service, so the two reads are independent and run concurrently; each gets its
- * own error boundary so neither hides the other's status code.
+ * Every stored document, in a stable order. Each key lives on its own module's
+ * service, so the reads are independent and run concurrently; each gets its
+ * own error boundary so none hides another's status code.
  */
 export const listConfigDocuments = query(async (): Promise<ConfigDocumentDto[]> => {
 	const metadata = sessionMetadata(requireSessionId());
-	const [auth, orchestration] = await Promise.all([
+	const [auth, notify, orchestration] = await Promise.all([
 		callGrpc(() => authClient().getAuthConfig({}, { metadata })),
+		callGrpc(() => notifyClient().getNotifyConfig({}, { metadata })),
 		callGrpc(() => orchestrationClient().getOrchestrationConfig({}, { metadata }))
 	]);
-	return [toDto('auth', auth.config), toDto('orchestration', orchestration.config)];
+	return [
+		toDto('auth', auth.config),
+		toDto('notify', notify.config),
+		toDto('orchestration', orchestration.config)
+	];
 });
 
 /** Replaces the whole document; the reply is the control plane's fresh read. */
@@ -73,6 +78,11 @@ export const saveConfigDocument = command(
 				saved = toDto('auth', reply.config);
 				break;
 			}
+			case 'notify': {
+				const reply = await callGrpc(() => notifyClient().setNotifyConfig({ json }, { metadata }));
+				saved = toDto('notify', reply.config);
+				break;
+			}
 			case 'orchestration': {
 				const reply = await callGrpc(() =>
 					orchestrationClient().setOrchestrationConfig({ json }, { metadata })
@@ -81,7 +91,7 @@ export const saveConfigDocument = command(
 				break;
 			}
 			default: {
-				// Exhaustive on purpose: a third key fails to assign to `never`
+				// Exhaustive on purpose: a fourth key fails to assign to `never`
 				// here, so it cannot be added without wiring its typed RPC pair.
 				const unhandled: never = key;
 				error(500, {

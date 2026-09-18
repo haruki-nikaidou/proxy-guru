@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notify_account_setting\n             (account, canvas, language, events, email_enabled, telegram_chat)\n         VALUES ($1, $2, 'zh_cn', ARRAY['server_offline'], true, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01fdc98b0967282543788504066af299fc71975c45ee0fb2dfd5df388dd401a1"
+}

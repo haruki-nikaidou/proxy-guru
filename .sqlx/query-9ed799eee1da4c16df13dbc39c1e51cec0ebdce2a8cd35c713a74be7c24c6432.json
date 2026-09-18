@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notify_canvas_setting (canvas, language, events, emails, telegram_chats)\nVALUES ($1, $2, $3, $4, $5)\nON CONFLICT (canvas) DO UPDATE\n    SET language = EXCLUDED.language,\n        events = EXCLUDED.events,\n        emails = EXCLUDED.emails,\n        telegram_chats = EXCLUDED.telegram_chats\nRETURNING canvas AS \"canvas: CanvasId\", language AS \"language: Language\",\n          events AS \"events: Vec<NoticeKind>\", emails, telegram_chats\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "canvas: CanvasId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_canvas_setting",
+            "name": "canvas"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "language: Language",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_canvas_setting",
+            "name": "language"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "events: Vec<NoticeKind>",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_canvas_setting",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "emails",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_canvas_setting",
+            "name": "emails"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "telegram_chats",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_canvas_setting",
+            "name": "telegram_chats"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9ed799eee1da4c16df13dbc39c1e51cec0ebdce2a8cd35c713a74be7c24c6432"
+}

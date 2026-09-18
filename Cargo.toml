@@ -95,6 +95,18 @@ smallvec = { version = "1.14.0", features = [
 
 # External tools
 reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "zstd", "deflate"] }
+# SMTP, for the notification module. rustls with the workspace's own provider;
+# no native-tls, and no default cert store beyond `webpki-roots`.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "hostname",
+    "pool",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls",
+    "aws-lc-rs",
+    "webpki-roots",
+] }
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # Auth & Security

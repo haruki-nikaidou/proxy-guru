@@ -69,7 +69,7 @@ Business logic lives in `modules/`, one crate per feature:
 |---|---|
 | `auth` | Accounts, sessions, API keys, RBAC |
 | `orchestration` | Canvases, servers and the pod graph; graph checks, config derivation, worker rollout |
-| `notify` | Notification module — scaffolded from `base`, not implemented yet |
+| `notify` | Notification settings per workspace and per account; email and Telegram delivery of health changes ([Notifications](/features/notifications/)) |
 | `base` | Shared foundations and the layout every module mirrors |
 
 ## Stack

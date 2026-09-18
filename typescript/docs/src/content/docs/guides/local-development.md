@@ -108,11 +108,28 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
   --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
 ```
 
-`workers_grpc` is the fourth mode — the worker API plus the config-view poller — and takes exactly
+Notifications are delivered by their own mode, of which there is exactly one instance. It needs
+neither the master key nor Redis, and it only does something once a canvas or an account has
+notification settings ([Notifications](/features/notifications/)):
+
+```sh
+env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
+  --mode notifier \
+  --database-url "$GURU_DATABASE_URL" \
+  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+```
+
+A second `notifier` refuses to start — `another notifier already holds the advisory lock; run
+exactly one` — which is the lock working, not a bug. For mail, point `notify`'s `smtp_host` at a
+local sink (`docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit`, then
+`manage-tool config set notify '{"smtp_host":"127.0.0.1","smtp_port":1025,"smtp_starttls":false}'`)
+and read what arrives at `http://127.0.0.1:8025`.
+
+`workers_grpc` is the fifth mode — the worker API plus the config-view poller — and takes exactly
 the same arguments as `dashboard_grpc`. Every mode needs the broker: with RabbitMQ down, nothing
 starts, and with `cron` or the `consumer` down, no periodic job happens. `--redis-url` (or
-`REDIS_URL`) is required by the three modes above that open a database connection, and unused by
-`cron`; without it they abort with
+`REDIS_URL`) is required by the three serving and deriving modes above, and unused by `cron` and
+`notifier`; without it they abort with
 `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/`. It
 is the live bus behind the operator API's `Watch*` streams, which the dashboard's canvas editor and
 health page follow: with Redis down, an open page stops updating (its *Live* badge stays green — that

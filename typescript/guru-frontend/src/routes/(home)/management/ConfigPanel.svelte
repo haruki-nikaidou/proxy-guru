@@ -19,13 +19,24 @@ import { errorText } from '#lib/i18n/codes.js';
 import { m } from '#lib/paraglide/messages.js';
 import { listConfigDocuments, saveConfigDocument } from './config.remote.js';
 
+function configDescription(key: ConfigKeyName): string {
+	switch (key) {
+		case 'auth':
+			return m.config_auth_description();
+		case 'notify':
+			return m.config_notify_description();
+		default:
+			return m.config_orchestration_description();
+	}
+}
+
 const documents = listConfigDocuments();
 
-// A two-item `ToggleGroup` rather than nested `Tabs`: this panel already sits
+// A three-item `ToggleGroup` rather than nested `Tabs`: this panel already sits
 // inside the management tab strip, so a second strip would read as another
 // level of page navigation, and each document needs the full width and a tall
-// editor — stacking both cards would bury the footer actions and mount two
-// editors for a document nobody is looking at.
+// editor — stacking the cards would bury the footer actions and mount editors
+// for documents nobody is looking at.
 let selected = $state<ConfigKeyName>('auth');
 
 /**
@@ -93,9 +104,7 @@ async function save() {
 					<Badge variant="secondary">{m.config_unsaved()}</Badge>
 				{/if}
 			</Card.Title>
-			<Card.Description>
-				{active.key === 'auth' ? m.config_auth_description() : m.config_orchestration_description()}
-			</Card.Description>
+			<Card.Description>{configDescription(active.key)}</Card.Description>
 			<Card.Action class="flex items-center gap-2">
 				<ToggleGroup.Root
 					type="single"
@@ -103,7 +112,7 @@ async function save() {
 					size="sm"
 					value={selected}
 					onValueChange={(next) => {
-						if (next === 'auth' || next === 'orchestration') selected = next;
+						if (next === 'auth' || next === 'notify' || next === 'orchestration') selected = next;
 					}}
 					aria-label={m.config_key_label()}
 				>

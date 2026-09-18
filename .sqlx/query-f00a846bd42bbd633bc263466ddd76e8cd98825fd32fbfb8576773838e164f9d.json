@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- One account's channels as they are in force for this canvas, whatever it\n-- subscribed to: the test notification's recipient. Same fallback as\n-- `list_personal_recipients.sql`; no row means no channel is set up.\nSELECT a.id AS \"account!: AccountId\",\n       s.language AS \"language!: Language\",\n       CASE WHEN s.email_enabled THEN a.email END AS \"email?\",\n       s.telegram_chat AS \"telegram_chat?\"\nFROM auth_account a\nJOIN LATERAL (\n    SELECT language, email_enabled, telegram_chat\n    FROM notify_account_setting\n    WHERE account = a.id AND canvas = $2\n    UNION ALL\n    SELECT language, email_enabled, telegram_chat\n    FROM notify_account_default\n    WHERE account = a.id\n      AND NOT EXISTS (\n          SELECT 1 FROM notify_account_setting\n          WHERE account = a.id AND canvas = $2\n      )\n) s ON true\nWHERE a.id = $1\n  AND (s.email_enabled OR s.telegram_chat IS NOT NULL)\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account!: AccountId",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth_account",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "language!: Language",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "email?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "telegram_chat?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f00a846bd42bbd633bc263466ddd76e8cd98825fd32fbfb8576773838e164f9d"
+}
