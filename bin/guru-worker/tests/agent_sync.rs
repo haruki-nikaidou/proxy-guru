@@ -24,7 +24,7 @@ use guru_worker_config::{
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::CanvasUiPosition;
-use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
+use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget, IpFamily};
 use orchestration::entities::db::exit::{ExitEntity, ExitId};
 use orchestration::entities::db::health::{ListServerHealthHistory, ServerHealthStatus};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress};
@@ -311,6 +311,7 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
         target: EdgeTarget::Exit(exit.id.clone()),
         override_ip: None,
         override_port: None,
+        ip_family: IpFamily::Auto,
     };
     let pod = PodEntity {
         id: pod_id,

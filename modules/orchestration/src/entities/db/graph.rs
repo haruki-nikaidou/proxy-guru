@@ -7,7 +7,7 @@ use crate::entities::db::canvas::{
     CanvasEntity, CanvasFence, CanvasId, CanvasRow, CanvasUiPosition, SNAPSHOT_READ,
 };
 use crate::entities::db::dns::DnsProviderId;
-use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeRow, insert_edge, update_edge};
+use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeRow, IpFamily, insert_edge, update_edge};
 use crate::entities::db::exit::{ExitEntity, ExitId, ExitRow, insert_exit, update_exit};
 use crate::entities::db::fence;
 use crate::entities::db::group::{

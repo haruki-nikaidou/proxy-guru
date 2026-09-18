@@ -1,6 +1,6 @@
 //! What [`crate::check`] and [`crate::compile`] report.
 
-use crate::model::{EdgeId, ExitId, PodId, ServerId};
+use crate::model::{EdgeId, ExitId, IpFamily, PodId, ServerId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -82,6 +82,11 @@ pub enum Problem {
     RelayPodNotDialed,
     /// An exit no edge leads to.
     ExitNotReached,
+    /// Edges insist on IPv4 or IPv6 and their target cannot be dialed over it:
+    /// its server has no address of that family, or the pod listens on the
+    /// other family only. A warning, since a server's addresses change without
+    /// anyone editing the graph; the pods dialing keep what they run.
+    DialFamilyUnreachable,
 }
 
 impl Problem {
@@ -90,7 +95,8 @@ impl Problem {
             Problem::SingleTierFailover
             | Problem::PodWithoutEdges
             | Problem::RelayPodNotDialed
-            | Problem::ExitNotReached => Severity::Warning,
+            | Problem::ExitNotReached
+            | Problem::DialFamilyUnreachable => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -170,12 +176,13 @@ pub enum Invalid {
     InternalCaMissing,
     /// A TLS or QUIC relay listener whose leaf certificate is not issued.
     RelayCertificateMissing,
-    /// An edge leads to a pod on a server with no address to dial, and neither
-    /// the edge nor the pod names one.
+    /// An edge leads to a pod on a server with no address of the family the
+    /// edge dials over, and neither the edge nor the pod names one.
     TargetWithoutAddress {
         edge: EdgeId,
         pod: PodId,
         server: ServerId,
+        family: IpFamily,
     },
     /// The entry failed the worker config's own validation.
     Rejected { reason: String },

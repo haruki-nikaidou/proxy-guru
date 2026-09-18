@@ -31,6 +31,7 @@ import type {
 import {
 	toAddressSource,
 	toIngressKind,
+	toIpFamily,
 	toIpv6,
 	toLogLevel,
 	toProxyVersion,
@@ -160,7 +161,8 @@ export const toEdge = (edge: ProtoEdge): Edge | null => {
 		sourcePodId: edge.sourcePodId,
 		target,
 		overrideIp: edge.overrideIp === '' ? null : edge.overrideIp,
-		overridePort: edge.overridePort === 0 ? null : edge.overridePort
+		overridePort: edge.overridePort === 0 ? null : edge.overridePort,
+		ipFamily: toIpFamily(edge.ipFamily)
 	};
 };
 

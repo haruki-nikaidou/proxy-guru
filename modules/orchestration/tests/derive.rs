@@ -13,6 +13,7 @@ use guru_worker_config::table::{Policy, Target};
 use guru_worker_config::{Config, ForwardingTo, LoadBalanceStrategy, To};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
+use orchestration::entities::db::edge::IpFamily;
 use orchestration::entities::db::graph::{GraphRows, LoadCanvasGraph};
 use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{QuicCongestion, ServerId, ServerQuic};
@@ -298,6 +299,78 @@ async fn a_pod_without_its_material_is_invalid_alone(pool: sqlx::PgPool) -> Test
     let aws = &configs[&f.aws];
     assert!(aws.invalid.is_empty(), "a plain TCP relay needs no CA");
     assert_eq!(aws.config.forwardings.len(), 1);
+    Ok(())
+}
+
+/// An edge dials the far server's address of the family it asks for: its IPv6
+/// address when it insists on IPv6, its IPv4 address on auto. A family the far
+/// server lacks is a warning on the graph and leaves the pod dialing over it
+/// invalid, saying what is missing.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_edge_dials_the_address_family_it_asks_for(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let c = canvas(&w.db, "prod").await?;
+    let tokyo = server(&w.db, &c, "tokyo").await?;
+    let osaka = server_dual(&w.db, &c, "osaka", "198.51.100.10", "2001:db8::10").await?;
+    let kyoto = server_at(&w.db, &c, "kyoto", "192.0.2.30").await?;
+    let v6 = client(&c, &tokyo, "v6", 443, None);
+    let auto = client(&c, &tokyo, "auto", 444, None);
+    let lacking = client(&c, &tokyo, "lacking", 445, None);
+    let osaka_hop = pod(&c, &osaka, "osaka-hop", 9443, PodIngress::RelayTcp);
+    let kyoto_hop = pod(&c, &kyoto, "kyoto-hop", 9443, PodIngress::RelayTcp);
+    let origin = exit(&c, "origin", "10.0.0.5:8080");
+    let mut over_v6 = edge_to_pod("over-v6", &v6, &osaka_hop);
+    over_v6.ip_family = IpFamily::V6;
+    let over_auto = edge_to_pod("over-auto", &auto, &osaka_hop);
+    let mut lacks_v6 = edge_to_pod("lacks-v6", &lacking, &kyoto_hop);
+    lacks_v6.ip_family = IpFamily::V6;
+    let out_osaka = edge_to_exit("out-osaka", &osaka_hop, &origin);
+    let out_kyoto = edge_to_exit("out-kyoto", &kyoto_hop, &origin);
+    let outcome = w
+        .apply(
+            &c,
+            GraphChange {
+                put_pods: vec![
+                    routed(v6, via(&over_v6)),
+                    routed(auto, via(&over_auto)),
+                    routed(lacking, via(&lacks_v6)),
+                    routed(osaka_hop, via(&out_osaka)),
+                    routed(kyoto_hop, via(&out_kyoto)),
+                ],
+                put_exits: vec![origin],
+                put_edges: vec![over_v6, over_auto, lacks_v6, out_osaka, out_kyoto],
+                ..GraphChange::default()
+            },
+        )
+        .await?;
+    assert!(
+        outcome
+            .diagnostics
+            .iter()
+            .any(|d| d.problem == "dial_family_unreachable" && !d.error),
+        "{:?}",
+        outcome.diagnostics
+    );
+
+    let graph =
+        w.db.process(LoadCanvasGraph {
+            canvas: c.id.clone(),
+        })
+        .await?;
+    let configs = derived(&graph, &issued());
+    let tokyo = &configs[&tokyo.id];
+    let toml = tokyo.config.to_toml_string().unwrap();
+    assert!(toml.contains("[2001:db8::10]:9443"), "{toml}");
+    assert!(toml.contains("198.51.100.10:9443"), "{toml}");
+    let [invalid] = tokyo.invalid.as_slice() else {
+        panic!("{:?}", tokyo.invalid);
+    };
+    assert_eq!(invalid.pod, pod_id("lacking"));
+    assert!(
+        invalid.error.contains("has no IPv6 address to dial"),
+        "{}",
+        invalid.error
+    );
     Ok(())
 }
 

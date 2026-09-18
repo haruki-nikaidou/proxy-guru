@@ -99,8 +99,9 @@ fn json(text: &str) -> serde_json::Value {
 }
 
 /// A whole graph crosses the wire and comes back as it was sent: the ids the
-/// client chose, the route and group documents, edge overrides, and the port
-/// picked for a pod put with port 0. A dry run writes nothing.
+/// client chose, the route and group documents, edge overrides and IP
+/// families (an unspecified one comes back as what it means, auto), and the
+/// port picked for a pod put with port 0. A dry run writes nothing.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
@@ -155,7 +156,8 @@ async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult 
     let mut near = edge("near", "entry", pb::edge::Target::TargetPodId(key("hop")));
     near.override_ip = "hop.example.net".to_string();
     near.override_port = 19443;
-    let far = edge("far", "entry", pb::edge::Target::TargetPodId(key("hop")));
+    let mut far = edge("far", "entry", pb::edge::Target::TargetPodId(key("hop")));
+    far.ip_family = pb::IpFamily::V6.into();
     let out = edge("out", "hop", pb::edge::Target::TargetExitId(key("origin")));
     let group = pb::Group {
         id: key("splitter"),
@@ -262,6 +264,11 @@ async fn a_graph_round_trips_through_the_wire(pool: sqlx::PgPool) -> TestResult 
     let mut edges = graph.edges.clone();
     edges.sort_by(|a, b| a.id.cmp(&b.id));
     let mut sent = vec![near, far, out];
+    for edge in &mut sent {
+        if edge.ip_family == i32::from(pb::IpFamily::Unspecified) {
+            edge.ip_family = pb::IpFamily::Auto.into();
+        }
+    }
     sent.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(edges, sent);
     assert_eq!(graph.groups.len(), 1);
@@ -316,6 +323,20 @@ async fn a_bad_graph_change_is_refused_with_what_is_wrong(pool: sqlx::PgPool) ->
     })
     .await
     .expect_err("an edge needs a target");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    let err = apply(pb::GraphChange {
+        put_edges: vec![pb::Edge {
+            id: key("odd"),
+            source_pod_id: key("entry"),
+            target: Some(pb::edge::Target::TargetExitId(key("origin"))),
+            ip_family: 99,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .await
+    .expect_err("an IP family nobody defined");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 
     // A route that names an edge the pod does not have, and an id that is not a

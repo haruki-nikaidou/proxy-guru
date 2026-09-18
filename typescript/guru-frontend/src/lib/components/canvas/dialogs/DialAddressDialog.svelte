@@ -1,17 +1,21 @@
 <script lang="ts">
-import { type Edge, putEdge } from 'guru-graph';
+import { type Edge, type IpFamily, putEdge } from 'guru-graph';
 import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import * as Dialog from '#lib/components/ui/dialog/index.js';
 import * as Field from '#lib/components/ui/field/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
+import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
+import { IP_FAMILY_OPTIONS, ipFamilyLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 
 /**
  * How one edge dials the pod it leads to: the pod's own address and port
  * unless overridden here — a second address of the same host, say, which is
- * what parallel edges between two pods are for. Exits are dialed as they say.
+ * what parallel edges between two pods are for — and, without an override
+ * address, which IP version of the server's addresses it dials. Exits are
+ * dialed as they say.
  */
 let { edge = $bindable(null) }: { edge?: Edge | null } = $props();
 
@@ -20,6 +24,7 @@ let address = $state('');
 // A text field, not `type="number"`: Svelte binds a number input as a number,
 // and as null for anything it cannot parse (`80e`), which would read as no override.
 let port = $state('');
+let ipFamily = $state<IpFamily>('auto');
 let pending = $state(false);
 
 let seeded: Edge | null = null;
@@ -29,6 +34,7 @@ $effect(() => {
 	if (!edge) return;
 	address = edge.overrideIp ?? '';
 	port = edge.overridePort === null ? '' : String(edge.overridePort);
+	ipFamily = edge.ipFamily;
 });
 
 const portValue = $derived(port.trim() === '' ? null : Number(port));
@@ -43,7 +49,8 @@ async function save() {
 	const next: Edge = {
 		...current,
 		overrideIp: address.trim() === '' ? null : address.trim(),
-		overridePort: portValue
+		overridePort: portValue,
+		ipFamily
 	};
 	const written = await editor.commit(() => putEdge(editor.graph, next), m.editor_saved());
 	pending = false;
@@ -76,6 +83,24 @@ async function save() {
 					bind:value={port}
 					aria-invalid={!portValid}
 				/>
+			</Field.Field>
+			<Field.Field>
+				<Field.FieldLabel for="dial-ip-family">{m.editor_ip_family()}</Field.FieldLabel>
+				<Select.Root
+					type="single"
+					value={ipFamily}
+					onValueChange={next => (ipFamily = next as IpFamily)}
+				>
+					<Select.Trigger id="dial-ip-family">{ipFamilyLabel(ipFamily)}</Select.Trigger>
+					<Select.Content>
+						<Select.Group>
+							{#each IP_FAMILY_OPTIONS as option (option)}
+								<Select.Item value={option} label={ipFamilyLabel(option)}>{ipFamilyLabel(option)}</Select.Item>
+							{/each}
+						</Select.Group>
+					</Select.Content>
+				</Select.Root>
+				<Field.FieldDescription>{m.editor_ip_family_edge_hint()}</Field.FieldDescription>
 			</Field.Field>
 		</Field.FieldGroup>
 		<Dialog.Footer class="mt-6">

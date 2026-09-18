@@ -19,6 +19,7 @@ import type {
 	Group,
 	Id,
 	Ingress,
+	IpFamily,
 	Pod,
 	RelayKind,
 	Route,
@@ -169,7 +170,8 @@ class Draft<S extends Server> {
 			sourcePodId: source.id,
 			target,
 			overrideIp: null,
-			overridePort: null
+			overridePort: null,
+			ipFamily: 'auto'
 		};
 		this.putEdge(edge);
 		const current = this.pod(source.id);
@@ -326,13 +328,15 @@ function cloneEdge<S extends Server>(draft: Draft<S>, pod: Pod, template: Edge):
 	if (!far) throw new EditError('pod_not_found');
 	const landing = draft.relayPod(far.serverId, far.canvasId, far.ingress, pod.name);
 	// The new pod is on the template's server, so an override address still
-	// reaches it; it listens on a port of its own, so an override port would not.
+	// reaches it, and the address family it was dialed over is still there; it
+	// listens on a port of its own, so an override port would not.
 	const edge: Edge = {
 		id: newId(),
 		sourcePodId: pod.id,
 		target: { pod: landing.id },
 		overrideIp: template.overrideIp,
-		overridePort: null
+		overridePort: null,
+		ipFamily: template.ipFamily
 	};
 	draft.putEdge(edge);
 	return edge;
@@ -573,7 +577,8 @@ function addWays<S extends Server>(
 				sourcePodId: podId,
 				target: edgeTarget,
 				overrideIp: null,
-				overridePort: null
+				overridePort: null,
+				ipFamily: 'auto'
 			};
 			draft.putEdge(edge);
 			return { path, member: { edge: edge.id } };
@@ -742,6 +747,25 @@ export function putExit<S extends Server>(graph: Graph<S>, exit: Exit): GraphCha
 export function putEdge<S extends Server>(graph: Graph<S>, edge: Edge): GraphChange {
 	const draft = new Draft(graph);
 	draft.putEdge(edge);
+	return draft.change();
+}
+
+/**
+ * Every edge of `edgeIds` that leads to a pod dials over `family`: a bus's
+ * edges at once. Edges into exits have no family to choose, and edges already
+ * on it are left alone, so the change holds only what moves.
+ */
+export function setIpFamily<S extends Server>(
+	graph: Graph<S>,
+	edgeIds: Iterable<Id>,
+	family: IpFamily
+): GraphChange {
+	const draft = new Draft(graph);
+	for (const id of edgeIds) {
+		const edge = draft.edges.get(id);
+		if (!edge || edgeTargetPod(edge) === null || edge.ipFamily === family) continue;
+		draft.putEdge({ ...edge, ipFamily: family });
+	}
 	return draft.change();
 }
 

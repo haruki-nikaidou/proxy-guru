@@ -7,7 +7,8 @@
 use crate::entities::db::exit::ExitId;
 use crate::entities::db::pod::PodId;
 use base::db::Error;
-use db_types::table_record;
+use db_types::{table_record, text_enum};
+use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 
 table_record!(EdgeId, "orchestration_edge");
@@ -22,12 +23,42 @@ pub struct EdgeEntity {
     pub override_ip: Option<String>,
     /// Dial this port instead of the target pod's.
     pub override_port: Option<u16>,
+    /// Which of the target pod's addresses to dial when `override_ip` names
+    /// none. Only meaningful toward a pod.
+    pub ip_family: IpFamily,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EdgeTarget {
     Pod(PodId),
     Exit(ExitId),
+}
+
+/// The stored spelling of [`guru_topology::IpFamily`]: which address family an
+/// edge dials the pod it leads to over.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IpFamily {
+    /// The server's effective address, IPv4 when it has one.
+    #[default]
+    Auto,
+    V4,
+    V6,
+}
+text_enum!(IpFamily {
+    Auto => "auto",
+    V4 => "v4",
+    V6 => "v6",
+});
+
+impl From<IpFamily> for guru_topology::IpFamily {
+    fn from(value: IpFamily) -> Self {
+        match value {
+            IpFamily::Auto => guru_topology::IpFamily::Auto,
+            IpFamily::V4 => guru_topology::IpFamily::V4,
+            IpFamily::V6 => guru_topology::IpFamily::V6,
+        }
+    }
 }
 
 /// An `orchestration_edge` row, one field per column: what the `query_as!`
@@ -40,6 +71,7 @@ pub(crate) struct EdgeRow {
     pub target_exit: Option<ExitId>,
     pub override_ip: Option<String>,
     pub override_port: Option<i32>,
+    pub ip_family: IpFamily,
 }
 
 impl TryFrom<EdgeRow> for EdgeEntity {
@@ -71,6 +103,7 @@ impl TryFrom<EdgeRow> for EdgeEntity {
             target,
             override_ip: row.override_ip,
             override_port,
+            ip_family: row.ip_family,
             id,
         })
     }
@@ -83,14 +116,15 @@ pub(crate) async fn insert_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> R
     };
     sqlx::query!(
         "INSERT INTO orchestration_edge
-             (id, source_pod, target_pod, target_exit, override_ip, override_port)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, source_pod, target_pod, target_exit, override_ip, override_port, ip_family)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
         edge.id as _,
         edge.source as _,
         pod as _,
         exit as _,
         edge.override_ip,
-        edge.override_port.map(i32::from)
+        edge.override_port.map(i32::from),
+        edge.ip_family as _
     )
     .execute(conn)
     .await?;
@@ -101,12 +135,26 @@ pub(crate) async fn insert_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> R
 /// edge is deleting it and drawing another.
 pub(crate) async fn update_edge(conn: &mut PgConnection, edge: &EdgeEntity) -> Result<(), Error> {
     sqlx::query!(
-        "UPDATE orchestration_edge SET override_ip = $2, override_port = $3 WHERE id = $1",
+        "UPDATE orchestration_edge
+         SET override_ip = $2, override_port = $3, ip_family = $4
+         WHERE id = $1",
         edge.id as _,
         edge.override_ip,
-        edge.override_port.map(i32::from)
+        edge.override_port.map(i32::from),
+        edge.ip_family as _
     )
     .execute(conn)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_spellings_match_serde() {
+        db_types::assert_text_enum_matches_serde!(IpFamily);
+    }
 }

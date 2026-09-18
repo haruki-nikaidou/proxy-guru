@@ -3,11 +3,12 @@
 
 use guru_topology::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Compiled, Edge, EdgeId,
-    EdgeTarget, Exit, ExitId, Graph, Ingress, Pod, PodId, Problem, Route, Server, ServerId,
-    ServerQuic, Sticky, Weighted, check, compile,
+    EdgeTarget, Exit, ExitId, Graph, Ingress, IpFamily, Pod, PodId, Problem, Route, Server,
+    ServerId, ServerQuic, Sticky, Weighted, check, compile,
 };
 use guru_worker_config::{Config, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, TcpProxyProtocol};
 use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// SplitMix64: small, fast and the same everywhere.
 struct Rng(u64);
@@ -68,12 +69,18 @@ fn random_graph(seed: u64, mode: Mode) -> (Graph, Certificates) {
 
     let server_count = 1 + rng.below(4);
     for i in 0..server_count {
+        // Every other server has an IPv6 address too; drawn without the rng, so
+        // the seeds keep the graphs they had.
+        let v4: Option<Ipv4Addr> = rng
+            .chance(85)
+            .then(|| format!("10.0.{i}.1").parse().unwrap());
+        let v6: Option<Ipv6Addr> = (i % 2 == 0).then(|| format!("fd00::{i}:1").parse().unwrap());
         graph.servers.push(Server {
             id: ServerId::new(format!("s{i}")),
             name: format!("server {i}"),
-            dial_address: rng
-                .chance(85)
-                .then(|| format!("10.0.{i}.1").parse().unwrap()),
+            dial_address: v4.map(IpAddr::V4).or(v6.map(IpAddr::V6)),
+            dial_v4: v4,
+            dial_v6: v6,
             quic: ServerQuic {
                 up_mbps: *rng.pick(&[0, 100, 500, 1000]),
                 down_mbps: *rng.pick(&[0, 100, 500, 1000]),
@@ -211,6 +218,12 @@ fn random_graph(seed: u64, mode: Mode) -> (Graph, Certificates) {
                 _ => None,
             },
             override_port: rng.chance(5).then_some(if plausible { 9000 } else { 0 }),
+            // Without the rng, like the servers' IPv6 addresses.
+            ip_family: match i % 5 {
+                0 => IpFamily::V6,
+                1 => IpFamily::V4,
+                _ => IpFamily::Auto,
+            },
         });
     }
 
@@ -421,6 +434,8 @@ fn deep_and_wide_graphs_stay_fast() {
         id: ServerId::new("s"),
         name: "s".to_string(),
         dial_address: Some("10.0.0.1".parse().unwrap()),
+        dial_v4: Some("10.0.0.1".parse().unwrap()),
+        dial_v6: None,
         quic: ServerQuic::default(),
         capabilities: Capabilities {
             route_table: true,
@@ -453,6 +468,7 @@ fn deep_and_wide_graphs_stay_fast() {
             },
             override_ip: None,
             override_port: None,
+            ip_family: IpFamily::Auto,
         });
         graph.pods.push(Pod {
             id: PodId::new(format!("p{i}")),

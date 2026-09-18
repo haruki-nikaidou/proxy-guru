@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "-- Every edge leaving a pod of the given canvases.\nSELECT e.id AS \"id: EdgeId\",\n       e.source_pod AS \"source_pod: PodId\",\n       e.target_pod AS \"target_pod: PodId\",\n       e.target_exit AS \"target_exit: ExitId\",\n       e.override_ip,\n       e.override_port\nFROM orchestration_edge e\nJOIN orchestration_pod p ON p.id = e.source_pod\nWHERE p.canvas = ANY($1)\nORDER BY e.id\n",
+  "query": "-- Every edge leaving a pod of the given canvases.\nSELECT e.id AS \"id: EdgeId\",\n       e.source_pod AS \"source_pod: PodId\",\n       e.target_pod AS \"target_pod: PodId\",\n       e.target_exit AS \"target_exit: ExitId\",\n       e.override_ip,\n       e.override_port,\n       e.ip_family AS \"ip_family: IpFamily\"\nFROM orchestration_edge e\nJOIN orchestration_pod p ON p.id = e.source_pod\nWHERE p.canvas = ANY($1)\nORDER BY e.id\n",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,17 @@
             "name": "override_port"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "ip_family: IpFamily",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orchestration_edge",
+            "name": "ip_family"
+          }
+        }
       }
     ],
     "parameters": {
@@ -81,8 +92,9 @@
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "f5cfd56596765ff9d76961eff6cb82689f851dddc98d99b79e87ceb7d2dd0547"
+  "hash": "3c9f3009f83c24b361abef4171aea050d023c041f80f8c7d15f8f2f2c0f085e3"
 }

@@ -8,12 +8,13 @@
 import {
 	AddressSource,
 	Ingress,
+	IpFamily,
 	Ipv6Resolve,
 	ProxyProtocolVersion,
 	QuicCongestion,
 	ServerHealthStatus
 } from 'app-protobuf/orchestration/orchestration';
-import type { IngressKind, ProxyVersion } from 'guru-graph';
+import type { IngressKind, IpFamily as IpFamilyName, ProxyVersion } from 'guru-graph';
 import type {
 	AddressSourceName,
 	Ipv6ResolveName,
@@ -78,6 +79,27 @@ export function fromIngressKind(value: IngressKind): Ingress {
 			return Ingress.RELAY_QUIC;
 		default:
 			return Ingress.CLIENT_RAW;
+	}
+}
+/** `UNSPECIFIED` is what an older control plane sends: the effective address. */
+export function toIpFamily(value: IpFamily): IpFamilyName {
+	switch (value) {
+		case IpFamily.V4:
+			return 'v4';
+		case IpFamily.V6:
+			return 'v6';
+		default:
+			return 'auto';
+	}
+}
+export function fromIpFamily(value: IpFamilyName): IpFamily {
+	switch (value) {
+		case 'v4':
+			return IpFamily.V4;
+		case 'v6':
+			return IpFamily.V6;
+		default:
+			return IpFamily.AUTO;
 	}
 }
 export function toQuicCongestion(value: QuicCongestion): QuicCongestionName {

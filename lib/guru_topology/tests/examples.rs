@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use guru_topology::{
-    CertificateKind, CertificateRef, EdgeId, Invalid, ListenProtocol, Listener, PodId, Problem,
-    Report, Route, ServerId, Subject, check, compile,
+    CertificateKind, CertificateRef, Diagnostic, EdgeId, Invalid, IpFamily, ListenProtocol,
+    Listener, PodId, Problem, Report, Route, ServerId, Severity, Subject, check, compile,
 };
 use guru_worker_config::table::{Policy, Target, Weighted};
 use guru_worker_config::{
@@ -917,6 +917,179 @@ fn weights_become_repeated_members_for_old_workers() {
         panic!("expected a group");
     };
     assert_eq!(group.strategy, LoadBalanceStrategy::IpHash);
+}
+
+// --- 10. The address family an edge dials over ------------------------------
+
+/// Client pod `p` on `s1` dials relay pod `q` on `s2` through `p-q`; `s2` has
+/// an IPv4 and an IPv6 address, and `q` exits to `x`.
+fn dual_stack() -> Fabric {
+    let mut f = Fabric::new();
+    f.server("s1", "198.51.100.1")
+        .server("s2", "192.0.2.10")
+        .addresses("s2", Some("192.0.2.10"), Some("2001:db8::10"))
+        .pod("p", "s1", 443, raw())
+        .pod("q", "s2", 40000, guru_topology::Ingress::RelayTcp)
+        .exit("x", "10.0.0.5:8080")
+        .edge("p-q", "p", "q")
+        .edge("q-x", "q", "x")
+        .route("p", leaf("p-q"))
+        .route("q", leaf("q-x"));
+    f
+}
+
+/// Where `p` dials `q`.
+fn dialed(f: &Fabric) -> Remote {
+    let compiled = f.compile();
+    relay_target(upstream(entry(table(&compiled, "s1"), "p"), "p-q"))
+        .destination
+        .clone()
+}
+
+fn family_warnings(f: &Fabric) -> Vec<Diagnostic> {
+    check(&f.graph)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.problem == Problem::DialFamilyUnreachable)
+        .collect()
+}
+
+#[test]
+fn an_edge_dials_the_address_family_it_asks_for() {
+    let mut f = dual_stack();
+    assert_eq!(
+        dialed(&f),
+        socket("192.0.2.10:40000"),
+        "auto dials the server's IPv4 address"
+    );
+    f.edge_mut("p-q").ip_family = IpFamily::V6;
+    assert_eq!(dialed(&f), socket("[2001:db8::10]:40000"));
+    f.edge_mut("p-q").ip_family = IpFamily::V4;
+    assert_eq!(dialed(&f), socket("192.0.2.10:40000"));
+    assert!(family_warnings(&f).is_empty());
+
+    f.addresses("s2", None, Some("2001:db8::10"));
+    f.edge_mut("p-q").ip_family = IpFamily::Auto;
+    assert_eq!(
+        dialed(&f),
+        socket("[2001:db8::10]:40000"),
+        "auto takes IPv6 when that is all the server has"
+    );
+}
+
+#[test]
+fn an_advertised_address_stands_in_for_its_own_family_only() {
+    let mut f = dual_stack();
+    f.pod_mut("q").advertise_ip = Some("10.8.0.2".to_string());
+    assert_eq!(dialed(&f), socket("10.8.0.2:40000"));
+    f.edge_mut("p-q").ip_family = IpFamily::V4;
+    assert_eq!(dialed(&f), socket("10.8.0.2:40000"));
+    f.edge_mut("p-q").ip_family = IpFamily::V6;
+    assert_eq!(
+        dialed(&f),
+        socket("[2001:db8::10]:40000"),
+        "an IPv4 advertisement does not stand in for the server's IPv6"
+    );
+    f.pod_mut("q").advertise_ip = Some("fd00::2".to_string());
+    assert_eq!(dialed(&f), socket("[fd00::2]:40000"));
+}
+
+#[test]
+fn an_override_address_wins_over_the_family() {
+    let mut f = dual_stack();
+    f.addresses("s2", Some("192.0.2.10"), None);
+    let edge = f.edge_mut("p-q");
+    edge.ip_family = IpFamily::V6;
+    edge.override_ip = Some("192.0.2.99".to_string());
+    assert_eq!(dialed(&f), socket("192.0.2.99:40000"));
+    assert!(family_warnings(&f).is_empty());
+}
+
+#[test]
+fn a_family_the_server_lacks_warns_and_invalidates_the_pods_dialing_over_it() {
+    let mut f = dual_stack();
+    f.addresses("s2", Some("192.0.2.10"), None)
+        .pod("p2", "s1", 444, raw())
+        .edge("p2-q", "p2", "q")
+        .route("p2", leaf("p2-q"));
+    f.edge_mut("p-q").ip_family = IpFamily::V6;
+    f.edge_mut("p2-q").ip_family = IpFamily::V6;
+
+    let report = check(&f.graph);
+    assert!(!report.has_errors(), "{report:#?}");
+    let [warning] = family_warnings(&f).try_into().unwrap();
+    assert_eq!(warning.severity(), Severity::Warning);
+    assert_eq!(
+        warning.subjects,
+        vec![
+            Subject::Server(ServerId::new("s2")),
+            Subject::Edge(EdgeId::new("p-q")),
+            Subject::Edge(EdgeId::new("p2-q")),
+        ]
+    );
+    assert_eq!(
+        warning.message,
+        "IPv6 edges from pods p, p2 cannot reach server s2: it has no IPv6 address"
+    );
+
+    let compiled = f.compile();
+    assert_eq!(compiled.warnings, report.diagnostics);
+    let s1 = &compiled.servers[&ServerId::new("s1")];
+    assert!(s1.forwardings.is_empty());
+    assert!(matches!(
+        &s1.invalid[0].reason,
+        Invalid::TargetWithoutAddress { pod, family: IpFamily::V6, .. } if pod.as_str() == "q"
+    ));
+    assert_eq!(
+        s1.invalid[0].message,
+        "pod p: pod q on server s2 has no IPv6 address to dial"
+    );
+}
+
+#[test]
+fn an_edge_on_auto_is_not_warned_about() {
+    let mut f = dual_stack();
+    f.addresses("s2", None, None);
+    assert!(family_warnings(&f).is_empty());
+    let compiled = f.compile();
+    let s1 = &compiled.servers[&ServerId::new("s1")];
+    assert!(matches!(
+        &s1.invalid[0].reason,
+        Invalid::TargetWithoutAddress {
+            family: IpFamily::Auto,
+            ..
+        }
+    ));
+    assert_eq!(
+        s1.invalid[0].message,
+        "pod p: pod q on server s2 has no address to dial"
+    );
+}
+
+#[test]
+fn a_listener_on_the_other_family_only_is_warned_about() {
+    let mut f = dual_stack();
+    f.edge_mut("p-q").ip_family = IpFamily::V6;
+    f.pod_mut("q").bind_ip = Some("0.0.0.0".to_string());
+    let [warning] = family_warnings(&f).try_into().unwrap();
+    assert_eq!(
+        warning.subjects,
+        vec![
+            Subject::Pod(PodId::new("q")),
+            Subject::Edge(EdgeId::new("p-q"))
+        ]
+    );
+    assert_eq!(
+        warning.message,
+        "IPv6 edges from pod p cannot reach pod q: it listens on 0.0.0.0 only"
+    );
+
+    f.pod_mut("q").bind_ip = Some("::".to_string());
+    assert!(family_warnings(&f).is_empty(), "`::` takes both families");
+    f.pod_mut("q").bind_ip = Some("2001:db8::10".to_string());
+    assert!(family_warnings(&f).is_empty());
+    f.edge_mut("p-q").ip_family = IpFamily::V4;
+    assert_eq!(family_warnings(&f).len(), 1);
 }
 
 // --- The stored form of a route ---------------------------------------------

@@ -18,6 +18,7 @@ import {
 	removeExits,
 	removePods,
 	removeSplitter,
+	setIpFamily,
 	setSplitterPolicy,
 	targetOf
 } from './edit.js';
@@ -173,6 +174,20 @@ describe('splitters', () => {
 			expect(edge.overrideIp).toBe('10.0.0.7');
 			expect(edge.overridePort).toBeNull();
 		}
+	});
+
+	test('a joining pod dials over the address family of the way it copies', () => {
+		const base = fanOut();
+		const graph: Graph = {
+			...base,
+			pods: [...base.pods, pod('ssh', 'mobile', 'client_raw')],
+			edges: base.edges.map(e =>
+				e.sourcePodId === 'web' || e.sourcePodId === 'api' ? { ...e, ipFamily: 'v6' } : e
+			)
+		};
+		const change = joinSplitter(graph, draw(graph, 'root'), 'ssh', splitterOf(graph).id);
+		expect(change.putEdges).toHaveLength(5);
+		expect(change.putEdges.every(edge => edge.ipFamily === 'v6')).toBe(true);
 	});
 
 	test('a member added to a splitter is added for every pod it stands for', () => {
@@ -630,5 +645,28 @@ describe('moving', () => {
 		const graph: Graph = { ...fanOut(), exits: [exit('exit-a', 'root', 7, 8), exit('exit-b')] };
 		const card = draw(graph, 'root').cards.find(c => c.id === 'exit:exit-a');
 		expect(card?.position).toEqual({ x: 7, y: 8 });
+	});
+});
+
+describe('the IP family of a bus', () => {
+	test('is set on every edge into a pod the bus carries, and only where it changes', () => {
+		const graph = fanOut();
+		const bus = draw(graph, 'root').buses.find(b => b.edges.includes('web>g1'));
+		if (!bus) throw new Error('no bus carries web>g1');
+		expect(bus.edges).toHaveLength(5);
+		const change = setIpFamily(graph, [...bus.edges, 'web-g1>out', 'missing'], 'v6');
+		expect(change.putEdges.map(e => e.id).sort()).toEqual([...bus.edges].sort());
+		expect(change.putEdges.every(e => e.ipFamily === 'v6')).toBe(true);
+		expect(change.putPods).toEqual([]);
+		const after = applied(graph, change);
+		expect(consistent(after)).toEqual([]);
+		expect(after.edges.find(e => e.id === 'web-g1>out')?.ipFamily).toBe('auto');
+		expect(setIpFamily(after, bus.edges, 'v6').putEdges).toEqual([]);
+		expect(setIpFamily(after, ['web>g2'], 'auto').putEdges.map(e => e.ipFamily)).toEqual(['auto']);
+	});
+
+	test('a new way on starts on auto', () => {
+		const change = connect(fanOut(), 'web', { exit: 'exit-b' });
+		expect(change.putEdges.map(e => e.ipFamily)).toEqual(['auto']);
 	});
 });

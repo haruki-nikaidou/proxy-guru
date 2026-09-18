@@ -51,6 +51,7 @@ export const agentUnitSchema = v.optional(
 	''
 );
 export const ipv6Schema = v.picklist(['required', 'preferred', 'tolerated', 'forbidden'] as const);
+export const ipFamilySchema = v.picklist(['auto', 'v4', 'v6'] as const);
 export const quicCongestionSchema = v.picklist(['cubic', 'brutal'] as const);
 /** A rate in Mbit/s; 0 is "unknown". */
 export const mbpsSchema = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(1_000_000));
@@ -165,7 +166,10 @@ const edgeSchema = v.object({
 	sourcePodId: idSchema,
 	target: v.union([v.strictObject({ pod: idSchema }), v.strictObject({ exit: idSchema })]),
 	overrideIp: optionalAddressSchema,
-	overridePort: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535)))
+	overridePort: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
+	// Required: a page built before the field existed is refused rather than
+	// allowed to put its edges back on auto.
+	ipFamily: ipFamilySchema
 });
 
 const groupSchema = v.object({

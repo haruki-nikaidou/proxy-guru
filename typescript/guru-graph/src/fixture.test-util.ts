@@ -58,7 +58,8 @@ export const toPod = (id: string, source: string, target: string): Edge => ({
 	sourcePodId: source,
 	target: { pod: target },
 	overrideIp: null,
-	overridePort: null
+	overridePort: null,
+	ipFamily: 'auto'
 });
 
 export const toExit = (id: string, source: string, target: string): Edge => ({
@@ -66,7 +67,8 @@ export const toExit = (id: string, source: string, target: string): Edge => ({
 	sourcePodId: source,
 	target: { exit: target },
 	overrideIp: null,
-	overridePort: null
+	overridePort: null,
+	ipFamily: 'auto'
 });
 
 export const leaf = (edge: string): Route => ({ edge });

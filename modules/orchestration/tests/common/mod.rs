@@ -9,7 +9,7 @@ use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas};
-use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
+use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget, IpFamily};
 use orchestration::entities::db::exit::{ExitEntity, ExitId};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{
@@ -94,6 +94,29 @@ pub async fn server_at(
         log_level: ServerLogLevel::Info,
         override_v4: Some(address.to_string()),
         override_v6: None,
+        extra_addresses: Vec::new(),
+    })
+    .await
+}
+
+/// A server with a pinned IPv4 and a pinned IPv6 address.
+pub async fn server_dual(
+    sp: &Db,
+    canvas: &CanvasEntity,
+    name: &str,
+    v4: &str,
+    v6: &str,
+) -> Result<ServerEntity, base::db::Error> {
+    sp.process(CreateServer {
+        canvas: canvas.id.clone(),
+        name: name.to_string(),
+        icon: String::new(),
+        comment: String::new(),
+        position: pos(0, 0),
+        ipv6_resolve: ServerIpv6Resolve::Tolerated,
+        log_level: ServerLogLevel::Info,
+        override_v4: Some(v4.to_string()),
+        override_v6: Some(v6.to_string()),
         extra_addresses: Vec::new(),
     })
     .await
@@ -195,6 +218,7 @@ pub fn edge_to_pod(name: &str, source: &PodEntity, target: &PodEntity) -> EdgeEn
         target: EdgeTarget::Pod(target.id.clone()),
         override_ip: None,
         override_port: None,
+        ip_family: IpFamily::Auto,
     }
 }
 
@@ -206,6 +230,7 @@ pub fn edge_to_exit(name: &str, source: &PodEntity, target: &ExitEntity) -> Edge
         target: EdgeTarget::Exit(target.id.clone()),
         override_ip: None,
         override_port: None,
+        ip_family: IpFamily::Auto,
     }
 }
 

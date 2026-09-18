@@ -8,7 +8,7 @@ use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 table_record!(ServerId, "orchestration_server");
 
@@ -226,8 +226,8 @@ impl ServerEntity {
 
     /// The address other servers dial by default: the IPv4 override, else the
     /// reported public IPv4, else the address the master observed, else the same
-    /// chain for IPv6. IPv4 first because that is what most peers can reach; a
-    /// pod that should be dialed over IPv6 sets its own `advertise_ip`.
+    /// chain for IPv6. IPv4 first because that is what most peers can reach; an
+    /// edge that should dial over IPv6 says so with its IP family.
     pub fn effective_address(&self) -> Option<(IpAddr, AddressSource)> {
         self.address_candidates()
             .into_iter()
@@ -242,6 +242,18 @@ impl ServerEntity {
             .into_iter()
             .find_map(|(address, _)| match address {
                 Some(IpAddr::V4(v4)) => Some(v4),
+                _ => None,
+            })
+    }
+
+    /// The server's IPv6 address: the first IPv6 of the same chain, which is the
+    /// one the dashboard's IPv6 line shows and the one edges dialing over IPv6
+    /// dial.
+    pub fn v6_address(&self) -> Option<Ipv6Addr> {
+        self.address_candidates()
+            .into_iter()
+            .find_map(|(address, _)| match address {
+                Some(IpAddr::V6(v6)) => Some(v6),
                 _ => None,
             })
     }

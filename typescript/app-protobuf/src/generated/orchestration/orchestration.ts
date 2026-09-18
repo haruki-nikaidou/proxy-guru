@@ -377,6 +377,57 @@ export function certificateStatusToJSON(object: CertificateStatus): string {
   }
 }
 
+/**
+ * Which of its target pod's addresses an edge dials. AUTO (and UNSPECIFIED) is
+ * the server's effective address, IPv4 when it has one; V4 and V6 insist on
+ * that family: the pod's advertised address when it is of it, else the
+ * server's address of it.
+ */
+export enum IpFamily {
+  UNSPECIFIED = 0,
+  AUTO = 1,
+  V4 = 2,
+  V6 = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function ipFamilyFromJSON(object: any): IpFamily {
+  switch (object) {
+    case 0:
+    case "IP_FAMILY_UNSPECIFIED":
+      return IpFamily.UNSPECIFIED;
+    case 1:
+    case "IP_FAMILY_AUTO":
+      return IpFamily.AUTO;
+    case 2:
+    case "IP_FAMILY_V4":
+      return IpFamily.V4;
+    case 3:
+    case "IP_FAMILY_V6":
+      return IpFamily.V6;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return IpFamily.UNRECOGNIZED;
+  }
+}
+
+export function ipFamilyToJSON(object: IpFamily): string {
+  switch (object) {
+    case IpFamily.UNSPECIFIED:
+      return "IP_FAMILY_UNSPECIFIED";
+    case IpFamily.AUTO:
+      return "IP_FAMILY_AUTO";
+    case IpFamily.V4:
+      return "IP_FAMILY_V4";
+    case IpFamily.V6:
+      return "IP_FAMILY_V6";
+    case IpFamily.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum AddressSource {
   UNSPECIFIED = 0,
   ADDRESS_OVERRIDE = 1,
@@ -509,6 +560,8 @@ export interface Edge {
   overrideIp: string;
   /** 0 dials the target pod's port. */
   overridePort: number;
+  /** Ignored toward an exit and when override_ip is set. */
+  ipFamily: IpFamily;
 }
 
 export interface GroupMember {
@@ -2008,7 +2061,15 @@ export const Exit: MessageFns<Exit> = {
 };
 
 function createBaseEdge(): Edge {
-  return { id: "", sourcePodId: "", targetPodId: undefined, targetExitId: undefined, overrideIp: "", overridePort: 0 };
+  return {
+    id: "",
+    sourcePodId: "",
+    targetPodId: undefined,
+    targetExitId: undefined,
+    overrideIp: "",
+    overridePort: 0,
+    ipFamily: 0,
+  };
 }
 
 export const Edge: MessageFns<Edge> = {
@@ -2030,6 +2091,9 @@ export const Edge: MessageFns<Edge> = {
     }
     if (message.overridePort !== 0) {
       writer.uint32(48).uint32(message.overridePort);
+    }
+    if (message.ipFamily !== 0) {
+      writer.uint32(56).int32(message.ipFamily);
     }
     return writer;
   },
@@ -2089,6 +2153,14 @@ export const Edge: MessageFns<Edge> = {
           message.overridePort = reader.uint32();
           continue;
         }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.ipFamily = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2126,6 +2198,11 @@ export const Edge: MessageFns<Edge> = {
         : isSet(object.override_port)
         ? globalThis.Number(object.override_port)
         : 0,
+      ipFamily: isSet(object.ipFamily)
+        ? ipFamilyFromJSON(object.ipFamily)
+        : isSet(object.ip_family)
+        ? ipFamilyFromJSON(object.ip_family)
+        : 0,
     };
   },
 
@@ -2149,6 +2226,9 @@ export const Edge: MessageFns<Edge> = {
     if (message.overridePort !== 0) {
       obj.overridePort = Math.round(message.overridePort);
     }
+    if (message.ipFamily !== 0) {
+      obj.ipFamily = ipFamilyToJSON(message.ipFamily);
+    }
     return obj;
   },
 
@@ -2163,6 +2243,7 @@ export const Edge: MessageFns<Edge> = {
     message.targetExitId = object.targetExitId ?? undefined;
     message.overrideIp = object.overrideIp ?? "";
     message.overridePort = object.overridePort ?? 0;
+    message.ipFamily = object.ipFamily ?? 0;
     return message;
   },
 };

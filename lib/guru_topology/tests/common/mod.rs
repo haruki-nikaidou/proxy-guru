@@ -4,11 +4,12 @@
 
 use guru_topology::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Compiled, Edge, EdgeId,
-    EdgeTarget, Exit, ExitId, Graph, Ingress, Pod, PodId, Route, Server, ServerId, ServerQuic,
-    Sticky, Weighted,
+    EdgeTarget, Exit, ExitId, Graph, Ingress, IpFamily, Pod, PodId, Route, Server, ServerId,
+    ServerQuic, Sticky, Weighted,
 };
 use guru_worker_config::Forwarding;
 use guru_worker_config::table::{Group, Target, Upstream};
+use std::net::IpAddr;
 
 /// A graph under construction, with every certificate its relay pods need.
 pub struct Fabric {
@@ -56,13 +57,40 @@ impl Fabric {
         address: Option<&str>,
         capabilities: Capabilities,
     ) -> &mut Self {
+        let address: Option<IpAddr> = address.map(|a| a.parse().unwrap());
         self.graph.servers.push(Server {
             id: ServerId::new(id),
             name: id.to_string(),
-            dial_address: address.map(|a| a.parse().unwrap()),
+            dial_address: address,
+            dial_v4: match address {
+                Some(IpAddr::V4(v4)) => Some(v4),
+                _ => None,
+            },
+            dial_v6: match address {
+                Some(IpAddr::V6(v6)) => Some(v6),
+                _ => None,
+            },
             quic: ServerQuic::default(),
             capabilities,
         });
+        self
+    }
+
+    /// Gives a server an IPv4 and an IPv6 address, either of them `None`; it is
+    /// dialed on the IPv4 one by default, as the control plane picks.
+    pub fn addresses(&mut self, server: &str, v4: Option<&str>, v6: Option<&str>) -> &mut Self {
+        let server = self
+            .graph
+            .servers
+            .iter_mut()
+            .find(|s| s.id.as_str() == server)
+            .unwrap();
+        server.dial_v4 = v4.map(|a| a.parse().unwrap());
+        server.dial_v6 = v6.map(|a| a.parse().unwrap());
+        server.dial_address = server
+            .dial_v4
+            .map(IpAddr::V4)
+            .or(server.dial_v6.map(IpAddr::V6));
         self
     }
 
@@ -126,6 +154,7 @@ impl Fabric {
             target,
             override_ip: None,
             override_port: None,
+            ip_family: IpFamily::Auto,
         });
         self
     }

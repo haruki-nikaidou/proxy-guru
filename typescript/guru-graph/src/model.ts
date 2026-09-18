@@ -95,12 +95,22 @@ export type Exit = {
 
 export type EdgeTarget = { pod: Id } | { exit: Id };
 
+/**
+ * Which of its target pod's addresses an edge dials: `auto` is the server's
+ * effective address (IPv4 when it has one); `v4` and `v6` insist on that
+ * family — the pod's advertised address when it is of it, else the server's
+ * address of it. An override address wins over all three, and an edge into an
+ * exit dials the exit's destination as written.
+ */
+export type IpFamily = 'auto' | 'v4' | 'v6';
+
 export type Edge = {
 	id: Id;
 	sourcePodId: Id;
 	target: EdgeTarget;
 	overrideIp: string | null;
 	overridePort: number | null;
+	ipFamily: IpFamily;
 };
 
 export type GroupMember = { pod: Id } | { edge: Id } | { exit: Id } | { server: Id };

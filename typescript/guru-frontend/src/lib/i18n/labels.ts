@@ -1,4 +1,4 @@
-import type { IngressKind, ProxyVersion, RelayKind } from 'guru-graph';
+import type { IngressKind, IpFamily, ProxyVersion, RelayKind } from 'guru-graph';
 import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
 import type {
 	Ipv6ResolveName,
@@ -94,6 +94,14 @@ export const ipv6Label = (value: Ipv6ResolveName): string =>
 			: value === 'forbidden'
 				? m.editor_ipv6_forbidden()
 				: m.editor_ipv6_tolerated();
+
+export const IP_FAMILY_OPTIONS: IpFamily[] = ['auto', 'v4', 'v6'];
+export const ipFamilyLabel = (value: IpFamily): string =>
+	value === 'v4'
+		? m.editor_ip_family_v4()
+		: value === 'v6'
+			? m.editor_ip_family_v6()
+			: m.editor_ip_family_auto();
 
 /** A pod binds every address by default; `0.0.0.0` is IPv4 only. */
 export const BIND_ALL = '';

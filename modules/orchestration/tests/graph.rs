@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::canvas::FindCanvasById;
-use orchestration::entities::db::edge::EdgeTarget;
+use orchestration::entities::db::edge::{EdgeTarget, IpFamily};
 use orchestration::entities::db::graph::LoadCanvasGraph;
 use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use orchestration::entities::db::pod::{PodEntity, PodIngress};
@@ -150,6 +150,7 @@ async fn an_edge_keeps_its_ends(pool: sqlx::PgPool) -> TestResult {
 
     let mut redialed = dial.clone();
     redialed.override_port = Some(19443);
+    redialed.ip_family = IpFamily::V4;
     w.apply(
         &c,
         GraphChange {
@@ -178,6 +179,7 @@ async fn an_edge_keeps_its_ends(pool: sqlx::PgPool) -> TestResult {
         .await?;
     let stored = graph.edges.iter().find(|e| e.id == dial.id).unwrap();
     assert_eq!(stored.override_port, Some(19443));
+    assert_eq!(stored.ip_family, IpFamily::V4);
     assert_eq!(stored.target, dial.target);
     Ok(())
 }

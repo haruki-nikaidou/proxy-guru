@@ -72,6 +72,8 @@ pub fn topology_server(server: &ServerEntity) -> topo::Server {
         id: topo::ServerId::new(server.id.as_str()),
         name: server.name.clone(),
         dial_address: server.effective_address().map(|(address, _)| address),
+        dial_v4: server.v4_address(),
+        dial_v6: server.v6_address(),
         quic: server_quic(&server.quic),
         capabilities: server_capabilities(server),
     }
@@ -127,6 +129,7 @@ pub fn topology_edge(edge: &EdgeEntity) -> topo::Edge {
         },
         override_ip: edge.override_ip.clone(),
         override_port: edge.override_port,
+        ip_family: edge.ip_family.into(),
     }
 }
 

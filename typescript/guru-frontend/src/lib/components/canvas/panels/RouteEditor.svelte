@@ -14,7 +14,7 @@ import { Input } from '#lib/components/ui/input/index.js';
 import * as Select from '#lib/components/ui/select/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
 import { Switch } from '#lib/components/ui/switch/index.js';
-import { ingressLabel, policyLabel } from '#lib/i18n/labels.js';
+import { ingressLabel, ipFamilyLabel, policyLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import { seedOn } from '#lib/seed.svelte.js';
 
@@ -216,6 +216,9 @@ const locked = $derived(!editor.editable || dirty);
 					{label.detail}
 					{#if edge?.overrideIp || edge?.overridePort}
 						· <span class="font-mono">{edge.overrideIp ?? ''}{edge.overridePort ? `:${edge.overridePort}` : ''}</span>
+					{/if}
+					{#if edge && 'pod' in edge.target && !edge.overrideIp && edge.ipFamily !== 'auto'}
+						· {ipFamilyLabel(edge.ipFamily)}
 					{/if}
 				</p>
 			</div>

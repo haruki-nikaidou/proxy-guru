@@ -41,6 +41,6 @@ pub use compile::{Compiled, Deps, ListenProtocol, Listener, ServerConfig, compil
 pub use diagnostic::{Diagnostic, Invalid, InvalidPod, Problem, Report, Severity, Subject};
 pub use model::{
     Capabilities, CertificateKind, CertificateRef, Certificates, Edge, EdgeId, EdgeTarget, Exit,
-    ExitId, Graph, Ingress, MAX_ROUTE_DEPTH, Pod, PodId, Route, Server, ServerId, ServerQuic,
-    Sticky, Weighted, relay_sni,
+    ExitId, Graph, Ingress, IpFamily, MAX_ROUTE_DEPTH, Pod, PodId, Route, Server, ServerId,
+    ServerQuic, Sticky, Weighted, relay_sni,
 };

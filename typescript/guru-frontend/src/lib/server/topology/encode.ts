@@ -12,7 +12,7 @@ import type {
 } from 'app-protobuf/orchestration/orchestration';
 import { ProxyProtocolVersion } from 'app-protobuf/orchestration/orchestration';
 import type { Edge, Exit, GraphChange, Group, Pod } from 'guru-graph';
-import { fromIngressKind, fromProxy } from './enums.js';
+import { fromIngressKind, fromIpFamily, fromProxy } from './enums.js';
 
 export const fromPod = (pod: Pod): ProtoPod => ({
 	id: pod.id,
@@ -47,7 +47,8 @@ export const fromEdge = (edge: Edge): ProtoEdge => ({
 	sourcePodId: edge.sourcePodId,
 	...('pod' in edge.target ? { targetPodId: edge.target.pod } : { targetExitId: edge.target.exit }),
 	overrideIp: edge.overrideIp ?? '',
-	overridePort: edge.overridePort ?? 0
+	overridePort: edge.overridePort ?? 0,
+	ipFamily: fromIpFamily(edge.ipFamily)
 });
 
 export const fromGroup = (group: Group): ProtoGroup => ({

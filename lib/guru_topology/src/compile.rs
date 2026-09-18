@@ -5,8 +5,8 @@ use crate::diagnostic::{Diagnostic, Invalid, InvalidPod, Report};
 use crate::index::Index;
 use crate::legacy;
 use crate::model::{
-    CertificateRef, Certificates, EdgeId, EdgeTarget, ExitId, Graph, Ingress, Pod, PodId, Route,
-    Server, ServerId, ServerQuic, acme_host, lower, relay_host, relay_sni,
+    CertificateRef, Certificates, EdgeId, EdgeTarget, ExitId, Graph, Ingress, IpFamily, Pod, PodId,
+    Route, Server, ServerId, ServerQuic, acme_host, lower, relay_host, relay_sni,
 };
 use guru_worker_config::table::{
     ExitTarget, Group, Policy, RelayTarget, Target, Upstream, Weighted,
@@ -327,16 +327,13 @@ fn entry<'g>(
                     port: target.port,
                     protocol: listen_protocol,
                 });
-                let host = match (&edge.override_ip, &target.advertise_ip, far.dial_address) {
-                    (Some(host), _, _) | (None, Some(host), _) => host.clone(),
-                    (None, None, Some(address)) => address.to_string(),
-                    (None, None, None) => {
-                        return Err(Invalid::TargetWithoutAddress {
-                            edge: edge.id.clone(),
-                            pod: target.id.clone(),
-                            server: far.id.clone(),
-                        });
-                    }
+                let Some(host) = edge.dial_host(target, far) else {
+                    return Err(Invalid::TargetWithoutAddress {
+                        edge: edge.id.clone(),
+                        pod: target.id.clone(),
+                        server: far.id.clone(),
+                        family: edge.ip_family,
+                    });
                 };
                 let port = edge.override_port.unwrap_or(target.port);
                 // An IP literal becomes a socket address directly; an unbracketed
@@ -541,9 +538,20 @@ fn invalid_pod(index: &Index<'_>, pod: &Pod, reason: Invalid) -> InvalidPod {
         Invalid::TargetWithoutAddress {
             pod: target,
             server,
+            family: IpFamily::Auto,
             ..
         } => format!(
             "pod {} on server {} has no address to dial",
+            index.pod_name(target),
+            index.server_name(server)
+        ),
+        Invalid::TargetWithoutAddress {
+            pod: target,
+            server,
+            family,
+            ..
+        } => format!(
+            "pod {} on server {} has no {family} address to dial",
             index.pod_name(target),
             index.server_name(server)
         ),

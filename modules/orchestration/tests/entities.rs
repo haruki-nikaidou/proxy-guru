@@ -11,6 +11,7 @@ use orchestration::entities::db::agent_release::{FindAgentRelease, PublishAgentR
 use orchestration::entities::db::canvas::{
     DeleteCanvasRow, FindCanvasById, ListCanvases, LoadCanvasTree, UpdateCanvasMeta,
 };
+use orchestration::entities::db::edge::IpFamily;
 use orchestration::entities::db::graph::{ApplyGraphBatch, LoadCanvasGraph};
 use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion, TlsConfig};
@@ -778,7 +779,8 @@ async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult 
     let mut near = edge_to_pod("near", &entry, &hop);
     near.override_ip = Some("hop.example.net".to_string());
     near.override_port = Some(19443);
-    let far = edge_to_pod("far", &entry, &hop);
+    let mut far = edge_to_pod("far", &entry, &hop);
+    far.ip_family = IpFamily::V6;
     let out = edge_to_exit("out", &hop, &origin);
     let entry = routed(
         entry,

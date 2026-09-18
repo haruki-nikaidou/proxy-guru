@@ -1,20 +1,27 @@
 <script lang="ts">
 import PencilIcon from '@lucide/svelte/icons/pencil';
 import Trash2Icon from '@lucide/svelte/icons/trash-2';
-import { type Bus, type Edge, removeAll } from 'guru-graph';
+import { type Bus, type Edge, type IpFamily, removeAll, setIpFamily } from 'guru-graph';
 import CopyButton from '#lib/components/CopyButton.svelte';
 import { useCanvasContext } from '#lib/components/canvas/context.svelte.js';
 import DialAddressDialog from '#lib/components/canvas/dialogs/DialAddressDialog.svelte';
 import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import { handleLabel } from '#lib/components/canvas/flow/nodes.js';
+import { Badge } from '#lib/components/ui/badge/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
+import * as Field from '#lib/components/ui/field/index.js';
+import * as Select from '#lib/components/ui/select/index.js';
+import { Spinner } from '#lib/components/ui/spinner/index.js';
+import { IP_FAMILY_OPTIONS, ipFamilyLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 
 /**
  * A bus: every edge that takes the same way between two handles. The panel says
- * where it runs, which rules ride it — each in the colour of its thin line on
- * the canvas, with how many of the edges carry it — and lists the edges: their
- * ids, the rules each carries, from which pod to where, and how it dials.
+ * where it runs, which IP version its edges into pods dial over (set for all of
+ * them at once), what the control plane finds wrong with its edges, which rules
+ * ride it — each in the colour of its thin line on the canvas, with how many of
+ * the edges carry it — and lists the edges: their ids, the rules each carries,
+ * from which pod to where, and how it dials.
  */
 let { bus }: { bus: Bus } = $props();
 
@@ -59,6 +66,38 @@ const edges = $derived(
 	})
 );
 
+/** The bus's edges into pods: the ones an IP version means anything for. */
+const podEdges = $derived(
+	bus.edges.flatMap(id => {
+		const edge = graph.edges.find(entry => entry.id === id);
+		return edge && 'pod' in edge.target ? [edge] : [];
+	})
+);
+/** The IP version they all dial over, or `null` when they differ. */
+const family = $derived.by((): IpFamily | null => {
+	const [first, ...rest] = podEdges;
+	if (!first) return null;
+	return rest.every(edge => edge.ipFamily === first.ipFamily) ? first.ipFamily : null;
+});
+let settingFamily = $state(false);
+
+async function chooseFamily(next: IpFamily) {
+	if (next === family) return;
+	settingFamily = true;
+	try {
+		await editor.commit(() => setIpFamily(editor.graph, bus.edges, next), m.editor_saved());
+	} finally {
+		settingFamily = false;
+	}
+}
+
+/** What the control plane finds wrong with the edges of this bus. */
+const problems = $derived(
+	graph.diagnostics.filter(diagnostic =>
+		diagnostic.subjects.some(subject => 'edge' in subject && bus.edges.includes(subject.edge))
+	)
+);
+
 function remove() {
 	editor.review({
 		title: m.editor_bus_delete(),
@@ -84,6 +123,45 @@ function remove() {
 	<dt class="text-muted-foreground">{m.editor_edge_to()}</dt>
 	<dd class="min-w-0 truncate">{handleLabel(graph, editor.drawing, bus.target)}</dd>
 </dl>
+
+{#if podEdges.length > 0}
+	<Field.Field class="mt-6">
+		<Field.FieldLabel for="bus-ip-family">{m.editor_ip_family()}</Field.FieldLabel>
+		<Select.Root
+			type="single"
+			value={family ?? ''}
+			disabled={!editor.editable || settingFamily}
+			onValueChange={next => chooseFamily(next as IpFamily)}
+		>
+			<Select.Trigger id="bus-ip-family">
+				{#if settingFamily}<Spinner data-icon="inline-start" />{/if}
+				{family ? ipFamilyLabel(family) : m.editor_ip_family_mixed()}
+			</Select.Trigger>
+			<Select.Content>
+				<Select.Group>
+					{#each IP_FAMILY_OPTIONS as option (option)}
+						<Select.Item value={option} label={ipFamilyLabel(option)}>{ipFamilyLabel(option)}</Select.Item>
+					{/each}
+				</Select.Group>
+			</Select.Content>
+		</Select.Root>
+		<Field.FieldDescription>{m.editor_ip_family_hint()}</Field.FieldDescription>
+	</Field.Field>
+{/if}
+
+{#if problems.length > 0}
+	<h3 class="mt-6 text-sm font-medium">{m.editor_bus_problems()}</h3>
+	<ul class="mt-2 grid gap-1.5">
+		{#each problems as problem, index (index)}
+			<li class="flex items-start gap-2 text-xs">
+				<Badge variant={problem.error ? 'destructive' : 'outline'} class="shrink-0">
+					{problem.error ? m.editor_severity_error() : m.editor_severity_warning()}
+				</Badge>
+				<span class="min-w-0">{problem.message}</span>
+			</li>
+		{/each}
+	</ul>
+{/if}
 
 <h3 class="mt-6 text-sm font-medium">{m.editor_bus_lines()}</h3>
 <p class="mt-1 text-xs text-muted-foreground">{m.editor_bus_lines_hint()}</p>
@@ -126,6 +204,9 @@ function remove() {
 							<span class="font-mono text-xs">
 								({edge.overrideIp ?? ''}{edge.overridePort ? `:${edge.overridePort}` : ''})
 							</span>
+						{/if}
+						{#if 'pod' in edge.target && !edge.overrideIp && edge.ipFamily !== 'auto'}
+							<span class="text-xs">· {ipFamilyLabel(edge.ipFamily)}</span>
 						{/if}
 					</p>
 				</div>

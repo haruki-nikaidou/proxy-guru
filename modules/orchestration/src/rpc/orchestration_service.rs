@@ -6,7 +6,7 @@
 use crate::entities::db::canvas::{CanvasEntity, CanvasTree, CanvasUiPosition};
 use crate::entities::db::certificate::{CertificateEntity, CertificateStatus};
 use crate::entities::db::dns::DnsProvider;
-use crate::entities::db::edge::{EdgeEntity, EdgeTarget};
+use crate::entities::db::edge::{EdgeEntity, EdgeTarget, IpFamily};
 use crate::entities::db::exit::ExitEntity;
 use crate::entities::db::group::{GroupEntity, GroupMember};
 use crate::entities::db::health::{
@@ -725,6 +725,7 @@ fn edge_to_proto(edge: &EdgeEntity) -> pb::Edge {
         }),
         override_ip: edge.override_ip.clone().unwrap_or_default(),
         override_port: edge.override_port.map(u32::from).unwrap_or_default(),
+        ip_family: ip_family_to_proto(edge.ip_family),
     }
 }
 
@@ -749,7 +750,29 @@ fn edge_from_proto(edge: pb::Edge) -> Result<EdgeEntity, Status> {
                 Status::invalid_argument(format!("override_port {port} out of range"))
             })?),
         },
+        ip_family: ip_family_from_proto(edge.ip_family)?,
     })
+}
+
+fn ip_family_to_proto(value: IpFamily) -> i32 {
+    match value {
+        IpFamily::Auto => pb::IpFamily::Auto,
+        IpFamily::V4 => pb::IpFamily::V4,
+        IpFamily::V6 => pb::IpFamily::V6,
+    }
+    .into()
+}
+
+fn ip_family_from_proto(value: i32) -> Result<IpFamily, Status> {
+    match pb::IpFamily::try_from(value) {
+        Ok(pb::IpFamily::V4) => Ok(IpFamily::V4),
+        Ok(pb::IpFamily::V6) => Ok(IpFamily::V6),
+        // Unspecified means "the server's effective address".
+        Ok(pb::IpFamily::Auto | pb::IpFamily::Unspecified) => Ok(IpFamily::Auto),
+        Err(_) => Err(Status::invalid_argument(format!(
+            "ip_family: unknown value {value}"
+        ))),
+    }
 }
 
 fn group_to_proto(group: &GroupEntity) -> pb::Group {

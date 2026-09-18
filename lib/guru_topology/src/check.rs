@@ -3,10 +3,11 @@
 use crate::diagnostic::{Diagnostic, Problem, Report, Subject};
 use crate::index::Index;
 use crate::model::{
-    Edge, EdgeTarget, ExitId, Graph, Ingress, MAX_ROUTE_DEPTH, Pod, PodId, Route, ServerId,
+    Edge, EdgeTarget, ExitId, Graph, Ingress, IpFamily, MAX_ROUTE_DEPTH, Pod, PodId, Route,
+    ServerId,
 };
 use guru_worker_config::Remote;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 /// Every problem with the graph. Errors mean it must not be stored; warnings
@@ -16,6 +17,7 @@ pub fn check(graph: &Graph) -> Report {
     let index = Index::build(graph, &mut out);
     references(&index, &mut out);
     values(&index, &mut out);
+    families(&index, &mut out);
     routes(&index, &mut out);
     client_pods_dialed(&index, &mut out);
     cycles(&index, &mut out);
@@ -157,6 +159,92 @@ fn values(index: &Index<'_>, out: &mut Vec<Diagnostic>) {
             ));
         }
     }
+}
+
+/// Edges that insist on IPv4 or IPv6 while their target cannot be dialed over
+/// it: the target's server has no address of that family (and neither the edge
+/// nor the pod names one), or the target pod listens on the other family only.
+/// One warning per server or pod and family, naming the pods that dial it. An
+/// edge with an override address dials that and is not looked at.
+fn families(index: &Index<'_>, out: &mut Vec<Diagnostic>) {
+    let mut without_address: BTreeMap<(&ServerId, IpFamily), Vec<&Edge>> = BTreeMap::new();
+    let mut other_family: BTreeMap<(&PodId, IpFamily), Vec<&Edge>> = BTreeMap::new();
+    for edge in index.edges.values().copied() {
+        let EdgeTarget::Pod(target) = &edge.target else {
+            continue;
+        };
+        if edge.ip_family == IpFamily::Auto || edge.override_ip.is_some() {
+            continue;
+        }
+        let Some(pod) = index.pods.get(target).copied() else {
+            continue;
+        };
+        if let Some(server) = index.servers.get(&pod.server).copied()
+            && edge.dial_host(pod, server).is_none()
+        {
+            without_address
+                .entry((&server.id, edge.ip_family))
+                .or_default()
+                .push(edge);
+        }
+        if !listens_over(pod, edge.ip_family) {
+            other_family
+                .entry((&pod.id, edge.ip_family))
+                .or_default()
+                .push(edge);
+        }
+    }
+    for ((server, family), edges) in without_address {
+        let mut subjects = vec![Subject::Server(server.clone())];
+        subjects.extend(edges.iter().map(|e| Subject::Edge(e.id.clone())));
+        out.push(Diagnostic::new(
+            Problem::DialFamilyUnreachable,
+            subjects,
+            format!(
+                "{family} edges from {} cannot reach server {}: it has no {family} address",
+                dialers(index, &edges),
+                index.server_name(server)
+            ),
+        ));
+    }
+    for ((pod, family), edges) in other_family {
+        let mut subjects = vec![Subject::Pod(pod.clone())];
+        subjects.extend(edges.iter().map(|e| Subject::Edge(e.id.clone())));
+        let bind = index
+            .pods
+            .get(pod)
+            .and_then(|p| p.bind_ip.clone())
+            .unwrap_or_default();
+        out.push(Diagnostic::new(
+            Problem::DialFamilyUnreachable,
+            subjects,
+            format!(
+                "{family} edges from {} cannot reach pod {}: it listens on {bind} only",
+                dialers(index, &edges),
+                index.pod_name(pod)
+            ),
+        ));
+    }
+}
+
+/// Whether a pod's listener takes connections over `family`. No bind, or `::`
+/// (which workers bind dual-stack), takes both; an IPv4 bind, `0.0.0.0`
+/// included, only IPv4; any other IPv6 bind only IPv6. A bind that is not an
+/// address is reported on its own.
+fn listens_over(pod: &Pod, family: IpFamily) -> bool {
+    match pod.bind_ip.as_deref().map(str::parse::<IpAddr>) {
+        None | Some(Err(_)) => true,
+        Some(Ok(IpAddr::V6(address))) if address.is_unspecified() => true,
+        Some(Ok(address)) => family.admits(address),
+    }
+}
+
+/// `pod a` or `pods a, b`: the pods some edges start at, each once.
+fn dialers(index: &Index<'_>, edges: &[&Edge]) -> String {
+    let names: BTreeSet<String> = edges.iter().map(|e| index.pod_name(&e.source)).collect();
+    let noun = if names.len() == 1 { "pod" } else { "pods" };
+    let names: Vec<String> = names.into_iter().collect();
+    format!("{noun} {}", names.join(", "))
 }
 
 fn plain_host_name(name: &str) -> bool {

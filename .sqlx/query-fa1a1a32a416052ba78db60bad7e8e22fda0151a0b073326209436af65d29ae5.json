@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_edge\n             (id, source_pod, target_pod, target_exit, override_ip, override_port, ip_family)\n         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fa1a1a32a416052ba78db60bad7e8e22fda0151a0b073326209436af65d29ae5"
+}

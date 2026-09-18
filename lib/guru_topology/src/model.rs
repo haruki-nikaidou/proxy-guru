@@ -14,7 +14,7 @@
 use guru_worker_config::{QuicCongestion, QuicTuning, TcpProxyProtocol, TlsHostConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 pub use guru_worker_config::table::Sticky;
@@ -78,12 +78,31 @@ pub struct Server {
     pub id: ServerId,
     pub name: String,
     /// The address other servers dial this one on, as the control plane chose
-    /// it (pinned, reported or observed). `None` while none is known.
+    /// it (pinned, reported or observed). `None` while none is known. An edge
+    /// of [`IpFamily::Auto`] dials it.
     pub dial_address: Option<IpAddr>,
+    /// The server's IPv4 address, chosen the same way among its IPv4
+    /// addresses: what an edge of [`IpFamily::V4`] dials.
+    #[serde(default)]
+    pub dial_v4: Option<Ipv4Addr>,
+    /// The same for IPv6 and [`IpFamily::V6`].
+    #[serde(default)]
+    pub dial_v6: Option<Ipv6Addr>,
     #[serde(default)]
     pub quic: ServerQuic,
     #[serde(default)]
     pub capabilities: Capabilities,
+}
+
+impl Server {
+    /// The address an edge of `family` dials this server on, if it has one.
+    pub fn address_for(&self, family: IpFamily) -> Option<IpAddr> {
+        match family {
+            IpFamily::Auto => self.dial_address,
+            IpFamily::V4 => self.dial_v4.map(IpAddr::V4),
+            IpFamily::V6 => self.dial_v6.map(IpAddr::V6),
+        }
+    }
 }
 
 /// A server's side of every QUIC link it takes part in.
@@ -231,6 +250,74 @@ pub struct Edge {
     pub override_ip: Option<String>,
     /// Dial this port instead of the target pod's.
     pub override_port: Option<u16>,
+    /// Which of the target pod's addresses to dial when the edge names none.
+    /// Only meaningful toward a pod.
+    #[serde(default)]
+    pub ip_family: IpFamily,
+}
+
+impl Edge {
+    /// The host this edge dials `target`, a pod on `server`, at: its override
+    /// address, else the address the pod advertises when that is of the edge's
+    /// family, else the server's address of the edge's family. `None` when
+    /// there is none of those.
+    pub fn dial_host(&self, target: &Pod, server: &Server) -> Option<String> {
+        if let Some(host) = &self.override_ip {
+            return Some(host.clone());
+        }
+        let advertised = target
+            .advertise_ip
+            .as_ref()
+            .filter(|host| match self.ip_family {
+                IpFamily::Auto => true,
+                family => host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| family.admits(address)),
+            });
+        match advertised {
+            Some(host) => Some(host.clone()),
+            None => server
+                .address_for(self.ip_family)
+                .map(|address| address.to_string()),
+        }
+    }
+}
+
+/// Which address family an edge dials the pod it leads to over.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum IpFamily {
+    /// The server's dial address, whichever family that is: IPv4 when the
+    /// server has one.
+    #[default]
+    Auto,
+    /// IPv4 only.
+    V4,
+    /// IPv6 only.
+    V6,
+}
+
+impl IpFamily {
+    /// Whether an edge of this family may dial `address`.
+    pub fn admits(self, address: IpAddr) -> bool {
+        match self {
+            IpFamily::Auto => true,
+            IpFamily::V4 => address.is_ipv4(),
+            IpFamily::V6 => address.is_ipv6(),
+        }
+    }
+}
+
+impl std::fmt::Display for IpFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            IpFamily::Auto => "auto",
+            IpFamily::V4 => "IPv4",
+            IpFamily::V6 => "IPv6",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
