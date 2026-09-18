@@ -305,7 +305,7 @@ impl Balance {
             .iter()
             .map(|i| self.weight(*i))
             .fold(0u64, u64::saturating_add);
-        let mut roll = xorshift(state).checked_rem(total)?;
+        let mut roll = draw(state).checked_rem(total)?;
         for &i in candidates {
             let weight = self.weight(i);
             if roll < weight {
@@ -354,13 +354,20 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn xorshift(state: &AtomicU64) -> u64 {
-    let mut x = state.load(Ordering::Relaxed);
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    state.store(x, Ordering::Relaxed);
-    x
+/// SplitMix64's increment, the golden ratio's fractional part.
+const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The next number of the SplitMix64 generator whose state is `state`.
+///
+/// The state is a counter every draw advances in one atomic add, and the draw
+/// is the finalised value it advanced to. Connections picking at the same
+/// moment each get a counter value of their own — a load followed by a store
+/// hands both the same number and advances once — and the finaliser is a
+/// bijection, so no two draws repeat until the counter wraps.
+fn draw(state: &AtomicU64) -> u64 {
+    mix(state
+        .fetch_add(GAMMA, Ordering::Relaxed)
+        .wrapping_add(GAMMA))
 }
 
 #[cfg(test)]
@@ -420,6 +427,26 @@ mod tests {
             .collect();
         let heavy = picks.iter().filter(|p| **p == 0).count();
         assert!((8_700..9_300).contains(&heavy), "{heavy}");
+    }
+
+    #[test]
+    fn concurrent_random_draws_never_repeat() {
+        let state = AtomicU64::new(0x1234_5678);
+        let draws: Vec<u64> = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| (0..10_000).map(|_| draw(&state)).collect::<Vec<u64>>()))
+                .collect();
+            threads
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        let distinct: std::collections::HashSet<u64> = draws.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            draws.len(),
+            "two racing draws got the same number"
+        );
     }
 
     #[test]
