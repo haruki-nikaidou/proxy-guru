@@ -9,6 +9,7 @@
 		"includes": [
 			"**",
 			"!typescript/app-protobuf",
+			"!.sqlx",
 			"!typescript/guru-frontend/src/lib/components/ui",
 			"!**/*.min.*",
 			"!bun.lock",
