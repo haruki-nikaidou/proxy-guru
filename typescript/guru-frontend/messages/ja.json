@@ -561,6 +561,7 @@
 	"editor_pod_port_hint": "空欄にすると、コントロールプレーンが 40000〜59999 の空いているポートを選びます。",
 	"editor_pod_added": "ポッドを追加しました",
 	"editor_pod_drawn_on": "{canvas} に表示",
+	"editor_pod_reorder": "ドラッグで並べ替えます（矢印キーでも可）。表示順が変わるだけで、何もデプロイされません。",
 	"editor_pod_id": "ポッド ID",
 	"editor_pod_id_copy": "ポッド ID をコピー",
 	"editor_pod_dialed_by": "ここへつながるポッド",

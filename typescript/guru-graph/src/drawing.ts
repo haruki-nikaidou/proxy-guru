@@ -17,7 +17,8 @@
  *   aggregator gathers them.
  *
  * Nothing here is stored: positions of what only the drawing has (splitters,
- * aggregators, portals) live in the canvas's `layout` group.
+ * aggregators, portals) live in the canvas's `layout` group, and the order a
+ * server's pods are listed in lives in that server's `pod_order` group.
  */
 
 import { hashKey } from './ids.js';
@@ -135,6 +136,8 @@ export const aggregatorOutHandle = (target: string) => `out:${target}`;
 
 /** Where the dashboard keeps what only the drawing has. */
 export const LAYOUT_KIND = 'layout';
+/** Where the dashboard keeps the order a server's pods are listed in. */
+export const POD_ORDER_KIND = 'pod_order';
 
 const SPLITTER_GAP = 320;
 const CARD_WIDTH = 300;
@@ -373,9 +376,8 @@ export function draw<S extends Server>(graph: Graph<S>, canvasId: Id): Drawing<S
 			const set = new Set<Id>();
 			for (const pod of card.pods) for (const rule of pod.rules) set.add(rule);
 			card.rules = orderRules(rules, set);
-			card.pods.sort(
-				(a, b) => a.pod.name.localeCompare(b.pod.name) || a.pod.id.localeCompare(b.pod.id)
-			);
+			const order = byPodOrder(graph, card.server.id);
+			card.pods.sort((a, b) => order(a.pod, b.pod));
 		} else if (card.kind === 'splitter' || card.kind === 'aggregator') {
 			const set = new Set<Id>();
 			for (const bus of buses.values()) {
@@ -720,6 +722,38 @@ export function positionsOf(group: Group | undefined): Map<string, Point> {
 		if (typeof x === 'number' && typeof y === 'number') out.set(id, { x, y });
 	}
 	return out;
+}
+
+/**
+ * The group that orders a server's pods: a `pod_order` group whose members are
+ * the server, then its pods as the operator lined them up. Two dashboards
+ * writing a server's first order at once can leave two such groups; the one
+ * with the lowest id is the one read and rewritten.
+ */
+export function podOrderGroup(graph: Graph, serverId: Id): Group | undefined {
+	let found: Group | undefined;
+	for (const group of graph.groups) {
+		if (group.kind !== POD_ORDER_KIND) continue;
+		if (!group.members.some(member => 'server' in member && member.server === serverId)) continue;
+		if (!found || group.id < found.id) found = group;
+	}
+	return found;
+}
+
+/**
+ * How a server's pods are listed, on its card and in its panel: those its
+ * `pod_order` group names in that order, then the rest by name. The order
+ * only tidies the list; nothing is derived from it.
+ */
+export function byPodOrder(graph: Graph, serverId: Id): (a: Pod, b: Pod) => number {
+	const rank = new Map<Id, number>();
+	for (const member of podOrderGroup(graph, serverId)?.members ?? []) {
+		if ('pod' in member && !rank.has(member.pod)) rank.set(member.pod, rank.size);
+	}
+	const unranked = rank.size;
+	const rankOf = (pod: Pod) => rank.get(pod.id) ?? unranked;
+	return (a, b) =>
+		rankOf(a) - rankOf(b) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 }
 
 /** Whether traffic can be dialed into this pod at all. */

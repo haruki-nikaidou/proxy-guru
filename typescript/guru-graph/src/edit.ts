@@ -8,7 +8,14 @@
  */
 
 import type { Drawing, Handle, Point, SplitterCard, SplitterMember } from './drawing.js';
-import { LAYOUT_KIND, layoutGroup, routeNodesAt } from './drawing.js';
+import {
+	byPodOrder,
+	LAYOUT_KIND,
+	layoutGroup,
+	POD_ORDER_KIND,
+	podOrderGroup,
+	routeNodesAt
+} from './drawing.js';
 import { newId } from './ids.js';
 import { drawnPositions } from './layout.js';
 import type {
@@ -849,4 +856,44 @@ export function moveCards<S extends Server>(
 		out.layout = change;
 	}
 	return out;
+}
+
+/**
+ * `podIds` as the order `serverId`'s pods are listed in, on its card and in its
+ * panel. Ids of pods the server does not have are dropped, and its pods left
+ * out follow in the order they had, so the group always names every one. Only
+ * the server's `pod_order` group is written — no pod, edge or route — so the
+ * control plane derives nothing from the change. The order already drawn is an
+ * empty change.
+ */
+export function reorderPods<S extends Server>(
+	graph: Graph<S>,
+	serverId: Id,
+	podIds: Iterable<Id>
+): GraphChange {
+	const server = graph.servers.find(s => s.id === serverId);
+	if (!server) throw new EditError('server_not_found');
+	const current = graph.pods
+		.filter(pod => pod.serverId === serverId)
+		.sort(byPodOrder(graph, serverId))
+		.map(pod => pod.id);
+	const own = new Set(current);
+	const order = new Set<Id>();
+	for (const id of podIds) if (own.has(id)) order.add(id);
+	for (const id of current) order.add(id);
+	const ids = [...order];
+	if (ids.every((id, index) => current[index] === id)) return emptyChange();
+	const existing = podOrderGroup(graph, serverId);
+	const draft = new Draft(graph);
+	draft.putGroup({
+		id: existing?.id ?? newId(),
+		// A group keeps the canvas it was made on: the control plane rewrites a
+		// group's members, never where it lives.
+		canvasId: existing?.canvasId ?? server.canvasId,
+		kind: POD_ORDER_KIND,
+		name: '',
+		props: {},
+		members: [{ server: serverId }, ...ids.map(pod => ({ pod }))]
+	});
+	return draft.change();
 }

@@ -18,6 +18,7 @@ import {
 	removeExits,
 	removePods,
 	removeSplitter,
+	reorderPods,
 	setIpFamily,
 	setSplitterPolicy,
 	targetOf
@@ -35,6 +36,7 @@ import {
 } from './fixture.test-util.js';
 import { isRecordKey } from './ids.js';
 import type { Graph, Route } from './model.js';
+import { isEmptyChange } from './model.js';
 import { leaves } from './route.js';
 
 const splitterOf = (graph: Graph): SplitterCard => {
@@ -668,5 +670,62 @@ describe('the IP family of a bus', () => {
 	test('a new way on starts on auto', () => {
 		const change = connect(fanOut(), 'web', { exit: 'exit-b' });
 		expect(change.putEdges.map(e => e.ipFamily)).toEqual(['auto']);
+	});
+});
+
+describe("the order a server's pods are listed in", () => {
+	const listed = (graph: Graph, serverId: string) => {
+		const card = draw(graph, 'root').cards.find(c => c.id === `server:${serverId}`);
+		return card?.kind === 'server' ? card.pods.map(drawn => drawn.pod.id) : [];
+	};
+
+	test('is one group on the server, and nothing else changes', () => {
+		const graph = fanOut();
+		expect(listed(graph, 'mobile')).toEqual(['api', 'web']);
+		const change = reorderPods(graph, 'mobile', ['web', 'api']);
+		const [group] = change.putGroups;
+		if (!group) throw new Error('no group');
+		expect(group).toMatchObject({
+			canvasId: 'root',
+			kind: 'pod_order',
+			members: [{ server: 'mobile' }, { pod: 'web' }, { pod: 'api' }]
+		});
+		expect(isRecordKey(group.id)).toBe(true);
+		expect(isEmptyChange({ ...change, putGroups: [] })).toBe(true);
+		const after = applied(graph, change);
+		expect(consistent(after)).toEqual([]);
+		expect(listed(after, 'mobile')).toEqual(['web', 'api']);
+		expect(after.pods).toEqual(graph.pods);
+
+		// A second order rewrites the same group.
+		const again = reorderPods(after, 'mobile', ['api', 'web']);
+		expect(again.putGroups.map(g => g.id)).toEqual([group.id]);
+		expect(listed(applied(after, again), 'mobile')).toEqual(['api', 'web']);
+	});
+
+	test("names each of the server's pods once: others are dropped, the rest follow", () => {
+		const graph: Graph = {
+			...fanOut(),
+			pods: [...fanOut().pods, pod('zed', 'mobile', 'client_raw')]
+		};
+		const change = reorderPods(graph, 'mobile', ['zed', 'web-g1', 'nope', 'zed']);
+		expect(change.putGroups[0]?.members).toEqual([
+			{ server: 'mobile' },
+			{ pod: 'zed' },
+			{ pod: 'api' },
+			{ pod: 'web' }
+		]);
+	});
+
+	test('the order already drawn writes nothing', () => {
+		const graph = fanOut();
+		expect(isEmptyChange(reorderPods(graph, 'mobile', ['api', 'web']))).toBe(true);
+		const after = applied(graph, reorderPods(graph, 'mobile', ['web']));
+		expect(listed(after, 'mobile')).toEqual(['web', 'api']);
+		expect(isEmptyChange(reorderPods(after, 'mobile', ['web', 'api']))).toBe(true);
+	});
+
+	test('a server that is not there is refused', () => {
+		expect(reasonOf(() => reorderPods(fanOut(), 'nowhere', []))).toBe('server_not_found');
 	});
 });

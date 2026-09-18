@@ -1,6 +1,8 @@
 <script lang="ts">
+import MenuIcon from '@lucide/svelte/icons/menu';
 import PlusIcon from '@lucide/svelte/icons/plus';
-import { newPod, putPod, type RelayKind } from 'guru-graph';
+import { byPodOrder, newPod, putPod, type RelayKind, reorderPods } from 'guru-graph';
+import { flip } from 'svelte/animate';
 import { useEditor } from '#lib/components/canvas/editor.svelte.js';
 import RuleDots from '#lib/components/canvas/nodes/RuleDots.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
@@ -10,21 +12,32 @@ import type { ServerDto } from '#lib/dto/topology.js';
 import { ingressLabel, listenLabel } from '#lib/i18n/labels.js';
 import { m } from '#lib/paraglide/messages.js';
 import { seedOn } from '#lib/seed.svelte.js';
+import { Sortable } from '#lib/sortable.svelte.js';
 
 /**
  * The pods that run on this server, wherever in the tree they are drawn, and a
  * row to add one. A new pod listens on a port the control plane picks unless one
  * is typed; how it listens — and everything else — is edited on the pod.
+ *
+ * The round handle at the start of a row drags the pod up or down the list. The
+ * order is the server's `pod_order` group, which the card on the canvas lists
+ * its rows by too; it is drawing only, so writing it deploys nothing.
  */
 let { server }: { server: ServerDto } = $props();
 
 const editor = useEditor();
 
-const pods = $derived(
+const stored = $derived(
 	editor.graph.pods
 		.filter(pod => pod.serverId === server.id)
-		.sort((a, b) => a.name.localeCompare(b.name))
+		.sort(byPodOrder(editor.graph, server.id))
 );
+const sortable = new Sortable(
+	() => stored.map(pod => pod.id),
+	ids => editor.commit(() => reorderPods(editor.graph, server.id, ids))
+);
+const pods = $derived(sortable.arrange(stored));
+const reorderable = $derived(editor.editable && pods.length > 1);
 const canvasName = (id: string) =>
 	editor.graph.canvases.find(canvas => canvas.id === id)?.name ?? id;
 const rulesOf = (podId: string) => editor.drawing.rules.pods.get(podId) ?? [];
@@ -42,6 +55,7 @@ let pending = $state(false);
 seedOn(
 	() => server.id,
 	() => {
+		sortable.reset();
 		name = '';
 		ingress = 'client_raw';
 		port = '';
@@ -77,26 +91,55 @@ async function add() {
 {#if pods.length === 0}
 	<p class="mt-2 text-sm text-muted-foreground">{m.editor_pod_none()}</p>
 {:else}
-	<ul class="mt-2 grid gap-1">
+	<!-- Positioned: the drag measures its rows from here. -->
+	<ul
+		bind:this={sortable.list}
+		class={[
+			'relative mt-2 grid gap-1',
+			sortable.held !== null && 'cursor-grabbing select-none **:cursor-grabbing'
+		]}
+	>
 		{#each pods as pod (pod.id)}
-			<li>
-				<button
-					type="button"
-					class="flex w-full items-center gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent"
-					onclick={() => editor.open({ kind: 'pod', id: pod.id })}
-				>
-					<RuleDots rules={rulesOf(pod.id)} max={4} />
-					<span class="min-w-0 truncate">{pod.name}</span>
-					<span class="shrink-0 text-xs text-muted-foreground">{ingressLabel(pod.ingress.kind)}</span>
-					<span class="ms-auto shrink-0 font-mono text-xs text-muted-foreground">
-						{listenLabel(pod.bindIp, pod.port)}
-					</span>
-				</button>
-				{#if pod.canvasId !== editor.canvasId}
-					<p class="px-2 text-xs text-muted-foreground">
-						{m.editor_pod_drawn_on({ canvas: canvasName(pod.canvasId) })}
-					</p>
+			<li
+				animate:flip={{ duration: 150 }}
+				data-sortable-id={pod.id}
+				class={[
+					'flex items-start gap-1 rounded',
+					sortable.held === pod.id && 'bg-card shadow-md ring-1 ring-border'
+				]}
+			>
+				{#if reorderable}
+					<button
+						type="button"
+						data-sortable-handle
+						class="mt-1 flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-full border bg-background text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						aria-label={m.editor_pod_reorder()}
+						title={m.editor_pod_reorder()}
+						onpointerdown={event => sortable.grab(event, pod.id)}
+						onkeydown={event => sortable.step(event, pod.id)}
+					>
+						<MenuIcon class="size-3" />
+					</button>
 				{/if}
+				<div class="min-w-0 flex-1">
+					<button
+						type="button"
+						class="flex w-full items-center gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent"
+						onclick={() => editor.open({ kind: 'pod', id: pod.id })}
+					>
+						<RuleDots rules={rulesOf(pod.id)} max={4} />
+						<span class="min-w-0 truncate">{pod.name}</span>
+						<span class="shrink-0 text-xs text-muted-foreground">{ingressLabel(pod.ingress.kind)}</span>
+						<span class="ms-auto shrink-0 font-mono text-xs text-muted-foreground">
+							{listenLabel(pod.bindIp, pod.port)}
+						</span>
+					</button>
+					{#if pod.canvasId !== editor.canvasId}
+						<p class="px-2 text-xs text-muted-foreground">
+							{m.editor_pod_drawn_on({ canvas: canvasName(pod.canvasId) })}
+						</p>
+					{/if}
+				</div>
 			</li>
 		{/each}
 	</ul>

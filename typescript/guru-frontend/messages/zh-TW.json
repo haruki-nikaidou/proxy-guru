@@ -561,6 +561,7 @@
 	"editor_pod_port_hint": "留空則由控制面在 40000–59999 中挑一個空閒連接埠。",
 	"editor_pod_added": "已新增 Pod",
 	"editor_pod_drawn_on": "畫在 {canvas}",
+	"editor_pod_reorder": "拖曳調整順序，也可以用方向鍵。只改變顯示順序，不會部署任何東西。",
 	"editor_pod_id": "Pod ID",
 	"editor_pod_id_copy": "複製 Pod ID",
 	"editor_pod_dialed_by": "連入來源",

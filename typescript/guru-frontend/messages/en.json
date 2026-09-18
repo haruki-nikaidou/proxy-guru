@@ -561,6 +561,7 @@
 	"editor_pod_port_hint": "Leave empty to let the control plane pick a free port between 40000 and 59999.",
 	"editor_pod_added": "Pod added",
 	"editor_pod_drawn_on": "drawn on {canvas}",
+	"editor_pod_reorder": "Drag to reorder, or use the arrow keys. Only the order shown changes; nothing is deployed.",
 	"editor_pod_id": "Pod ID",
 	"editor_pod_id_copy": "Copy pod ID",
 	"editor_pod_dialed_by": "Led into from",

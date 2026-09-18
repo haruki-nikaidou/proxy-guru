@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import type { AggregatorCard, SplitterCard } from './drawing.js';
-import { clearSpot, draw, routeNodesAt } from './drawing.js';
+import { byPodOrder, clearSpot, draw, podOrderGroup, routeNodesAt } from './drawing.js';
 import { connect } from './edit.js';
 import { applied, exit, fanOut, leaf, pod, server, toExit, toPod } from './fixture.test-util.js';
-import type { Graph } from './model.js';
+import type { Graph, Group } from './model.js';
 
 describe('drawing the production fan-out', () => {
 	const graph = fanOut();
@@ -165,6 +165,65 @@ describe('drawing across canvases', () => {
 		const portal = deep.cards.find(c => c.id === 'portal:root');
 		expect(portal?.kind === 'portal' && portal.exits.map(e => e.id)).toEqual(['origin']);
 		expect(portal?.kind === 'portal' && portal.pods.map(p => p.id)).toEqual(['entry']);
+	});
+});
+
+describe("the order of a server's pods", () => {
+	// Two pods drawn on the server's own canvas, two on a subcanvas, where the
+	// server is a ghost card.
+	const graph = (groups: Group[]): Graph => ({
+		canvases: [
+			{ id: 'root', name: 'root', description: '', parentId: null, x: 0, y: 0 },
+			{ id: 'sub', name: 'sub', description: '', parentId: 'root', x: 0, y: 0 }
+		],
+		servers: [server('a'), server('b')],
+		pods: [
+			pod('c', 'a', 'relay_tcp'),
+			pod('a1', 'a', 'relay_tcp'),
+			pod('d', 'a', 'relay_tcp', null, 'sub'),
+			pod('b1', 'a', 'relay_tcp', null, 'sub'),
+			pod('other', 'b', 'relay_tcp')
+		],
+		exits: [],
+		edges: [],
+		groups,
+		generation: 1
+	});
+	const order = (id: string, serverId: string, pods: string[]): Group => ({
+		id,
+		canvasId: 'root',
+		kind: 'pod_order',
+		name: '',
+		props: {},
+		members: [{ server: serverId }, ...pods.map(pod => ({ pod }))]
+	});
+	const listed = (g: Graph, canvasId: string) => {
+		const card = draw(g, canvasId).cards.find(c => c.id === 'server:a');
+		return card?.kind === 'server' ? card.pods.map(drawn => drawn.pod.id) : [];
+	};
+
+	test('is by name until one is given', () => {
+		expect(listed(graph([]), 'root')).toEqual(['a1', 'c']);
+		expect(listed(graph([]), 'sub')).toEqual(['b1', 'd']);
+	});
+
+	test("is the server's pod_order group on every card, pods it leaves out by name after", () => {
+		const g = graph([order('o1', 'a', ['d', 'c'])]);
+		expect(listed(g, 'root')).toEqual(['c', 'a1']);
+		expect(listed(g, 'sub')).toEqual(['d', 'b1']);
+		expect(
+			[...g.pods]
+				.sort(byPodOrder(g, 'a'))
+				.map(p => p.id)
+				.filter(id => id !== 'other')
+		).toEqual(['d', 'c', 'a1', 'b1']);
+	});
+
+	test("another server's group is not this one's, and of two the lowest id wins", () => {
+		expect(listed(graph([order('o1', 'b', ['c', 'a1'])]), 'root')).toEqual(['a1', 'c']);
+		const two = graph([order('o2', 'a', ['a1', 'c']), order('o1', 'a', ['c', 'a1'])]);
+		expect(podOrderGroup(two, 'a')?.id).toBe('o1');
+		expect(listed(two, 'root')).toEqual(['c', 'a1']);
 	});
 });
 
