@@ -5,8 +5,8 @@ use kanau::processor::Processor;
 
 use crate::entities::db::account::{
     AccountEntity, AccountId, AccountRole, CreateAccount, DeleteAccount as DeleteAccountEntity,
-    FindAccountByEmail, FindAccountById, ListAccounts as ListAccountsEntity, UpdateAccountEmail,
-    UpdateAccountPassword, UpdateAccountRole,
+    FindAccountById, ListAccounts as ListAccountsEntity, UpdateAccountEmail, UpdateAccountPassword,
+    UpdateAccountRole,
 };
 use crate::services::identity::Identity;
 use crate::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
@@ -46,19 +46,13 @@ impl Processor<RegisterAccount> for AccountService {
     async fn process(&self, input: RegisterAccount) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
         let email = normalize_email(&input.email);
-        if self
-            .db
-            .process(FindAccountByEmail { email: &email })
-            .await?
-            .is_some()
-        {
-            return Ok(RegisterResult::EmailTaken);
-        }
         let password_hash = self
             .hasher
             .hash_password(&input.password)
             .map_err(|e| wakuwaku::Error::BusinessPanic(anyhow::anyhow!(e)))?;
-        let account = self
+        // The insert itself finds out whether the address is taken: two
+        // registrations for one address can both pass a lookup made first.
+        let created = self
             .db
             .process(CreateAccount {
                 email,
@@ -66,7 +60,10 @@ impl Processor<RegisterAccount> for AccountService {
                 role: input.role,
             })
             .await?;
-        Ok(RegisterResult::Created(account))
+        Ok(match created {
+            Some(account) => RegisterResult::Created(account),
+            None => RegisterResult::EmailTaken,
+        })
     }
 }
 
@@ -207,21 +204,20 @@ impl Processor<ChangeOwnEmail> for AccountService {
         {
             return Ok(ChangeEmailResult::WrongPassword);
         }
-        let new_email = normalize_email(&input.new_email);
-        if let Some(existing) = self
+        // The update itself finds out whether another account has the address: two
+        // accounts moving to one address can both pass a lookup made first. Setting
+        // the address the account already has is no conflict.
+        let changed = self
             .db
-            .process(FindAccountByEmail { email: &new_email })
-            .await?
-            && existing.id != account.id
-        {
-            return Ok(ChangeEmailResult::EmailTaken);
-        }
-        self.db
             .process(UpdateAccountEmail {
                 id: account.id,
-                new_email,
+                new_email: normalize_email(&input.new_email),
             })
             .await?;
-        Ok(ChangeEmailResult::Changed)
+        Ok(if changed {
+            ChangeEmailResult::Changed
+        } else {
+            ChangeEmailResult::EmailTaken
+        })
     }
 }

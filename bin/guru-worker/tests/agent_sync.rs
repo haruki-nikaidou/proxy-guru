@@ -134,7 +134,8 @@ async fn boot_master_with(
             password_hash: hasher.hash_password("hunter2hunter2")?,
             role: AccountRole::Maintainer,
         })
-        .await?;
+        .await?
+        .ok_or("a fresh database has no account with this email")?;
     let api_keys = ApiKeyService { db: sp.clone() };
     let created = api_keys
         .process(CreateApiKey {

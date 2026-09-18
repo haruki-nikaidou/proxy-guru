@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO auth_account (id, email, password_hash, role)\n               VALUES ($1, $2, $3, $4)\n               RETURNING id AS \"id: AccountId\", email, password_hash, role AS \"role: AccountRole\"",
+  "query": "INSERT INTO auth_account (id, email, password_hash, role)\n               VALUES ($1, $2, $3, $4)\n               ON CONFLICT (email) DO NOTHING\n               RETURNING id AS \"id: AccountId\", email, password_hash, role AS \"role: AccountRole\"",
   "describe": {
     "columns": [
       {
@@ -63,5 +63,5 @@
       false
     ]
   },
-  "hash": "98a3699e840ee14eeb3e52b10078831a3b5f239b4749ecc4a0b4fa9442027fb6"
+  "hash": "40330fc351abd6ca9c981f3d28bc9492aa7d29b6a07875f37f620c3cf655c423"
 }

@@ -4,6 +4,11 @@ use kanau::processor::Processor;
 
 table_record!(AccountId, "auth_account");
 
+/// The unique constraint on `auth_account.email`. It decides whether an address is
+/// taken: a lookup before the write would leave a window in which two writes for
+/// one address both pass it.
+pub const EMAIL_KEY: &str = "auth_account_email_key";
+
 #[derive(Debug, Clone)]
 pub struct AccountEntity {
     pub id: AccountId,
@@ -52,7 +57,8 @@ pub struct CreateAccount {
 }
 
 impl Processor<CreateAccount> for Db {
-    type Output = AccountEntity;
+    /// `None` when another account already has the email; nothing is written then.
+    type Output = Option<AccountEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateAccount", skip_all, err)]
     async fn process(&self, input: CreateAccount) -> Result<Self::Output, Self::Error> {
@@ -60,13 +66,14 @@ impl Processor<CreateAccount> for Db {
             AccountEntity,
             r#"INSERT INTO auth_account (id, email, password_hash, role)
                VALUES ($1, $2, $3, $4)
+               ON CONFLICT (email) DO NOTHING
                RETURNING id AS "id: AccountId", email, password_hash, role AS "role: AccountRole""#,
             AccountId::new() as _,
             input.email,
             input.password_hash,
             input.role as _
         )
-        .fetch_one(self.db())
+        .fetch_optional(self.db())
         .await?)
     }
 }
@@ -98,18 +105,24 @@ pub struct UpdateAccountEmail {
 }
 
 impl Processor<UpdateAccountEmail> for Db {
-    type Output = ();
+    /// `false` when another account already has the address; nothing is written then.
+    type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateAccountEmail", skip_all, err)]
     async fn process(&self, input: UpdateAccountEmail) -> Result<Self::Output, Self::Error> {
-        sqlx::query!(
+        match sqlx::query!(
             "UPDATE auth_account SET email = $2 WHERE id = $1",
             input.id as _,
             input.new_email
         )
         .execute(self.db())
-        .await?;
-        Ok(())
+        .await
+        .map_err(Error::from)
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.unique_violation() == Some(EMAIL_KEY) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }
 

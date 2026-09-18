@@ -11,7 +11,7 @@
 //! See `bin/manage-tool/README.md` for the full description.
 
 use auth::config::AuthConfig;
-use auth::entities::db::account::{AccountRole, CreateAccount, FindAccountByEmail};
+use auth::entities::db::account::{AccountRole, CreateAccount};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use base::db::{Db, PoolSettings};
 use base::entities::db::app_config::{ConfigJson, FindRawConfig};
@@ -413,23 +413,18 @@ async fn create_admin(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let email = email.trim().to_lowercase();
 
-    if db
-        .process(FindAccountByEmail { email: &email })
-        .await?
-        .is_some()
-    {
-        eprintln!("An account with email {email} already exists");
-        std::process::exit(1);
-    }
-
     let password_hash = Argon2PasswordAlgorithm::default().hash_password(&password)?;
-    let account = db
+    let Some(account) = db
         .process(CreateAccount {
-            email,
+            email: email.clone(),
             password_hash,
             role: AccountRole::Admin,
         })
-        .await?;
+        .await?
+    else {
+        eprintln!("An account with email {email} already exists");
+        std::process::exit(1);
+    };
 
     println!("Created admin account {}", account.id);
     Ok(())

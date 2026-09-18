@@ -6,11 +6,11 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use auth::config::AuthConfig;
-use auth::entities::db::account::{AccountRole, CreateAccount};
+use auth::entities::db::account::{AccountRole, CreateAccount, UpdateAccountEmail};
 use auth::entities::db::session::FindSessionById;
 use auth::services::account::{
-    AccountService, ChangeOwnPassword, ChangePasswordResult, RegisterAccount, RegisterResult,
-    SetAccountRole,
+    AccountService, ChangeEmailResult, ChangeOwnEmail, ChangeOwnPassword, ChangePasswordResult,
+    RegisterAccount, RegisterResult, SetAccountRole,
 };
 use auth::services::api_key::{ApiKeyService, AuthenticateApiKey, CreateApiKey};
 use auth::services::identity::{Identity, IdentityKind};
@@ -51,6 +51,25 @@ fn session_identity(
     }
 }
 
+/// Creates an account through the entity layer; returns the identity a session of
+/// it carries.
+async fn create(
+    sp: &Db,
+    email: &str,
+    password: &str,
+    role: AccountRole,
+) -> Result<Identity, Box<dyn std::error::Error>> {
+    let account = sp
+        .process(CreateAccount {
+            email: email.to_string(),
+            password_hash: Argon2PasswordAlgorithm::default().hash_password(password)?,
+            role,
+        })
+        .await?
+        .ok_or("the email is already taken")?;
+    Ok(session_identity(account.id, role))
+}
+
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     let (sp, accounts, sessions, api_keys) = setup(pool);
@@ -63,7 +82,8 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
             password_hash: hasher.hash_password("admin-password")?,
             role: AccountRole::Admin,
         })
-        .await?;
+        .await?
+        .expect("a fresh database has no account with this email");
     let admin_identity = session_identity(admin.id.clone(), AccountRole::Admin);
 
     // 2. Admin registers a maintainer and an observer.
@@ -347,5 +367,96 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request(
             .await?
             .is_none()
     );
+    Ok(())
+}
+
+/// Whether an address is taken is the unique constraint's answer, and it comes back
+/// as a result, not an error: a registration or an address change that raced
+/// another for the same address reaches its write with nothing any lookup could
+/// have found, and still has to be told the address is taken.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_write_to_a_taken_address_is_refused_not_failed(pool: sqlx::PgPool) -> TestResult {
+    let (sp, _accounts, _sessions, _api_keys) = setup(pool);
+    let alice = create(
+        &sp,
+        "alice@example.com",
+        "alice-password",
+        AccountRole::Maintainer,
+    )
+    .await?;
+    let bob = create(
+        &sp,
+        "bob@example.com",
+        "bob-password",
+        AccountRole::Maintainer,
+    )
+    .await?;
+
+    let second = sp
+        .process(CreateAccount {
+            email: "alice@example.com".to_string(),
+            password_hash: "never-used".to_string(),
+            role: AccountRole::Observer,
+        })
+        .await?;
+    assert!(second.is_none(), "a second account for one address");
+    assert!(
+        !sp.process(UpdateAccountEmail {
+            id: bob.account_id.clone(),
+            new_email: "alice@example.com".to_string(),
+        })
+        .await?,
+        "moving onto another account's address"
+    );
+    assert!(
+        sp.process(UpdateAccountEmail {
+            id: alice.account_id.clone(),
+            new_email: "alice@example.com".to_string(),
+        })
+        .await?,
+        "an account's own address is no conflict"
+    );
+    Ok(())
+}
+
+/// Changing one's address to one another account has is answered as taken, and to
+/// one's own address as changed.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn changing_to_another_accounts_address_is_taken(pool: sqlx::PgPool) -> TestResult {
+    let (sp, accounts, _sessions, _api_keys) = setup(pool);
+    let alice = create(
+        &sp,
+        "alice@example.com",
+        "alice-password",
+        AccountRole::Maintainer,
+    )
+    .await?;
+    create(
+        &sp,
+        "bob@example.com",
+        "bob-password",
+        AccountRole::Maintainer,
+    )
+    .await?;
+    let change = |new_email: &str| {
+        accounts.process(ChangeOwnEmail {
+            actor: alice.clone(),
+            new_email: new_email.to_string(),
+            current_password: "alice-password".to_string(),
+        })
+    };
+
+    assert!(matches!(
+        change(" Bob@Example.com ").await?,
+        ChangeEmailResult::EmailTaken
+    ));
+    assert!(matches!(
+        change("alice@example.com").await?,
+        ChangeEmailResult::Changed
+    ));
+    assert!(matches!(
+        change("alice@example.org").await?,
+        ChangeEmailResult::Changed
+    ));
     Ok(())
 }
