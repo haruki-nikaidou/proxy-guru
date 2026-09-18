@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)\n         VALUES ($1, 'cf', 'cloudflare', '', 'enc1:secret', now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ca5c2d04c5395071bd151d5938f8802ceebf6b351e7006a578e0e4222d14ff27"
+}

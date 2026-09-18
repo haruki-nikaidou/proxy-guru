@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration_canvas (id, name, description) VALUES ($1, $2, '')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3caf21e8962cf570a02f95f23bb0d6f3ad0a17cb3232d4afeac9574298ce242d"
+}
