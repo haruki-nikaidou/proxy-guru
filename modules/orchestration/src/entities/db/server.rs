@@ -3,12 +3,12 @@ use crate::entities::db::fence;
 use crate::entities::db::health::ServerHealthStatus;
 use crate::entities::db::view::ConfigSnapshot;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use time::OffsetDateTime;
 
 table_record!(ServerId, "orchestration_server");
 
@@ -35,15 +35,15 @@ pub struct ServerEntity {
     pub watch_epoch: i64,
     /// While this is in the future, one worker session owns the server: another
     /// registration is refused until it lapses or the owning stream releases it.
-    pub session_lease_until: Option<DateTime<Utc>>,
+    pub session_lease_until: Option<OffsetDateTime>,
     /// When the session holding `refresh_key_generation` registered; `None` until
     /// a worker ever has.
-    pub registered_at: Option<DateTime<Utc>>,
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub registered_at: Option<OffsetDateTime>,
+    pub last_seen_at: Option<OffsetDateTime>,
     /// When the last health report was accepted. Distinct from `last_seen_at`
     /// (the watch stream's heartbeat) so a live config stream cannot mask a dead
     /// health stream.
-    pub last_health_report_at: Option<DateTime<Utc>>,
+    pub last_health_report_at: Option<OffsetDateTime>,
     /// Current liveness, kept by the health pipeline; `Offline` until a worker
     /// reports.
     pub health_status: ServerHealthStatus,
@@ -57,7 +57,7 @@ pub struct ServerEntity {
     pub reported_addresses: Option<ReportedAddresses>,
     /// The peer address the master saw the last registration come from.
     pub observed_address: Option<String>,
-    pub observed_at: Option<DateTime<Utc>>,
+    pub observed_at: Option<OffsetDateTime>,
     /// The worker crate version the last registration reported; `None` until a
     /// worker that reports one registers.
     pub agent_version: Option<String>,
@@ -73,7 +73,7 @@ pub struct ServerEntity {
     /// SHA-256 of the server's own agent key, which authenticates `Register` in
     /// place of an operator API key. Only the digest is ever stored.
     pub agent_key_digest: Option<String>,
-    pub agent_key_issued_at: Option<DateTime<Utc>>,
+    pub agent_key_issued_at: Option<OffsetDateTime>,
     /// ISO 3166-1 alpha-2 country of `country_address`, upper-case, as the master
     /// looked it up; `None` until a lookup for that address succeeded.
     pub country: Option<String>,
@@ -82,7 +82,7 @@ pub struct ServerEntity {
     /// the old address's flag.
     pub country_address: Option<String>,
     /// The last lookup for `country_address`, successful or not.
-    pub country_checked_at: Option<DateTime<Utc>>,
+    pub country_checked_at: Option<OffsetDateTime>,
     /// What the server's worker reads beyond the config every worker reads, as
     /// it reported on its last registration (`route_table`, `relay_confirm`).
     pub capabilities: Vec<String>,
@@ -105,27 +105,27 @@ pub(crate) struct ServerRow {
     pub(crate) current_dynamic_refresh_key: Option<String>,
     pub(crate) refresh_key_generation: i64,
     pub(crate) watch_epoch: i64,
-    pub(crate) session_lease_until: Option<DateTime<Utc>>,
-    pub(crate) registered_at: Option<DateTime<Utc>>,
-    pub(crate) last_seen_at: Option<DateTime<Utc>>,
-    pub(crate) last_health_report_at: Option<DateTime<Utc>>,
+    pub(crate) session_lease_until: Option<OffsetDateTime>,
+    pub(crate) registered_at: Option<OffsetDateTime>,
+    pub(crate) last_seen_at: Option<OffsetDateTime>,
+    pub(crate) last_health_report_at: Option<OffsetDateTime>,
     pub(crate) health_status: ServerHealthStatus,
     pub(crate) override_v4: Option<String>,
     pub(crate) override_v6: Option<String>,
     pub(crate) extra_addresses: Vec<String>,
     pub(crate) reported_addresses: Option<Json<ReportedAddresses>>,
     pub(crate) observed_address: Option<String>,
-    pub(crate) observed_at: Option<DateTime<Utc>>,
+    pub(crate) observed_at: Option<OffsetDateTime>,
     pub(crate) agent_version: Option<String>,
     pub(crate) agent_arch: Option<String>,
     pub(crate) agent_unit: Option<String>,
     pub(crate) agent_update_requested: Option<String>,
     pub(crate) agent_update_error: Option<String>,
     pub(crate) agent_key_digest: Option<String>,
-    pub(crate) agent_key_issued_at: Option<DateTime<Utc>>,
+    pub(crate) agent_key_issued_at: Option<OffsetDateTime>,
     pub(crate) country: Option<String>,
     pub(crate) country_address: Option<String>,
-    pub(crate) country_checked_at: Option<DateTime<Utc>>,
+    pub(crate) country_checked_at: Option<OffsetDateTime>,
     pub(crate) capabilities: Vec<String>,
 }
 
@@ -180,7 +180,8 @@ pub struct ReportedAddresses {
     pub public_v4: Option<String>,
     pub public_v6: Option<String>,
     pub interfaces: Vec<String>,
-    pub reported_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub reported_at: OffsetDateTime,
 }
 
 impl ReportedAddresses {
@@ -490,7 +491,7 @@ pub struct SetServerCountry {
     pub server: ServerId,
     pub address: Option<String>,
     pub country: Option<String>,
-    pub checked_at: Option<DateTime<Utc>>,
+    pub checked_at: Option<OffsetDateTime>,
 }
 
 impl Processor<SetServerCountry> for Db {
@@ -595,7 +596,7 @@ pub struct SetServerAgentKey {
     pub id: ServerId,
     pub digest: String,
     pub unit: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<SetServerAgentKey> for Db {
@@ -789,9 +790,9 @@ impl Processor<DeleteServerRow> for Db {
 pub struct RegisterWorkerSession {
     pub server: ServerId,
     pub digest: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
     /// The lease deadline the new session gets.
-    pub lease_until: DateTime<Utc>,
+    pub lease_until: OffsetDateTime,
     /// The revision the worker says it is running; `0` for a fresh worker.
     pub running_revision: i64,
     /// The peer address this registration arrived from, if known.
@@ -989,8 +990,8 @@ pub struct ClaimServerWatchSession {
     pub server: ServerId,
     /// The generation the claiming stream authenticated with.
     pub generation: i64,
-    pub now: DateTime<Utc>,
-    pub lease_until: DateTime<Utc>,
+    pub now: OffsetDateTime,
+    pub lease_until: OffsetDateTime,
 }
 
 impl Processor<ClaimServerWatchSession> for Db {
@@ -1030,8 +1031,8 @@ pub struct RenewServerWatchSession {
     pub server: ServerId,
     pub generation: i64,
     pub epoch: i64,
-    pub now: DateTime<Utc>,
-    pub lease_until: DateTime<Utc>,
+    pub now: OffsetDateTime,
+    pub lease_until: OffsetDateTime,
 }
 
 impl Processor<RenewServerWatchSession> for Db {
@@ -1101,9 +1102,9 @@ impl Processor<ReleaseServerWatchSession> for Db {
 /// session keeps its lease.
 #[derive(Debug)]
 pub struct RevokeSilentWatchSessions {
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
     /// Only a registration strictly older than this has been silent long enough.
-    pub registered_before: DateTime<Utc>,
+    pub registered_before: OffsetDateTime,
 }
 
 impl Processor<RevokeSilentWatchSessions> for Db {
@@ -1160,5 +1161,27 @@ impl Processor<FindCanvasOfServer> for Db {
         )
         .fetch_optional(self.db())
         .await?)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// `reported_addresses` is a `jsonb` column, so the report's timestamp is
+    /// part of the persisted shape and stays RFC 3339 in both directions.
+    #[test]
+    fn a_stored_address_report_reads_back_from_rfc3339() {
+        let stored = r#"{"public_v4":"203.0.113.7","public_v6":null,"interfaces":["eth0"],"reported_at":"2026-09-21T14:14:56.789012Z"}"#;
+        let reported: ReportedAddresses = serde_json::from_str(stored).unwrap();
+        assert_eq!(
+            reported.reported_at.unix_timestamp_nanos(),
+            1_790_000_096_789_012_000
+        );
+        assert_eq!(
+            serde_json::to_value(&reported).unwrap()["reported_at"],
+            "2026-09-21T14:14:56.789012Z"
+        );
     }
 }

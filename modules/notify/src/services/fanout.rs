@@ -21,7 +21,6 @@ use crate::events::{HealthNotice, HealthNotifyGroupEvent, HealthNotifyPersonalEv
 use crate::services::NotifyError;
 use auth::services::identity::Identity;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use orchestration::entities::db::canvas::CanvasId;
 use orchestration::entities::db::health::{PodHealthStatus, ServerHealthStatus};
@@ -30,6 +29,7 @@ use orchestration::entities::db::server::ServerId;
 use orchestration::events::HealthFact;
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
 
 /// Decides the audience of every health fact and publishes one notice per
@@ -176,7 +176,7 @@ impl FanoutService {
         }
         let mut pods = Vec::with_capacity(latest.len());
         let mut statuses = Vec::with_capacity(latest.len());
-        let mut newest = DateTime::<Utc>::MIN_UTC;
+        let mut newest = PrimitiveDateTime::MIN.assume_utc();
         for fact in &latest {
             let HealthFact::Pod {
                 pod,
@@ -340,7 +340,8 @@ impl Processor<SendTestNotice> for FanoutService {
                     canvas: input.canvas.into_string(),
                     canvas_name,
                     message: String::new(),
-                    at_unix_micros: Utc::now().timestamp_micros(),
+                    at_unix_micros: (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000)
+                        as i64,
                 },
                 language: recipient.language,
                 account: recipient.account.into_string(),
@@ -379,6 +380,7 @@ fn pod_kind(status: PodHealthStatus) -> NoticeKind {
 /// A fact's timestamp. One too large for a calendar is a corrupt event, not a
 /// reason to drop the notice: the row's `changed_at` is bookkeeping, and `now`
 /// is the closest honest answer.
-fn at(unix_micros: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_micros(unix_micros).unwrap_or_else(Utc::now)
+fn at(unix_micros: i64) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_micros).saturating_mul(1_000))
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
 }

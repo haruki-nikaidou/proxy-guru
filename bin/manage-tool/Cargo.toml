@@ -32,7 +32,7 @@ serde_json = { workspace = true }
 
 # Data types
 uuid = { workspace = true }
-chrono = { workspace = true }
+time = { workspace = true }
 
 # Hashing (the published binary's SHA-256)
 sha2 = { workspace = true }

@@ -30,8 +30,8 @@ use crate::events::RenewCertificatesSignal;
 use crate::services::acme::{
     AcmeService, EnsureRequestedCertificates, IssueCertificate, IssueOutcome,
 };
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use wakuwaku::amqp::AmqpMessageProcessor;
 
 /// One pass: ensure rows, then work through the due ones.
@@ -39,24 +39,23 @@ pub async fn renew_due(acme: &AcmeService) {
     if let Err(e) = acme.process(EnsureRequestedCertificates).await {
         tracing::error!(error = %e, "ensuring certificate rows failed");
     }
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     // The window that lists a row: an attempt is stamped at claim time, so a row
     // whose order is still running (or crashed) waits out `acme_retry_after`.
     let retry_before = now
-        .checked_sub_signed(
-            chrono::Duration::from_std(acme.config.acme_retry_after())
-                .unwrap_or(chrono::TimeDelta::MAX),
+        .checked_sub(
+            time::Duration::try_from(acme.config.acme_retry_after()).unwrap_or(time::Duration::MAX),
         )
-        .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        .unwrap_or(PrimitiveDateTime::MIN.assume_utc());
     let due = match acme
         .db
         .process(ListCertificatesDue {
             renew_before: now
-                .checked_add_signed(
-                    chrono::Duration::from_std(acme.config.acme_renew_before())
-                        .unwrap_or(chrono::TimeDelta::MAX),
+                .checked_add(
+                    time::Duration::try_from(acme.config.acme_renew_before())
+                        .unwrap_or(time::Duration::MAX),
                 )
-                .unwrap_or(DateTime::<Utc>::MAX_UTC),
+                .unwrap_or(PrimitiveDateTime::MAX.assume_utc()),
             retry_before,
         })
         .await
@@ -73,7 +72,7 @@ pub async fn renew_due(acme: &AcmeService) {
             .db
             .process(ClaimCertificateAttempt {
                 id: row.id.clone(),
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
                 seen_attempt_at: row.last_attempt_at,
             })
             .await

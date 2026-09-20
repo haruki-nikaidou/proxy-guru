@@ -6,13 +6,13 @@
 mod common;
 
 use base::db::Db;
-use chrono::{DateTime, TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::server::{FindServerById, ServerEntity, ServerId};
 use orchestration::services::country::{CountryPass, CountryService, ResolveServerCountries};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -89,7 +89,7 @@ async fn pin_v4(db: &Db, id: &ServerId, address: &str) {
     .unwrap();
 }
 
-async fn pass(service: &CountryService, now: DateTime<Utc>) -> CountryPass {
+async fn pass(service: &CountryService, now: OffsetDateTime) -> CountryPass {
     service
         .process(ResolveServerCountries { now })
         .await
@@ -114,7 +114,7 @@ async fn each_public_address_is_looked_up_once(pool: sqlx::PgPool) -> TestResult
     ])
     .await;
     let service = service(&db, &template);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
 
     let first = pass(&service, now).await;
     assert_eq!(
@@ -158,7 +158,7 @@ async fn a_moved_address_hides_the_old_answer_until_it_is_looked_up(
     ])
     .await;
     let service = service(&db, &template);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     pass(&service, now).await;
     assert_eq!(row(&db, &server.id).await.country_of_v4(), Some("HK"));
 
@@ -201,7 +201,7 @@ async fn a_failed_lookup_is_retried_only_after_the_delay(pool: sqlx::PgPool) -> 
     let server = server_at(&db, &c, "edge", "8.8.8.8").await?;
     let (template, asked) = lookup_service(vec![("8.8.8.8", 500, "upstream down")]).await;
     let service = service(&db, &template);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
 
     let failed = pass(&service, now).await;
     assert_eq!(
@@ -218,11 +218,11 @@ async fn a_failed_lookup_is_retried_only_after_the_delay(pool: sqlx::PgPool) -> 
     assert!(stored.country_checked_at.is_some());
 
     // The default delay is an hour.
-    let soon = now + TimeDelta::minutes(30);
+    let soon = now + Duration::minutes(30);
     assert_eq!(pass(&service, soon).await, CountryPass::default());
     assert_eq!(asked.lock().await.len(), 1);
 
-    let later = now + TimeDelta::minutes(61);
+    let later = now + Duration::minutes(61);
     assert_eq!(pass(&service, later).await.looked_up, 1);
     assert_eq!(asked.lock().await.len(), 2);
     Ok(())
@@ -234,7 +234,10 @@ async fn an_empty_url_turns_the_lookup_off(pool: sqlx::PgPool) -> TestResult {
     let c = canvas(&db, "prod").await?;
     let server = server_at(&db, &c, "edge", "8.8.8.8").await?;
     let service = service(&db, "  ");
-    assert_eq!(pass(&service, Utc::now()).await, CountryPass::default());
+    assert_eq!(
+        pass(&service, OffsetDateTime::now_utc()).await,
+        CountryPass::default()
+    );
     assert_eq!(row(&db, &server.id).await.country_checked_at, None);
     Ok(())
 }

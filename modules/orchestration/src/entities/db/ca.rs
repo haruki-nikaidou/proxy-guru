@@ -8,9 +8,9 @@
 
 use crate::entities::db::pod::PodId;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 table_record!(InternalCaId, "internal_ca");
 
@@ -34,8 +34,8 @@ pub struct InternalCaEntity {
     pub certificate_pem: String,
     /// Encrypted.
     pub private_key_pem: String,
-    pub not_after: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub not_after: OffsetDateTime,
+    pub created_at: OffsetDateTime,
 }
 
 /// Creates the CA row (`manage-tool orchestration init-ca`). Returns `false`
@@ -45,8 +45,8 @@ pub struct InternalCaEntity {
 pub struct CreateInternalCa {
     pub certificate_pem: String,
     pub private_key_pem: String,
-    pub not_after: DateTime<Utc>,
-    pub now: DateTime<Utc>,
+    pub not_after: OffsetDateTime,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<CreateInternalCa> for Db {
@@ -101,8 +101,8 @@ pub struct RelayCertificateEntity {
     /// Encrypted.
     pub private_key_pem: String,
     pub certificate_pem: String,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: OffsetDateTime,
+    pub not_after: OffsetDateTime,
     pub version: i64,
 }
 
@@ -123,8 +123,8 @@ pub struct StoreRelayCertificate {
     pub sni: String,
     pub private_key_pem: String,
     pub certificate_pem: String,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: OffsetDateTime,
+    pub not_after: OffsetDateTime,
     pub expected_version: Option<i64>,
 }
 
@@ -229,7 +229,7 @@ impl Processor<ListRelayCertificatesByIds> for Db {
 /// Leaves whose `not_after` is before the cut-off: the rotation cron's input.
 #[derive(Debug)]
 pub struct ListRelayCertificatesExpiringBefore {
-    pub before: DateTime<Utc>,
+    pub before: OffsetDateTime,
 }
 
 impl Processor<ListRelayCertificatesExpiringBefore> for Db {

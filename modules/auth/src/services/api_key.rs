@@ -1,8 +1,8 @@
 //! API-key lifecycle and machine authentication.
 
 use base::db::Db;
-use chrono::Utc;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 use crate::entities::db::account::{AccountRole, FindAccountById};
 use crate::entities::db::api_key::{
@@ -46,7 +46,7 @@ impl Processor<CreateApiKey> for ApiKeyService {
                 name: input.name,
                 owner: input.actor.account_id,
                 secret_sha256,
-                created_at: Utc::now(),
+                created_at: OffsetDateTime::now_utc(),
             })
             .await?;
         Ok(CreatedApiKey { id, secret })

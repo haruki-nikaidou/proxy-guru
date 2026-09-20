@@ -5,7 +5,6 @@
 
 mod common;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::canvas::{CanvasEntity, FindCanvasById};
@@ -25,6 +24,8 @@ use orchestration::services::dns::{
     CreateDnsProvider, DeleteDnsProvider, DnsProviderSummary, ListDnsProviders, UpdateDnsProvider,
 };
 use std::sync::Arc;
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
 
 const DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -71,7 +72,7 @@ async fn ensure(
         dns_provider: provider.id.clone(),
         domain_id: "zone1".to_string(),
         acme_directory: directory.to_string(),
-        now: Utc::now(),
+        now: OffsetDateTime::now_utc(),
     })
     .await
     .unwrap()
@@ -89,16 +90,16 @@ async fn find(w: &World, cert: &CertificateEntity) -> CertificateEntity {
 async fn store_issued(
     w: &World,
     cert: &CertificateEntity,
-    not_after: DateTime<Utc>,
+    not_after: OffsetDateTime,
 ) -> CertificateEntity {
     w.db.process(StoreIssuedCertificate {
         id: cert.id.clone(),
         acme_account_key: "enc1:acct".to_string(),
         private_key_pem: "enc1:key".to_string(),
         full_chain_pem: "chain".to_string(),
-        not_before: Utc::now(),
+        not_before: OffsetDateTime::now_utc(),
         not_after,
-        now: Utc::now(),
+        now: OffsetDateTime::now_utc(),
     })
     .await
     .unwrap()
@@ -108,7 +109,7 @@ async fn mark_failed(w: &World, cert: &CertificateEntity, error: &str) {
     w.db.process(MarkCertificateAttemptFailed {
         id: cert.id.clone(),
         error: error.to_string(),
-        now: Utc::now(),
+        now: OffsetDateTime::now_utc(),
     })
     .await
     .unwrap();
@@ -337,7 +338,7 @@ async fn ensure_certificate_is_idempotent_per_sni_and_directory(pool: sqlx::PgPo
             dns_provider: other.id.clone(),
             domain_id: "other-zone".into(),
             acme_directory: DIRECTORY.into(),
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
         })
         .await?;
     assert_eq!(
@@ -364,18 +365,18 @@ async fn ensure_certificate_is_idempotent_per_sni_and_directory(pool: sqlx::PgPo
 async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let provider = create_provider(&w, "cf", "tok").await;
-    let now = Utc::now();
-    let renew_before = now + TimeDelta::days(30);
+    let now = OffsetDateTime::now_utc();
+    let renew_before = now + Duration::days(30);
 
     let pending = ensure(&w, &provider, "pending.example.com", DIRECTORY).await;
     let failed = ensure(&w, &provider, "failed.example.com", DIRECTORY).await;
     mark_failed(&w, &failed, "boom").await;
     let fresh = ensure(&w, &provider, "fresh.example.com", DIRECTORY).await;
-    store_issued(&w, &fresh, now + TimeDelta::days(80)).await;
+    store_issued(&w, &fresh, now + Duration::days(80)).await;
     let expiring = ensure(&w, &provider, "expiring.example.com", DIRECTORY).await;
-    store_issued(&w, &expiring, now + TimeDelta::days(10)).await;
+    store_issued(&w, &expiring, now + Duration::days(10)).await;
     let forced = ensure(&w, &provider, "forced.example.com", DIRECTORY).await;
-    store_issued(&w, &forced, now + TimeDelta::days(80)).await;
+    store_issued(&w, &forced, now + Duration::days(80)).await;
     w.certificates
         .process(RetryCertificate {
             actor: operator(),
@@ -388,7 +389,7 @@ async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestR
     let throttled =
         w.db.process(ListCertificatesDue {
             renew_before,
-            retry_before: now - TimeDelta::hours(1),
+            retry_before: now - Duration::hours(1),
         })
         .await?;
     assert_eq!(keys(&throttled), keys(&[pending.clone(), forced.clone()]));
@@ -397,7 +398,7 @@ async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestR
     let due =
         w.db.process(ListCertificatesDue {
             renew_before,
-            retry_before: now + TimeDelta::hours(1),
+            retry_before: now + Duration::hours(1),
         })
         .await?;
     assert_eq!(
@@ -417,7 +418,7 @@ async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestR
     assert!(
         w.db.process(ClaimCertificateAttempt {
             id: pending.id.clone(),
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
             seen_attempt_at: None,
         })
         .await?
@@ -425,7 +426,7 @@ async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestR
     let claimed =
         w.db.process(ListCertificatesDue {
             renew_before,
-            retry_before: now - TimeDelta::hours(1),
+            retry_before: now - Duration::hours(1),
         })
         .await?;
     assert_eq!(
@@ -436,7 +437,7 @@ async fn list_certificates_due_picks_the_right_rows(pool: sqlx::PgPool) -> TestR
     let window_passed =
         w.db.process(ListCertificatesDue {
             renew_before,
-            retry_before: Utc::now() + TimeDelta::hours(1),
+            retry_before: OffsetDateTime::now_utc() + Duration::hours(1),
         })
         .await?;
     assert_eq!(
@@ -459,7 +460,7 @@ async fn store_issued_bumps_version_and_clears_the_failure(pool: sqlx::PgPool) -
     assert_eq!(failed.last_error.as_deref(), Some("dns timeout"));
     assert!(failed.last_attempt_at.is_some());
 
-    let issued = store_issued(&w, &cert, Utc::now() + TimeDelta::days(90)).await;
+    let issued = store_issued(&w, &cert, OffsetDateTime::now_utc() + Duration::days(90)).await;
     assert_eq!(issued.status, CertificateStatus::Issued);
     assert_eq!(issued.version, 1);
     assert!(issued.last_error.is_none());
@@ -472,7 +473,7 @@ async fn store_issued_bumps_version_and_clears_the_failure(pool: sqlx::PgPool) -
     assert_eq!(still_issued.last_error.as_deref(), Some("rate limited"));
     assert!(still_issued.is_issued());
 
-    let renewed = store_issued(&w, &cert, Utc::now() + TimeDelta::days(90)).await;
+    let renewed = store_issued(&w, &cert, OffsetDateTime::now_utc() + Duration::days(90)).await;
     assert_eq!(renewed.version, 2);
     assert!(renewed.last_error.is_none());
     Ok(())
@@ -667,12 +668,12 @@ async fn issue_certificate_stores_encrypted_material_and_touches_canvases(
     assert_eq!(issued.status, CertificateStatus::Issued);
     assert_eq!(issued.version, 1);
     assert_eq!(
-        issued.not_before.unwrap().to_rfc3339(),
-        "2026-01-01T00:00:00+00:00"
+        issued.not_before.unwrap().format(&Rfc3339)?,
+        "2026-01-01T00:00:00Z"
     );
     assert_eq!(
-        issued.not_after.unwrap().to_rfc3339(),
-        "2026-04-01T00:00:00+00:00"
+        issued.not_after.unwrap().format(&Rfc3339)?,
+        "2026-04-01T00:00:00Z"
     );
     assert!(
         issued
@@ -895,7 +896,7 @@ async fn claiming_an_attempt_compares_and_sets_the_observed_value(
 
     let claim = |seen| ClaimCertificateAttempt {
         id: cert.id.clone(),
-        now: Utc::now(),
+        now: OffsetDateTime::now_utc(),
         seen_attempt_at: seen,
     };
     let (first, second) = tokio::join!(w.db.process(claim(None)), w.db.process(claim(None)));
@@ -910,12 +911,12 @@ async fn claiming_an_attempt_compares_and_sets_the_observed_value(
     // though the retry window has long passed.
     let stale = find(&w, &cert).await.last_attempt_at;
     assert!(stale.is_some());
-    store_issued(&w, &cert, Utc::now() + TimeDelta::days(90)).await;
+    store_issued(&w, &cert, OffsetDateTime::now_utc() + Duration::days(90)).await;
     assert!(
         !w.db
             .process(ClaimCertificateAttempt {
                 id: cert.id.clone(),
-                now: Utc::now() + TimeDelta::days(1),
+                now: OffsetDateTime::now_utc() + Duration::days(1),
                 seen_attempt_at: stale,
             })
             .await?,

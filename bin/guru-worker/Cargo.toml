@@ -59,4 +59,4 @@ kanau = { workspace = true }
 sqlx = { workspace = true }
 tower = { workspace = true }
 rcgen = { workspace = true }
-chrono = { workspace = true }
+time = { workspace = true }

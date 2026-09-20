@@ -31,10 +31,12 @@ use crate::services::live::{self, LiveService, ViewValue};
 use crate::services::rollout::{self, RolloutService, RolloutStatus};
 use crate::services::server::{self, ServerService};
 use crate::utils::ids;
+use crate::utils::time::rfc3339;
 use auth::services::session::SessionService;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration as pb;
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -252,7 +254,7 @@ fn server_health_record_to_proto(record: &ServerHealthRecordEntity) -> pb::Serve
         id: record.id.to_string(),
         server_id: record.server.to_string(),
         status: server_health_to_proto(record.status),
-        report_time: record.report_time.to_rfc3339(),
+        report_time: rfc3339(record.report_time),
         upload_bytes: record.upload_bytes,
         download_bytes: record.download_bytes,
         current_connections: record.current_connections,
@@ -266,7 +268,7 @@ fn pod_health_record_to_proto(record: &PodHealthRecordEntity) -> pb::PodHealthRe
         pod_id: record.pod.to_string(),
         status: pod_health_to_proto(record.status),
         message: record.message.clone(),
-        report_time: record.report_time.to_rfc3339(),
+        report_time: rfc3339(record.report_time),
     }
 }
 
@@ -292,7 +294,7 @@ fn dns_provider_summary_to_proto(provider: &DnsProviderSummary) -> pb::DnsProvid
         name: provider.name.clone(),
         provider: dns_provider_to_proto(provider.provider),
         account_id: provider.account_id.clone(),
-        created_at: provider.created_at.to_rfc3339(),
+        created_at: rfc3339(provider.created_at),
     }
 }
 
@@ -307,7 +309,7 @@ fn certificate_status_to_proto(value: CertificateStatus) -> i32 {
 
 /// Key material never crosses the wire: only the row's metadata does.
 fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
-    let time = |t: Option<DateTime<Utc>>| t.map(|t| t.to_rfc3339()).unwrap_or_default();
+    let at = |t: Option<OffsetDateTime>| t.map(rfc3339).unwrap_or_default();
     pb::Certificate {
         id: certificate.id.to_string(),
         sni: certificate.sni.clone(),
@@ -315,10 +317,10 @@ fn certificate_to_proto(certificate: &CertificateEntity) -> pb::Certificate {
         domain_id: certificate.domain_id.clone(),
         acme_directory: certificate.acme_directory.clone(),
         status: certificate_status_to_proto(certificate.status),
-        not_before: time(certificate.not_before),
-        not_after: time(certificate.not_after),
+        not_before: at(certificate.not_before),
+        not_after: at(certificate.not_after),
         last_error: certificate.last_error.clone().unwrap_or_default(),
-        last_attempt_at: time(certificate.last_attempt_at),
+        last_attempt_at: at(certificate.last_attempt_at),
     }
 }
 
@@ -341,10 +343,7 @@ fn rollout_status_to_proto(status: RolloutStatus) -> pb::GetServerRolloutStatusR
             })
             .collect(),
         derivation_pending: status.derivation_pending,
-        last_seen_at: status
-            .last_seen_at
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_default(),
+        last_seen_at: status.last_seen_at.map(rfc3339).unwrap_or_default(),
     }
 }
 
@@ -355,7 +354,7 @@ fn server_health_live_to_proto(server: &str, record: &ServerHealthLive) -> pb::S
         id: record.id.clone(),
         server_id: server.to_string(),
         status: server_health_to_proto(record.status),
-        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
+        report_time: rfc3339(live_time(record.report_time_unix_micros)),
         upload_bytes: record.upload_bytes,
         download_bytes: record.download_bytes,
         current_connections: record.current_connections,
@@ -369,7 +368,7 @@ fn pod_health_live_to_proto(record: &PodHealthLive) -> pb::PodHealthRecord {
         pod_id: record.pod.clone(),
         status: pod_health_to_proto(record.status),
         message: record.message.clone(),
-        report_time: live_time(record.report_time_unix_micros).to_rfc3339(),
+        report_time: rfc3339(live_time(record.report_time_unix_micros)),
     }
 }
 
@@ -390,20 +389,19 @@ fn graph_reply(view: &graph::GraphView) -> pb::GetGraphReply {
 
 /// The history window as the proto defines it: an empty `end` means now, an
 /// empty `start` means one hour before `end`.
-fn history_window(start: &str, end: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), Status> {
-    fn parse(field: &str, value: &str) -> Result<DateTime<Utc>, Status> {
-        DateTime::parse_from_rfc3339(value)
-            .map(|t| t.with_timezone(&Utc))
+fn history_window(start: &str, end: &str) -> Result<(OffsetDateTime, OffsetDateTime), Status> {
+    fn parse(field: &str, value: &str) -> Result<OffsetDateTime, Status> {
+        OffsetDateTime::parse(value, &Rfc3339)
             .map_err(|e| Status::invalid_argument(format!("{field}: {e}")))
     }
     let end = if end.is_empty() {
-        Utc::now()
+        OffsetDateTime::now_utc()
     } else {
         parse("end", end)?
     };
     let start = if start.is_empty() {
-        end.checked_sub_signed(chrono::TimeDelta::hours(1))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC)
+        end.checked_sub(time::Duration::hours(1))
+            .unwrap_or(PrimitiveDateTime::MIN.assume_utc())
     } else {
         parse("start", start)?
     };
@@ -486,13 +484,10 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         ipv6_resolve: ipv6_to_proto(server.ipv6_resolve),
         log_level: server.log_level.to_string(),
         quic: Some(quic_to_proto(&server.quic)),
-        last_seen_at: server
-            .last_seen_at
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_default(),
+        last_seen_at: server.last_seen_at.map(rfc3339).unwrap_or_default(),
         last_health_report_at: server
             .last_health_report_at
-            .map(|t| t.to_rfc3339())
+            .map(rfc3339)
             .unwrap_or_default(),
         health_status: server_health_to_proto(server.health_status),
         addresses: Some(addresses_to_proto(server)),
@@ -501,10 +496,7 @@ fn server_to_proto(server: &ServerEntity) -> pb::Server {
         agent_unit: server.agent_unit.clone().unwrap_or_default(),
         agent_update_requested: server.agent_update_requested.clone().unwrap_or_default(),
         agent_update_error: server.agent_update_error.clone().unwrap_or_default(),
-        agent_key_issued_at: server
-            .agent_key_issued_at
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_default(),
+        agent_key_issued_at: server.agent_key_issued_at.map(rfc3339).unwrap_or_default(),
         capabilities: server.capabilities.clone(),
     }
 }
@@ -527,14 +519,9 @@ fn addresses_to_proto(server: &ServerEntity) -> pb::ServerAddresses {
         }),
         extra: server.extra_addresses.clone(),
         reported_interfaces: reported.map(|r| r.interfaces.clone()).unwrap_or_default(),
-        reported_at: reported
-            .map(|r| r.reported_at.to_rfc3339())
-            .unwrap_or_default(),
+        reported_at: reported.map(|r| rfc3339(r.reported_at)).unwrap_or_default(),
         observed_address: server.observed_address.clone().unwrap_or_default(),
-        observed_at: server
-            .observed_at
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_default(),
+        observed_at: server.observed_at.map(rfc3339).unwrap_or_default(),
         effective_address: effective
             .map(|(address, _)| address.to_string())
             .unwrap_or_default(),
@@ -917,7 +904,7 @@ fn listener_cap_to_proto(cap: &ListenerCap) -> pb::ListenerCap {
 fn snapshot_to_proto(snapshot: &ConfigSnapshot) -> pb::ConfigSnapshot {
     pb::ConfigSnapshot {
         revision: snapshot.revision,
-        created_at: snapshot.created_at.to_rfc3339(),
+        created_at: rfc3339(snapshot.created_at),
         forwardings: snapshot
             .forwardings
             .iter()
@@ -1192,7 +1179,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             arch: release.as_ref().map(|r| r.arch.clone()).unwrap_or_default(),
             published_at: release
                 .as_ref()
-                .map(|r| r.published_at.to_rfc3339())
+                .map(|r| rfc3339(r.published_at))
                 .unwrap_or_default(),
             base_url_configured: info.base_url_configured,
         }))
@@ -1688,11 +1675,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                 event: Some(pb::server_health_event::Event::Snapshot(
                     pb::ServerHealthSnapshot {
                         status: server_health_to_proto(watch.server.health_status),
-                        last_seen_at: watch
-                            .server
-                            .last_seen_at
-                            .map(|t| t.to_rfc3339())
-                            .unwrap_or_default(),
+                        last_seen_at: watch.server.last_seen_at.map(rfc3339).unwrap_or_default(),
                         records: watch
                             .records
                             .iter()
@@ -1750,7 +1733,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                     db.process(ListServerHealthHistoryRows {
                                         server: server.clone(),
                                         start: last,
-                                        end: Utc::now(),
+                                        end: OffsetDateTime::now_utc(),
                                     })
                                 })
                                 .await
@@ -1907,7 +1890,7 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                     db.process(ListPodHealthSince {
                                         pod: pod.clone(),
                                         start: last,
-                                        end: Utc::now(),
+                                        end: OffsetDateTime::now_utc(),
                                         limit: None,
                                     })
                                 })
@@ -1952,5 +1935,43 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
             }
         });
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The dashboard sends `Date.prototype.toISOString()` (a `Z` offset) and
+    /// echoes back the `report_time` this service rendered, so both spellings
+    /// of the same instant are part of the contract.
+    #[test]
+    fn a_history_window_reads_either_utc_spelling() {
+        let (start, end) =
+            history_window("2026-09-21T13:14:56.789Z", "2026-09-21T16:14:56+02:00").unwrap();
+        assert_eq!(start.unix_timestamp_nanos(), 1_789_996_496_789_000_000);
+        assert_eq!(end.unix_timestamp(), 1_790_000_096);
+    }
+
+    /// An empty bound is not an error: the proto defines `end` as now and
+    /// `start` as one hour before it.
+    #[test]
+    fn an_empty_bound_falls_back_to_the_documented_default() {
+        let (start, end) = history_window("", "2026-09-21T14:14:56Z").unwrap();
+        assert_eq!(end.unix_timestamp(), 1_790_000_096);
+        assert_eq!((end - start), time::Duration::hours(1));
+
+        let before = OffsetDateTime::now_utc();
+        let (_, end) = history_window("", "").unwrap();
+        assert!(end >= before, "an empty end is the time of the call");
+    }
+
+    /// A bound that is not RFC 3339 names the field it came from.
+    #[test]
+    fn a_malformed_bound_is_refused() {
+        let status = history_window("yesterday", "").unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().starts_with("start: "));
     }
 }

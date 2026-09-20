@@ -362,7 +362,7 @@ async fn a_derivation_commit_and_an_address_report_do_not_deadlock(pool: PgPool)
         .await?
         .unwrap()
         .generation;
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let commit = CommitCanvasDerivation {
         canvas: c.id.clone(),
         generation,

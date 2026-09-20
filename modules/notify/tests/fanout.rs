@@ -7,7 +7,6 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
 use auth::entities::db::account::AccountId;
-use chrono::{TimeDelta, Utc};
 use kanau::processor::Processor;
 use notify::entities::db::setting::{Language, NoticeKind};
 use notify::events::{HealthNotifyGroupEvent, HealthNotifyPersonalEvent};
@@ -17,6 +16,7 @@ use notify::services::fanout::{
 use orchestration::entities::db::health::ServerHealthStatus;
 use orchestration::events::HealthFact;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -76,7 +76,8 @@ impl World {
                     canvas: CANVAS.to_string(),
                     canvas_name: CANVAS_NAME.to_string(),
                     status,
-                    at_unix_micros: Utc::now().timestamp_micros(),
+                    at_unix_micros: (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000)
+                        as i64,
                 }],
             })
             .await?;
@@ -367,7 +368,7 @@ async fn one_batch_asks_about_each_pod_once(pool: sqlx::PgPool) -> TestResult {
             canvas_name: CANVAS_NAME.to_string(),
             status,
             message: message.to_string(),
-            at_unix_micros: Utc::now().timestamp_micros(),
+            at_unix_micros: (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000) as i64,
         }
     };
     use orchestration::entities::db::health::PodHealthStatus;
@@ -415,7 +416,7 @@ async fn an_unchanged_status_leaves_its_timestamp_alone(pool: sqlx::PgPool) -> T
     sqlx::query!(
         "UPDATE notify_server_state SET changed_at = $2 WHERE server = $1",
         SERVER,
-        first - TimeDelta::hours(1)
+        first - Duration::hours(1)
     )
     .execute(w.db.db())
     .await?;
@@ -427,6 +428,6 @@ async fn an_unchanged_status_leaves_its_timestamp_alone(pool: sqlx::PgPool) -> T
     )
     .fetch_one(w.db.db())
     .await?;
-    assert_eq!(again, first - TimeDelta::hours(1));
+    assert_eq!(again, first - Duration::hours(1));
     Ok(())
 }

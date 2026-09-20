@@ -29,6 +29,7 @@ use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -58,10 +59,10 @@ impl Default for SessionLease {
 
 impl SessionLease {
     /// The deadline a session taken at `now` gets.
-    pub fn until(&self, now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
-        let ttl = chrono::TimeDelta::from_std(self.ttl).unwrap_or(chrono::TimeDelta::MAX);
-        now.checked_add_signed(ttl)
-            .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
+    pub fn until(&self, now: OffsetDateTime) -> OffsetDateTime {
+        let ttl = time::Duration::try_from(self.ttl).unwrap_or(time::Duration::MAX);
+        now.checked_add(ttl)
+            .unwrap_or(PrimitiveDateTime::MAX.assume_utc())
     }
 }
 

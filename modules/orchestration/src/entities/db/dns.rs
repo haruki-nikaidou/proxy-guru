@@ -6,10 +6,10 @@
 //! [`UpdateDnsProvider`] and decrypts only inside the ACME pipeline.
 
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 table_record!(DnsProviderId, "dns_provider");
 
@@ -24,7 +24,7 @@ pub struct DnsProviderEntity {
     pub account_id: String,
     /// Encrypted (`enc1:...`).
     pub api_secret: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ pub struct CreateDnsProvider {
     pub provider: DnsProvider,
     pub account_id: String,
     pub api_secret: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<CreateDnsProvider> for Db {

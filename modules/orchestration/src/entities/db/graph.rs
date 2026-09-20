@@ -331,7 +331,7 @@ impl Processor<ApplyGraphBatch> for Db {
 /// conversion found.
 #[derive(Debug, Clone)]
 pub struct GraphStateEntity {
-    pub converted_at: chrono::DateTime<chrono::Utc>,
+    pub converted_at: time::OffsetDateTime,
     pub report: serde_json::Value,
 }
 

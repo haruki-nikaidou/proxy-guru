@@ -1,6 +1,8 @@
 //! gRPC `Auth` service implementation: a thin adapter over the services.
 
 use kanau::processor::Processor;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tonic::{Request, Response, Status};
 
 use rpguru_sdk::auth as pb;
@@ -58,8 +60,15 @@ fn api_key_to_proto(key: ApiKeyOmitSecret) -> pb::ApiKeySummary {
         id: key.id.to_string(),
         name: key.name,
         owner_account_id: key.owner.to_string(),
-        created_at: key.created_at.to_rfc3339(),
+        created_at: rfc3339(key.created_at),
     }
+}
+
+/// RFC 3339, the one shape a timestamp crosses the API in. Formatting a value
+/// that came from the database cannot fail; an empty string is the fallback
+/// rather than a panic on the request path.
+fn rfc3339(at: OffsetDateTime) -> String {
+    at.format(&Rfc3339).unwrap_or_default()
 }
 
 /// Both document fields are pretty-printed: an operator edits this text.

@@ -12,9 +12,9 @@ use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::fence;
 use crate::entities::db::pod::TlsConfig;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 table_record!(CertificateId, "certificate");
 
@@ -32,12 +32,12 @@ pub struct CertificateEntity {
     /// Encrypted PEM. Set together with `full_chain_pem` when `status` is `Issued`.
     pub private_key_pem: Option<String>,
     pub full_chain_pem: Option<String>,
-    pub not_before: Option<DateTime<Utc>>,
-    pub not_after: Option<DateTime<Utc>>,
+    pub not_before: Option<OffsetDateTime>,
+    pub not_after: Option<OffsetDateTime>,
     pub last_error: Option<String>,
-    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<OffsetDateTime>,
     pub version: i64,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// The `rkyv` derives put this enum on the live bus unchanged
@@ -75,7 +75,7 @@ pub struct EnsureCertificate {
     pub dns_provider: DnsProviderId,
     pub domain_id: String,
     pub acme_directory: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<EnsureCertificate> for Db {
@@ -213,8 +213,8 @@ impl Processor<ListCertificatesByIds> for Db {
 /// gone stale.
 #[derive(Debug)]
 pub struct ListCertificatesDue {
-    pub renew_before: DateTime<Utc>,
-    pub retry_before: DateTime<Utc>,
+    pub renew_before: OffsetDateTime,
+    pub retry_before: OffsetDateTime,
 }
 
 impl Processor<ListCertificatesDue> for Db {
@@ -247,10 +247,10 @@ impl Processor<ListCertificatesDue> for Db {
 #[derive(Debug)]
 pub struct ClaimCertificateAttempt {
     pub id: CertificateId,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
     /// `last_attempt_at` as the pass read it; the claim is refused when anything
     /// touched the row since, which is what makes a stale listing harmless.
-    pub seen_attempt_at: Option<DateTime<Utc>>,
+    pub seen_attempt_at: Option<OffsetDateTime>,
 }
 
 impl Processor<ClaimCertificateAttempt> for Db {
@@ -281,9 +281,9 @@ pub struct StoreIssuedCertificate {
     pub acme_account_key: String,
     pub private_key_pem: String,
     pub full_chain_pem: String,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
-    pub now: DateTime<Utc>,
+    pub not_before: OffsetDateTime,
+    pub not_after: OffsetDateTime,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<StoreIssuedCertificate> for Db {
@@ -314,7 +314,7 @@ impl Processor<StoreIssuedCertificate> for Db {
 pub struct MarkCertificateAttemptFailed {
     pub id: CertificateId,
     pub error: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<MarkCertificateAttemptFailed> for Db {

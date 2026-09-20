@@ -19,8 +19,8 @@ use crate::entities::db::certificate::CertificateStatus;
 use crate::entities::db::health::{
     PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
-use chrono::{DateTime, Utc};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
+use time::OffsetDateTime;
 
 /// The single Redis pub/sub channel every replica subscribes to.
 ///
@@ -131,7 +131,7 @@ pub enum RolloutScope {
 }
 
 /// A `server_health_record` row as it travels on the bus. Timestamps are
-/// microseconds since the epoch: `chrono` types are not `rkyv`-encodable, and
+/// microseconds since the epoch: `time` types are not `rkyv`-encodable, and
 /// the record's own resolution is a report interval.
 #[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ServerHealthLive {
@@ -159,7 +159,7 @@ impl From<&ServerHealthRecordEntity> for ServerHealthLive {
         Self {
             id: record.id.to_string(),
             status: record.status,
-            report_time_unix_micros: record.report_time.timestamp_micros(),
+            report_time_unix_micros: (record.report_time.unix_timestamp_nanos() / 1_000) as i64,
             upload_bytes: record.upload_bytes,
             download_bytes: record.download_bytes,
             current_connections: record.current_connections,
@@ -175,15 +175,16 @@ impl From<&PodHealthRecordEntity> for PodHealthLive {
             pod: record.pod.to_string(),
             status: record.status,
             message: record.message.clone(),
-            report_time_unix_micros: record.report_time.timestamp_micros(),
+            report_time_unix_micros: (record.report_time.unix_timestamp_nanos() / 1_000) as i64,
         }
     }
 }
 
-/// A bus timestamp back as a `chrono` instant. Out of range is impossible for a
-/// value this module produced, so it collapses to the epoch rather than
+/// A bus timestamp back as an [`OffsetDateTime`]. Out of range is impossible for
+/// a value this module produced, so it collapses to the epoch rather than
 /// erroring: the only use is an ordering comparison against the last record a
 /// stream sent, and the epoch loses it.
-pub fn live_time(unix_micros: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_micros(unix_micros).unwrap_or(DateTime::UNIX_EPOCH)
+pub fn live_time(unix_micros: i64) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_micros).saturating_mul(1_000))
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }

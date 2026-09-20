@@ -46,7 +46,6 @@ reqwest = { workspace = true }
 hickory-resolver = { workspace = true }
 
 # Data types
-chrono = { workspace = true }
 time = { workspace = true }
 smallvec = { workspace = true }
 

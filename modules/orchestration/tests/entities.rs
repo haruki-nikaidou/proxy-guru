@@ -175,9 +175,9 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
 
-    let start = chrono::Utc::now();
-    let lease = chrono::TimeDelta::seconds(30);
-    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>| RegisterWorkerSession {
+    let start = time::OffsetDateTime::now_utc();
+    let lease = time::Duration::seconds(30);
+    let register = |digest: &str, now: time::OffsetDateTime| RegisterWorkerSession {
         server: s.id.clone(),
         digest: digest.to_string(),
         now,
@@ -208,7 +208,7 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
     assert!(
         sp.process(register(
             "digest-contender",
-            start + chrono::TimeDelta::seconds(5)
+            start + time::Duration::seconds(5)
         ))
         .await?
         .is_none(),
@@ -229,8 +229,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
             server: s.id.clone(),
             generation: 1,
             epoch: 0,
-            now: start + chrono::TimeDelta::seconds(10),
-            lease_until: start + chrono::TimeDelta::seconds(40),
+            now: start + time::Duration::seconds(10),
+            lease_until: start + time::Duration::seconds(40),
         })
         .await?
     );
@@ -239,8 +239,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
             server: s.id.clone(),
             generation: 1,
             epoch: 7,
-            now: start + chrono::TimeDelta::seconds(10),
-            lease_until: start + chrono::TimeDelta::seconds(40),
+            now: start + time::Duration::seconds(10),
+            lease_until: start + time::Duration::seconds(40),
         })
         .await?,
         "a fenced-out session must not be able to hold the lease"
@@ -248,7 +248,7 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
 
     // Once the lease lapses the server can be taken over.
     let row = sp
-        .process(register("digest-2", start + chrono::TimeDelta::seconds(41)))
+        .process(register("digest-2", start + time::Duration::seconds(41)))
         .await?
         .expect("a lapsed lease releases the server");
     assert_eq!(row.refresh_key_generation, 2);
@@ -266,8 +266,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
         .process(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 2,
-            now: start + chrono::TimeDelta::seconds(42),
-            lease_until: start + chrono::TimeDelta::seconds(72),
+            now: start + time::Duration::seconds(42),
+            lease_until: start + time::Duration::seconds(72),
         })
         .await?
         .expect("the current generation may claim the stream");
@@ -276,8 +276,8 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
         sp.process(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 1,
-            now: start + chrono::TimeDelta::seconds(42),
-            lease_until: start + chrono::TimeDelta::seconds(72),
+            now: start + time::Duration::seconds(42),
+            lease_until: start + time::Duration::seconds(72),
         })
         .await?
         .is_none(),
@@ -290,7 +290,7 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
     })
     .await?;
     let row = sp
-        .process(register("digest-3", start + chrono::TimeDelta::seconds(43)))
+        .process(register("digest-3", start + time::Duration::seconds(43)))
         .await?
         .expect("a released session lets the next worker register at once");
     assert_eq!(row.refresh_key_generation, 3);
@@ -316,7 +316,7 @@ async fn seed_desired(
     let snapshot = orchestration::entities::db::view::ConfigSnapshot {
         revision,
         toml: format!("# revision {revision}"),
-        created_at: chrono::Utc::now(),
+        created_at: time::OffsetDateTime::now_utc(),
         forwardings: Vec::new(),
         certificates: Vec::new(),
     };
@@ -463,8 +463,8 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
         .process(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 0,
-            now: chrono::Utc::now(),
-            lease_until: chrono::Utc::now() + chrono::TimeDelta::seconds(30),
+            now: time::OffsetDateTime::now_utc(),
+            lease_until: time::OffsetDateTime::now_utc() + time::Duration::seconds(30),
         })
         .await?
         .unwrap();
@@ -483,8 +483,8 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
         .process(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 0,
-            now: chrono::Utc::now(),
-            lease_until: chrono::Utc::now() + chrono::TimeDelta::seconds(30),
+            now: time::OffsetDateTime::now_utc(),
+            lease_until: time::OffsetDateTime::now_utc() + time::Duration::seconds(30),
         })
         .await?
         .unwrap();
@@ -514,12 +514,12 @@ async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> Te
     .await?
     .expect("the snapshot is in flight when the worker restarts");
 
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
         digest: "digest-1".to_string(),
         now,
-        lease_until: now + chrono::TimeDelta::seconds(30),
+        lease_until: now + time::Duration::seconds(30),
         running_revision: 3,
         observed: None,
         reported: None,
@@ -570,12 +570,12 @@ async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> 
     // its way back is the in-flight revision and no longer the desired one.
     seed_desired(&sp, &s.id, 2).await?;
 
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
         digest: "digest-1".to_string(),
         now,
-        lease_until: now + chrono::TimeDelta::seconds(30),
+        lease_until: now + time::Duration::seconds(30),
         running_revision: 1,
         observed: None,
         reported: None,
@@ -621,12 +621,12 @@ async fn register_rejects_an_unknown_running_revision(pool: sqlx::PgPool) -> Tes
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
 
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     sp.process(RegisterWorkerSession {
         server: s.id.clone(),
         digest: "digest-1".to_string(),
         now,
-        lease_until: now + chrono::TimeDelta::seconds(30),
+        lease_until: now + time::Duration::seconds(30),
         running_revision: 7,
         observed: None,
         reported: None,
@@ -1064,23 +1064,22 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&sp, &s.id, 3).await?;
-    let register =
-        |digest: &str, now: chrono::DateTime<chrono::Utc>, running: i64| RegisterWorkerSession {
-            server: s.id.clone(),
-            digest: digest.to_string(),
-            now,
-            lease_until: now,
-            running_revision: running,
-            observed: None,
-            reported: None,
-            agent_version: None,
-            agent_arch: None,
-            capabilities: Vec::new(),
-        };
+    let register = |digest: &str, now: time::OffsetDateTime, running: i64| RegisterWorkerSession {
+        server: s.id.clone(),
+        digest: digest.to_string(),
+        now,
+        lease_until: now,
+        running_revision: running,
+        observed: None,
+        reported: None,
+        agent_version: None,
+        agent_arch: None,
+        capabilities: Vec::new(),
+    };
 
     // The first worker ran revision 3: registering as such records it as applied,
     // and there is nothing left to hand a stream.
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     sp.process(register("digest-1", now, 3))
         .await?
         .expect("the free session is taken");
@@ -1104,7 +1103,7 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
 
     // The host was reinstalled: the new worker runs nothing. Treating the server
     // as still converged would leave it running nothing forever.
-    let later = now + chrono::TimeDelta::seconds(1);
+    let later = now + time::Duration::seconds(1);
     let row = sp
         .process(register("digest-2", later, 0))
         .await?
@@ -1142,9 +1141,9 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
     let s = server(&sp, &c, "tokyo").await?;
     assert_eq!(s.agent_version, None);
 
-    let now = chrono::Utc::now();
-    let register = |digest: &str, now: chrono::DateTime<chrono::Utc>, build: Option<&str>| {
-        RegisterWorkerSession {
+    let now = time::OffsetDateTime::now_utc();
+    let register =
+        |digest: &str, now: time::OffsetDateTime, build: Option<&str>| RegisterWorkerSession {
             server: s.id.clone(),
             digest: digest.to_string(),
             now,
@@ -1155,8 +1154,7 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
             agent_version: build.map(str::to_owned),
             agent_arch: build.map(|_| "x86_64".to_string()),
             capabilities: Vec::new(),
-        }
-    };
+        };
 
     // A worker that reports its build has it recorded.
     let row = sp
@@ -1168,7 +1166,7 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
 
     // An older worker that reports nothing (empty on the wire, `None` here)
     // must not blank what is known.
-    let later = now + chrono::TimeDelta::seconds(1);
+    let later = now + time::Duration::seconds(1);
     let row = sp
         .process(register("digest-2", later, None))
         .await?
@@ -1180,7 +1178,7 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
     let row = sp
         .process(register(
             "digest-3",
-            later + chrono::TimeDelta::seconds(1),
+            later + time::Duration::seconds(1),
             Some("0.3.0"),
         ))
         .await?
@@ -1194,7 +1192,7 @@ async fn agent_release_publish_replaces_the_single_row(pool: sqlx::PgPool) -> Te
     let sp = setup(pool);
     assert!(sp.process(FindAgentRelease).await?.is_none());
 
-    let first = chrono::Utc::now();
+    let first = time::OffsetDateTime::now_utc();
     sp.process(PublishAgentRelease {
         version: "0.2.0-beta".to_string(),
         sha256: "a".repeat(64),
@@ -1212,7 +1210,7 @@ async fn agent_release_publish_replaces_the_single_row(pool: sqlx::PgPool) -> Te
         version: "0.3.0".to_string(),
         sha256: "b".repeat(64),
         arch: "x86_64".to_string(),
-        now: first + chrono::TimeDelta::seconds(60),
+        now: first + time::Duration::seconds(60),
     })
     .await?;
     let row = sp.process(FindAgentRelease).await?.expect("published");

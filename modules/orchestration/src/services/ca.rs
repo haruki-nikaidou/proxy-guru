@@ -26,14 +26,13 @@ use crate::services::OrchestrationError;
 use crate::utils::ids;
 use crate::utils::secret::SecretKey;
 use base::db::Db;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use kanau::processor::Processor;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SanType,
 };
 use std::collections::HashMap;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub const CA_COMMON_NAME: &str = "guru internal relay CA";
 const CA_VALID_DAYS: i64 = 3650;
@@ -79,10 +78,6 @@ fn certificate_error(error: impl std::fmt::Display) -> OrchestrationError {
     OrchestrationError::Certificate(error.to_string())
 }
 
-fn to_offset(at: DateTime<Utc>) -> Result<OffsetDateTime, OrchestrationError> {
-    OffsetDateTime::from_unix_timestamp(at.timestamp()).map_err(certificate_error)
-}
-
 /// The parameters the CA certificate was (and the issuer is) built from.
 fn ca_params() -> CertificateParams {
     let mut params = CertificateParams::default();
@@ -120,17 +115,16 @@ impl Processor<InitInternalCa> for CaService {
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:InitInternalCa", skip_all, err)]
     async fn process(&self, _: InitInternalCa) -> Result<Self::Output, Self::Error> {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let not_after = now
-            .checked_add_signed(ChronoDuration::days(CA_VALID_DAYS))
-            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            .checked_add(Duration::days(CA_VALID_DAYS))
+            .unwrap_or(PrimitiveDateTime::MAX.assume_utc());
         let key = KeyPair::generate().map_err(certificate_error)?;
         let mut params = ca_params();
-        params.not_before = to_offset(
-            now.checked_sub_signed(ChronoDuration::seconds(NOT_BEFORE_SKEW_SECS))
-                .unwrap_or(DateTime::<Utc>::MIN_UTC),
-        )?;
-        params.not_after = to_offset(not_after)?;
+        params.not_before = now
+            .checked_sub(Duration::seconds(NOT_BEFORE_SKEW_SECS))
+            .unwrap_or(PrimitiveDateTime::MIN.assume_utc());
+        params.not_after = not_after;
         let certificate = params.self_signed(&key).map_err(certificate_error)?;
         let certificate_pem = certificate.pem();
         let created = self
@@ -199,13 +193,13 @@ impl Processor<EnsureRelayCertificates> for CaService {
             .map(|leaf| (leaf.pod.clone(), leaf))
             .collect();
 
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let renew_at = now
-            .checked_add_signed(
-                ChronoDuration::from_std(self.config.relay_cert_renew_before())
+            .checked_add(
+                Duration::try_from(self.config.relay_cert_renew_before())
                     .map_err(certificate_error)?,
             )
-            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            .unwrap_or(PrimitiveDateTime::MAX.assume_utc());
         let mut issuer = None;
         let mut leaves = Vec::with_capacity(input.pods.len());
         for pod in input.pods {
@@ -298,7 +292,7 @@ impl Processor<RotateRelayCertificate> for CaService {
             &issuer,
             &input.pod,
             sni,
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             Some(input.expected_version),
         )
         .await
@@ -325,18 +319,17 @@ impl CaService {
         issuer: &Issuer<'_, KeyPair>,
         pod: &PodId,
         sni: String,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         expected_version: Option<i64>,
     ) -> Result<Option<RelayCertificateEntity>, OrchestrationError> {
         let not_before = now
-            .checked_sub_signed(ChronoDuration::seconds(NOT_BEFORE_SKEW_SECS))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            .checked_sub(Duration::seconds(NOT_BEFORE_SKEW_SECS))
+            .unwrap_or(PrimitiveDateTime::MIN.assume_utc());
         let not_after = now
-            .checked_add_signed(
-                ChronoDuration::from_std(self.config.relay_cert_valid())
-                    .map_err(certificate_error)?,
+            .checked_add(
+                Duration::try_from(self.config.relay_cert_valid()).map_err(certificate_error)?,
             )
-            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            .unwrap_or(PrimitiveDateTime::MAX.assume_utc());
         let key = KeyPair::generate().map_err(certificate_error)?;
         let mut params = CertificateParams::default();
         params.distinguished_name = rcgen::DistinguishedName::new();
@@ -350,8 +343,8 @@ impl CaService {
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         params.use_authority_key_identifier_extension = true;
-        params.not_before = to_offset(not_before)?;
-        params.not_after = to_offset(not_after)?;
+        params.not_before = not_before;
+        params.not_after = not_after;
         let certificate = params.signed_by(&key, issuer).map_err(certificate_error)?;
         let stored = self
             .db

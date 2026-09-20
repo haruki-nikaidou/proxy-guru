@@ -103,7 +103,7 @@ impl HealthFact {
             canvas: write.canvas.to_string(),
             canvas_name: write.canvas_name.clone(),
             status: write.record.status,
-            at_unix_micros: write.record.report_time.timestamp_micros(),
+            at_unix_micros: (write.record.report_time.unix_timestamp_nanos() / 1_000) as i64,
         })
     }
 
@@ -117,7 +117,7 @@ impl HealthFact {
             canvas_name: write.canvas_name.clone(),
             status: write.record.status,
             message: write.record.message.clone(),
-            at_unix_micros: write.record.report_time.timestamp_micros(),
+            at_unix_micros: (write.record.report_time.unix_timestamp_nanos() / 1_000) as i64,
         }
     }
 }
@@ -168,9 +168,9 @@ macro_rules! interval_signal {
 
             /// The scheduling tick this signal was published for; a hook logs its
             /// age to make a consumer backlog visible.
-            pub fn tick_time(&self) -> chrono::DateTime<chrono::Utc> {
-                chrono::DateTime::from_timestamp(self.tick_unix_secs, 0)
-                    .unwrap_or_else(chrono::Utc::now)
+            pub fn tick_time(&self) -> OffsetDateTime {
+                OffsetDateTime::from_unix_timestamp(self.tick_unix_secs)
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
             }
         }
 

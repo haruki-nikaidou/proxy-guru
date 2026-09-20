@@ -37,11 +37,11 @@ use crate::services::rollout::{RolloutStatus, rollout_status};
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use time::OffsetDateTime;
 use tokio::sync::{Notify, broadcast, watch};
 use tokio::task::AbortHandle;
 
@@ -522,7 +522,7 @@ pub struct ServerHealthWatch {
 pub struct WatchServerHealth {
     pub actor: Identity,
     pub server: ServerId,
-    pub since: DateTime<Utc>,
+    pub since: OffsetDateTime,
 }
 
 impl Processor<WatchServerHealth> for LiveService {
@@ -546,7 +546,7 @@ impl Processor<WatchServerHealth> for LiveService {
             .process(ListServerHealthHistoryRows {
                 server: input.server,
                 start: input.since,
-                end: Utc::now(),
+                end: OffsetDateTime::now_utc(),
             })
             .await?;
         Ok(ServerHealthWatch {
@@ -567,7 +567,7 @@ pub struct PodHealthWatch {
 pub struct WatchPodHealth {
     pub actor: Identity,
     pub pod: PodId,
-    pub since: DateTime<Utc>,
+    pub since: OffsetDateTime,
 }
 
 impl Processor<WatchPodHealth> for LiveService {
@@ -590,7 +590,7 @@ impl Processor<WatchPodHealth> for LiveService {
             .process(ListPodHealthSince {
                 pod: input.pod,
                 start: input.since,
-                end: Utc::now(),
+                end: OffsetDateTime::now_utc(),
                 limit: Some(DEFAULT_POD_HISTORY_LIMIT),
             })
             .await?;

@@ -123,9 +123,10 @@ src/
     pointing at a migrated database) whenever a statement or the schema
     changes, and commit the result — the Docker build compiles with
     `SQLX_OFFLINE=true`. `-- --all-targets` is what includes the tests' own
-    statements; without it an offline `cargo test` fails on them. Each crate
-    that invokes the macros carries a `sqlx.toml` pinning `chrono` as the
-    date/time crate, because `wakuwaku` also enables sqlx's `time` feature.
+    statements; without it an offline `cargo test` fails on them. `time` is the
+    only date/time crate sqlx is built with, so `timestamptz` maps to
+    `time::OffsetDateTime` everywhere and no crate needs a `sqlx.toml` to
+    disambiguate.
 - Cover queries with the module's integration tests all the same — the macros
   check shapes and types, not behaviour:
   `#[sqlx::test(migrator = "base::db::MIGRATOR")]` creates and migrates one
@@ -136,6 +137,12 @@ src/
 - PostgreSQL gotchas: compare a nullable column with `IS DISTINCT FROM`, not
   `<>`; a JSON `null` inside `jsonb` is not SQL `NULL` (`jsonb_typeof`).
 - Annotate every impl with the named tracing span described under *Tracing*.
+- **Timestamps** are `time::OffsetDateTime`, never `chrono`. A timestamp that
+  ends up inside a `jsonb` document (or in a protobuf string) carries
+  `#[serde(with = "time::serde::rfc3339")]`: `time`'s own `Serialize` writes an
+  array of components no stored row can be read back from. RFC 3339 is also
+  what the rows written before the migration hold, so the annotation is what
+  keeps them readable.
 
 ### `entities/redis`
 

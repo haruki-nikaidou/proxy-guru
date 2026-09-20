@@ -8,7 +8,7 @@ Shared crate holding the generated gRPC/protobuf types for the whole workspace.
   workspace [`proto/`](../../proto) directory with `tonic-prost-build`.
 - Re-exports each generated package as a Rust module via
   `tonic::include_proto!`.
-- Hosts conversions between protobuf types and domain types (`chrono`, `uuid`,
+- Hosts conversions between protobuf types and domain types (`time`, `uuid`,
   …) so every consumer shares one implementation.
 
 Both the [`guru-master`](../../bin/guru-master) binary and the business modules

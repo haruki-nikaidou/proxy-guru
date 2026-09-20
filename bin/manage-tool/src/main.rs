@@ -475,7 +475,7 @@ async fn agent_publish(
         version: version.clone(),
         sha256: sha256.clone(),
         arch: arch.to_string(),
-        now: chrono::Utc::now(),
+        now: time::OffsetDateTime::now_utc(),
     })
     .await?;
     println!(

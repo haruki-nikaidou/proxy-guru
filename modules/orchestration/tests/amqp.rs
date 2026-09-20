@@ -272,7 +272,7 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
     );
 
     DeriveStaleCanvasesSignal {
-        tick_unix_secs: chrono::Utc::now().timestamp(),
+        tick_unix_secs: time::OffsetDateTime::now_utc().unix_timestamp(),
     }
     .send(&pool)
     .await?;

@@ -6,9 +6,9 @@
 //! it and takes effect at once.
 
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 table_record!(AgentReleaseId, "orchestration_agent_release");
 
@@ -29,7 +29,7 @@ pub struct AgentReleaseEntity {
     pub sha256: String,
     /// The CPU architecture the binary was built for (`x86_64`, `aarch64`).
     pub arch: String,
-    pub published_at: DateTime<Utc>,
+    pub published_at: OffsetDateTime,
 }
 
 /// Replaces the published release.
@@ -38,7 +38,7 @@ pub struct PublishAgentRelease {
     pub version: String,
     pub sha256: String,
     pub arch: String,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<PublishAgentRelease> for Db {

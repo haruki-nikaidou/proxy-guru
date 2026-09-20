@@ -23,8 +23,8 @@
 use crate::entities::db::job_run::ClaimJobRun;
 use crate::events::{SweepLivenessSignal, TrimHealthHistorySignal};
 use crate::services::health::{HealthService, SweepLiveness, TrimHealthHistory};
-use chrono::Utc;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 use wakuwaku::amqp::AmqpMessageProcessor;
 
 /// Consumes the two health execution signals.
@@ -56,7 +56,9 @@ impl Processor<SweepLivenessSignal> for HealthCronHook {
         }
         let swept = self
             .health
-            .process(SweepLiveness { now: Utc::now() })
+            .process(SweepLiveness {
+                now: OffsetDateTime::now_utc(),
+            })
             .await?;
         if !swept.flipped.is_empty() {
             tracing::info!(
@@ -96,7 +98,9 @@ impl Processor<TrimHealthHistorySignal> for HealthCronHook {
             return Ok(());
         }
         self.health
-            .process(TrimHealthHistory { now: Utc::now() })
+            .process(TrimHealthHistory {
+                now: OffsetDateTime::now_utc(),
+            })
             .await?;
         Ok(())
     }

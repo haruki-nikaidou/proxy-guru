@@ -3,8 +3,8 @@
 use std::sync::LazyLock;
 
 use base::db::Db;
-use chrono::{Duration, Utc};
 use kanau::processor::Processor;
+use time::{Duration, OffsetDateTime};
 
 use crate::config::AuthConfig;
 use crate::entities::db::account::FindAccountByEmail;
@@ -83,7 +83,7 @@ impl Processor<Login> for SessionService {
             return Ok(LoginResult::InvalidCredentials);
         }
         let token = generate_session_token();
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         self.db
             .process(CreateSession {
                 token: token.clone(),
@@ -117,9 +117,12 @@ impl Processor<AuthenticateSession> for SessionService {
             Some(session) => session,
             None => return Ok(None),
         };
-        let now = Utc::now();
-        if now.signed_duration_since(session.last_active_at)
-            > Duration::seconds(self.config.session_idle_ttl_secs)
+        let now = OffsetDateTime::now_utc();
+        let idle_ttl = Duration::seconds(self.config.session_idle_ttl_secs);
+        if session
+            .last_active_at
+            .checked_add(idle_ttl)
+            .is_some_and(|deadline| now > deadline)
         {
             self.db
                 .process(DeleteSession {
@@ -142,7 +145,10 @@ impl Processor<AuthenticateSession> for SessionService {
         // is still there. Sliding the deadline is bookkeeping, done only once the
         // record is stale, and a refused write is a log line rather than a denied
         // request — at worst the session expires `ACTIVITY_SLACK` early.
-        if now.signed_duration_since(session.last_active_at) > ACTIVITY_SLACK
+        if session
+            .last_active_at
+            .checked_add(ACTIVITY_SLACK)
+            .is_some_and(|deadline| now > deadline)
             && let Err(error) = self
                 .db
                 .process(UpdateSession {

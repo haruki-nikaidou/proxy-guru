@@ -5,7 +5,6 @@
 
 mod common;
 
-use chrono::Utc;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::ca::{
@@ -33,6 +32,9 @@ use orchestration::services::ca::{
 use orchestration::services::canvas as canvas_service;
 use orchestration::services::graph::GraphChange;
 use orchestration::services::server::{AddressOverrides, CreateServer};
+// `x509_parser::prelude::*` glob-imports a `time` module of its own, so the
+// crate is named absolutely here.
+use ::time::{Duration, OffsetDateTime};
 use x509_parser::prelude::*;
 
 fn parse_pem(pem: &str) -> Vec<u8> {
@@ -96,7 +98,7 @@ async fn init_ca_refuses_a_second_init(pool: sqlx::PgPool) -> TestResult {
         row.private_key_pem.starts_with("enc1:"),
         "the key is stored encrypted"
     );
-    assert!(row.not_after > Utc::now() + chrono::Duration::days(3600));
+    assert!(row.not_after > OffsetDateTime::now_utc() + Duration::days(3600));
     assert!(
         w.secrets
             .decrypt_str(&row.private_key_pem)?
@@ -150,10 +152,10 @@ async fn relay_leaves_are_issued_stable_and_rotated_when_expiring(
     assert_eq!(leaf.version, 1);
     assert_leaf_signed_by(&leaf.certificate_pem, &ca.certificate_pem, &leaf.sni);
     assert!(leaf.private_key_pem.starts_with("enc1:"));
-    let valid_for = leaf.not_after - Utc::now();
-    let expected = chrono::Duration::from_std(w.config.relay_cert_valid())?;
+    let valid_for = leaf.not_after - OffsetDateTime::now_utc();
+    let expected = Duration::try_from(w.config.relay_cert_valid())?;
     assert!(
-        valid_for > expected - chrono::Duration::minutes(1) && valid_for <= expected,
+        valid_for > expected - Duration::minutes(1) && valid_for <= expected,
         "validity is config.relay_cert_valid: {valid_for}"
     );
 
@@ -173,7 +175,7 @@ async fn relay_leaves_are_issued_stable_and_rotated_when_expiring(
         private_key_pem: leaf.private_key_pem.clone(),
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
-        not_after: Utc::now() + chrono::Duration::hours(1),
+        not_after: OffsetDateTime::now_utc() + Duration::hours(1),
         expected_version: None,
     })
     .await?
@@ -217,7 +219,7 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) ->
             provider: DnsProvider::Cloudflare,
             account_id: String::new(),
             api_secret: w.secrets.encrypt_str("token")?,
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
         })
         .await?;
     let certificate =
@@ -226,7 +228,7 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) ->
             dns_provider: dns.id.clone(),
             domain_id: "zone".to_string(),
             acme_directory: w.config.default_acme_directory.clone(),
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
         })
         .await?;
     w.db.process(StoreIssuedCertificate {
@@ -234,9 +236,9 @@ async fn bundles_carry_decrypted_keys_at_the_worker_paths(pool: sqlx::PgPool) ->
         acme_account_key: w.secrets.encrypt_str("acct")?,
         private_key_pem: w.secrets.encrypt_str("ACME KEY PEM")?,
         full_chain_pem: "ACME CHAIN PEM".to_string(),
-        not_before: Utc::now(),
-        not_after: Utc::now() + chrono::Duration::days(60),
-        now: Utc::now(),
+        not_before: OffsetDateTime::now_utc(),
+        not_after: OffsetDateTime::now_utc() + Duration::days(60),
+        now: OffsetDateTime::now_utc(),
     })
     .await?;
 
@@ -545,7 +547,7 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
         private_key_pem: leaf.private_key_pem.clone(),
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
-        not_after: Utc::now() + chrono::Duration::hours(1),
+        not_after: OffsetDateTime::now_utc() + Duration::hours(1),
         expected_version: None,
     })
     .await?
@@ -600,7 +602,7 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
             provider: DnsProvider::Cloudflare,
             account_id: String::new(),
             api_secret: w.secrets.encrypt_str("token")?,
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
         })
         .await?;
     let f = relay_chain(
@@ -622,7 +624,7 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
             dns_provider: dns.id,
             domain_id: "zone".to_string(),
             acme_directory: w.config.default_acme_directory.clone(),
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
         })
         .await?;
     w.derive(&f.canvas).await?;
@@ -639,12 +641,12 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
     // Osaka serves its listener, so tokyo's forwarding can be published once its
     // certificate arrives. That first publish already marked osaka-hop Deploying.
     ack_current(&w, &f.osaka).await?;
-    let since = Utc::now();
+    let since = OffsetDateTime::now_utc();
     let history = async |pod: &PodId| {
         w.db.process(ListPodHealthHistory {
             pod: pod.clone(),
-            start: since - chrono::Duration::hours(1),
-            end: since + chrono::Duration::hours(1),
+            start: since - Duration::hours(1),
+            end: since + Duration::hours(1),
             limit: 10,
         })
         .await
@@ -657,9 +659,9 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
         acme_account_key: w.secrets.encrypt_str("acct")?,
         private_key_pem: w.secrets.encrypt_str("ACME KEY PEM")?,
         full_chain_pem: "ACME CHAIN PEM".to_string(),
-        not_before: Utc::now(),
-        not_after: Utc::now() + chrono::Duration::days(60),
-        now: Utc::now(),
+        not_before: OffsetDateTime::now_utc(),
+        not_after: OffsetDateTime::now_utc() + Duration::days(60),
+        now: OffsetDateTime::now_utc(),
     })
     .await?;
     w.db.process(orchestration::entities::db::certificate::TouchCanvases {
@@ -734,7 +736,7 @@ async fn two_overlapping_rotation_passes_rotate_a_leaf_once(pool: sqlx::PgPool) 
         private_key_pem: leaf.private_key_pem.clone(),
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
-        not_after: Utc::now() + chrono::Duration::hours(1),
+        not_after: OffsetDateTime::now_utc() + Duration::hours(1),
         expected_version: None,
     })
     .await?
@@ -755,7 +757,7 @@ async fn two_overlapping_rotation_passes_rotate_a_leaf_once(pool: sqlx::PgPool) 
         "one rotation across both passes, not one each"
     );
     assert_ne!(after.certificate_pem, before.certificate_pem);
-    assert!(after.not_after > Utc::now() + chrono::Duration::days(1));
+    assert!(after.not_after > OffsetDateTime::now_utc() + Duration::days(1));
     Ok(())
 }
 
@@ -850,7 +852,7 @@ async fn two_overlapping_ensures_replace_an_expiring_leaf_once(pool: sqlx::PgPoo
         private_key_pem: leaf.private_key_pem.clone(),
         certificate_pem: leaf.certificate_pem.clone(),
         not_before: leaf.not_before,
-        not_after: Utc::now() + chrono::Duration::hours(1),
+        not_after: OffsetDateTime::now_utc() + Duration::hours(1),
         expected_version: None,
     })
     .await?

@@ -26,7 +26,7 @@ async fn published_world(pool: sqlx::PgPool) -> Result<World, Box<dyn std::error
         version: "0.2.0-beta".to_string(),
         sha256: "c".repeat(64),
         arch: "x86_64".to_string(),
-        now: chrono::Utc::now(),
+        now: time::OffsetDateTime::now_utc(),
     })
     .await?;
     Ok(w)
@@ -207,7 +207,7 @@ async fn issuing_needs_an_origin_a_release_and_a_key_manager(pool: sqlx::PgPool)
         version: "0.2.0-beta".to_string(),
         sha256: "c".repeat(64),
         arch: "x86_64".to_string(),
-        now: chrono::Utc::now(),
+        now: time::OffsetDateTime::now_utc(),
     })
     .await?;
     let info = servers
@@ -389,7 +389,7 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
         version: "0.3.0".to_string(),
         sha256: "d".repeat(64),
         arch: "x86_64".to_string(),
-        now: chrono::Utc::now(),
+        now: time::OffsetDateTime::now_utc(),
     })
     .await?;
     w.servers
@@ -423,7 +423,7 @@ async fn an_update_is_offered_once_requested_and_settled_by_what_the_worker_repo
         version: "0.4.0".to_string(),
         sha256: "e".repeat(64),
         arch: "x86_64".to_string(),
-        now: chrono::Utc::now(),
+        now: time::OffsetDateTime::now_utc(),
     })
     .await?;
     let agent = register_as(&w, &a.id, "0.2.0-beta", None).await?;

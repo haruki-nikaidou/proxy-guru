@@ -27,7 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Data types
-chrono = { workspace = true }
+time = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }

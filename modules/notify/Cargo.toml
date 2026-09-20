@@ -38,7 +38,7 @@ lettre = { workspace = true }
 reqwest = { workspace = true }
 
 # Data types
-chrono = { workspace = true }
+time = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }

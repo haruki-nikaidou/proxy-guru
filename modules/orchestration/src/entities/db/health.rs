@@ -10,10 +10,10 @@ use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 table_record!(ServerHealthRecordId, "server_health_record");
 
@@ -22,7 +22,7 @@ pub struct ServerHealthRecordEntity {
     pub id: ServerHealthRecordId,
     pub server: ServerId,
     pub status: ServerHealthStatus,
-    pub report_time: DateTime<Utc>,
+    pub report_time: OffsetDateTime,
     pub upload_bytes: i64,
     pub download_bytes: i64,
     pub current_connections: i64,
@@ -58,8 +58,8 @@ impl Default for ServerHealthStatus {
 #[derive(Debug)]
 pub struct ListServerHealthHistory {
     pub server: ServerId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
 }
 
 impl Processor<ListServerHealthHistory> for Db {
@@ -126,7 +126,7 @@ async fn insert_server_record(
     conn: &mut PgConnection,
     server: &ServerId,
     status: ServerHealthStatus,
-    report_time: DateTime<Utc>,
+    report_time: OffsetDateTime,
     counters: [i64; 4],
 ) -> Result<ServerHealthRecordEntity, Error> {
     let [
@@ -161,7 +161,7 @@ pub struct InsertServerHealthRecord {
     pub server: ServerId,
     pub generation: i64,
     pub status: ServerHealthStatus,
-    pub report_time: DateTime<Utc>,
+    pub report_time: OffsetDateTime,
     pub upload_bytes: i64,
     pub download_bytes: i64,
     pub current_connections: i64,
@@ -235,7 +235,7 @@ pub struct SetServerHealthStatus {
     pub server: ServerId,
     pub generation: Option<i64>,
     pub status: ServerHealthStatus,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<SetServerHealthStatus> for Db {
@@ -284,7 +284,7 @@ impl Processor<SetServerHealthStatus> for Db {
 #[derive(Debug, Clone)]
 pub struct ServerLiveness {
     pub id: ServerId,
-    pub last_health_report_at: Option<DateTime<Utc>>,
+    pub last_health_report_at: Option<OffsetDateTime>,
     pub health_status: ServerHealthStatus,
 }
 
@@ -316,7 +316,7 @@ pub struct PodHealthRecordEntity {
     pub pod: PodId,
     pub status: PodHealthStatus,
     pub message: String,
-    pub report_time: DateTime<Utc>,
+    pub report_time: OffsetDateTime,
 }
 
 /// The `rkyv` derives put this enum on the live bus unchanged
@@ -344,8 +344,8 @@ text_enum!(PodHealthStatus {
 #[derive(Debug)]
 pub struct ListPodHealthHistory {
     pub pod: PodId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
     pub limit: i64,
 }
 
@@ -387,8 +387,8 @@ impl Processor<ListPodHealthHistory> for Db {
 #[derive(Debug)]
 pub struct ListPodHealthSince {
     pub pod: PodId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
     /// The newest rows to keep; `None` keeps them all.
     pub limit: Option<i64>,
 }
@@ -418,7 +418,7 @@ pub struct NewPodHealthRecord {
     pub pod: PodId,
     pub status: PodHealthStatus,
     pub message: String,
-    pub report_time: DateTime<Utc>,
+    pub report_time: OffsetDateTime,
 }
 
 /// A pod row written, with the labels a notification needs. They are read in
@@ -439,7 +439,7 @@ struct PodHealthWriteRow {
     pod: PodId,
     status: PodHealthStatus,
     message: String,
-    report_time: DateTime<Utc>,
+    report_time: OffsetDateTime,
     pod_name: String,
     canvas: CanvasId,
     canvas_name: String,
@@ -474,7 +474,7 @@ async fn insert_pod_records(
     let pods: Vec<&PodId> = records.iter().map(|r| &r.pod).collect();
     let statuses: Vec<PodHealthStatus> = records.iter().map(|r| r.status).collect();
     let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
-    let times: Vec<DateTime<Utc>> = records.iter().map(|r| r.report_time).collect();
+    let times: Vec<OffsetDateTime> = records.iter().map(|r| r.report_time).collect();
     Ok(sqlx::query_file_as!(
         PodHealthWriteRow,
         "sql/insert_pod_records.sql",
@@ -514,8 +514,8 @@ impl Processor<InsertPodHealthRecords> for Db {
 /// Deletes records older than the given cut-offs; the retention cron's query.
 #[derive(Debug)]
 pub struct DeleteHealthRecordsBefore {
-    pub server_records_before: DateTime<Utc>,
-    pub pod_records_before: DateTime<Utc>,
+    pub server_records_before: OffsetDateTime,
+    pub pod_records_before: OffsetDateTime,
 }
 
 impl Processor<DeleteHealthRecordsBefore> for Db {

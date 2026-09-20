@@ -16,8 +16,8 @@ use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct DnsProviderService {
@@ -32,7 +32,7 @@ pub struct DnsProviderSummary {
     pub name: String,
     pub provider: DnsProvider,
     pub account_id: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 impl From<DnsProviderEntity> for DnsProviderSummary {
@@ -94,7 +94,7 @@ impl Processor<CreateDnsProvider> for DnsProviderService {
                 provider: input.provider,
                 account_id: input.account_id.trim().to_string(),
                 api_secret,
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
             })
             .await?;
         Ok(row.into())

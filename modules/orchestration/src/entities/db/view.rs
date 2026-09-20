@@ -13,11 +13,11 @@ use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
 use crate::entities::db::tree;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
+use time::OffsetDateTime;
 
 table_record!(ServerConfigViewId, "orchestration_server_config_view");
 
@@ -151,7 +151,8 @@ pub struct InvalidPod {
 pub struct ConfigSnapshot {
     pub revision: i64,
     pub toml: String,
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// Index-aligned with the `[[forwarding]]` entries of `toml`.
     pub forwardings: Vec<ForwardingDeps>,
     /// The certificates `toml` references. Sorted, so two snapshots asking for
@@ -598,5 +599,43 @@ impl Processor<ListStaleCanvases> for Db {
         Ok(sqlx::query_file_scalar!("sql/list_stale_canvases.sql")
             .fetch_all(self.db())
             .await?)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// A snapshot is stored as a `jsonb` document, so its timestamp is part of
+    /// the persisted shape: `time`'s own `Serialize` writes an array of
+    /// calendar components, which no row written so far can be read back from.
+    /// The field's `rfc3339` attribute is what keeps both directions on the one
+    /// spelling — this is the row a running deployment already holds.
+    #[test]
+    fn a_stored_snapshot_reads_back_from_rfc3339() {
+        let stored = r#"{"revision":7,"toml":"[server]","created_at":"2026-09-21T14:14:56.789012Z","forwardings":[],"certificates":[]}"#;
+        let snapshot: ConfigSnapshot = serde_json::from_str(stored).unwrap();
+        assert_eq!(
+            snapshot.created_at.unix_timestamp_nanos(),
+            1_790_000_096_789_012_000
+        );
+        assert_eq!(
+            serde_json::to_value(&snapshot).unwrap()["created_at"],
+            "2026-09-21T14:14:56.789012Z"
+        );
+    }
+
+    /// A whole second is written without a fractional part, and an offset other
+    /// than `Z` is accepted on the way in.
+    #[test]
+    fn a_snapshot_timestamp_round_trips_at_second_resolution() {
+        let stored =
+            r#"{"revision":1,"toml":"","created_at":"2026-09-21T16:14:56+02:00","forwardings":[]}"#;
+        let snapshot: ConfigSnapshot = serde_json::from_str(stored).unwrap();
+        assert_eq!(snapshot.created_at.unix_timestamp(), 1_790_000_096);
+        let again: ConfigSnapshot =
+            serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        assert_eq!(again.created_at, snapshot.created_at);
     }
 }

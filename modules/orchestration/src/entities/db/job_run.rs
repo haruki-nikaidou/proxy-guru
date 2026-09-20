@@ -27,19 +27,19 @@
 //! for the fence.
 
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
 use std::time::Duration;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 table_record!(JobRunId, "orchestration_job_run");
 
 #[derive(Debug, Clone)]
 pub struct JobRunEntity {
     pub id: JobRunId,
-    pub last_run_at: DateTime<Utc>,
+    pub last_run_at: OffsetDateTime,
     /// The scheduling tick of the signal that last ran this job.
-    pub last_signal_tick: DateTime<Utc>,
+    pub last_signal_tick: OffsetDateTime,
 }
 
 /// Claims the run of `job` for the signal published at `tick`: succeeds when the
@@ -51,12 +51,12 @@ pub struct ClaimJobRun {
     /// The job name; it is the row id.
     pub job: &'static str,
     /// When the claim is made; recorded for operators, never compared.
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
     /// The scheduling tick of the signal being handled.
-    pub tick: DateTime<Utc>,
+    pub tick: OffsetDateTime,
     /// `tick` minus the configured interval: the newest `last_signal_tick` that
     /// may still be claimed over.
-    pub tick_not_before: DateTime<Utc>,
+    pub tick_not_before: OffsetDateTime,
 }
 
 impl ClaimJobRun {
@@ -67,14 +67,14 @@ impl ClaimJobRun {
     /// when it gets round to the message, so measuring from that would subtract
     /// the processing delay from every period and refuse every other signal
     /// whenever the interval equals the publication cadence.
-    pub fn for_tick(job: &'static str, every: Duration, tick: DateTime<Utc>) -> Self {
-        let tick_not_before = chrono::Duration::from_std(every)
+    pub fn for_tick(job: &'static str, every: Duration, tick: OffsetDateTime) -> Self {
+        let tick_not_before = time::Duration::try_from(every)
             .ok()
-            .and_then(|every| tick.checked_sub_signed(every))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            .and_then(|every| tick.checked_sub(every))
+            .unwrap_or(PrimitiveDateTime::MIN.assume_utc());
         Self {
             job,
-            now: Utc::now(),
+            now: OffsetDateTime::now_utc(),
             tick,
             tick_not_before,
         }
@@ -105,7 +105,9 @@ impl Processor<ClaimJobRun> for Db {
             // tells an operator whether it was a duplicate or a backlog.
             tracing::debug!(
                 job = input.job,
-                tick_age_secs = Utc::now().signed_duration_since(input.tick).num_seconds(),
+                tick_age_secs = OffsetDateTime::now_utc()
+                    .unix_timestamp()
+                    .saturating_sub(input.tick.unix_timestamp()),
                 "skipping a periodic signal: the job already ran for this tick or interval"
             );
         }

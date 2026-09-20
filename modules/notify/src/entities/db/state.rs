@@ -13,17 +13,17 @@
 //! sighting: there is nobody left to announce.
 
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use orchestration::entities::db::health::{PodHealthStatus, ServerHealthStatus};
 use orchestration::entities::db::pod::PodId;
 use orchestration::entities::db::server::ServerId;
+use time::OffsetDateTime;
 
 /// Records one server's status and answers with the previous one.
 pub struct ObserveServerStatus {
     pub server: ServerId,
     pub status: ServerHealthStatus,
-    pub at: DateTime<Utc>,
+    pub at: OffsetDateTime,
 }
 
 impl Processor<ObserveServerStatus> for Db {
@@ -58,7 +58,7 @@ pub struct PodObservation {
 pub struct ObservePodStatuses {
     pub pods: Vec<PodId>,
     pub statuses: Vec<PodHealthStatus>,
-    pub at: DateTime<Utc>,
+    pub at: OffsetDateTime,
 }
 
 impl Processor<ObservePodStatuses> for Db {

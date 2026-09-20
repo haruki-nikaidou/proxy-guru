@@ -403,7 +403,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
 
     let sup = Arc::new(Mutex::new(Supervisor::new()));
     let agent_shutdown = CancellationToken::new();
-    let started = chrono::Utc::now();
+    let started = time::OffsetDateTime::now_utc();
     let agent_task = tokio::spawn(agent::run(
         AgentOptions {
             master: format!("http://{}", master.addr),
@@ -448,8 +448,8 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
             .db
             .process(ListServerHealthHistory {
                 server: canvas.server.clone(),
-                start: started - chrono::TimeDelta::seconds(1),
-                end: chrono::Utc::now() + chrono::TimeDelta::seconds(1),
+                start: started - time::Duration::seconds(1),
+                end: time::OffsetDateTime::now_utc() + time::Duration::seconds(1),
             })
             .await?;
         if records
@@ -784,7 +784,7 @@ async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestRe
     sqlx::query!(
         "UPDATE orchestration_server SET session_lease_until = $2 WHERE id = $1",
         &canvas.server as _,
-        chrono::Utc::now() - chrono::TimeDelta::seconds(60)
+        time::OffsetDateTime::now_utc() - time::Duration::seconds(60)
     )
     .execute(master.db.db())
     .await?;
@@ -902,7 +902,10 @@ async fn open_health(
     Ok((reports, replies))
 }
 
-async fn server_row(db: &Db, server: &ServerId) -> orchestration::entities::db::server::ServerEntity {
+async fn server_row(
+    db: &Db,
+    server: &ServerId,
+) -> orchestration::entities::db::server::ServerEntity {
     db.process(FindServerById { id: server.clone() })
         .await
         .unwrap()
@@ -1527,7 +1530,13 @@ impl FakeRun {
         update_poll: Duration,
         unary_timeout: Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::start_with(master, update_poll, unary_timeout, Duration::from_millis(100)).await
+        Self::start_with(
+            master,
+            update_poll,
+            unary_timeout,
+            Duration::from_millis(100),
+        )
+        .await
     }
 
     /// [`FakeRun::start`] reporting health every `health_interval`: the reply watchdog
@@ -1597,7 +1606,13 @@ async fn a_poll_the_master_never_answers_does_not_stall_health_reports() -> Test
     // Reporting starts with the session, before the revision is in: the first
     // reports may still say `0`, and one soon says what now runs.
     within("a report of the applied revision", async {
-        while health.recv().await.expect("a report arrives").running_revision != 3 {}
+        while health
+            .recv()
+            .await
+            .expect("a report arrives")
+            .running_revision
+            != 3
+        {}
     })
     .await;
     // Twenty more reports: two seconds of a loop that used to freeze at the
@@ -1648,7 +1663,6 @@ async fn an_ack_the_master_never_answers_ends_the_session() -> TestResult {
     run.stop().await;
     Ok(())
 }
-
 
 /// A current master sends keep-alives, ahead of the revision and after it: the worker
 /// skips them — none is applied as an empty config or acknowledged — and a session

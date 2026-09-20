@@ -31,7 +31,6 @@ use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{CLOUDFLARE, GOOGLE, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
@@ -46,6 +45,7 @@ use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use time::OffsetDateTime;
 
 pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 pub const VERCEL_API: &str = "https://api.vercel.com";
@@ -519,7 +519,7 @@ async fn wait_for_txt(name: &str, value: &str) -> Result<(), AcmeError> {
 }
 
 /// `(not_before, not_after)` of the leaf, the first block of the chain.
-pub fn leaf_validity(full_chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), AcmeError> {
+pub fn leaf_validity(full_chain_pem: &str) -> Result<(OffsetDateTime, OffsetDateTime), AcmeError> {
     let (_, pem) = x509_parser::pem::parse_x509_pem(full_chain_pem.as_bytes())
         .map_err(|e| AcmeError::Parse(e.to_string()))?;
     let leaf = pem
@@ -527,8 +527,8 @@ pub fn leaf_validity(full_chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Ut
         .map_err(|e| AcmeError::Parse(e.to_string()))?;
     let validity = leaf.validity();
     let to_utc = |t: i64| {
-        DateTime::<Utc>::from_timestamp(t, 0)
-            .ok_or_else(|| AcmeError::Parse(format!("timestamp {t} out of range")))
+        OffsetDateTime::from_unix_timestamp(t)
+            .map_err(|_| AcmeError::Parse(format!("timestamp {t} out of range")))
     };
     Ok((
         to_utc(validity.not_before.timestamp())?,
@@ -608,14 +608,14 @@ impl AcmeService {
         &self,
         id: &CertificateId,
         status: CertificateStatus,
-        not_after: Option<DateTime<Utc>>,
+        not_after: Option<OffsetDateTime>,
         error: Option<String>,
     ) {
         self.notifier
             .live(LiveMessage::CertificateChanged {
                 certificate: id.to_string(),
                 status,
-                not_after_unix_secs: not_after.map(|t| t.timestamp()),
+                not_after_unix_secs: not_after.map(|t| t.unix_timestamp()),
                 error,
             })
             .await;
@@ -664,7 +664,7 @@ impl Processor<IssueCertificate> for AcmeService {
                     .process(MarkCertificateAttemptFailed {
                         id: input.id.clone(),
                         error: error.clone(),
-                        now: Utc::now(),
+                        now: OffsetDateTime::now_utc(),
                     })
                     .await?;
                 self.publish_certificate(
@@ -688,7 +688,7 @@ impl Processor<IssueCertificate> for AcmeService {
                     .process(MarkCertificateAttemptFailed {
                         id: input.id.clone(),
                         error: error.clone(),
-                        now: Utc::now(),
+                        now: OffsetDateTime::now_utc(),
                     })
                     .await?;
                 self.publish_certificate(
@@ -713,7 +713,7 @@ impl Processor<IssueCertificate> for AcmeService {
                 full_chain_pem: material.full_chain_pem,
                 not_before,
                 not_after,
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
             })
             .await?;
         self.publish_certificate(
@@ -777,7 +777,7 @@ impl Processor<EnsureRequestedCertificates> for AcmeService {
                     dns_provider: request.tls.dns_provider,
                     domain_id: request.tls.domain_id,
                     acme_directory: directory,
-                    now: Utc::now(),
+                    now: OffsetDateTime::now_utc(),
                 })
                 .await?;
             ensured.push(row.id);
@@ -893,6 +893,7 @@ impl Processor<DeleteCertificate> for AcmeService {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use time::format_description::well_known::Rfc3339;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
@@ -1171,8 +1172,8 @@ mod tests {
         let cert = params.self_signed(&key).unwrap();
         let chain = format!("{}{}", cert.pem(), cert.pem());
         let (not_before, not_after) = leaf_validity(&chain).unwrap();
-        assert_eq!(not_before.to_rfc3339(), "2026-01-02T00:00:00+00:00");
-        assert_eq!(not_after.to_rfc3339(), "2026-04-02T00:00:00+00:00");
+        assert_eq!(not_before.format(&Rfc3339).unwrap(), "2026-01-02T00:00:00Z");
+        assert_eq!(not_after.format(&Rfc3339).unwrap(), "2026-04-02T00:00:00Z");
         assert!(leaf_validity("not pem").is_err());
     }
 }

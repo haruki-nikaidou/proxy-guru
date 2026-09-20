@@ -29,11 +29,11 @@ use crate::services::notify::Notifier;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use guru_worker_config::{Config, ConfigError, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::time::Duration;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 /// Pod records returned by `ListPodHealthHistory` when the caller sets no limit.
 pub const DEFAULT_POD_HISTORY_LIMIT: i64 = 500;
@@ -152,7 +152,7 @@ impl Processor<RecordHealthReport> for HealthService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let report = input.report;
         let server_id = input.agent.server.clone();
         // The generation is checked inside the write itself, so a report from a
@@ -223,7 +223,7 @@ impl Processor<RecordHealthReport> for HealthService {
 fn server_status(
     view: &ServerConfigViewEntity,
     running_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     grace: Duration,
 ) -> ServerHealthStatus {
     if view.apply_error.is_some() || !view.failed_pods.is_empty() {
@@ -236,12 +236,14 @@ fn server_status(
     if running_revision != applied {
         return ServerHealthStatus::Degraded;
     }
+    // A grace too large to add to the calendar never elapses, so a lagging
+    // revision under it stays `Online` rather than flipping on an absurd config.
     let lagging = view.desired.as_ref().is_some_and(|desired| {
         desired.revision > applied
-            && now
-                .signed_duration_since(desired.created_at)
-                .to_std()
-                .is_ok_and(|lag| lag > grace)
+            && time::Duration::try_from(grace)
+                .ok()
+                .and_then(|grace| desired.created_at.checked_add(grace))
+                .is_some_and(|deadline| now > deadline)
     });
     if lagging {
         ServerHealthStatus::Degraded
@@ -271,7 +273,7 @@ impl<'a> PodVerdicts<'a> {
             .or_insert((status, message));
     }
 
-    pub fn into_records(self, now: DateTime<Utc>) -> Vec<NewPodHealthRecord> {
+    pub fn into_records(self, now: OffsetDateTime) -> Vec<NewPodHealthRecord> {
         self.verdicts
             .into_iter()
             .map(|(pod, (status, message))| NewPodHealthRecord {
@@ -300,7 +302,7 @@ fn severity(status: PodHealthStatus) -> u8 {
 fn pod_records(
     view: &ServerConfigViewEntity,
     pods: &[PodResult],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Vec<NewPodHealthRecord> {
     let applied = entries_or_empty(view.applied.as_ref());
     let desired = entries_or_empty(view.desired.as_ref());
@@ -366,7 +368,7 @@ impl Processor<MarkServerOffline> for HealthService {
                 server: input.server.clone(),
                 generation: input.generation,
                 status: ServerHealthStatus::Offline,
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
             })
             .await?;
         if let Some(write) = &write {
@@ -385,7 +387,7 @@ impl Processor<MarkServerOffline> for HealthService {
 /// flip, whose connection died before its first report. That session is revoked
 /// once it is older than the same threshold (see [`RevokeSilentWatchSessions`]).
 pub struct SweepLiveness {
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// What one liveness sweep changed.
@@ -406,11 +408,10 @@ impl Processor<SweepLiveness> for HealthService {
         let mut flipped = Vec::new();
         for server in self.db.process(ListServersForLivenessSweep).await? {
             let silent = server.last_health_report_at.is_none_or(|last| {
-                input
-                    .now
-                    .signed_duration_since(last)
-                    .to_std()
-                    .is_ok_and(|silence| silence > threshold)
+                time::Duration::try_from(threshold)
+                    .ok()
+                    .and_then(|threshold| last.checked_add(threshold))
+                    .is_some_and(|deadline| input.now > deadline)
             });
             if !silent {
                 continue;
@@ -433,10 +434,10 @@ impl Processor<SweepLiveness> for HealthService {
             }
         }
         // A threshold too large to subtract leaves no registration old enough.
-        let registered_before = chrono::TimeDelta::from_std(threshold)
+        let registered_before = time::Duration::try_from(threshold)
             .ok()
-            .and_then(|threshold| input.now.checked_sub_signed(threshold))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            .and_then(|threshold| input.now.checked_sub(threshold))
+            .unwrap_or(PrimitiveDateTime::MIN.assume_utc());
         let revoked = self
             .db
             .process(RevokeSilentWatchSessions {
@@ -450,7 +451,7 @@ impl Processor<SweepLiveness> for HealthService {
 
 /// One retention pass: drops raw records older than their TTL.
 pub struct TrimHealthHistory {
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 impl Processor<TrimHealthHistory> for HealthService {
@@ -462,18 +463,18 @@ impl Processor<TrimHealthHistory> for HealthService {
             .process(DeleteHealthRecordsBefore {
                 server_records_before: input
                     .now
-                    .checked_sub_signed(
-                        chrono::Duration::from_std(self.config.server_health_ttl())
-                            .unwrap_or(chrono::TimeDelta::MAX),
+                    .checked_sub(
+                        time::Duration::try_from(self.config.server_health_ttl())
+                            .unwrap_or(time::Duration::MAX),
                     )
-                    .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                    .unwrap_or(PrimitiveDateTime::MIN.assume_utc()),
                 pod_records_before: input
                     .now
-                    .checked_sub_signed(
-                        chrono::Duration::from_std(self.config.pod_health_ttl())
-                            .unwrap_or(chrono::TimeDelta::MAX),
+                    .checked_sub(
+                        time::Duration::try_from(self.config.pod_health_ttl())
+                            .unwrap_or(time::Duration::MAX),
                     )
-                    .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                    .unwrap_or(PrimitiveDateTime::MIN.assume_utc()),
             })
             .await?;
         Ok(())
@@ -483,8 +484,8 @@ impl Processor<TrimHealthHistory> for HealthService {
 pub struct ListServerHealthHistory {
     pub actor: Identity,
     pub server: ServerId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
 }
 
 impl Processor<ListServerHealthHistory> for HealthService {
@@ -507,8 +508,8 @@ impl Processor<ListServerHealthHistory> for HealthService {
 pub struct ListPodHealthHistory {
     pub actor: Identity,
     pub pod: PodId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
     pub limit: i64,
 }
 

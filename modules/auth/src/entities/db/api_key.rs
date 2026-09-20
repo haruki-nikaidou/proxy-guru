@@ -1,8 +1,8 @@
 use crate::entities::db::account::AccountId;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 table_record!(ApiKeyId, "api_key");
 
@@ -12,14 +12,14 @@ pub struct ApiKeyEntity {
     pub name: String,
     pub owner: AccountId,
     pub secret_sha256: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 pub struct CreateNewApiKey {
     pub name: String,
     pub owner: AccountId,
     pub secret_sha256: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 impl Processor<CreateNewApiKey> for Db {
@@ -90,7 +90,7 @@ pub struct ApiKeyOmitSecret {
     pub id: ApiKeyId,
     pub name: String,
     pub owner: AccountId,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 impl Processor<ListApiKeysByOwner> for Db {

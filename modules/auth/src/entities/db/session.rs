@@ -1,8 +1,8 @@
 use super::account::AccountId;
 use base::db::{Db, Error};
-use chrono::{DateTime, Utc};
 use db_types::table_record;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 // A session's id is the opaque session token itself.
 table_record!(SessionId, "auth_session");
@@ -12,8 +12,8 @@ pub struct SessionEntity {
     pub id: SessionId,
     pub account_id: AccountId,
     pub user_agent: String,
-    pub created_at: DateTime<Utc>,
-    pub last_active_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub last_active_at: OffsetDateTime,
 }
 
 pub struct FindSessionById {
@@ -42,8 +42,8 @@ pub struct CreateSession {
     pub token: String,
     pub account_id: AccountId,
     pub user_agent: String,
-    pub created_at: DateTime<Utc>,
-    pub last_active_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub last_active_at: OffsetDateTime,
 }
 
 impl Processor<CreateSession> for Db {
@@ -86,7 +86,7 @@ impl Processor<DeleteSession> for Db {
 
 pub struct UpdateSession {
     pub id: String,
-    pub last_active_at: DateTime<Utc>,
+    pub last_active_at: OffsetDateTime,
 }
 
 impl Processor<UpdateSession> for Db {

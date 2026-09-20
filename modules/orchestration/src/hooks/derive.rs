@@ -53,10 +53,10 @@ use crate::services::notify::Notifier;
 use crate::utils::ids;
 use crate::utils::secret::SecretKey;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use wakuwaku::amqp::AmqpMessageProcessor;
 
 /// How many times one pass retries after losing the generation race before it
@@ -179,7 +179,7 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 .collect();
 
             let mut derived = derive_tree(&state.graph, &certificates, &self.config);
-            let now = Utc::now();
+            let now = OffsetDateTime::now_utc();
             let mut updates = Vec::with_capacity(state.graph.servers.len());
             let mut deploying = Vec::new();
             for server in &state.graph.servers {
@@ -307,7 +307,7 @@ fn derive_one(
     view: &ServerConfigViewEntity,
     ideal: Result<DerivedConfig, String>,
     views: &[ServerConfigViewEntity],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> ViewUpdate {
     let failed = |error: String| ViewUpdate {
         server: server.clone(),
@@ -382,7 +382,7 @@ fn derive_one(
 fn deploying_records(
     previous: Option<&ConfigSnapshot>,
     next: &ConfigSnapshot,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     out: &mut Vec<NewPodHealthRecord>,
 ) {
     let Ok(next_config) = Config::from_toml_str(&next.toml) else {
@@ -446,12 +446,12 @@ pub async fn sweep_stale_canvases(deriver: &CanvasDeriver) -> Result<(), wakuwak
 pub async fn rotate_expiring_relay_certificates(
     deriver: &CanvasDeriver,
 ) -> Result<(), wakuwaku::Error> {
-    let before = Utc::now()
-        .checked_add_signed(
-            chrono::Duration::from_std(deriver.config.relay_cert_renew_before())
-                .unwrap_or(chrono::TimeDelta::MAX),
+    let before = OffsetDateTime::now_utc()
+        .checked_add(
+            time::Duration::try_from(deriver.config.relay_cert_renew_before())
+                .unwrap_or(time::Duration::MAX),
         )
-        .unwrap_or(DateTime::<Utc>::MAX_UTC);
+        .unwrap_or(PrimitiveDateTime::MAX.assume_utc());
     let expiring = deriver
         .db
         .process(ListRelayCertificatesExpiringBefore { before })

@@ -9,7 +9,6 @@
 
 mod common;
 
-use chrono::{SubsecRound, TimeDelta, Utc};
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::PublishAgentRelease;
@@ -43,6 +42,7 @@ use orchestration::services::server::{
 };
 use std::sync::Arc;
 use std::time::Duration;
+use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
 /// How long a test waits for an event it expects. Generous: the bus is
@@ -320,7 +320,7 @@ async fn agent_state_changes_are_announced(pool: sqlx::PgPool) -> TestResult {
         version: "0.2.0-beta".to_string(),
         sha256: "c".repeat(64),
         arch: "x86_64".to_string(),
-        now: Utc::now(),
+        now: OffsetDateTime::now_utc(),
     })
     .await?;
     let canvas = canvas_named(&w, "prod", None).await?;
@@ -674,7 +674,7 @@ async fn graph_view_reloads_on_a_status_flip_not_a_report(pool: sqlx::PgPool) ->
     // The master's own flip does.
     w.health
         .process(SweepLiveness {
-            now: Utc::now() + TimeDelta::days(1),
+            now: OffsetDateTime::now_utc() + time::Duration::days(1),
         })
         .await?;
     assert_eq!(
@@ -792,7 +792,7 @@ async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> Te
         .process(WatchServerHealth {
             actor: operator(),
             server: server.clone(),
-            since: Utc::now() - TimeDelta::hours(1),
+            since: OffsetDateTime::now_utc() - time::Duration::hours(1),
         })
         .await?;
     let mut events = watch.events;
@@ -826,7 +826,7 @@ async fn server_health_stream_dedupes_and_sees_offline(pool: sqlx::PgPool) -> Te
     let swept = w
         .health
         .process(SweepLiveness {
-            now: Utc::now() + TimeDelta::days(1),
+            now: OffsetDateTime::now_utc() + time::Duration::days(1),
         })
         .await?;
     assert!(swept.flipped.contains(&server));
@@ -883,7 +883,7 @@ async fn pod_health_is_deploying_then_ready_then_failed(pool: sqlx::PgPool) -> T
         .process(WatchPodHealth {
             actor: operator(),
             pod: PodId::from_key(key("web")),
-            since: Utc::now() - TimeDelta::hours(1),
+            since: OffsetDateTime::now_utc() - time::Duration::hours(1),
         })
         .await?;
     let statuses: Vec<_> = watch.records.iter().map(|r| r.status).collect();
@@ -937,7 +937,8 @@ async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> Test
     wired(&w).await?;
     let pod = pod_id("web");
     // PostgreSQL keeps microseconds.
-    let now = Utc::now().trunc_subsecs(6);
+    let now = OffsetDateTime::now_utc();
+    let now = now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)?;
     let total = DEFAULT_POD_HISTORY_LIMIT + 10;
     w.db.process(InsertPodHealthRecords {
         records: (0..total)
@@ -945,7 +946,7 @@ async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> Test
                 pod: pod.clone(),
                 status: PodHealthStatus::Ready,
                 message: String::new(),
-                report_time: now - TimeDelta::seconds(total - i),
+                report_time: now - time::Duration::seconds(total - i),
             })
             .collect(),
     })
@@ -956,7 +957,7 @@ async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> Test
         .process(WatchPodHealth {
             actor: operator(),
             pod,
-            since: now - TimeDelta::hours(1),
+            since: now - time::Duration::hours(1),
         })
         .await?;
     let times: Vec<_> = watch.records.iter().map(|r| r.report_time).collect();
@@ -967,12 +968,12 @@ async fn a_pod_watch_opens_with_the_newest_page_only(pool: sqlx::PgPool) -> Test
     );
     assert_eq!(
         times.last(),
-        Some(&(now - TimeDelta::seconds(1))),
+        Some(&(now - time::Duration::seconds(1))),
         "the newest row is in"
     );
     assert_eq!(
         times.first(),
-        Some(&(now - TimeDelta::seconds(DEFAULT_POD_HISTORY_LIMIT))),
+        Some(&(now - time::Duration::seconds(DEFAULT_POD_HISTORY_LIMIT))),
         "the oldest rows are the ones left out"
     );
     Ok(())

@@ -22,6 +22,7 @@ use base::db::Db;
 use guru_worker_config::Config;
 use kanau::processor::Processor;
 use rpguru_sdk::orchestration_agent as pb;
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -67,7 +68,7 @@ fn reported_from_proto(reported: pb::ReportedAddresses) -> ReportedAddresses {
         public_v4: non_empty(reported.public_v4),
         public_v6: non_empty(reported.public_v6),
         interfaces: reported.interfaces,
-        reported_at: chrono::Utc::now(),
+        reported_at: OffsetDateTime::now_utc(),
     }
 }
 
@@ -170,7 +171,7 @@ impl WorkerAgentGrpc {
 
     /// Extends this session's lease. `false` means the fence moved on.
     async fn renew(&self, server: &ServerId, fence: WatchFence) -> Result<bool, Status> {
-        let now = chrono::Utc::now();
+        let now = OffsetDateTime::now_utc();
         self.db
             .process(RenewServerWatchSession {
                 server: server.clone(),
@@ -303,7 +304,7 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         // Claim the server's single watch session. The claim is conditional on the
         // generation still being current, so a request that authenticated just
         // before a registration rotated the key cannot open a stream afterwards.
-        let now = chrono::Utc::now();
+        let now = OffsetDateTime::now_utc();
         let server = self
             .db
             .process(ClaimServerWatchSession {

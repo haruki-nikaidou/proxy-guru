@@ -11,11 +11,11 @@ use crate::config::OrchestrationConfig;
 use crate::entities::db::server::{ListAllServers, ServerEntity, SetServerCountry};
 use crate::services::OrchestrationError;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
+use time::OffsetDateTime;
 
 /// Per-request budget: a service that does not answer within this failed.
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -29,7 +29,7 @@ pub struct CountryService {
 
 /// One pass over every server of every canvas.
 pub struct ResolveServerCountries {
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// What one pass did.
@@ -51,7 +51,7 @@ pub struct CountryState<'a> {
     pub country: Option<&'a str>,
     /// The address the stored lookup was made for.
     pub address: Option<&'a str>,
-    pub checked_at: Option<DateTime<Utc>>,
+    pub checked_at: Option<OffsetDateTime>,
 }
 
 impl<'a> CountryState<'a> {
@@ -80,7 +80,7 @@ pub enum CountryAction {
 /// once; a failed lookup of the same address is retried after `retry_after`.
 pub fn country_action(
     state: CountryState<'_>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     retry_after: Duration,
 ) -> CountryAction {
     let Some(v4) = state.v4.filter(|v4| is_global_v4(*v4)) else {
@@ -96,10 +96,12 @@ pub fn country_action(
     if state.country.is_some() {
         return CountryAction::Skip;
     }
+    // A retry window too large to add to the calendar never comes due.
     let due = state.checked_at.is_none_or(|checked| {
-        now.signed_duration_since(checked)
-            .to_std()
-            .is_ok_and(|since| since >= retry_after)
+        time::Duration::try_from(retry_after)
+            .ok()
+            .and_then(|retry_after| checked.checked_add(retry_after))
+            .is_some_and(|retry_at| now >= retry_at)
     });
     if due {
         CountryAction::Lookup(v4)
@@ -237,15 +239,15 @@ mod tests {
 
     const HOUR: Duration = Duration::from_secs(3600);
 
-    fn at(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap_or_default()
+    fn at(secs: i64) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(secs).unwrap_or(OffsetDateTime::UNIX_EPOCH)
     }
 
     fn state<'a>(
         v4: Option<&str>,
         country: Option<&'a str>,
         address: Option<&'a str>,
-        checked_at: Option<DateTime<Utc>>,
+        checked_at: Option<OffsetDateTime>,
     ) -> CountryState<'a> {
         CountryState {
             v4: v4.and_then(|v4| v4.parse().ok()),

@@ -27,9 +27,9 @@ use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_refresh_key, sha256_hex};
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
 use std::collections::HashSet;
+use time::OffsetDateTime;
 
 /// An authenticated worker: which server, and which refresh-key generation it holds.
 #[derive(Clone, Debug)]
@@ -84,7 +84,7 @@ impl Processor<RegisterWorker> for AgentService {
             .await?;
 
         let secret = generate_refresh_key();
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         // One transaction: rotate the key, reconcile what the worker reports, and
         // clear whatever was in flight — the worker is not running it. Refused
         // while another session still heartbeats, so a second worker pointed at
@@ -369,7 +369,7 @@ impl Processor<AckConfig> for AgentService {
             .filter(|snapshot| snapshot.revision == input.revision)
             .ok_or_else(|| OrchestrationError::Invalid("unknown revision".into()))?;
         let parsed = parse_snapshot(in_flight).map_err(invalid_snapshot)?;
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         // Failures keyed by tag: `(tag, error)`.
         let (applied, failed_pods, pods) = match &input.error {
             Some(error) => {
@@ -478,7 +478,7 @@ impl Processor<AckConfig> for AgentService {
 fn ack_pod_records(
     entries: &[SnapshotEntry<'_>],
     failed: &[(&str, &str)],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Vec<NewPodHealthRecord> {
     let mut verdicts = PodVerdicts::default();
     for entry in entries {

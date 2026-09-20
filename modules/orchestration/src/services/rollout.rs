@@ -14,8 +14,8 @@ use auth::entities::db::account::AccountRole;
 use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use base::db::Db;
-use chrono::{DateTime, Utc};
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct RolloutService {
@@ -62,7 +62,7 @@ pub struct RolloutStatus {
     pub waiting_for: Vec<ServerId>,
     /// The canvas has edits the derivation has not caught up with yet.
     pub derivation_pending: bool,
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<OffsetDateTime>,
 }
 
 pub struct GetServerRolloutStatus {

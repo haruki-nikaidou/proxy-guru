@@ -25,9 +25,9 @@ use auth::services::identity::Identity;
 use auth::utils::rbac::Permission;
 use auth::utils::token::{generate_server_agent_key, sha256_hex};
 use base::db::Db;
-use chrono::Utc;
 use kanau::processor::Processor;
 use std::net::IpAddr;
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct ServerService {
@@ -315,7 +315,7 @@ impl Processor<IssueServerAgentInstall> for ServerService {
                 id: server.id.clone(),
                 digest: sha256_hex(&secret),
                 unit: unit.clone(),
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
             })
             .await?;
         tracing::info!(server = %server.id.to_string(), unit, "issued a server agent key");

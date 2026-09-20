@@ -10,8 +10,8 @@
 use crate::entities::db::job_run::ClaimJobRun;
 use crate::events::ResolveServerCountriesSignal;
 use crate::services::country::{CountryService, ResolveServerCountries};
-use chrono::Utc;
 use kanau::processor::Processor;
+use time::OffsetDateTime;
 use wakuwaku::amqp::AmqpMessageProcessor;
 
 /// Consumes [`ResolveServerCountriesSignal`].
@@ -46,7 +46,9 @@ impl Processor<ResolveServerCountriesSignal> for CountryCronHook {
         }
         let pass = self
             .country
-            .process(ResolveServerCountries { now: Utc::now() })
+            .process(ResolveServerCountries {
+                now: OffsetDateTime::now_utc(),
+            })
             .await?;
         if pass.looked_up > 0 || pass.cleared > 0 {
             tracing::info!(

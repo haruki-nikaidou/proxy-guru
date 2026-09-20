@@ -334,7 +334,7 @@ async fn a_tls_pod_must_name_a_provider_and_agree_on_its_certificate(
             dns_provider: provider.id.clone(),
             domain_id: "zone".to_string(),
             acme_directory: w.config.default_acme_directory.clone(),
-            now: chrono::Utc::now(),
+            now: time::OffsetDateTime::now_utc(),
         },
     )
     .await?;

@@ -7,7 +7,12 @@
 
 use crate::entities::db::setting::{Language, NoticeKind};
 use crate::events::HealthNotice;
-use chrono::DateTime;
+use time::OffsetDateTime;
+use time::format_description::StaticFormatDescription;
+
+/// How a notice renders its timestamp: UTC wall clock, zero-padded.
+const NOTICE_TIME: StaticFormatDescription =
+    time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second] UTC");
 
 /// A notice as one recipient will see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,9 +65,12 @@ pub fn render(notice: &HealthNotice, language: Language) -> RenderedNotice {
     // A timestamp no calendar can represent is a corrupt event, not a reason to
     // drop the notice: the epoch is obviously wrong to a reader, and the rest of
     // the message still says what happened.
-    let time = DateTime::from_timestamp_micros(notice.at_unix_micros)
-        .unwrap_or_default()
-        .format("%Y-%m-%d %H:%M:%S UTC");
+    let time = OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(notice.at_unix_micros).saturating_mul(1_000),
+    )
+    .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+    .format(NOTICE_TIME)
+    .unwrap_or_default();
     let mut body = format!(
         "{headline}\n\n{subject_label}: {} ({})\n{canvas_label}: {}\n{time_label}: {time}",
         notice.subject_name, notice.subject, notice.canvas_name

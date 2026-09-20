@@ -5,7 +5,6 @@
 
 mod common;
 
-use chrono::{DateTime, DurationRound, TimeDelta, Utc};
 use common::*;
 use guru_worker_config::{Config, ForwardingTo, Remote};
 use kanau::processor::Processor;
@@ -36,6 +35,7 @@ use orchestration::services::health::{
     HealthReportInput, MarkServerOffline, RecordHealthReport, SweepLiveness, TrimHealthHistory,
 };
 use orchestration::services::server::{AddressOverrides, CreateServer};
+use time::{Duration, OffsetDateTime};
 
 /// One server, two client pods: `web` (443 → exit `web-out`) and `api`
 /// (8443 → exit `api-out`).
@@ -254,8 +254,8 @@ async fn record(
 async fn server_history(w: &World, server: &ServerId) -> Vec<ServerHealthRecordEntity> {
     w.db.process(ListServerHealthHistory {
         server: server.clone(),
-        start: Utc::now() - TimeDelta::days(30),
-        end: Utc::now() + TimeDelta::days(1),
+        start: OffsetDateTime::now_utc() - Duration::days(30),
+        end: OffsetDateTime::now_utc() + Duration::days(1),
     })
     .await
     .unwrap()
@@ -265,8 +265,8 @@ async fn server_history(w: &World, server: &ServerId) -> Vec<ServerHealthRecordE
 async fn latest_pod(w: &World, pod: &PodId) -> Option<PodHealthRecordEntity> {
     w.db.process(ListPodHealthHistory {
         pod: pod.clone(),
-        start: Utc::now() - TimeDelta::days(30),
-        end: Utc::now() + TimeDelta::days(1),
+        start: OffsetDateTime::now_utc() - Duration::days(30),
+        end: OffsetDateTime::now_utc() + Duration::days(1),
         limit: 1,
     })
     .await
@@ -658,7 +658,7 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
         "a second worker is refused while the session is live"
     );
 
-    let before = reported_at + threshold - TimeDelta::seconds(1);
+    let before = reported_at + threshold - Duration::seconds(1);
     assert!(
         w.health
             .process(SweepLiveness { now: before })
@@ -671,7 +671,7 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
     assert_eq!(row.session_lease_until, held.session_lease_until);
     assert_eq!(row.watch_epoch, held.watch_epoch);
 
-    let after = reported_at + threshold + TimeDelta::seconds(1);
+    let after = reported_at + threshold + Duration::seconds(1);
     let swept = w.health.process(SweepLiveness { now: after }).await?;
     assert_eq!(
         swept
@@ -699,7 +699,7 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
     // keeps renewing.
     assert_eq!(row.session_lease_until, None, "the lease is dropped");
     assert_eq!(row.watch_epoch, held.watch_epoch + 1, "the epoch moves");
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     assert!(
         !w.db
             .process(RenewServerWatchSession {
@@ -707,7 +707,7 @@ async fn silence_past_the_threshold_marks_the_server_offline(pool: sqlx::PgPool)
                 generation: agent.generation,
                 epoch: held.watch_epoch,
                 now,
-                lease_until: now + TimeDelta::seconds(30),
+                lease_until: now + Duration::seconds(30),
             })
             .await?,
         "the stream that held the lease cannot renew it"
@@ -756,13 +756,13 @@ async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
     );
 
     let agent = register(&w, &f.server).await?;
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let claimed =
         w.db.process(ClaimServerWatchSession {
             server: f.server.clone(),
             generation: agent.generation,
             now,
-            lease_until: now + TimeDelta::seconds(30),
+            lease_until: now + Duration::seconds(30),
         })
         .await?
         .unwrap();
@@ -775,19 +775,19 @@ async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
     let threshold = w.health.config.health_offline_after();
     // The stream keeps renewing whatever the clock says, as the master's own
     // heartbeat does for a stream behind a proxy.
-    let renew = async |at: DateTime<Utc>| {
+    let renew = async |at: OffsetDateTime| {
         w.db.process(RenewServerWatchSession {
             server: f.server.clone(),
             generation: agent.generation,
             epoch: claimed.watch_epoch,
             now: at,
-            lease_until: at + TimeDelta::seconds(30),
+            lease_until: at + Duration::seconds(30),
         })
         .await
         .unwrap()
     };
 
-    let before = registered_at + threshold - TimeDelta::seconds(1);
+    let before = registered_at + threshold - Duration::seconds(1);
     assert!(renew(before).await);
     let swept = w.health.process(SweepLiveness { now: before }).await?;
     assert!(swept.flipped.is_empty() && swept.revoked.is_empty());
@@ -798,7 +798,7 @@ async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
         "a registration younger than the threshold keeps its session"
     );
 
-    let after = registered_at + threshold + TimeDelta::seconds(1);
+    let after = registered_at + threshold + Duration::seconds(1);
     assert!(renew(after).await);
     let history = server_history(&w, &f.server).await.len();
     let swept = w.health.process(SweepLiveness { now: after }).await?;
@@ -839,7 +839,7 @@ async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> 
     take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
     let held = server_row(&w, &f.server).await;
     // A report an hour into the session, and a sweep just after it.
-    let reported_at = held.registered_at.unwrap() + TimeDelta::hours(1);
+    let reported_at = held.registered_at.unwrap() + Duration::hours(1);
     assert!(
         w.db.process(InsertServerHealthRecord {
             server: f.server.clone(),
@@ -855,14 +855,14 @@ async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> 
         .await?
         .is_some()
     );
-    let now = reported_at + TimeDelta::seconds(1);
+    let now = reported_at + Duration::seconds(1);
     assert!(
         w.db.process(RenewServerWatchSession {
             server: f.server.clone(),
             generation: agent.generation,
             epoch: held.watch_epoch,
             now,
-            lease_until: now + TimeDelta::seconds(30),
+            lease_until: now + Duration::seconds(30),
         })
         .await?
     );
@@ -932,8 +932,9 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     // `timestamptz` keeps microseconds; a nanosecond `now` would not round-trip.
-    let now = Utc::now().duration_trunc(TimeDelta::microseconds(1))?;
-    let insert = async |report_time: DateTime<Utc>| {
+    let now = OffsetDateTime::now_utc();
+    let now = now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)?;
+    let insert = async |report_time: OffsetDateTime| {
         w.db.process(InsertServerHealthRecord {
             server: f.server.clone(),
             generation: agent.generation,
@@ -952,8 +953,8 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
         })
         .await
     };
-    let stale = now - w.health.config.server_health_ttl() - TimeDelta::hours(1);
-    let fresh = now - w.health.config.server_health_ttl() + TimeDelta::hours(1);
+    let stale = now - w.health.config.server_health_ttl() - Duration::hours(1);
+    let fresh = now - w.health.config.server_health_ttl() + Duration::hours(1);
     assert!(insert(stale).await?.is_some());
     assert!(insert(fresh).await?.is_some());
 
@@ -969,7 +970,7 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
     let pods =
         w.db.process(ListPodHealthHistory {
             pod: f.web.id.clone(),
-            start: now - TimeDelta::days(30),
+            start: now - Duration::days(30),
             end: now,
             limit: 10,
         })
@@ -984,8 +985,9 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
 
 /// A liveness sweep that is guaranteed to flip the server: the report is
 /// backdated past the offline threshold, so the pass needs no fake clock.
-async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> DateTime<Utc> {
-    let stale = Utc::now() - w.health.config.health_offline_after() - TimeDelta::hours(1);
+async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> OffsetDateTime {
+    let stale =
+        OffsetDateTime::now_utc() - w.health.config.health_offline_after() - Duration::hours(1);
     assert!(
         w.db.process(InsertServerHealthRecord {
             server: f.server.clone(),
@@ -1005,9 +1007,9 @@ async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> DateTime<Ut
     stale
 }
 
-fn signal(tick: DateTime<Utc>) -> SweepLivenessSignal {
+fn signal(tick: OffsetDateTime) -> SweepLivenessSignal {
     SweepLivenessSignal {
-        tick_unix_secs: tick.timestamp(),
+        tick_unix_secs: tick.unix_timestamp(),
     }
 }
 
@@ -1039,7 +1041,7 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
             notifier: w.notifier.clone(),
         },
     };
-    let tick = Utc::now();
+    let tick = OffsetDateTime::now_utc();
 
     hook.process(signal(tick)).await?;
     assert_eq!(
@@ -1056,7 +1058,7 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
         "a redelivery of the same tick does nothing"
     );
 
-    hook.process(signal(tick + TimeDelta::seconds(5))).await?;
+    hook.process(signal(tick + Duration::seconds(5))).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Online,
@@ -1076,7 +1078,7 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
     // happened milliseconds ago, and the pass must still run — measuring from the
     // run would subtract the processing delay from every period and drop every
     // other signal whenever the interval equals the publication cadence.
-    hook.process(signal(tick + TimeDelta::seconds(30))).await?;
+    hook.process(signal(tick + Duration::seconds(30))).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Offline,
@@ -1097,7 +1099,7 @@ async fn two_consumers_handed_one_signal_run_the_pass_once(pool: sqlx::PgPool) -
     let hook = HealthCronHook {
         health: w.health.clone(),
     };
-    let tick = Utc::now();
+    let tick = OffsetDateTime::now_utc();
 
     let (a, b) = tokio::join!(hook.process(signal(tick)), hook.process(signal(tick)));
     a?;
@@ -1345,8 +1347,8 @@ async fn a_health_write_carries_labels_and_announces_only_a_flip(pool: sqlx::PgP
     let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
-    let report_time = Utc::now();
-    let online = async |report_time: DateTime<Utc>| {
+    let report_time = OffsetDateTime::now_utc();
+    let online = async |report_time: OffsetDateTime| {
         w.db.process(InsertServerHealthRecord {
             server: f.server.clone(),
             generation: agent.generation,
@@ -1401,7 +1403,7 @@ async fn a_health_write_carries_labels_and_announces_only_a_flip(pool: sqlx::PgP
 
     // The next report says the same thing: only the pod row is a fact, or every
     // recipient would hear about every interval.
-    let again = online(report_time + TimeDelta::seconds(15))
+    let again = online(report_time + Duration::seconds(15))
         .await?
         .expect("the write lands");
     let facts = health_facts(&again);
