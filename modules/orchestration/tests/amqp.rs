@@ -12,11 +12,14 @@
 mod common;
 
 use common::*;
+use kanau::message::{MessageDe, MessageSer};
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::server::{ServerIpv6Resolve, ServerLogLevel};
 use orchestration::entities::db::view::FindServerConfigView;
-use orchestration::events::{CanvasDirty, DeriveStaleCanvasesSignal};
+use orchestration::events::{
+    CanvasDirty, DeriveStaleCanvasesSignal, RotateRelayCertificatesSignal,
+};
 use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::services::canvas::{CanvasService, CreateCanvas};
 use orchestration::services::graph::{ApplyGraph, GraphChange, GraphService};
@@ -27,7 +30,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use wakuwaku::amqp::{AmqpMessageProcessor, AmqpMessageSend, AmqpPool, setup_consumer};
+use wakuwaku::amqp::{
+    AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting, setup_consumer,
+};
+use wakuwaku::interval_job::IntervalJobExecutionSignal;
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn an_edit_reaches_the_deriver_through_the_broker(db_pool: sqlx::PgPool) -> TestResult {
@@ -300,4 +306,121 @@ async fn a_periodic_signal_reaches_its_hook_through_the_broker(
     drop(channel);
     connection.close().await?;
     Ok(())
+}
+
+/// A tick nobody consumed is dropped by the broker instead of piling up.
+///
+/// `cron` publishes on each job's own cadence whether a consumer is alive or
+/// not, so with the consumer fleet down the signal queues are what grows: the
+/// run claim discards a stale delivery, but only after the queue held it and a
+/// consumer decoded it. No consumer is bound here — the queues are declared and
+/// left alone, the way they are during an outage.
+#[tokio::test]
+async fn an_unconsumed_periodic_signal_expires_at_the_broker() -> TestResult {
+    let broker = RabbitMq::default().start().await?;
+    let uri = format!(
+        "amqp://guest:guest@{}:{}",
+        broker.get_host().await?,
+        broker.get_host_port_ipv4(5672).await?
+    );
+    let args = amqprs::connection::OpenConnectionArguments::try_from(uri.as_str())?;
+    let connection = amqprs::connection::Connection::open(&args).await?;
+    connection
+        .register_callback(amqprs::callbacks::DefaultConnectionCallback)
+        .await?;
+    let pool = AmqpPool::connect(connection.clone()).await;
+
+    let stale =
+        <CanvasDeriver as AmqpMessageProcessor<DeriveStaleCanvasesSignal>>::ensure_queue(&pool)
+            .await?;
+    let rotate =
+        <CanvasDeriver as AmqpMessageProcessor<RotateRelayCertificatesSignal>>::ensure_queue(&pool)
+            .await?;
+
+    let now = time::OffsetDateTime::now_utc();
+    DeriveStaleCanvasesSignal::tick(now).send(&pool).await?;
+    RotateRelayCertificatesSignal::tick(now).send(&pool).await?;
+
+    let stale_queue =
+        <CanvasDeriver as AmqpMessageProcessor<DeriveStaleCanvasesSignal>>::QUEUE.to_string();
+    let rotate_queue =
+        <CanvasDeriver as AmqpMessageProcessor<RotateRelayCertificatesSignal>>::QUEUE.to_string();
+    let (_, properties, payload) = get_one(&stale, &stale_queue)
+        .await?
+        .expect("the 30 s signal reached its queue");
+    assert_eq!(
+        properties.expiration().map(String::as_str),
+        Some("30000"),
+        "a tick carries its own cadence as a per-message TTL"
+    );
+    assert_eq!(
+        DeriveStaleCanvasesSignal::from_bytes(&payload)
+            .expect("the payload still decodes")
+            .tick_unix_secs,
+        now.unix_timestamp(),
+        "the TTL rides along with the payload, it does not replace it"
+    );
+    let (_, properties, _) = get_one(&rotate, &rotate_queue)
+        .await?
+        .expect("the hourly signal reached its queue");
+    assert_eq!(
+        properties.expiration().map(String::as_str),
+        Some("3600000"),
+        "each job's TTL is its own cadence, not one constant for the fleet"
+    );
+
+    // And the broker acts on it with nothing consuming: the expired tick leaves
+    // the queue by itself, which is what bounds a backlog during an outage.
+    stale
+        .basic_publish(
+            amqprs::BasicProperties::default()
+                .with_expiration("200")
+                .finish(),
+            DeriveStaleCanvasesSignal::tick(now).to_bytes()?.into_vec(),
+            amqprs::channel::BasicPublishArguments::new(
+                DeriveStaleCanvasesSignal::EXCHANGE,
+                DeriveStaleCanvasesSignal::ROUTING_KEY,
+            )
+            .mandatory(true)
+            .finish(),
+        )
+        .await?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        stale
+            .basic_get(
+                amqprs::channel::BasicGetArguments::new(&stale_queue)
+                    .no_ack(true)
+                    .finish()
+            )
+            .await?
+            .is_none(),
+        "an expired tick is still queued: the backlog is unbounded again"
+    );
+
+    drop(stale);
+    drop(rotate);
+    connection.close().await?;
+    Ok(())
+}
+
+/// One message off `queue`, waiting for the publish to be routed.
+async fn get_one(
+    channel: &amqprs::channel::Channel,
+    queue: &str,
+) -> Result<Option<amqprs::channel::GetMessage>, Box<dyn std::error::Error>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = channel
+            .basic_get(
+                amqprs::channel::BasicGetArguments::new(queue)
+                    .no_ack(true)
+                    .finish(),
+            )
+            .await?;
+        if got.is_some() || std::time::Instant::now() >= deadline {
+            return Ok(got);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

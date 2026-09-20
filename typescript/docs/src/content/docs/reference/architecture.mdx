@@ -83,10 +83,13 @@ Every module crate mirrors `modules/base`:
 - **`hooks`:** AMQP consumers implement `AmqpMessageProcessor<E>` with a durable `QUEUE` name. A
   periodic job is one of them: `cron` publishes its signal when it comes due and the hook claims
   the run (one `orchestration_job_run` row, compare-and-set) before working, so delivery may be
-  duplicated and consumers may be replicated without the pass running twice. The scheduler opens no
-  database connection and reads no configuration; everything that decides *what* happens lives in
-  the consumer. The consequence is that the broker is mandatory in all four modes: with RabbitMQ
-  down, no derivation sweep, liveness sweep or certificate renewal happens until it is back.
+  duplicated and consumers may be replicated without the pass running twice. Each tick is
+  published with a per-message TTL of its own cadence, so a clock that keeps running while the
+  consumer fleet is down leaves about one tick per queue behind instead of a day of them. The
+  scheduler opens no database connection and reads no configuration; everything that decides
+  *what* happens lives in the consumer. The consequence is that the broker is mandatory in all
+  four modes: with RabbitMQ down, no derivation sweep, liveness sweep or certificate renewal
+  happens until it is back.
 - **`rpc`:** thin adapters — decode request, call a service, encode reply. No business logic.
 - **Errors:** `wakuwaku::Error` at the service/hook boundary; `base::db::Error` inside
   `entities/db`, which converts with `?` at the service layer. It separates a database that did not

@@ -9,11 +9,14 @@ pub mod live;
 use crate::entities::db::health::{
     HealthWrite, PodHealthStatus, PodHealthWrite, ServerHealthStatus,
 };
+use amqprs::BasicProperties;
+use amqprs::channel::{BasicPublishArguments, Channel, ConfirmSelectArguments};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
 use std::task::Poll;
 use time::OffsetDateTime;
-use wakuwaku::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpRouting};
+use wakuwaku::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpPool, AmqpRouting};
 use wakuwaku::interval_job::IntervalJobExecutionSignal;
+use wakuwaku::pool::Pooled;
 
 /// **Public event**
 ///
@@ -151,6 +154,54 @@ fn elapsed(every: i64, now: OffsetDateTime, last_time: OffsetDateTime) -> bool {
         >= every
 }
 
+/// Publishes `message` with a per-message TTL of `ttl_secs` seconds, so the
+/// broker discards a delivery nobody consumed in time.
+///
+/// This is [`AmqpMessageSend::send`] with one property added, and it exists for
+/// the periodic signals only: a tick is worth exactly as much as the next one,
+/// so a queue nobody is draining holds about one cadence's worth, not a day of
+/// them. The TTL is carried by the message rather than declared on the queue
+/// (`x-message-ttl`) because a queue's arguments are immutable once it is
+/// declared: a queue argument would need every existing deployment to rename or
+/// re-declare its signal queues, while a published property takes effect on the
+/// next publish.
+///
+/// Every message in a signal queue is the same type with the same TTL and they
+/// arrive in order, so the head expires first and the queue drains itself —
+/// the lazy-expiry caveat of per-message TTLs (an expired message stuck behind
+/// a live one) cannot arise here.
+#[tracing::instrument(skip_all, err, name = "Publish:IntervalSignal")]
+async fn send_expiring<M: AmqpMessageSend>(
+    message: M,
+    pool: &AmqpPool,
+    ttl_secs: i64,
+) -> Result<(), wakuwaku::Error> {
+    let expiration = ttl_secs.saturating_mul(1_000).to_string();
+    let bytes = message.to_bytes().map_err(|e| e.into())?;
+    let channel: Result<Pooled<Channel, _>, wakuwaku::Error> = pool.get().await.into();
+    let channel = channel?;
+    let channel = channel
+        .get_ref()
+        .ok_or_else(|| wakuwaku::Error::Io(anyhow::anyhow!("the AMQP channel is closed")))?;
+    channel
+        .confirm_select(ConfirmSelectArguments::new(false))
+        .await?;
+    channel
+        .basic_publish(
+            BasicProperties::default()
+                .with_expiration(&expiration)
+                .finish(),
+            bytes.into_vec(),
+            BasicPublishArguments::new(M::EXCHANGE, M::ROUTING_KEY)
+                .mandatory(true)
+                .finish(),
+        )
+        .await?;
+    // The counter the default `send` emits; a signal publish still counts.
+    tracing::info!(monotonic_counter.mq_event_push = 1);
+    Ok(())
+}
+
 /// Implements the AMQP route and [`IntervalJobExecutionSignal`] for one signal.
 ///
 /// The publication cadence is a constant, and it has to be: `time_pool` is a
@@ -180,7 +231,15 @@ macro_rules! interval_signal {
             const ROUTING_KEY: &'static str = $key;
         }
 
-        impl AmqpMessageSend for $ty {}
+        // The one place a signal departs from the default `send`: a tick that
+        // outlives its own cadence has been superseded by the next one, and the
+        // hook's run claim would discard it anyway — so the broker drops it
+        // instead of holding a backlog for a fleet that is down.
+        impl AmqpMessageSend for $ty {
+            async fn send(self, pool: &AmqpPool) -> Result<(), wakuwaku::Error> {
+                send_expiring(self, pool, Self::EVERY_SECS).await
+            }
+        }
 
         impl IntervalJobExecutionSignal for $ty {
             fn tick(now: OffsetDateTime) -> Self {

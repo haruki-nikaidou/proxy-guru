@@ -12,7 +12,10 @@
 //! consumers, or late after a backlog.
 //!
 //! Deciding *whether* a signal is due is pure, and publishing is the signal's own
-//! `send`: there is no state here beyond one timestamp per job.
+//! `send`: there is no state here beyond one timestamp per job. That `send` is
+//! the one the signals override — a tick is published with a per-message TTL of
+//! its own cadence, so a clock that keeps running while the consumer fleet is
+//! down leaves about one tick per queue behind instead of a day of them.
 
 use std::marker::PhantomData;
 use std::task::Poll;
