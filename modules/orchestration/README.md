@@ -285,8 +285,10 @@ Both re-issue paths replace an existing leaf, and both fence the write on the
 row instead of storing the leaf it signed, so overlapping derivations — or a
 derivation and a duplicate rotation signal — end with one new leaf, not two
 versions of clobbered material. Only a pod's first leaf is written
-unconditionally; two of those collide on the `relay_certificate_pod` unique
-index and one transaction fails, which the caller retries.
+unconditionally, and that write is an upsert on the `relay_certificate_pod`
+unique constraint: two passes issuing a pod's first leaf at once both succeed,
+the later one replacing the material of the earlier and bumping the version, so
+a first deployment never reports the pod invalid for a pass.
 
 ## Dependency direction
 

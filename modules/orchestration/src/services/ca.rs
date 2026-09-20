@@ -162,8 +162,9 @@ impl Processor<InitInternalCa> for CaService {
 /// rotation cron replaces the same leaves and two derivations of the same
 /// canvas can overlap: the pass that loses adopts the winner's freshly issued
 /// row rather than issuing a leaf of its own. Only the first issuance of a
-/// pod's leaf is unfenced, and two of those collide on the
-/// `relay_certificate_pod` UNIQUE index instead.
+/// pod's leaf is unfenced; two of those are resolved by the upsert on the
+/// `relay_certificate_pod` unique constraint, so both passes succeed and the
+/// later write replaces the material of the earlier.
 pub struct EnsureRelayCertificates {
     pub pods: Vec<PodId>,
 }
@@ -216,12 +217,13 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 // fence both would issue a leaf and the later write would
                 // overwrite the other's material while bumping `version` again.
                 Some(leaf) => Some(leaf.version),
-                // No leaf at all: a `CREATE`, which has no prior version to
-                // fence against. Two concurrent creates for the same pod
-                // collide on the `relay_certificate_pod` UNIQUE index and one
-                // transaction fails; that is pre-existing behaviour and reaches
-                // the caller as a database error it already logs and retries,
-                // so it is deliberately not swallowed here.
+                // No leaf at all: a create, which has no prior version to
+                // fence against. Two concurrent creates for the same pod both
+                // land — the write upserts on the `relay_certificate_pod`
+                // unique constraint — and the later one replaces the leaf the
+                // earlier just issued. Both are freshly signed by the same CA
+                // for the same SNI and the version only moves forward, so the
+                // race costs a wasted key pair, never a failed pass.
                 None => None,
             };
             let signer = match &issuer {
@@ -360,12 +362,12 @@ impl CaService {
             .await;
         match (stored, expected_version) {
             (Ok(row), _) => Ok(row),
-            // A fenced write whose transaction the engine aborted. SurrealDB does
-            // not serialise two transactions writing one row — it fails the
-            // second instead of letting its `WHERE` match nothing — so this is
-            // the same lost race as an empty result, and reporting it as an error
-            // would make every overlapping derivation fail a pass it is supposed
-            // to absorb. Only the row itself can tell the two apart: past the
+            // A fenced write that came back as an error rather than as an
+            // empty result. On PostgreSQL a lost compare-and-set matches
+            // nothing (`Ok(None)`), but contention can still surface as a
+            // failure — `lock_timeout` while the winner holds the row — and
+            // reporting that as an error would fail a pass the design is meant
+            // to absorb. Only the row itself tells the two apart: past the
             // version we fenced on means somebody else wrote it.
             (Err(error), Some(expected)) => {
                 let current = self

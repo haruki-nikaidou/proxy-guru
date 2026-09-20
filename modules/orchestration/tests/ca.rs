@@ -766,12 +766,11 @@ async fn two_overlapping_rotation_passes_rotate_a_leaf_once(pool: sqlx::PgPool) 
 /// renewal or a rotation from overwriting material another writer just stored,
 /// and it holds whichever future the executor polls first.
 ///
-/// This is the entity level, where a lost race can also arrive as the engine
-/// aborting the losing transaction rather than matching nothing — SurrealDB does
-/// not serialise two transactions writing one row. Either way exactly one write
-/// lands, and the version is the witness. (The service turns that abort back
-/// into a refusal, which is what `two_overlapping_ensures_replace_an_expiring_leaf_once`
-/// pins.)
+/// This is the entity level: the refused write matches nothing and comes back
+/// as `Ok(None)`, and under contention it may instead fail (`lock_timeout`).
+/// Either way exactly one write lands, and the version is the witness. (The
+/// service turns a contended failure back into a refusal, which is what
+/// `two_overlapping_ensures_replace_an_expiring_leaf_once` pins.)
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn two_stores_fenced_on_the_same_version_write_once(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
@@ -825,15 +824,77 @@ async fn two_stores_fenced_on_the_same_version_write_once(pool: sqlx::PgPool) ->
     Ok(())
 }
 
+/// A pod's *first* leaf, which has no version to fence on: two derivation
+/// passes that both found no leaf write one at the same time. The write
+/// upserts on the `relay_certificate_pod` unique constraint, so neither pass
+/// fails — the pod must not be reported invalid for a pass just because its
+/// first deployment derived two canvases at once — and the pod still ends with
+/// exactly one leaf, the later writer's.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_unfenced_creates_of_a_first_leaf_both_land(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let pod = some_pod(&w).await?;
+    assert!(
+        w.db.process(ListRelayCertificatesByPods {
+            pods: vec![pod.clone()]
+        })
+        .await?
+        .is_empty(),
+        "the pod has no leaf yet, so both writers take the create path"
+    );
+
+    let now = OffsetDateTime::now_utc();
+    let store = |certificate_pem: &str| StoreRelayCertificate {
+        pod: pod.clone(),
+        sni: relay_sni(&pod),
+        private_key_pem: format!("key-{certificate_pem}"),
+        certificate_pem: certificate_pem.to_string(),
+        not_before: now,
+        not_after: now + Duration::days(30),
+        expected_version: None,
+    };
+    // Both statements are in flight before either commits, which is what makes
+    // them collide on the unique constraint rather than run one after another.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let writers: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|material| {
+            let (db, barrier, input) = (w.db.clone(), barrier.clone(), store(material));
+            tokio::spawn(async move {
+                barrier.wait().await;
+                db.process(input).await
+            })
+        })
+        .collect();
+    let mut versions = Vec::new();
+    for writer in writers {
+        let landed = writer
+            .await?
+            .expect("an unfenced create never fails on a concurrent create")
+            .expect("the unconditional store always writes the row");
+        versions.push(landed.version);
+    }
+    versions.sort_unstable();
+    assert_eq!(versions, [1, 2], "the first creates, the second replaces");
+
+    let stored = leaf_of(&w, &pod).await;
+    assert_eq!(stored.version, 2, "one row for the pod, not two leaves");
+    assert!(matches!(
+        stored.certificate_pem.as_str(),
+        "first" | "second"
+    ));
+    assert_eq!(stored.sni, relay_sni(&pod));
+    Ok(())
+}
+
 /// Two derivation passes over the same pod overlap (two canvases derived at
 /// once, or one derivation racing the rotation cron) and both see a leaf inside
 /// the renewal window. The ensure path fences its replacement on the version it
 /// read, so the pod ends with exactly one new leaf however the race falls.
 ///
-/// Both passes must succeed. SurrealDB aborts the losing transaction instead of
-/// letting its `WHERE` match nothing, so the service translates that abort back
-/// into a lost race by re-reading the row: an overlap it is built to absorb must
-/// not surface as a failed derivation pass.
+/// Both passes must succeed. A refused compare-and-set is `Ok(None)`, which the
+/// service resolves by re-reading and adopting the winner's row; an overlap the
+/// design is built to absorb must not surface as a failed derivation pass.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn two_overlapping_ensures_replace_an_expiring_leaf_once(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;

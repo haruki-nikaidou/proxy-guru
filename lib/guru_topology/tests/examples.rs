@@ -534,6 +534,10 @@ fn two_pods_cannot_share_a_socket() {
         "the same literal"
     );
     assert!(
+        conflict(Some("2001:db8::1"), Some("2001:0db8:0:0:0:0:0:1"), false),
+        "two spellings of one address"
+    );
+    assert!(
         !conflict(Some("10.0.0.1"), Some("10.0.0.2"), false),
         "two literals"
     );
