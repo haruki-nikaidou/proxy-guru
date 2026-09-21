@@ -1,6 +1,6 @@
 [package]
 name = "orchestration"
-version = "0.3.0-beta"  # master side
+version = "1.0.0"  # master side
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -95,8 +95,8 @@ Bun 在这里可以跳过 —— 控制台以镜像形式发布。`perl` 只在�
 ```sh
 # /srv/guru/.env  (append)
 # The master and the frontend are tagged and released independently; pin each one.
-MASTER_VERSION=v0.3.0-beta
-FRONTEND_VERSION=v0.2.0-beta
+MASTER_VERSION=v1.0.0
+FRONTEND_VERSION=v1.0.0
 ```
 
 `GURU_MASTER_KEY` 会在第 7 节加入同一个文件，那时 `manage-tool` 已经可以打印一个出来。

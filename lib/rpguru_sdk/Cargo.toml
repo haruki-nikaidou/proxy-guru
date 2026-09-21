@@ -1,6 +1,6 @@
 [package]
 name = "rpguru_sdk"
-version = "0.0.1-alpha"  # API
+version = "1.0.0"  # API
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

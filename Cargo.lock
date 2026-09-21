@@ -311,7 +311,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "base"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -1144,7 +1144,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "db_types"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "rand 0.9.5",
  "serde",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "guru-master"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "amqprs",
  "auth",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "guru-worker"
-version = "0.5.0-beta"
+version = "1.0.0"
 dependencies = [
  "auth",
  "base",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "guru_topology"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "guru_worker_config",
  "serde",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "guru_worker_config"
-version = "0.5.0-beta"
+version = "1.0.0"
 dependencies = [
  "compact_str",
  "serde",
@@ -2549,7 +2549,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "manage-tool"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "auth",
  "base",
@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "orchestration"
-version = "0.3.0-beta"
+version = "1.0.0"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -3829,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "rpguru_sdk"
-version = "0.0.1-alpha"
+version = "1.0.0"
 dependencies = [
  "prost",
  "tonic",
