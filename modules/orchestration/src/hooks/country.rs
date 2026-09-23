@@ -12,7 +12,7 @@ use crate::events::ResolveServerCountriesSignal;
 use crate::services::country::{CountryService, ResolveServerCountries};
 use kanau::processor::Processor;
 use time::OffsetDateTime;
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// Consumes [`ResolveServerCountriesSignal`].
 #[derive(Clone)]

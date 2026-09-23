@@ -8,7 +8,7 @@
 
 use crate::entities::db::setting::{Language, NoticeKind};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
-use wakuwaku::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpRouting};
+use wakuwaku::integration::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpRouting};
 
 /// What happened, in the words a message is rendered from.
 ///

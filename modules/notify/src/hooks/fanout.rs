@@ -8,7 +8,7 @@
 use crate::services::fanout::{FanOutHealthFacts, FanoutService};
 use kanau::processor::Processor;
 use orchestration::events::HealthChanged;
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// Consumes [`HealthChanged`].
 #[derive(Clone)]

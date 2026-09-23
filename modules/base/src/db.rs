@@ -16,7 +16,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
 
-pub use wakuwaku::sqlx::DatabaseProcessor as Db;
+pub use wakuwaku::integration::sqlx::DatabaseProcessor as Db;
 
 /// The schema, applied by `guru-master` at startup and by `manage-tool db migrate`.
 ///

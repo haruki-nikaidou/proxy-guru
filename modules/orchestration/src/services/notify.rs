@@ -11,7 +11,7 @@ use crate::events::live::{CanvasChangeKind, LIVE_CHANNEL, LiveMessage, RolloutSc
 use crate::events::{CanvasDirty, HealthChanged, HealthFact};
 use crate::hooks::live::LiveBus;
 use kanau::message::MessageSer;
-use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
+use wakuwaku::integration::amqp::{AmqpMessageSend, AmqpPool};
 
 /// Tells the derivation hook that canvases have pending edits, and the fleet's
 /// dashboards that something they render changed.

@@ -9,7 +9,7 @@
 use crate::events::{HealthNotifyGroupEvent, HealthNotifyPersonalEvent};
 use crate::services::delivery::{DeliverNotice, DeliveryService, Target};
 use kanau::processor::Processor;
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// Consumes [`HealthNotifyGroupEvent`] and [`HealthNotifyPersonalEvent`].
 #[derive(Clone)]

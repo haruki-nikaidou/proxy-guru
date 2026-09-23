@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use wakuwaku::amqp::{
+use wakuwaku::integration::amqp::{
     AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting, setup_consumer,
 };
 use wakuwaku::interval_job::IntervalJobExecutionSignal;

@@ -57,7 +57,7 @@ use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// How many times one pass retries after losing the generation race before it
 /// leaves the canvas to the next message or sweep tick.

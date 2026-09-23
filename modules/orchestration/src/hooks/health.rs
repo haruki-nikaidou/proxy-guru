@@ -25,7 +25,7 @@ use crate::events::{SweepLivenessSignal, TrimHealthHistorySignal};
 use crate::services::health::{HealthService, SweepLiveness, TrimHealthHistory};
 use kanau::processor::Processor;
 use time::OffsetDateTime;
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// Consumes the two health execution signals.
 #[derive(Clone)]

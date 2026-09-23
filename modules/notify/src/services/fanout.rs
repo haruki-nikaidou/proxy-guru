@@ -30,7 +30,7 @@ use orchestration::events::HealthFact;
 use std::collections::HashMap;
 use std::sync::Arc;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::amqp::{AmqpMessageSend, AmqpPool};
+use wakuwaku::integration::amqp::{AmqpMessageSend, AmqpPool};
 
 /// Decides the audience of every health fact and publishes one notice per
 /// audience found.

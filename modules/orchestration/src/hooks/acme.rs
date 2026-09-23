@@ -32,7 +32,7 @@ use crate::services::acme::{
 };
 use kanau::processor::Processor;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::amqp::AmqpMessageProcessor;
+use wakuwaku::integration::amqp::AmqpMessageProcessor;
 
 /// One pass: ensure rows, then work through the due ones.
 pub async fn renew_due(acme: &AcmeService) {

@@ -311,7 +311,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "base"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -949,15 +949,6 @@ name = "compression-core"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
-
-[[package]]
-name = "convert_case"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
-dependencies = [
- "unicode-segmentation",
-]
 
 [[package]]
 name = "core-foundation"
@@ -1622,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "guru-master"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "amqprs",
  "auth",
@@ -2430,15 +2421,16 @@ dependencies = [
 
 [[package]]
 name = "kanau"
-version = "0.5.2"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d84a4cb99093a2c0f20ac0dbf1784d1a18291150f2ffb9359e72f36765f13874"
+checksum = "3cedf7ef16cd6cb58af505ee3f340e8c5751d216865ed877aaf7a4537cfad538"
 dependencies = [
  "anyhow",
  "bincode",
  "futures",
  "kanau-macro",
  "rkyv 0.8.18",
+ "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
@@ -2447,14 +2439,13 @@ dependencies = [
 
 [[package]]
 name = "kanau-macro"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d39705f0cf94b1adf34d1899d68fef74c585cadb96103079f887fac4e27377f6"
+checksum = "814babf2580d5379fbf1743e75346f499342ca4019ba9f94c502c4671b59ff67"
 dependencies = [
- "convert_case",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
- "regex",
  "syn 2.0.119",
 ]
 
@@ -2744,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -3031,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "orchestration"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "amqprs",
  "anyhow",
@@ -5198,12 +5189,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
-name = "unicode-segmentation"
-version = "1.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
-
-[[package]]
 name = "universal-hash"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5337,9 +5322,9 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "wakuwaku"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89215e6f843ca0f5cad71595bf5e72bcba2538f73b3fb8c022fff560bce82514"
+checksum = "27c2dd50fdfcfa418de1684028ca50a34e779ffe7d3198249337bbcca088d8af"
 dependencies = [
  "amqprs",
  "anyhow",

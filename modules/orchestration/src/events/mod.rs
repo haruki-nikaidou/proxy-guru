@@ -14,7 +14,7 @@ use amqprs::channel::{BasicPublishArguments, Channel, ConfirmSelectArguments};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
 use std::task::Poll;
 use time::OffsetDateTime;
-use wakuwaku::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpPool, AmqpRouting};
+use wakuwaku::integration::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpPool, AmqpRouting};
 use wakuwaku::interval_job::IntervalJobExecutionSignal;
 use wakuwaku::pool::Pooled;
 

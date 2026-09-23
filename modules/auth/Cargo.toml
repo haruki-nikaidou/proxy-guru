@@ -1,6 +1,6 @@
 [package]
 name = "auth"
-version = "1.0.0"  # master side
+version = "1.0.1"  # master side
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

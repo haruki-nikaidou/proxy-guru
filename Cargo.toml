@@ -29,8 +29,8 @@ license = "MIT"
 tokio = { version = "1.49", features = ["full"] }
 
 # Framework
-wakuwaku = { version = "0.2.3", features = ["tracing-otel", "tonic", "sqlx"] }
-kanau = { version = "0.5", features = [
+wakuwaku = { version = "0.3", features = ["tracing-otel", "tonic", "sqlx", "amqprs"] }
+kanau = { version = "0.6", features = [
     "message",
     "rkyv",
     "bincode",

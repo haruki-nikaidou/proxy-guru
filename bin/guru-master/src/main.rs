@@ -47,9 +47,8 @@ use notify::utils::lock::hold_notifier_lock;
 use notify::utils::secret::NotifySecrets;
 use orchestration::config::OrchestrationConfig;
 use orchestration::events::{
-    CanvasDirty, DeriveStaleCanvasesSignal, HealthChanged, RenewCertificatesSignal,
-    ResolveServerCountriesSignal, RotateRelayCertificatesSignal, SweepLivenessSignal,
-    TrimHealthHistorySignal,
+    CanvasDirty, DeriveStaleCanvasesSignal, RenewCertificatesSignal, ResolveServerCountriesSignal,
+    RotateRelayCertificatesSignal, SweepLivenessSignal, TrimHealthHistorySignal,
 };
 use orchestration::hooks::acme::AcmeCronHook;
 use orchestration::hooks::country::CountryCronHook;
@@ -79,6 +78,7 @@ use rpguru_sdk::notify::notify_server::NotifyServer;
 use rpguru_sdk::orchestration::orchestration_server::OrchestrationServer;
 use rpguru_sdk::orchestration_agent::worker_agent_server::WorkerAgentServer;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -86,10 +86,9 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
-use wakuwaku::amqp::{
-    AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting, setup_consumer,
-};
+use wakuwaku::integration::amqp::{AmqpMessageProcessor, AmqpMessageSend, AmqpPool, AmqpRouting};
 use wakuwaku::interval_job::IntervalJobExecutionSignal;
+use wakuwaku::services::amqp_consumer::AmqpConsumerRegisterCenter;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum WorkerMode {
@@ -471,25 +470,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     issuer: Arc::new(InstantAcmeIssuer),
                 },
             };
-            let health = HealthCronHook { health };
             let fanout = HealthFanout {
                 fanout: FanoutService {
                     db: db.clone(),
                     publisher: NoticePublisher::Amqp(pool.clone()),
                 },
             };
-            // Every channel is kept alive for the lifetime of the mode: dropping
-            // one cancels its consumer without a word.
-            let channels = vec![
-                bind_consumer::<CanvasDirty, _>(&pool, &deriver).await?,
-                bind_consumer::<DeriveStaleCanvasesSignal, _>(&pool, &deriver).await?,
-                bind_consumer::<RotateRelayCertificatesSignal, _>(&pool, &deriver).await?,
-                bind_consumer::<SweepLivenessSignal, _>(&pool, &health).await?,
-                bind_consumer::<TrimHealthHistorySignal, _>(&pool, &health).await?,
-                bind_consumer::<RenewCertificatesSignal, _>(&pool, &acme).await?,
-                bind_consumer::<ResolveServerCountriesSignal, _>(&pool, &country).await?,
-                bind_consumer::<HealthChanged, _>(&pool, &fanout).await?,
-            ];
+            // A hook that consumes several events is shared, not cloned, across
+            // its queues; those events are named because they cannot be inferred.
+            let deriver = Arc::new(deriver);
+            let health = Arc::new(HealthCronHook { health });
+            // The runtime owns every consumer's channel and is kept alive for the
+            // lifetime of the mode: dropping it cancels the consumers without a word.
+            let consumers = AmqpConsumerRegisterCenter::<_, CanvasDirty>::new(deriver.clone())
+                .push::<_, DeriveStaleCanvasesSignal>(deriver.clone())
+                .push::<_, RotateRelayCertificatesSignal>(deriver)
+                .push::<_, SweepLivenessSignal>(health.clone())
+                .push::<_, TrimHealthHistorySignal>(health)
+                .push(Arc::new(acme))
+                .push(Arc::new(country))
+                .push(Arc::new(fanout))
+                .setup(&consumer_pool(&connection))
+                .await
+                .map_err(|e| format!("starting the consumers failed: {e}"))?;
+            tracing::info!("consuming");
             let lost = tokio::select! {
                 () = shutdown() => false,
                 _ = connection.listen_network_io_failure() => true,
@@ -497,7 +501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if lost {
                 return Err(BROKER_LOST.into());
             }
-            drop(channels);
+            drop(consumers);
             connection
                 .close()
                 .await
@@ -539,17 +543,20 @@ async fn run_notifier(
     // notifier does not block its successor.
     let _lock = hold_notifier_lock(db).await.map_err(|e| e.to_string())?;
     let secrets = NotifySecrets::from_env();
-    let delivery = NoticeDelivery {
+    let delivery = Arc::new(NoticeDelivery {
         delivery: DeliveryService::new(&config, &secrets).map_err(|e| e.to_string())?,
-    };
+    });
     for channel in delivery.delivery.channels() {
         tracing::info!(channel, "notification channel");
     }
-    let (connection, pool) = amqp_pool(amqp_uri(cli.amqp_uri.as_deref())?).await?;
-    let channels = vec![
-        bind_consumer::<HealthNotifyGroupEvent, _>(&pool, &delivery).await?,
-        bind_consumer::<HealthNotifyPersonalEvent, _>(&pool, &delivery).await?,
-    ];
+    // Delivery publishes nothing: the pool only declares both exchanges.
+    let (connection, _) = amqp_pool(amqp_uri(cli.amqp_uri.as_deref())?).await?;
+    let consumers = AmqpConsumerRegisterCenter::<_, HealthNotifyGroupEvent>::new(delivery.clone())
+        .push::<_, HealthNotifyPersonalEvent>(delivery)
+        .setup(&consumer_pool(&connection))
+        .await
+        .map_err(|e| format!("starting the consumers failed: {e}"))?;
+    tracing::info!("consuming");
     let lost = tokio::select! {
         () = shutdown() => false,
         _ = connection.listen_network_io_failure() => true,
@@ -557,7 +564,7 @@ async fn run_notifier(
     if lost {
         return Err(BROKER_LOST.into());
     }
-    drop(channels);
+    drop(consumers);
     connection
         .close()
         .await
@@ -695,37 +702,28 @@ async fn publish_due<S: IntervalJobExecutionSignal>(
     }
 }
 
-/// Binds one consumer on its own channel and returns the channel, which the
-/// caller must keep alive: dropping it cancels the consumer.
+/// A channel pool for consumers: every channel it opens has its callback
+/// registered and a bounded prefetch set before a consumer starts on it.
 ///
 /// The prefetch is bounded so one consumer cannot hoard a backlog its idle peers
 /// could be working through; every pass here is a database transaction, not a
 /// cheap ack.
-async fn bind_consumer<M, H>(
-    pool: &AmqpPool,
-    hook: &H,
-) -> Result<Channel, Box<dyn std::error::Error>>
-where
-    M: AmqpMessageSend + MessageDe + Send + Sync + 'static,
-    M::DeError: Send,
-    H: AmqpMessageProcessor<M> + Clone + Send + Sync + 'static,
-{
-    let channel = H::ensure_queue(pool)
-        .await
-        .map_err(|e| format!("declaring the queue {} failed: {e}", H::QUEUE))?;
-    channel
-        .register_callback(DefaultChannelCallback)
-        .await
-        .map_err(|e| format!("registering the channel callback failed: {e}"))?;
-    channel
-        .basic_qos(BasicQosArguments::new(0, 8, false))
-        .await
-        .map_err(|e| format!("setting the consumer prefetch failed: {e}"))?;
-    setup_consumer::<M, H>(&channel, Arc::new(hook.clone()))
-        .await
-        .map_err(|e| format!("binding the consumer failed: {e}"))?;
-    tracing::info!(queue = H::QUEUE, key = M::ROUTING_KEY, "consuming");
-    Ok(channel)
+fn consumer_pool(connection: &Connection) -> AmqpPool {
+    let connection = connection.clone();
+    let factory = move || {
+        let connection = connection.clone();
+        Box::pin(async move {
+            let channel = connection.open_channel(None).await?;
+            channel.register_callback(DefaultChannelCallback).await?;
+            channel
+                .basic_qos(BasicQosArguments::new(0, 8, false))
+                .await?;
+            Ok(channel)
+        }) as Pin<Box<dyn Future<Output = Result<Channel, amqprs::error::Error>> + Send>>
+    };
+    // Setup draws a pooled channel only to declare each exchange, one consumer
+    // at a time; each consumer's own channel comes straight from the factory.
+    AmqpPool::new(Box::pin(factory), 1)
 }
 
 /// Opens an AMQP connection and its channel pool, declaring both exchanges.
