@@ -5,7 +5,10 @@
 //! - `dashboard_grpc` — the operator API (`Auth` + `Orchestration` + `Notify`),
 //!   including the live `Watch*` streams, which it feeds from Redis pub/sub so a
 //!   change made on one replica reaches the dashboards attached to the others,
-//! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller,
+//!   and the remote-shell calls, relayed over Redis to the replica holding the
+//!   worker's `ShellChannel`,
+//! - `workers_grpc` — the worker API (`WorkerAgent`) plus the config-view poller
+//!   and the remote-shell relay's worker-facing end,
 //! - `consumer` — the AMQP derivation hook, every periodic job, and the
 //!   notification fan-out,
 //! - `notifier` — the notification *delivery*: exactly one instance, which it
@@ -56,6 +59,9 @@ use orchestration::hooks::derive::CanvasDeriver;
 use orchestration::hooks::health::HealthCronHook;
 use orchestration::hooks::live::{LiveBus, run_redis_subscriber};
 use orchestration::hooks::schedule::IntervalJob;
+use orchestration::hooks::shell::{
+    ShellRouter, run_shell_down_subscriber, run_shell_up_subscriber,
+};
 use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::rpc::{OrchestrationGrpc, WorkerAgentGrpc};
 use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
@@ -71,6 +77,8 @@ use orchestration::services::live::LiveService;
 use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
+use orchestration::services::shell::{ShellDownPublisher, ShellService, ShellTimings};
+use orchestration::services::shell_channel::{ShellChannelHub, ShellChannels, ShellUpPublisher};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::auth::auth_server::AuthServer;
@@ -261,15 +269,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The broker and Redis are opened once for every serving mode: all three
     // publish dirty-canvas events, and all three publish live events (a
     // consumer's derivation pass moves what a dashboard renders just as much as
-    // an operator's edit does).
+    // an operator's edit does). The two gRPC modes also relay remote-shell
+    // traffic over the same Redis.
     let uri = amqp_uri(cli.amqp_uri.as_deref())?;
     let (connection, pool) = amqp_pool(uri).await?;
     let redis = redis::Client::open(redis_url(cli.redis_url.as_deref())?)?;
+    let publisher = redis::aio::ConnectionManager::new(redis.clone()).await?;
     let notifier = Notifier {
         amqp: Some(pool.clone()),
-        live: Some(LivePublisher::Redis(
-            redis::aio::ConnectionManager::new(redis.clone()).await?,
-        )),
+        live: Some(LivePublisher::Redis(publisher.clone())),
     };
     let health = HealthService {
         db: db.clone(),
@@ -295,6 +303,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let subscriber = tokio::spawn(run_redis_subscriber(
                 redis.clone(),
                 bus.clone(),
+                live_token.clone(),
+            ));
+            // This replica's end of the shell relay: workers' answers come back
+            // on its own channel, named by the router's random replica id.
+            let router = ShellRouter::new();
+            let shell_subscriber = tokio::spawn(run_shell_up_subscriber(
+                redis.clone(),
+                router.clone(),
                 live_token.clone(),
             ));
             let accounts = AccountService {
@@ -341,6 +357,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 live: LiveService::new(db.clone(), bus, config.clone()),
                 sessions: sessions.clone(),
+                shell: ShellService {
+                    db: db.clone(),
+                    router,
+                    down: ShellDownPublisher::Redis(publisher),
+                    timings: ShellTimings::default(),
+                },
             };
             let auth = AuthGrpc {
                 accounts,
@@ -392,6 +414,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::error!(%error, "the live bus subscriber task failed");
                 return Err(error.into());
             }
+            // Likewise the shell relay: without it every shell call times out.
+            if let Err(error) = shell_subscriber.await {
+                tracing::error!(%error, "the shell relay subscriber task failed");
+                return Err(error.into());
+            }
         }
         WorkerMode::WorkersGrpc => {
             let hub = WatchHub::default();
@@ -410,6 +437,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(cli.watch_poll_ms),
                 token.clone(),
             ));
+            // The worker-facing end of the shell relay: dashboard replicas
+            // publish down, the replica holding a worker's channel forwards.
+            let shells = ShellChannels {
+                db: db.clone(),
+                hub: ShellChannelHub::default(),
+                up: ShellUpPublisher::Redis(publisher),
+            };
+            let shell_subscriber = tokio::spawn(run_shell_down_subscriber(
+                redis.clone(),
+                shells.clone(),
+                token.clone(),
+            ));
             let workers = WorkerAgentGrpc {
                 agents: agents.clone(),
                 health,
@@ -417,6 +456,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 db: db.clone(),
                 hub,
                 lease,
+                shells,
             };
             tracing::info!(addr = %cli.workers_addr, "serving worker API");
             // `AuthLayer` is required here too: `Register` authenticates with an
@@ -449,6 +489,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // learns of a new revision, so the process exits non-zero.
             if let Err(error) = poller.await {
                 tracing::error!(%error, "the config-view poller task failed");
+                return Err(error.into());
+            }
+            if let Err(error) = shell_subscriber.await {
+                tracing::error!(%error, "the shell relay subscriber task failed");
                 return Err(error.into());
             }
         }

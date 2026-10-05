@@ -717,6 +717,116 @@ message PodHealthEvent {
   }
 }
 
+// ---- remote shell -----------------------------------------------------------
+// Run commands on a worker host. Every call needs a human Admin session
+// (PERMISSION_DENIED otherwise) and a server whose worker advertised
+// `remote_shell` (FAILED_PRECONDITION otherwise). The master relays each call to
+// the worker and stores nothing: UNAVAILABLE means the worker did not answer
+// (it is not connected, or not connected to any master right now), NOT_FOUND
+// that the session is gone (closed, reaped by the worker's idle timeout, or the
+// worker restarted).
+message ShellSession {
+  string session_id = 1;
+  // RFC 3339.
+  string opened_at = 2;
+  // The command running now; unset while the shell is idle.
+  optional string running = 3;
+  // The transcript position the session's next event starts at.
+  uint64 end_offset = 4;
+  // How many watches are attached right now.
+  uint32 viewers = 5;
+}
+message OpenShellSessionRequest {
+  string server_id = 1;
+}
+// RESOURCE_EXHAUSTED: the worker's local session cap is reached.
+message OpenShellSessionReply {
+  ShellSession session = 1;
+}
+// Answers once the worker accepted the command, not when it finishes; the
+// exit status arrives as a `finished` event on WatchShellSession.
+// FAILED_PRECONDITION: another command is still running (commands are never
+// queued). INVALID_ARGUMENT: an empty command or one containing a NUL byte.
+message SendShellCommandRequest {
+  string server_id = 1;
+  string session_id = 2;
+  string command = 3;
+}
+message SendShellCommandReply {}
+// Kills the session's whole process group.
+message CloseShellSessionRequest {
+  string server_id = 1;
+  string session_id = 2;
+}
+message CloseShellSessionReply {}
+message ListShellSessionsRequest {
+  string server_id = 1;
+}
+message ListShellSessionsReply {
+  repeated ShellSession sessions = 1;
+}
+// Streams the session's transcript from `from_offset` (0: from the session's
+// start) and then live, until the session closes.
+// Reconnecting with the last event's `offset` plus its length resumes without
+// a gap or a repeat; a position the worker's ring buffer no longer holds is
+// answered with `truncated` first. A KeepAlive is sent every
+// `stream_keepalive_secs`.
+message WatchShellSessionRequest {
+  string server_id = 1;
+  string session_id = 2;
+  uint64 from_offset = 3;
+}
+// `offset` is where the event starts in the transcript. Output occupies one
+// position per byte; `started` and `finished` occupy one position each;
+// `truncated`, `closed` and `keep_alive` occupy none.
+message ShellEvent {
+  uint64 offset = 1;
+  oneof event {
+    ShellOutput output = 2;
+    ShellCommandStarted started = 3;
+    ShellCommandFinished finished = 4;
+    // The requested positions are gone from the worker's ring buffer:
+    // `dropped` positions were skipped and the stream continues at `offset`.
+    ShellTruncated truncated = 5;
+    // The session ended; the stream ends after this event.
+    ShellSessionClosed closed = 6;
+    KeepAlive keep_alive = 7;
+  }
+}
+enum ShellStream {
+  SHELL_STREAM_UNSPECIFIED = 0;
+  SHELL_STREAM_STDOUT = 1;
+  SHELL_STREAM_STDERR = 2;
+}
+message ShellOutput {
+  ShellStream stream = 1;
+  bytes data = 2;
+}
+message ShellCommandStarted {
+  string command = 1;
+}
+// The shell's `$?`: 128 + n for a command killed by signal n.
+message ShellCommandFinished {
+  int32 exit_code = 1;
+}
+message ShellTruncated {
+  uint64 dropped = 1;
+}
+enum ShellCloseReason {
+  SHELL_CLOSE_REASON_UNSPECIFIED = 0;
+  // CloseShellSession.
+  SHELL_CLOSE_REASON_CLOSED = 1;
+  // Reaped by the worker's idle timeout.
+  SHELL_CLOSE_REASON_IDLE = 2;
+  // The shell exited on its own (`exit`).
+  SHELL_CLOSE_REASON_EXITED = 3;
+  // The worker is stopping (shutdown or self-update).
+  SHELL_CLOSE_REASON_SHUTDOWN = 4;
+}
+message ShellSessionClosed {
+  ShellCloseReason reason = 1;
+}
+
 service Orchestration {
   rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasReply);
   rpc ListCanvases(ListCanvasesRequest) returns (ListCanvasesReply);
@@ -751,4 +861,9 @@ service Orchestration {
   rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateReply);
   rpc GetOrchestrationConfig(GetOrchestrationConfigRequest) returns (GetOrchestrationConfigReply);
   rpc SetOrchestrationConfig(SetOrchestrationConfigRequest) returns (SetOrchestrationConfigReply);
+  rpc OpenShellSession(OpenShellSessionRequest) returns (OpenShellSessionReply);
+  rpc SendShellCommand(SendShellCommandRequest) returns (SendShellCommandReply);
+  rpc CloseShellSession(CloseShellSessionRequest) returns (CloseShellSessionReply);
+  rpc ListShellSessions(ListShellSessionsRequest) returns (ListShellSessionsReply);
+  rpc WatchShellSession(WatchShellSessionRequest) returns (stream ShellEvent);
 }

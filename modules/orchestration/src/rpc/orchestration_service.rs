@@ -30,6 +30,7 @@ use crate::services::health::{self, HealthService};
 use crate::services::live::{self, LiveService, ViewValue};
 use crate::services::rollout::{self, RolloutService, RolloutStatus};
 use crate::services::server::{self, ServerService};
+use crate::services::shell::{self, ShellService};
 use crate::utils::ids;
 use crate::utils::time::rfc3339;
 use auth::services::session::SessionService;
@@ -93,6 +94,7 @@ pub struct OrchestrationGrpc {
     /// Streams re-validate the session that opened them on every keep-alive
     /// tick: a long-lived stream must not outlive the login behind it.
     pub sessions: SessionService,
+    pub shell: ShellService,
 }
 
 /// A live stream's clock: it paces the keep-alives and re-checks the session.
@@ -100,6 +102,10 @@ struct StreamTicker {
     keepalive: tokio::time::Interval,
     sessions: SessionService,
     session_id: String,
+    /// A permission the stream needs beyond a live session. Every other stream
+    /// needs only `ViewWorkspace`, which every role holds; one gated on a
+    /// permission a role change takes away must end when it is taken away.
+    requires: Option<auth::utils::rbac::Permission>,
 }
 
 impl StreamTicker {
@@ -118,7 +124,15 @@ impl StreamTicker {
             keepalive,
             sessions,
             session_id,
+            requires: None,
         }
+    }
+
+    /// Also end the stream with `PERMISSION_DENIED` once the session's account
+    /// no longer holds `permission` (an Admin demoted mid-stream).
+    fn requiring(mut self, permission: auth::utils::rbac::Permission) -> Self {
+        self.requires = Some(permission);
+        self
     }
 
     /// Waits for the next tick, then re-authenticates. `Err` ends the stream.
@@ -126,7 +140,8 @@ impl StreamTicker {
     /// A database failure is *not* an ending: cutting every open dashboard over
     /// one failed read would turn a blip into a fleet-wide reconnect storm. A
     /// session that resolves to nothing is, because that is a logout or an
-    /// expiry and the stream has no right to the data any more.
+    /// expiry and the stream has no right to the data any more. So is an
+    /// account that lost the permission the stream requires.
     async fn tick(&mut self) -> Result<(), Status> {
         self.keepalive.tick().await;
         match self
@@ -136,7 +151,12 @@ impl StreamTicker {
             })
             .await
         {
-            Ok(Some(_)) => Ok(()),
+            Ok(Some(identity)) => match self.requires {
+                Some(permission) if identity.ensure(permission).is_err() => {
+                    Err(Status::permission_denied("Permission denied"))
+                }
+                _ => Ok(()),
+            },
             Ok(None) => Err(Status::unauthenticated("session ended")),
             Err(error) => {
                 tracing::warn!(%error, "re-validating a live stream's session failed");
@@ -913,6 +933,22 @@ fn snapshot_to_proto(snapshot: &ConfigSnapshot) -> pb::ConfigSnapshot {
                 points_at: deps.points_at.iter().map(listener_cap_to_proto).collect(),
             })
             .collect(),
+    }
+}
+
+/// A worker's session as the dashboard reads it. An `opened_at` out of range
+/// renders empty, as an absent timestamp does.
+fn shell_session_to_proto(
+    info: rpguru_sdk::orchestration_agent::ShellSessionInfo,
+) -> pb::ShellSession {
+    pb::ShellSession {
+        session_id: info.session_id,
+        opened_at: OffsetDateTime::from_unix_timestamp(info.opened_at)
+            .map(rfc3339)
+            .unwrap_or_default(),
+        running: info.running,
+        end_offset: info.end_offset,
+        viewers: info.viewers,
     }
 }
 
@@ -1926,6 +1962,144 @@ impl pb::orchestration_server::Orchestration for OrchestrationGrpc {
                                 return Ok(());
                             }
                         },
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = ended {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn open_shell_session(
+        &self,
+        request: Request<pb::OpenShellSessionRequest>,
+    ) -> Result<Response<pb::OpenShellSessionReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let info = self
+            .shell
+            .process(shell::OpenShellSession {
+                actor,
+                server: ids::server_id(&input.server_id),
+            })
+            .await?;
+        Ok(Response::new(pb::OpenShellSessionReply {
+            session: Some(shell_session_to_proto(info)),
+        }))
+    }
+
+    async fn send_shell_command(
+        &self,
+        request: Request<pb::SendShellCommandRequest>,
+    ) -> Result<Response<pb::SendShellCommandReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        self.shell
+            .process(shell::SendShellCommand {
+                actor,
+                server: ids::server_id(&input.server_id),
+                session_id: input.session_id,
+                command: input.command,
+            })
+            .await?;
+        Ok(Response::new(pb::SendShellCommandReply {}))
+    }
+
+    async fn close_shell_session(
+        &self,
+        request: Request<pb::CloseShellSessionRequest>,
+    ) -> Result<Response<pb::CloseShellSessionReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        self.shell
+            .process(shell::CloseShellSession {
+                actor,
+                server: ids::server_id(&input.server_id),
+                session_id: input.session_id,
+            })
+            .await?;
+        Ok(Response::new(pb::CloseShellSessionReply {}))
+    }
+
+    async fn list_shell_sessions(
+        &self,
+        request: Request<pb::ListShellSessionsRequest>,
+    ) -> Result<Response<pb::ListShellSessionsReply>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let input = request.into_inner();
+        let sessions = self
+            .shell
+            .process(shell::ListShellSessions {
+                actor,
+                server: ids::server_id(&input.server_id),
+            })
+            .await?;
+        Ok(Response::new(pb::ListShellSessionsReply {
+            sessions: sessions.into_iter().map(shell_session_to_proto).collect(),
+        }))
+    }
+
+    type WatchShellSessionStream = ReceiverStream<Result<pb::ShellEvent, Status>>;
+
+    /// The service has already heard from the worker when it answers, so an
+    /// unknown session or a silent worker is this call's status, not the
+    /// stream's. The stream then carries the transcript, a keep-alive at the
+    /// resume position every `stream_keepalive_secs`, and ends after `closed`.
+    async fn watch_shell_session(
+        &self,
+        request: Request<pb::WatchShellSessionRequest>,
+    ) -> Result<Response<Self::WatchShellSessionStream>, Status> {
+        let actor = auth::rpc::middleware::from_request(&request)?;
+        let session = session_id(&request)?;
+        let input = request.into_inner();
+        let watch = self
+            .shell
+            .process(shell::WatchShellSession {
+                actor,
+                server: ids::server_id(&input.server_id),
+                session_id: input.session_id,
+                from_offset: input.from_offset,
+            })
+            .await?;
+        let (tx, rx) = mpsc::channel(STREAM_CAPACITY);
+        let mut ticker = StreamTicker::new(
+            self.sessions.clone(),
+            session,
+            self.live.config.stream_keepalive(),
+        )
+        .requiring(auth::utils::rbac::Permission::RemoteShell);
+        let mut position = input.from_offset;
+        tokio::spawn(async move {
+            let mut watch = watch;
+            let ended: Result<(), Status> = async {
+                loop {
+                    let event = tokio::select! {
+                        _ = tx.closed() => return Ok(()),
+                        result = ticker.tick() => {
+                            result?;
+                            pb::ShellEvent {
+                                offset: position,
+                                event: Some(pb::shell_event::Event::KeepAlive(pb::KeepAlive {})),
+                            }
+                        }
+                        next = watch.rx.recv() => match next {
+                            // The session closed and its last event went out.
+                            None => return Ok(()),
+                            Some(Err(error)) => return Err(OrchestrationError::from(error).into()),
+                            Some(Ok(event)) => match pb::ShellEvent::from_agent(event) {
+                                Some(event) => {
+                                    position = event.end_offset();
+                                    event
+                                }
+                                None => continue,
+                            },
+                        },
+                    };
+                    if tx.send(Ok(event)).await.is_err() {
+                        return Ok(());
                     }
                 }
             }

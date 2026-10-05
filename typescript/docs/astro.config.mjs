@@ -137,6 +137,11 @@ export default defineConfig({
 							label: 'Notifications',
 							translations: { ja: '通知', 'zh-CN': '通知' },
 							link: '/features/notifications/'
+						},
+						{
+							label: 'Remote Shell',
+							translations: { ja: 'リモートシェル', 'zh-CN': '远程 Shell' },
+							link: '/features/remote-shell/'
 						}
 					]
 				},

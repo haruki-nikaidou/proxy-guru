@@ -289,3 +289,8 @@ Or let the dashboard do the unit-file change: its install command (see
 [Install and Update Agents](/guides/agent-install/)) lays out the agent-mode instance
 `guru-worker@<unit>` next to this unit, with its own key, state directory and self-update. Once it
 registers, `systemctl disable --now guru-worker` retires the standalone one.
+
+The [remote shell](/features/remote-shell/) is an agent-mode feature: a standalone worker refuses to
+start with `--remote-shell`. Once the node runs in agent mode, add `--remote-shell` (or
+`GURU_REMOTE_SHELL=1`) to its unit if Admins should be able to run commands on it from the
+dashboard.

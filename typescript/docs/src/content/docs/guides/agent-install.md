@@ -186,6 +186,13 @@ is no longer the recorded one, so the master drops the request with a reason and
 `systemctl restart guru-worker@<unit>`) makes the worker refuse offered updates and report why; the
 panel shows the refusal. Re-running the install command still upgrades such a host by hand.
 
+**Opting a host in to the remote shell.** The same file is where a host opts in to the
+[remote shell](/features/remote-shell/): `GURU_REMOTE_SHELL=1` (then a restart) lets Admins run
+commands on it from the Agent section. It is off by default, it can only be set on the host, and
+the related settings (`GURU_REMOTE_SHELL_IDLE_TIMEOUT_SECS`, `GURU_REMOTE_SHELL_MAX_SESSIONS`,
+`GURU_REMOTE_SHELL_BUFFER_BYTES`, `GURU_REMOTE_SHELL_ALLOW_PLAINTEXT`) are listed on that page. A
+re-run of the install command rewrites the environment file, so add these lines again afterwards.
+
 ## 4. Uninstall a worker
 
 Every install leaves a purge script next to the instance's tree. On the host:

@@ -473,6 +473,100 @@ export function addressSourceToJSON(object: AddressSource): string {
   }
 }
 
+export enum ShellStream {
+  UNSPECIFIED = 0,
+  STDOUT = 1,
+  STDERR = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function shellStreamFromJSON(object: any): ShellStream {
+  switch (object) {
+    case 0:
+    case "SHELL_STREAM_UNSPECIFIED":
+      return ShellStream.UNSPECIFIED;
+    case 1:
+    case "SHELL_STREAM_STDOUT":
+      return ShellStream.STDOUT;
+    case 2:
+    case "SHELL_STREAM_STDERR":
+      return ShellStream.STDERR;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ShellStream.UNRECOGNIZED;
+  }
+}
+
+export function shellStreamToJSON(object: ShellStream): string {
+  switch (object) {
+    case ShellStream.UNSPECIFIED:
+      return "SHELL_STREAM_UNSPECIFIED";
+    case ShellStream.STDOUT:
+      return "SHELL_STREAM_STDOUT";
+    case ShellStream.STDERR:
+      return "SHELL_STREAM_STDERR";
+    case ShellStream.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum ShellCloseReason {
+  UNSPECIFIED = 0,
+  /** CLOSED - CloseShellSession. */
+  CLOSED = 1,
+  /** IDLE - Reaped by the worker's idle timeout. */
+  IDLE = 2,
+  /** EXITED - The shell exited on its own (`exit`). */
+  EXITED = 3,
+  /** SHUTDOWN - The worker is stopping (shutdown or self-update). */
+  SHUTDOWN = 4,
+  UNRECOGNIZED = -1,
+}
+
+export function shellCloseReasonFromJSON(object: any): ShellCloseReason {
+  switch (object) {
+    case 0:
+    case "SHELL_CLOSE_REASON_UNSPECIFIED":
+      return ShellCloseReason.UNSPECIFIED;
+    case 1:
+    case "SHELL_CLOSE_REASON_CLOSED":
+      return ShellCloseReason.CLOSED;
+    case 2:
+    case "SHELL_CLOSE_REASON_IDLE":
+      return ShellCloseReason.IDLE;
+    case 3:
+    case "SHELL_CLOSE_REASON_EXITED":
+      return ShellCloseReason.EXITED;
+    case 4:
+    case "SHELL_CLOSE_REASON_SHUTDOWN":
+      return ShellCloseReason.SHUTDOWN;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ShellCloseReason.UNRECOGNIZED;
+  }
+}
+
+export function shellCloseReasonToJSON(object: ShellCloseReason): string {
+  switch (object) {
+    case ShellCloseReason.UNSPECIFIED:
+      return "SHELL_CLOSE_REASON_UNSPECIFIED";
+    case ShellCloseReason.CLOSED:
+      return "SHELL_CLOSE_REASON_CLOSED";
+    case ShellCloseReason.IDLE:
+      return "SHELL_CLOSE_REASON_IDLE";
+    case ShellCloseReason.EXITED:
+      return "SHELL_CLOSE_REASON_EXITED";
+    case ShellCloseReason.SHUTDOWN:
+      return "SHELL_CLOSE_REASON_SHUTDOWN";
+    case ShellCloseReason.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 /**
  * A server's side of every QUIC relay link it takes part in. `up_mbps` is what
  * it sends at (brutal's fixed rate), `down_mbps` what it can receive; on each
@@ -1270,6 +1364,131 @@ export interface PodHealthEvent {
   snapshot?: PodHealthSnapshot | undefined;
   record?: PodHealthRecord | undefined;
   keepAlive?: KeepAlive | undefined;
+}
+
+/**
+ * ---- remote shell -----------------------------------------------------------
+ * Run commands on a worker host. Every call needs a human Admin session
+ * (PERMISSION_DENIED otherwise) and a server whose worker advertised
+ * `remote_shell` (FAILED_PRECONDITION otherwise). The master relays each call to
+ * the worker and stores nothing: UNAVAILABLE means the worker did not answer
+ * (it is not connected, or not connected to any master right now), NOT_FOUND
+ * that the session is gone (closed, reaped by the worker's idle timeout, or the
+ * worker restarted).
+ */
+export interface ShellSession {
+  sessionId: string;
+  /** RFC 3339. */
+  openedAt: string;
+  /** The command running now; unset while the shell is idle. */
+  running?:
+    | string
+    | undefined;
+  /** The transcript position the session's next event starts at. */
+  endOffset: bigint;
+  /** How many watches are attached right now. */
+  viewers: number;
+}
+
+export interface OpenShellSessionRequest {
+  serverId: string;
+}
+
+/** RESOURCE_EXHAUSTED: the worker's local session cap is reached. */
+export interface OpenShellSessionReply {
+  session: ShellSession | undefined;
+}
+
+/**
+ * Answers once the worker accepted the command, not when it finishes; the
+ * exit status arrives as a `finished` event on WatchShellSession.
+ * FAILED_PRECONDITION: another command is still running (commands are never
+ * queued). INVALID_ARGUMENT: an empty command or one containing a NUL byte.
+ */
+export interface SendShellCommandRequest {
+  serverId: string;
+  sessionId: string;
+  command: string;
+}
+
+export interface SendShellCommandReply {
+}
+
+/** Kills the session's whole process group. */
+export interface CloseShellSessionRequest {
+  serverId: string;
+  sessionId: string;
+}
+
+export interface CloseShellSessionReply {
+}
+
+export interface ListShellSessionsRequest {
+  serverId: string;
+}
+
+export interface ListShellSessionsReply {
+  sessions: ShellSession[];
+}
+
+/**
+ * Streams the session's transcript from `from_offset` (0: from the session's
+ * start) and then live, until the session closes.
+ * Reconnecting with the last event's `offset` plus its length resumes without
+ * a gap or a repeat; a position the worker's ring buffer no longer holds is
+ * answered with `truncated` first. A KeepAlive is sent every
+ * `stream_keepalive_secs`.
+ */
+export interface WatchShellSessionRequest {
+  serverId: string;
+  sessionId: string;
+  fromOffset: bigint;
+}
+
+/**
+ * `offset` is where the event starts in the transcript. Output occupies one
+ * position per byte; `started` and `finished` occupy one position each;
+ * `truncated`, `closed` and `keep_alive` occupy none.
+ */
+export interface ShellEvent {
+  offset: bigint;
+  output?: ShellOutput | undefined;
+  started?: ShellCommandStarted | undefined;
+  finished?:
+    | ShellCommandFinished
+    | undefined;
+  /**
+   * The requested positions are gone from the worker's ring buffer:
+   * `dropped` positions were skipped and the stream continues at `offset`.
+   */
+  truncated?:
+    | ShellTruncated
+    | undefined;
+  /** The session ended; the stream ends after this event. */
+  closed?: ShellSessionClosed | undefined;
+  keepAlive?: KeepAlive | undefined;
+}
+
+export interface ShellOutput {
+  stream: ShellStream;
+  data: Uint8Array;
+}
+
+export interface ShellCommandStarted {
+  command: string;
+}
+
+/** The shell's `$?`: 128 + n for a command killed by signal n. */
+export interface ShellCommandFinished {
+  exitCode: number;
+}
+
+export interface ShellTruncated {
+  dropped: bigint;
+}
+
+export interface ShellSessionClosed {
+  reason: ShellCloseReason;
 }
 
 function createBaseQuicSettings(): QuicSettings {
@@ -10908,6 +11127,1274 @@ export const PodHealthEvent: MessageFns<PodHealthEvent> = {
   },
 };
 
+function createBaseShellSession(): ShellSession {
+  return { sessionId: "", openedAt: "", running: undefined, endOffset: 0n, viewers: 0 };
+}
+
+export const ShellSession: MessageFns<ShellSession> = {
+  encode(message: ShellSession, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    if (message.openedAt !== "") {
+      writer.uint32(18).string(message.openedAt);
+    }
+    if (message.running !== undefined) {
+      writer.uint32(26).string(message.running);
+    }
+    if (message.endOffset !== 0n) {
+      if (BigInt.asUintN(64, message.endOffset) !== message.endOffset) {
+        throw new globalThis.Error("value provided for field message.endOffset of type uint64 too large");
+      }
+      writer.uint32(32).uint64(message.endOffset);
+    }
+    if (message.viewers !== 0) {
+      writer.uint32(40).uint32(message.viewers);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellSession {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellSession();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.openedAt = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.running = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.endOffset = reader.uint64() as bigint;
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.viewers = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellSession {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      openedAt: isSet(object.openedAt)
+        ? globalThis.String(object.openedAt)
+        : isSet(object.opened_at)
+        ? globalThis.String(object.opened_at)
+        : "",
+      running: isSet(object.running) ? globalThis.String(object.running) : undefined,
+      endOffset: isSet(object.endOffset)
+        ? BigInt(object.endOffset)
+        : isSet(object.end_offset)
+        ? BigInt(object.end_offset)
+        : 0n,
+      viewers: isSet(object.viewers) ? globalThis.Number(object.viewers) : 0,
+    };
+  },
+
+  toJSON(message: ShellSession): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.openedAt !== "") {
+      obj.openedAt = message.openedAt;
+    }
+    if (message.running !== undefined) {
+      obj.running = message.running;
+    }
+    if (message.endOffset !== 0n) {
+      obj.endOffset = message.endOffset.toString();
+    }
+    if (message.viewers !== 0) {
+      obj.viewers = Math.round(message.viewers);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellSession>): ShellSession {
+    return ShellSession.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellSession>): ShellSession {
+    const message = createBaseShellSession();
+    message.sessionId = object.sessionId ?? "";
+    message.openedAt = object.openedAt ?? "";
+    message.running = object.running ?? undefined;
+    message.endOffset = (object.endOffset !== undefined && object.endOffset !== null) ? BigInt(object.endOffset) : 0n;
+    message.viewers = object.viewers ?? 0;
+    return message;
+  },
+};
+
+function createBaseOpenShellSessionRequest(): OpenShellSessionRequest {
+  return { serverId: "" };
+}
+
+export const OpenShellSessionRequest: MessageFns<OpenShellSessionRequest> = {
+  encode(message: OpenShellSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): OpenShellSessionRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseOpenShellSessionRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): OpenShellSessionRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+    };
+  },
+
+  toJSON(message: OpenShellSessionRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<OpenShellSessionRequest>): OpenShellSessionRequest {
+    return OpenShellSessionRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<OpenShellSessionRequest>): OpenShellSessionRequest {
+    const message = createBaseOpenShellSessionRequest();
+    message.serverId = object.serverId ?? "";
+    return message;
+  },
+};
+
+function createBaseOpenShellSessionReply(): OpenShellSessionReply {
+  return { session: undefined };
+}
+
+export const OpenShellSessionReply: MessageFns<OpenShellSessionReply> = {
+  encode(message: OpenShellSessionReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.session !== undefined) {
+      ShellSession.encode(message.session, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): OpenShellSessionReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseOpenShellSessionReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.session = ShellSession.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): OpenShellSessionReply {
+    return { session: isSet(object.session) ? ShellSession.fromJSON(object.session) : undefined };
+  },
+
+  toJSON(message: OpenShellSessionReply): unknown {
+    const obj: any = {};
+    if (message.session !== undefined) {
+      obj.session = ShellSession.toJSON(message.session);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<OpenShellSessionReply>): OpenShellSessionReply {
+    return OpenShellSessionReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<OpenShellSessionReply>): OpenShellSessionReply {
+    const message = createBaseOpenShellSessionReply();
+    message.session = (object.session !== undefined && object.session !== null)
+      ? ShellSession.fromPartial(object.session)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseSendShellCommandRequest(): SendShellCommandRequest {
+  return { serverId: "", sessionId: "", command: "" };
+}
+
+export const SendShellCommandRequest: MessageFns<SendShellCommandRequest> = {
+  encode(message: SendShellCommandRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.sessionId !== "") {
+      writer.uint32(18).string(message.sessionId);
+    }
+    if (message.command !== "") {
+      writer.uint32(26).string(message.command);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SendShellCommandRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSendShellCommandRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.command = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SendShellCommandRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      command: isSet(object.command) ? globalThis.String(object.command) : "",
+    };
+  },
+
+  toJSON(message: SendShellCommandRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.command !== "") {
+      obj.command = message.command;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SendShellCommandRequest>): SendShellCommandRequest {
+    return SendShellCommandRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SendShellCommandRequest>): SendShellCommandRequest {
+    const message = createBaseSendShellCommandRequest();
+    message.serverId = object.serverId ?? "";
+    message.sessionId = object.sessionId ?? "";
+    message.command = object.command ?? "";
+    return message;
+  },
+};
+
+function createBaseSendShellCommandReply(): SendShellCommandReply {
+  return {};
+}
+
+export const SendShellCommandReply: MessageFns<SendShellCommandReply> = {
+  encode(_: SendShellCommandReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SendShellCommandReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSendShellCommandReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): SendShellCommandReply {
+    return {};
+  },
+
+  toJSON(_: SendShellCommandReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<SendShellCommandReply>): SendShellCommandReply {
+    return SendShellCommandReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<SendShellCommandReply>): SendShellCommandReply {
+    const message = createBaseSendShellCommandReply();
+    return message;
+  },
+};
+
+function createBaseCloseShellSessionRequest(): CloseShellSessionRequest {
+  return { serverId: "", sessionId: "" };
+}
+
+export const CloseShellSessionRequest: MessageFns<CloseShellSessionRequest> = {
+  encode(message: CloseShellSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.sessionId !== "") {
+      writer.uint32(18).string(message.sessionId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CloseShellSessionRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCloseShellSessionRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CloseShellSessionRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+    };
+  },
+
+  toJSON(message: CloseShellSessionRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<CloseShellSessionRequest>): CloseShellSessionRequest {
+    return CloseShellSessionRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<CloseShellSessionRequest>): CloseShellSessionRequest {
+    const message = createBaseCloseShellSessionRequest();
+    message.serverId = object.serverId ?? "";
+    message.sessionId = object.sessionId ?? "";
+    return message;
+  },
+};
+
+function createBaseCloseShellSessionReply(): CloseShellSessionReply {
+  return {};
+}
+
+export const CloseShellSessionReply: MessageFns<CloseShellSessionReply> = {
+  encode(_: CloseShellSessionReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CloseShellSessionReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCloseShellSessionReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): CloseShellSessionReply {
+    return {};
+  },
+
+  toJSON(_: CloseShellSessionReply): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<CloseShellSessionReply>): CloseShellSessionReply {
+    return CloseShellSessionReply.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<CloseShellSessionReply>): CloseShellSessionReply {
+    const message = createBaseCloseShellSessionReply();
+    return message;
+  },
+};
+
+function createBaseListShellSessionsRequest(): ListShellSessionsRequest {
+  return { serverId: "" };
+}
+
+export const ListShellSessionsRequest: MessageFns<ListShellSessionsRequest> = {
+  encode(message: ListShellSessionsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListShellSessionsRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListShellSessionsRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListShellSessionsRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+    };
+  },
+
+  toJSON(message: ListShellSessionsRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListShellSessionsRequest>): ListShellSessionsRequest {
+    return ListShellSessionsRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListShellSessionsRequest>): ListShellSessionsRequest {
+    const message = createBaseListShellSessionsRequest();
+    message.serverId = object.serverId ?? "";
+    return message;
+  },
+};
+
+function createBaseListShellSessionsReply(): ListShellSessionsReply {
+  return { sessions: [] };
+}
+
+export const ListShellSessionsReply: MessageFns<ListShellSessionsReply> = {
+  encode(message: ListShellSessionsReply, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.sessions) {
+      ShellSession.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListShellSessionsReply {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListShellSessionsReply();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessions.push(ShellSession.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListShellSessionsReply {
+    return {
+      sessions: globalThis.Array.isArray(object?.sessions)
+        ? object.sessions.map((e: any) => ShellSession.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListShellSessionsReply): unknown {
+    const obj: any = {};
+    if (message.sessions?.length) {
+      obj.sessions = message.sessions.map((e) => ShellSession.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ListShellSessionsReply>): ListShellSessionsReply {
+    return ListShellSessionsReply.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ListShellSessionsReply>): ListShellSessionsReply {
+    const message = createBaseListShellSessionsReply();
+    message.sessions = object.sessions?.map((e) => ShellSession.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseWatchShellSessionRequest(): WatchShellSessionRequest {
+  return { serverId: "", sessionId: "", fromOffset: 0n };
+}
+
+export const WatchShellSessionRequest: MessageFns<WatchShellSessionRequest> = {
+  encode(message: WatchShellSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverId !== "") {
+      writer.uint32(10).string(message.serverId);
+    }
+    if (message.sessionId !== "") {
+      writer.uint32(18).string(message.sessionId);
+    }
+    if (message.fromOffset !== 0n) {
+      if (BigInt.asUintN(64, message.fromOffset) !== message.fromOffset) {
+        throw new globalThis.Error("value provided for field message.fromOffset of type uint64 too large");
+      }
+      writer.uint32(24).uint64(message.fromOffset);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WatchShellSessionRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWatchShellSessionRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.fromOffset = reader.uint64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WatchShellSessionRequest {
+    return {
+      serverId: isSet(object.serverId)
+        ? globalThis.String(object.serverId)
+        : isSet(object.server_id)
+        ? globalThis.String(object.server_id)
+        : "",
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      fromOffset: isSet(object.fromOffset)
+        ? BigInt(object.fromOffset)
+        : isSet(object.from_offset)
+        ? BigInt(object.from_offset)
+        : 0n,
+    };
+  },
+
+  toJSON(message: WatchShellSessionRequest): unknown {
+    const obj: any = {};
+    if (message.serverId !== "") {
+      obj.serverId = message.serverId;
+    }
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.fromOffset !== 0n) {
+      obj.fromOffset = message.fromOffset.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<WatchShellSessionRequest>): WatchShellSessionRequest {
+    return WatchShellSessionRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<WatchShellSessionRequest>): WatchShellSessionRequest {
+    const message = createBaseWatchShellSessionRequest();
+    message.serverId = object.serverId ?? "";
+    message.sessionId = object.sessionId ?? "";
+    message.fromOffset = (object.fromOffset !== undefined && object.fromOffset !== null)
+      ? BigInt(object.fromOffset)
+      : 0n;
+    return message;
+  },
+};
+
+function createBaseShellEvent(): ShellEvent {
+  return {
+    offset: 0n,
+    output: undefined,
+    started: undefined,
+    finished: undefined,
+    truncated: undefined,
+    closed: undefined,
+    keepAlive: undefined,
+  };
+}
+
+export const ShellEvent: MessageFns<ShellEvent> = {
+  encode(message: ShellEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.offset !== 0n) {
+      if (BigInt.asUintN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.offset);
+    }
+    if (message.output !== undefined) {
+      ShellOutput.encode(message.output, writer.uint32(18).fork()).join();
+    }
+    if (message.started !== undefined) {
+      ShellCommandStarted.encode(message.started, writer.uint32(26).fork()).join();
+    }
+    if (message.finished !== undefined) {
+      ShellCommandFinished.encode(message.finished, writer.uint32(34).fork()).join();
+    }
+    if (message.truncated !== undefined) {
+      ShellTruncated.encode(message.truncated, writer.uint32(42).fork()).join();
+    }
+    if (message.closed !== undefined) {
+      ShellSessionClosed.encode(message.closed, writer.uint32(50).fork()).join();
+    }
+    if (message.keepAlive !== undefined) {
+      KeepAlive.encode(message.keepAlive, writer.uint32(58).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.offset = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.output = ShellOutput.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.started = ShellCommandStarted.decode(reader, reader.uint32());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.finished = ShellCommandFinished.decode(reader, reader.uint32());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.truncated = ShellTruncated.decode(reader, reader.uint32());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.closed = ShellSessionClosed.decode(reader, reader.uint32());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.keepAlive = KeepAlive.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellEvent {
+    return {
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
+      output: isSet(object.output) ? ShellOutput.fromJSON(object.output) : undefined,
+      started: isSet(object.started) ? ShellCommandStarted.fromJSON(object.started) : undefined,
+      finished: isSet(object.finished) ? ShellCommandFinished.fromJSON(object.finished) : undefined,
+      truncated: isSet(object.truncated) ? ShellTruncated.fromJSON(object.truncated) : undefined,
+      closed: isSet(object.closed) ? ShellSessionClosed.fromJSON(object.closed) : undefined,
+      keepAlive: isSet(object.keepAlive)
+        ? KeepAlive.fromJSON(object.keepAlive)
+        : isSet(object.keep_alive)
+        ? KeepAlive.fromJSON(object.keep_alive)
+        : undefined,
+    };
+  },
+
+  toJSON(message: ShellEvent): unknown {
+    const obj: any = {};
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
+    }
+    if (message.output !== undefined) {
+      obj.output = ShellOutput.toJSON(message.output);
+    }
+    if (message.started !== undefined) {
+      obj.started = ShellCommandStarted.toJSON(message.started);
+    }
+    if (message.finished !== undefined) {
+      obj.finished = ShellCommandFinished.toJSON(message.finished);
+    }
+    if (message.truncated !== undefined) {
+      obj.truncated = ShellTruncated.toJSON(message.truncated);
+    }
+    if (message.closed !== undefined) {
+      obj.closed = ShellSessionClosed.toJSON(message.closed);
+    }
+    if (message.keepAlive !== undefined) {
+      obj.keepAlive = KeepAlive.toJSON(message.keepAlive);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellEvent>): ShellEvent {
+    return ShellEvent.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellEvent>): ShellEvent {
+    const message = createBaseShellEvent();
+    message.offset = (object.offset !== undefined && object.offset !== null) ? BigInt(object.offset) : 0n;
+    message.output = (object.output !== undefined && object.output !== null)
+      ? ShellOutput.fromPartial(object.output)
+      : undefined;
+    message.started = (object.started !== undefined && object.started !== null)
+      ? ShellCommandStarted.fromPartial(object.started)
+      : undefined;
+    message.finished = (object.finished !== undefined && object.finished !== null)
+      ? ShellCommandFinished.fromPartial(object.finished)
+      : undefined;
+    message.truncated = (object.truncated !== undefined && object.truncated !== null)
+      ? ShellTruncated.fromPartial(object.truncated)
+      : undefined;
+    message.closed = (object.closed !== undefined && object.closed !== null)
+      ? ShellSessionClosed.fromPartial(object.closed)
+      : undefined;
+    message.keepAlive = (object.keepAlive !== undefined && object.keepAlive !== null)
+      ? KeepAlive.fromPartial(object.keepAlive)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseShellOutput(): ShellOutput {
+  return { stream: 0, data: new Uint8Array(0) };
+}
+
+export const ShellOutput: MessageFns<ShellOutput> = {
+  encode(message: ShellOutput, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.stream !== 0) {
+      writer.uint32(8).int32(message.stream);
+    }
+    if (message.data.length !== 0) {
+      writer.uint32(18).bytes(message.data);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellOutput {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellOutput();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.stream = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.data = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellOutput {
+    return {
+      stream: isSet(object.stream) ? shellStreamFromJSON(object.stream) : 0,
+      data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: ShellOutput): unknown {
+    const obj: any = {};
+    if (message.stream !== 0) {
+      obj.stream = shellStreamToJSON(message.stream);
+    }
+    if (message.data.length !== 0) {
+      obj.data = base64FromBytes(message.data);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellOutput>): ShellOutput {
+    return ShellOutput.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellOutput>): ShellOutput {
+    const message = createBaseShellOutput();
+    message.stream = object.stream ?? 0;
+    message.data = object.data ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseShellCommandStarted(): ShellCommandStarted {
+  return { command: "" };
+}
+
+export const ShellCommandStarted: MessageFns<ShellCommandStarted> = {
+  encode(message: ShellCommandStarted, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.command !== "") {
+      writer.uint32(10).string(message.command);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellCommandStarted {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellCommandStarted();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.command = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellCommandStarted {
+    return { command: isSet(object.command) ? globalThis.String(object.command) : "" };
+  },
+
+  toJSON(message: ShellCommandStarted): unknown {
+    const obj: any = {};
+    if (message.command !== "") {
+      obj.command = message.command;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellCommandStarted>): ShellCommandStarted {
+    return ShellCommandStarted.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellCommandStarted>): ShellCommandStarted {
+    const message = createBaseShellCommandStarted();
+    message.command = object.command ?? "";
+    return message;
+  },
+};
+
+function createBaseShellCommandFinished(): ShellCommandFinished {
+  return { exitCode: 0 };
+}
+
+export const ShellCommandFinished: MessageFns<ShellCommandFinished> = {
+  encode(message: ShellCommandFinished, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.exitCode !== 0) {
+      writer.uint32(8).int32(message.exitCode);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellCommandFinished {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellCommandFinished();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.exitCode = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellCommandFinished {
+    return {
+      exitCode: isSet(object.exitCode)
+        ? globalThis.Number(object.exitCode)
+        : isSet(object.exit_code)
+        ? globalThis.Number(object.exit_code)
+        : 0,
+    };
+  },
+
+  toJSON(message: ShellCommandFinished): unknown {
+    const obj: any = {};
+    if (message.exitCode !== 0) {
+      obj.exitCode = Math.round(message.exitCode);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellCommandFinished>): ShellCommandFinished {
+    return ShellCommandFinished.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellCommandFinished>): ShellCommandFinished {
+    const message = createBaseShellCommandFinished();
+    message.exitCode = object.exitCode ?? 0;
+    return message;
+  },
+};
+
+function createBaseShellTruncated(): ShellTruncated {
+  return { dropped: 0n };
+}
+
+export const ShellTruncated: MessageFns<ShellTruncated> = {
+  encode(message: ShellTruncated, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.dropped !== 0n) {
+      if (BigInt.asUintN(64, message.dropped) !== message.dropped) {
+        throw new globalThis.Error("value provided for field message.dropped of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.dropped);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellTruncated {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellTruncated();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.dropped = reader.uint64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellTruncated {
+    return { dropped: isSet(object.dropped) ? BigInt(object.dropped) : 0n };
+  },
+
+  toJSON(message: ShellTruncated): unknown {
+    const obj: any = {};
+    if (message.dropped !== 0n) {
+      obj.dropped = message.dropped.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellTruncated>): ShellTruncated {
+    return ShellTruncated.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellTruncated>): ShellTruncated {
+    const message = createBaseShellTruncated();
+    message.dropped = (object.dropped !== undefined && object.dropped !== null) ? BigInt(object.dropped) : 0n;
+    return message;
+  },
+};
+
+function createBaseShellSessionClosed(): ShellSessionClosed {
+  return { reason: 0 };
+}
+
+export const ShellSessionClosed: MessageFns<ShellSessionClosed> = {
+  encode(message: ShellSessionClosed, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.reason !== 0) {
+      writer.uint32(8).int32(message.reason);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ShellSessionClosed {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseShellSessionClosed();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.reason = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ShellSessionClosed {
+    return { reason: isSet(object.reason) ? shellCloseReasonFromJSON(object.reason) : 0 };
+  },
+
+  toJSON(message: ShellSessionClosed): unknown {
+    const obj: any = {};
+    if (message.reason !== 0) {
+      obj.reason = shellCloseReasonToJSON(message.reason);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ShellSessionClosed>): ShellSessionClosed {
+    return ShellSessionClosed.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ShellSessionClosed>): ShellSessionClosed {
+    const message = createBaseShellSessionClosed();
+    message.reason = object.reason ?? 0;
+    return message;
+  },
+};
+
 export type OrchestrationDefinition = typeof OrchestrationDefinition;
 export const OrchestrationDefinition = {
   name: "Orchestration",
@@ -11177,6 +12664,46 @@ export const OrchestrationDefinition = {
       responseStream: false,
       options: {},
     },
+    openShellSession: {
+      name: "OpenShellSession",
+      requestType: OpenShellSessionRequest as typeof OpenShellSessionRequest,
+      requestStream: false,
+      responseType: OpenShellSessionReply as typeof OpenShellSessionReply,
+      responseStream: false,
+      options: {},
+    },
+    sendShellCommand: {
+      name: "SendShellCommand",
+      requestType: SendShellCommandRequest as typeof SendShellCommandRequest,
+      requestStream: false,
+      responseType: SendShellCommandReply as typeof SendShellCommandReply,
+      responseStream: false,
+      options: {},
+    },
+    closeShellSession: {
+      name: "CloseShellSession",
+      requestType: CloseShellSessionRequest as typeof CloseShellSessionRequest,
+      requestStream: false,
+      responseType: CloseShellSessionReply as typeof CloseShellSessionReply,
+      responseStream: false,
+      options: {},
+    },
+    listShellSessions: {
+      name: "ListShellSessions",
+      requestType: ListShellSessionsRequest as typeof ListShellSessionsRequest,
+      requestStream: false,
+      responseType: ListShellSessionsReply as typeof ListShellSessionsReply,
+      responseStream: false,
+      options: {},
+    },
+    watchShellSession: {
+      name: "WatchShellSession",
+      requestType: WatchShellSessionRequest as typeof WatchShellSessionRequest,
+      requestStream: false,
+      responseType: ShellEvent as typeof ShellEvent,
+      responseStream: true,
+      options: {},
+    },
   },
 } as const;
 
@@ -11301,6 +12828,26 @@ export interface OrchestrationServiceImplementation<CallContextExt = {}> {
     request: SetOrchestrationConfigRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<SetOrchestrationConfigReply>>;
+  openShellSession(
+    request: OpenShellSessionRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<OpenShellSessionReply>>;
+  sendShellCommand(
+    request: SendShellCommandRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<SendShellCommandReply>>;
+  closeShellSession(
+    request: CloseShellSessionRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<CloseShellSessionReply>>;
+  listShellSessions(
+    request: ListShellSessionsRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<ListShellSessionsReply>>;
+  watchShellSession(
+    request: WatchShellSessionRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<ShellEvent>>;
 }
 
 export interface OrchestrationClient<CallOptionsExt = {}> {
@@ -11424,6 +12971,51 @@ export interface OrchestrationClient<CallOptionsExt = {}> {
     request: DeepPartial<SetOrchestrationConfigRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<SetOrchestrationConfigReply>;
+  openShellSession(
+    request: DeepPartial<OpenShellSessionRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<OpenShellSessionReply>;
+  sendShellCommand(
+    request: DeepPartial<SendShellCommandRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<SendShellCommandReply>;
+  closeShellSession(
+    request: DeepPartial<CloseShellSessionRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<CloseShellSessionReply>;
+  listShellSessions(
+    request: DeepPartial<ListShellSessionsRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<ListShellSessionsReply>;
+  watchShellSession(
+    request: DeepPartial<WatchShellSessionRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<ShellEvent>;
+}
+
+function bytesFromBase64(b64: string): Uint8Array {
+  if ((globalThis as any).Buffer) {
+    return Uint8Array.from((globalThis as any).Buffer.from(b64, "base64"));
+  } else {
+    const bin = globalThis.atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; ++i) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return arr;
+  }
+}
+
+function base64FromBytes(arr: Uint8Array): string {
+  if ((globalThis as any).Buffer) {
+    return (globalThis as any).Buffer.from(arr).toString("base64");
+  } else {
+    const bin: string[] = [];
+    arr.forEach((byte) => {
+      bin.push(globalThis.String.fromCharCode(byte));
+    });
+    return globalThis.btoa(bin.join(""));
+  }
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;

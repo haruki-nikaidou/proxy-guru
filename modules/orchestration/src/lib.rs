@@ -11,13 +11,14 @@
 //!   per query in [`entities::db`].
 //! - [`services`] — business logic: the graph edit path (read, check, apply a
 //!   batch), canvas and server management, derivation through `guru_topology`,
-//!   convergence and the worker agent.
+//!   convergence, the worker agent and the remote-shell relay.
 //! - [`rpc`] — the transport edge: the operator `Orchestration` service and the
 //!   `WorkerAgent` service workers talk to, plus their middleware.
 //! - [`events`] — AMQP payloads this module publishes or consumes, and the live
-//!   messages it fans out over Redis.
+//!   and remote-shell messages it relays over Redis.
 //! - [`hooks`] — background reactors: the derivation hook and its sweep, relay
-//!   leaf rotation, the health liveness sweep and retention, ACME renewal.
+//!   leaf rotation, the health liveness sweep and retention, ACME renewal, and
+//!   the Redis subscribers.
 //! - [`config`] — [`config::OrchestrationConfig`], loaded from the database
 //!   under the `"orchestration"` key: health intervals and retention, ACME and
 //!   relay-certificate knobs.

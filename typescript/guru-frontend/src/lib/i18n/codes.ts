@@ -84,6 +84,12 @@ export function issueMessage(code: string): string {
 			return m.issue_notify_chat_too_long();
 		case 'agent_unit_invalid':
 			return m.issue_agent_unit_invalid();
+		case 'shell_command_required':
+			return m.issue_shell_command_required();
+		case 'shell_command_invalid':
+			return m.issue_shell_command_invalid();
+		case 'shell_command_too_long':
+			return m.issue_shell_command_too_long();
 		default:
 			return code;
 	}

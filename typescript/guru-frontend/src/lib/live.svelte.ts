@@ -6,7 +6,7 @@ import type { RemoteLiveQuery } from '$app/server';
  * while this server restarts (`network`), and the control plane not up yet or
  * too slow (`unavailable`, `timeout`).
  */
-const TRANSIENT = new Set(['network', 'unavailable', 'timeout']);
+export const TRANSIENT = new Set(['network', 'unavailable', 'timeout']);
 
 const MAX_DELAY_MS = 30_000;
 

@@ -3,8 +3,12 @@
 //! Periodic work is not run by the process that schedules it. `--mode cron`
 //! publishes one signal per due job and `--mode consumer` runs the pass, so a
 //! sweep fails over and scales exactly like an edit does.
+//!
+//! The two Redis pub/sub contracts live beside them: [`live`] (dashboard change
+//! notices) and [`shell`] (the remote-shell relay).
 
 pub mod live;
+pub mod shell;
 
 use crate::entities::db::health::{
     HealthWrite, PodHealthStatus, PodHealthWrite, ServerHealthStatus,

@@ -1,5 +1,5 @@
 //! The `WorkerAgent` gRPC service: registration, config streaming,
-//! acknowledgement and health reporting.
+//! acknowledgement, health reporting and the remote-shell channel.
 
 use crate::entities::db::server::{
     ClaimServerWatchSession, FindServerById, ReleaseServerWatchSession, RenewServerWatchSession,
@@ -16,6 +16,7 @@ use crate::services::ca::{BundleCertificates, CaService};
 use crate::services::health::{
     HealthReportInput, HealthService, MarkServerOffline, RecordHealthReport,
 };
+use crate::services::shell_channel::{ShellChannelEnd, ShellChannelLease, ShellChannels};
 use crate::services::watch::{AgentSignal, SessionLease, WatchFence, WatchHub};
 use crate::utils::ids;
 use base::db::Db;
@@ -24,10 +25,14 @@ use kanau::processor::Processor;
 use rpguru_sdk::orchestration_agent as pb;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 const STREAM_CAPACITY: usize = 4;
+/// How many down messages a worker's shell channel may have queued. Beyond it
+/// a message is dropped, never waited for (see `ForwardShellDown`).
+const SHELL_DOWN_CAPACITY: usize = 64;
 /// The bound on one unary handler's service call. The database client can leave a
 /// request pending forever (its socket reconnected underneath it); a worker
 /// waiting on such a call must get an answer it can retry on, not silence.
@@ -56,6 +61,8 @@ pub struct WorkerAgentGrpc {
     pub db: Db,
     pub hub: WatchHub,
     pub lease: SessionLease,
+    /// The remote-shell relay's worker-facing half.
+    pub shells: ShellChannels,
 }
 
 /// Empty strings on the wire mean "unknown".
@@ -252,6 +259,57 @@ impl WorkerAgentGrpc {
             .await
         {
             tracing::warn!(error = %e, "releasing the watch session lease failed");
+        }
+    }
+
+    /// Relays one worker's shell channel until it ends: everything the worker
+    /// sends goes up to the dashboard replica it answers, a keep-alive goes
+    /// down every beat, and the stream is ended once it was silent for three.
+    ///
+    /// Down messages do not pass through here: the hub hands them to `tx`
+    /// directly.
+    async fn relay_shell(
+        &self,
+        agent: &AgentIdentity,
+        lease: &ShellChannelLease,
+        mut inbound: tonic::Streaming<pb::ShellUp>,
+        tx: &mpsc::Sender<pb::ShellDown>,
+    ) -> ShellEnd {
+        let beat = self.health.config.stream_keepalive();
+        let silence = beat.saturating_mul(3);
+        // Its first tick is not skipped: the keep-alive is what carries the
+        // response headers out through a proxy that holds bare headers.
+        let mut keepalive = tokio::time::interval(beat);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut heard = tokio::time::Instant::now();
+        loop {
+            let deadline = heard
+                .checked_add(silence)
+                .unwrap_or_else(tokio::time::Instant::now);
+            tokio::select! {
+                end = lease.ended() => return ShellEnd::Superseded(end),
+                () = tx.closed() => return ShellEnd::Closed,
+                _ = keepalive.tick() => {
+                    // A full channel already has data on its way.
+                    let _ = tx.try_send(pb::ShellDown {
+                        message: Some(pb::shell_down::Message::KeepAlive(pb::ShellKeepAlive {})),
+                    });
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return ShellEnd::Silent(Status::deadline_exceeded(format!(
+                        "no shell channel message within {}s",
+                        silence.as_secs()
+                    )));
+                }
+                next = inbound.next() => match next {
+                    None => return ShellEnd::Closed,
+                    Some(Err(status)) => return ShellEnd::Broken(status),
+                    Some(Ok(up)) => {
+                        heard = tokio::time::Instant::now();
+                        self.shells.up.publish(&agent.server, up).await;
+                    }
+                },
+            }
         }
     }
 }
@@ -515,6 +573,50 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
+
+    type ShellChannelStream = tonic::codegen::BoxStream<pb::ShellDown>;
+
+    /// Takes the server's shell slot for this stream (ending the stream it
+    /// replaces) and relays it until either side ends it.
+    ///
+    /// The loop runs in a task of its own, like `report_health`'s: hyper drops
+    /// a handler whose stream the peer reset, and the slot must be handed back
+    /// either way. The response is the hub's down messages followed by the
+    /// status the stream ended with, if it did not simply close.
+    async fn shell_channel(
+        &self,
+        request: Request<tonic::Streaming<pb::ShellUp>>,
+    ) -> Result<Response<Self::ShellChannelStream>, Status> {
+        let agent = agent_from_request(&request)?;
+        let inbound = request.into_inner();
+        let (tx, rx) = mpsc::channel(SHELL_DOWN_CAPACITY);
+        let lease = self
+            .shells
+            .hub
+            .hold(&agent.server, agent.generation, tx.clone())
+            .ok_or_else(|| Status::unauthenticated("refresh key superseded"))?;
+        let (end_tx, end_rx) = mpsc::channel(1);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let ended = this.relay_shell(&agent, &lease, inbound, &tx).await;
+            tracing::info!(
+                server = %agent.server,
+                generation = agent.generation,
+                ended = %ended,
+                "shell channel ended"
+            );
+            // Both senders gone ends the down half, and the status follows it.
+            drop(lease);
+            drop(tx);
+            if let Some(status) = ended.into_status() {
+                let _ = end_tx.send(status).await;
+            }
+        });
+        let downs = ReceiverStream::new(rx)
+            .map(Ok)
+            .chain(ReceiverStream::new(end_rx).map(Err));
+        Ok(Response::new(Box::pin(downs)))
+    }
 }
 
 /// How one health stream ended. Only `Silent` marks the server offline.
@@ -546,6 +648,47 @@ impl std::fmt::Display for HealthEnd {
             Self::Broken(status) => write!(f, "broken: {}", status.message()),
             Self::Silent(status) => write!(f, "silent: {}", status.message()),
             Self::Unrecorded(status) => write!(f, "unrecorded: {}", status.message()),
+        }
+    }
+}
+
+/// How one shell channel ended.
+enum ShellEnd {
+    /// The worker (or a proxy on the path) closed it, or stopped reading.
+    Closed,
+    /// The request stream broke underneath the master.
+    Broken(Status),
+    /// Nothing from the worker for three keep-alive periods.
+    Silent(Status),
+    /// A newer stream for the server took the slot, or registration moved past
+    /// this stream's refresh key.
+    Superseded(ShellChannelEnd),
+}
+
+impl ShellEnd {
+    /// What the worker is told, if the stream did not simply close. A
+    /// re-registration is the one that sends it back to `Register`.
+    fn into_status(self) -> Option<Status> {
+        match self {
+            Self::Closed => None,
+            Self::Broken(status) | Self::Silent(status) => Some(status),
+            Self::Superseded(ShellChannelEnd::Reregistered) => {
+                Some(Status::unauthenticated("refresh key superseded"))
+            }
+            Self::Superseded(ShellChannelEnd::Replaced) => {
+                Some(Status::aborted("a newer shell channel took over"))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ShellEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("closed"),
+            Self::Broken(status) => write!(f, "broken: {}", status.message()),
+            Self::Silent(status) => write!(f, "silent: {}", status.message()),
+            Self::Superseded(end) => write!(f, "superseded: {end:?}"),
         }
     }
 }

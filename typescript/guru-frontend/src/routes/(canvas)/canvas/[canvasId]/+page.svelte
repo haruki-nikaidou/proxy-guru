@@ -6,7 +6,7 @@ import CanvasFlow from '#lib/components/canvas/CanvasFlow.svelte';
 import * as Empty from '#lib/components/ui/empty/index.js';
 import { IsMobile } from '#lib/hooks/is-mobile.svelte.js';
 import { m } from '#lib/paraglide/messages.js';
-import { canEditWorkspace } from '#lib/permissions.js';
+import { canEditWorkspace, canUseRemoteShell } from '#lib/permissions.js';
 import type { PageProps } from './$types.js';
 
 let { data }: PageProps = $props();
@@ -14,6 +14,7 @@ let { data }: PageProps = $props();
 const canvasId = $derived(page.params.canvasId ?? '');
 const editable = $derived(canEditWorkspace(data.identity.role));
 const admin = $derived(data.identity.role === 'admin');
+const remoteShell = $derived(canUseRemoteShell(data.identity.role));
 
 // The flow plus its side panel do not fit a phone; nothing is gained by trying.
 const narrow = new IsMobile();
@@ -33,7 +34,7 @@ const narrow = new IsMobile();
 	<!-- `SvelteFlowProvider` is required: `CanvasFlow` calls `useSvelteFlow()`. -->
 	<div class="min-h-0 flex-1">
 		<SvelteFlowProvider>
-			<CanvasFlow {canvasId} {editable} {admin} />
+			<CanvasFlow {canvasId} {editable} {admin} {remoteShell} />
 		</SvelteFlowProvider>
 	</div>
 {/if}

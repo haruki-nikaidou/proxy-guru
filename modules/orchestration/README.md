@@ -17,11 +17,14 @@ src/
 │                   # (load / batch write), view, health, dns, certificate (ACME),
 │                   # ca (internal CA, relay leaves), job_run, agent_release
 ├── services/       # graph (read, check, apply), derive, converge, rollout, agent,
-│                   # canvas, server, health, ca, acme, dns, live, watch
-├── events/         # `CanvasDirty`, the periodic execution signals, live messages
+│                   # canvas, server, health, ca, acme, dns, live, watch,
+│                   # shell (remote shell, dashboard side), shell_channel (worker side)
+├── events/         # `CanvasDirty`, the periodic execution signals, live messages,
+│                   # the remote-shell relay envelopes
 ├── hooks/          # schedule.rs (the `cron` clock and the run claim), derive.rs
 │                   # (derivation, stale-canvas sweep, relay leaf rotation),
-│                   # health.rs (liveness sweep, retention), acme.rs (issuance/renewal)
+│                   # health.rs (liveness sweep, retention), acme.rs (issuance/renewal),
+│                   # live.rs and shell.rs (the Redis pub/sub subscribers)
 └── rpc/            # the operator API and the worker API, plus refresh-key middleware
 ```
 
@@ -87,7 +90,8 @@ destinations without breaking the seamless-switch protocol.
 `route_table` gets each pod's route as a table of groups and upstreams, anything
 older the tree form (weights as repetitions, failover as fallback, sticky as
 `ip_hash`); relays are asked to confirm only on workers reporting
-`relay_confirm`.
+`relay_confirm`; the dashboard's remote shell is offered only on workers
+reporting `remote_shell` (see *Remote shell*).
 
 ## Subcanvases
 
@@ -289,6 +293,49 @@ unconditionally, and that write is an upsert on the `relay_certificate_pod`
 unique constraint: two passes issuing a pod's first leaf at once both succeed,
 the later one replacing the material of the earlier and bumping the version, so
 a first deployment never reports the pod invalid for a pass.
+
+## Remote shell
+
+An Admin runs commands on a worker host from the dashboard (issue #30). The
+worker owns everything: the `bash` processes, their output ring buffers, the
+session table. The master stores nothing and only relays, and only for a
+server whose worker advertised `remote_shell` at `Register` (built with the
+feature *and* opted in on its host); anything else is refused
+`FAILED_PRECONDITION`. Every call needs `Permission::RemoteShell`, which only a
+human Admin session holds.
+
+```
+dashboard_grpc replica                    workers_grpc replica          worker
+ShellService ── PUBLISH shell:down ──► run_shell_down_subscriber
+  (request / attach / renew / detach)      └─ ForwardShellDown ──► ShellChannel (bidi)
+ShellRouter ◄── PUBLISH shell:up:<replica> ── ShellUpPublisher ◄── reply / watch event
+```
+
+- `dashboard_grpc` and `workers_grpc` are different processes with several
+  replicas each, so the relay runs over Redis pub/sub (`events::shell`). Every
+  `workers_grpc` replica subscribes to `guru:orchestration:shell:down`; every
+  `dashboard_grpc` replica to `guru:orchestration:shell:up:<replica>` under a
+  random replica id. Request and watch ids are `<replica>:<random>`, so the
+  worker-facing side publishes an answer to the replica that asked without
+  keeping state, and the router only accepts it from the server it asked.
+- `services::shell_channel::ShellChannelHub` holds the live `ShellChannel` per
+  server on the replica it landed on: the newest stream wins (a newer
+  generation, or a reconnect on the same one, ends the older stream), and
+  before a request or an attach is forwarded the server row's
+  `refresh_key_generation` is read again, so a stream registration has moved
+  past is ended instead of trusted. Forwards never wait: a full stream drops
+  the message. Both sides send a keep-alive every `stream_keepalive_secs` and
+  end a stream silent for three.
+- A call waits up to 10 s for the worker's reply (`UNAVAILABLE` otherwise);
+  worker refusals map to `NOT_FOUND`, `FAILED_PRECONDITION` (busy),
+  `RESOURCE_EXHAUSTED` (session cap), `INVALID_ARGUMENT` and `INTERNAL`.
+- A watch (`services::shell::WatchShellSession`) is a cursor on the worker. The
+  relay renews it every 10 s, tracks the position the next event must start at,
+  skips what came before (duplicates after a re-attach), re-attaches from the
+  position when an event starts past it or after 30 s of silence, reports a
+  tail lost with a closed session as `truncated`, and detaches when the client
+  goes away. The call itself waits for the worker's first answer, so an unknown
+  session or a silent worker is the call's status rather than the stream's.
 
 ## Dependency direction
 

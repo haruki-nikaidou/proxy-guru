@@ -54,3 +54,41 @@ impl Identity {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(role: AccountRole, kind: IdentityKind) -> Identity {
+        Identity {
+            account_id: AccountId::from_key("someone"),
+            role,
+            kind,
+        }
+    }
+
+    /// The remote shell is a human Admin's alone: neither a lesser role nor an
+    /// Admin's own API key gets it.
+    #[test]
+    fn remote_shell_needs_a_human_admin() {
+        assert!(
+            identity(AccountRole::Admin, IdentityKind::Session)
+                .ensure(Permission::RemoteShell)
+                .is_ok()
+        );
+        for (role, kind) in [
+            (AccountRole::Admin, IdentityKind::ApiKey),
+            (AccountRole::Maintainer, IdentityKind::Session),
+            (AccountRole::Maintainer, IdentityKind::ApiKey),
+            (AccountRole::Observer, IdentityKind::Session),
+        ] {
+            assert!(
+                matches!(
+                    identity(role, kind).ensure(Permission::RemoteShell),
+                    Err(wakuwaku::Error::PermissionsDenied)
+                ),
+                "{role:?} over {kind:?} must be refused"
+            );
+        }
+    }
+}

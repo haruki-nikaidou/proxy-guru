@@ -66,6 +66,10 @@ export function grpcFailure(err: ClientError): never {
 		case Status.ALREADY_EXISTS:
 			// These carry actionable English text from the control plane.
 			throw error(400, { message: err.details, code: 'server_message' });
+		case Status.RESOURCE_EXHAUSTED:
+			// A limit the caller ran into (a worker's remote shell session cap),
+			// worded by the control plane.
+			throw error(429, { message: err.details, code: 'server_message' });
 		case Status.ABORTED:
 			// Another write won the race for the same rows; nothing was written.
 			throw error(409, { message: 'Conflict', code: 'conflict', detail });
