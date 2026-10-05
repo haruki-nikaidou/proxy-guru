@@ -112,6 +112,11 @@ while the last acknowledged revision failed for any pod. The named values are ke
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip` (the same for IPv6) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
 | `--no-self-update` | `GURU_NO_SELF_UPDATE` | off (agent mode; when set, an update the dashboard requests is refused and reported back with that reason instead of installed) |
+| `--remote-shell` | `GURU_REMOTE_SHELL` | off (agent mode; the host's opt-in to the [remote shell](/features/remote-shell/), never part of the master-pushed config; startup fails on a build without the `remote-shell` feature, in standalone mode, with an `http://` master unless `--remote-shell-allow-plaintext` is set, and without `bash` on `PATH`) |
+| `--remote-shell-buffer-bytes` | `GURU_REMOTE_SHELL_BUFFER_BYTES` | `1048576` (transcript ring buffer per session; must be ≥ 4096) |
+| `--remote-shell-idle-timeout` | `GURU_REMOTE_SHELL_IDLE_TIMEOUT_SECS` | `1800` (seconds a session may sit with no command running and no viewer attached; must be ≥ 1) |
+| `--remote-shell-max-sessions` | `GURU_REMOTE_SHELL_MAX_SESSIONS` | `4` (concurrent sessions; must be ≥ 1) |
+| `--remote-shell-allow-plaintext` | `GURU_REMOTE_SHELL_ALLOW_PLAINTEXT` | off (permits `--remote-shell` with an `http://` master) |
 
 `--config` and `--master` are mutually exclusive, and with neither the worker runs standalone
 against the default path `/etc/guru-worker/config.toml`. `--log-level`/`GURU_LOG_LEVEL` configures

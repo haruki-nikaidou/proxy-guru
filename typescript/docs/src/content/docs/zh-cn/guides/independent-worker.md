@@ -255,3 +255,7 @@ systemctl reload guru-worker
    会打印画布当前派生出的内容，也就是 master 将要下发的那份文件。（该命令需要访问数据库，所以要在运维机器上运行，而不是在 Worker 节点上。）
 3. 把 `--config <file>` 换成 `--master <url> --server <key>`，通过 `GURU_API_KEY` 或 `--api-key-file` 提供 API
    密钥，并加上一个可写的 `--state-dir`，让节点在重启后能恢复它的 last-known-good 配置。
+
+[远程 Shell](/zh-cn/features/remote-shell/) 是 agent 模式的功能：独立模式的 Worker 带上 `--remote-shell`
+会拒绝启动。节点切换到 agent 模式后，如果希望 Admin 能在控制台里对它执行命令，再把 `--remote-shell`（或
+`GURU_REMOTE_SHELL=1`）加到它的 unit 中。

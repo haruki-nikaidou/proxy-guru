@@ -3,9 +3,9 @@ syntax = "proto3";
 package guru.orchestration.agent;
 
 // The worker control plane. `Register` is authenticated with an operator API
-// key (`x-api-key`, Maintainer+); `WatchConfig`, `AckConfig` and
-// `ReportHealth` are authenticated with the dynamic refresh key
-// (`x-refresh-key`) that `Register` returned.
+// key (`x-api-key`, Maintainer+); `WatchConfig`, `AckConfig`, `ReportHealth`,
+// `PollAgentUpdate` and `ShellChannel` are authenticated with the dynamic
+// refresh key (`x-refresh-key`) that `Register` returned.
 service WorkerAgent {
   rpc Register(RegisterRequest) returns (RegisterReply);
   // Sends a keep-alive every `RegisterReply.stream_keepalive_secs` to a worker
@@ -26,6 +26,18 @@ service WorkerAgent {
   // Asked every `agent_update_poll_secs`: whether the operator requested an
   // update for this server, and how the previous attempt went.
   rpc PollAgentUpdate(PollAgentUpdateRequest) returns (PollAgentUpdateReply);
+  // Remote shell. Only a worker whose host opted in locally (and which
+  // therefore advertised `remote_shell` at `Register`) opens it, right after
+  // `Register`, authenticated with `x-refresh-key`. A newer registration
+  // supersedes the stream, exactly as it does `WatchConfig`.
+  //
+  // The master is a stateless relay: it hands dashboard requests down and the
+  // worker's replies and transcript events up, and stores nothing. Sessions,
+  // their shells and their output buffers live on the worker and outlive the
+  // stream. Both sides send a `ShellKeepAlive` every
+  // `RegisterReply.stream_keepalive_secs` and end a stream that stays silent
+  // for three of them.
+  rpc ShellChannel(stream ShellUp) returns (stream ShellDown);
 }
 
 // What the worker knows about its own addresses. An empty string means the
@@ -55,9 +67,11 @@ message RegisterRequest {
   // it and the worker found it at startup. Empty when there is nothing to tell.
   string last_update_error = 6;
   // What this worker understands beyond the config every worker reads:
-  // `route_table` (a forwarding's `to` naming its own groups and upstreams) and
+  // `route_table` (a forwarding's `to` naming its own groups and upstreams),
   // `relay_confirm` (answering a dialer that asks, in its PROXY header, whether
-  // the relay's own next hop connected). Empty for workers built before either.
+  // the relay's own next hop connected) and `remote_shell` (built with the
+  // feature *and* opted in on its host; it opens `ShellChannel`). Empty for
+  // workers built before any of them.
   repeated string capabilities = 7;
 }
 message RegisterReply {
@@ -145,4 +159,175 @@ message AgentUpdate {
 }
 message PollAgentUpdateReply {
   optional AgentUpdate update = 1;
+}
+
+// ---- remote shell -----------------------------------------------------------
+
+// Master → worker.
+message ShellDown {
+  oneof message {
+    ShellRequest request = 1;
+    ShellAttach attach = 2;
+    ShellDetach detach = 3;
+    ShellRenew renew = 4;
+    ShellKeepAlive keep_alive = 5;
+  }
+}
+// Worker → master.
+message ShellUp {
+  oneof message {
+    ShellReply reply = 1;
+    ShellWatchEvent event = 2;
+    ShellKeepAlive keep_alive = 3;
+  }
+}
+message ShellKeepAlive {}
+
+// One dashboard call. `request_id` is opaque to the worker and echoed in the
+// one `ShellReply` it answers with.
+message ShellRequest {
+  string request_id = 1;
+  oneof op {
+    ShellOpen open = 2;
+    ShellExec exec = 3;
+    ShellClose close = 4;
+    ShellList list = 5;
+  }
+}
+// Spawns a new shell; answered with `opened`.
+message ShellOpen {}
+// Writes `command` to the session's shell; answered with `done` as soon as the
+// command was accepted, not when it finishes (that is a `ShellCommandFinished`
+// event). Refused with `BUSY` while another command runs: commands are never
+// queued.
+message ShellExec {
+  string session_id = 1;
+  string command = 2;
+}
+// Kills the session's process group; answered with `done`.
+message ShellClose {
+  string session_id = 1;
+}
+// Answered with `sessions`.
+message ShellList {}
+
+message ShellReply {
+  string request_id = 1;
+  oneof result {
+    ShellSessionInfo opened = 2;
+    ShellDone done = 3;
+    ShellSessionList sessions = 4;
+    ShellError error = 5;
+  }
+}
+message ShellDone {}
+message ShellSessionList {
+  repeated ShellSessionInfo sessions = 1;
+}
+message ShellSessionInfo {
+  string session_id = 1;
+  // Unix seconds.
+  int64 opened_at = 2;
+  // The command running now; unset while the shell is idle.
+  optional string running = 3;
+  // The transcript position the session's next event starts at.
+  uint64 end_offset = 4;
+  // How many watches are attached right now.
+  uint32 viewers = 5;
+}
+enum ShellErrorCode {
+  SHELL_ERROR_CODE_UNSPECIFIED = 0;
+  // No such session: closed, reaped, or the worker restarted since.
+  SHELL_ERROR_CODE_NOT_FOUND = 1;
+  // A command is still running in the session.
+  SHELL_ERROR_CODE_BUSY = 2;
+  // The worker's local session cap is reached.
+  SHELL_ERROR_CODE_LIMIT = 3;
+  // The request itself is unusable (an empty command, a NUL byte, too long).
+  SHELL_ERROR_CODE_INVALID = 4;
+  // Anything else: the shell could not be spawned or written to.
+  SHELL_ERROR_CODE_FAILED = 5;
+}
+message ShellError {
+  ShellErrorCode code = 1;
+  string message = 2;
+}
+
+// Starts the watch `watch_id` on a session at transcript position
+// `from_offset`. Attaching an id that is already attached restarts it from the
+// new position, so a relay that suspects a gap simply attaches again. A session
+// may have any number of watches, each with its own cursor.
+message ShellAttach {
+  string watch_id = 1;
+  string session_id = 2;
+  uint64 from_offset = 3;
+}
+message ShellDetach {
+  string watch_id = 1;
+}
+// Sent periodically for every live watch. The worker drops a watch that goes
+// unrenewed for a while (its relay died without a `ShellDetach`), and answers a
+// renewal of a watch it holds with a `keep_alive` event.
+message ShellRenew {
+  string watch_id = 1;
+}
+message ShellWatchEvent {
+  string watch_id = 1;
+  ShellEvent event = 2;
+}
+
+// One entry of a session's transcript, or a notice about the watch.
+//
+// `offset` is where the event starts in the transcript. Output occupies one
+// position per byte; `started` and `finished` occupy one position each;
+// `truncated`, `closed`, `keep_alive` and `error` occupy none. A watch resumes
+// at `offset` plus that length.
+message ShellEvent {
+  uint64 offset = 1;
+  oneof event {
+    ShellOutput output = 2;
+    ShellCommandStarted started = 3;
+    ShellCommandFinished finished = 4;
+    // The watch asked for positions the ring buffer no longer holds: `dropped`
+    // positions were skipped and it continues at `offset`, the oldest one kept.
+    ShellTruncated truncated = 5;
+    // The session ended; the watch ends with it.
+    ShellSessionClosed closed = 6;
+    ShellKeepAlive keep_alive = 7;
+    // The watch could not start (`NOT_FOUND`); the watch ends.
+    ShellError error = 8;
+  }
+}
+enum ShellStream {
+  SHELL_STREAM_UNSPECIFIED = 0;
+  SHELL_STREAM_STDOUT = 1;
+  SHELL_STREAM_STDERR = 2;
+}
+message ShellOutput {
+  ShellStream stream = 1;
+  bytes data = 2;
+}
+message ShellCommandStarted {
+  string command = 1;
+}
+// `exit_code` is the shell's `$?`: 128 + n for a command killed by signal n.
+message ShellCommandFinished {
+  int32 exit_code = 1;
+}
+message ShellTruncated {
+  uint64 dropped = 1;
+}
+enum ShellCloseReason {
+  SHELL_CLOSE_REASON_UNSPECIFIED = 0;
+  // An explicit `ShellClose`.
+  SHELL_CLOSE_REASON_CLOSED = 1;
+  // Reaped by the worker's idle timeout.
+  SHELL_CLOSE_REASON_IDLE = 2;
+  // The shell exited on its own (`exit`).
+  SHELL_CLOSE_REASON_EXITED = 3;
+  // The worker is stopping (shutdown or self-update).
+  SHELL_CLOSE_REASON_SHUTDOWN = 4;
+}
+message ShellSessionClosed {
+  ShellCloseReason reason = 1;
 }

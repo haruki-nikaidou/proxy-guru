@@ -93,8 +93,12 @@ import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 import { reportError } from '#lib/report.js';
 
-let { canvasId, editable, admin }: { canvasId: string; editable: boolean; admin: boolean } =
-	$props();
+let {
+	canvasId,
+	editable,
+	admin,
+	remoteShell
+}: { canvasId: string; editable: boolean; admin: boolean; remoteShell: boolean } = $props();
 
 const query = $derived(watchCanvasGraph({ canvasId }));
 reconnectWhenTransient(() => query);
@@ -281,6 +285,9 @@ setEditor({
 	},
 	get admin() {
 		return admin;
+	},
+	get remoteShell() {
+		return remoteShell;
 	},
 	commit,
 	review: request => {

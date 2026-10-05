@@ -1,5 +1,6 @@
 //! Control-plane agent: registers with `guru-master`, streams config revisions,
-//! acknowledges each one per pod and reports health for as long as the session lives.
+//! acknowledges each one per pod and reports health for as long as the session lives
+//! — and, on a host that opted in to the remote shell, keeps its `ShellChannel` open.
 //!
 //! The dynamic refresh key handed out by `Register` lives in memory only, so a worker
 //! restart always produces a fresh registration and the master can tell it was down.
@@ -56,15 +57,42 @@ pub struct AgentOptions {
     /// How long one unary call (`Register`, `AckConfig`, `PollAgentUpdate`) may
     /// wait for its answer; [`UNARY_TIMEOUT`] outside tests.
     pub unary_timeout: Duration,
+    /// The remote-shell sessions to serve over `ShellChannel`: `Some` only on a host
+    /// that opted in (`--remote-shell`). `None` advertises no `remote_shell` and
+    /// never opens the channel, whatever the master asks.
+    pub remote_shell: Option<RemoteShell>,
 }
+
+/// The worker's remote-shell sessions (see [`crate::shell`]).
+#[cfg(feature = "remote-shell")]
+pub type RemoteShell = crate::shell::ShellTable;
+
+/// A build without the `remote-shell` feature has no remote shell: no value of
+/// this type exists, so [`AgentOptions::remote_shell`] is always `None`.
+#[cfg(not(feature = "remote-shell"))]
+#[derive(Clone)]
+pub enum RemoteShell {}
 
 /// What this build registers as; the master shows it next to the server and
 /// compares it against the published release to offer an update.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// What this worker reads beyond the config every worker reads; the master only
-/// sends a server what its worker reported here.
-pub const CAPABILITIES: &[&str] = &["route_table", "relay_confirm"];
+/// What a worker that opted in to the remote shell (and was built with it)
+/// advertises; only such a worker opens `ShellChannel`.
+pub const REMOTE_SHELL_CAPABILITY: &str = "remote_shell";
+
+/// What this worker reads beyond the config every worker reads, and serves beyond
+/// it; the master only sends a server what its worker reported here.
+pub fn capabilities(remote_shell: bool) -> Vec<String> {
+    let mut capabilities: Vec<String> = ["route_table", "relay_confirm"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if remote_shell {
+        capabilities.push(REMOTE_SHELL_CAPABILITY.to_owned());
+    }
+    capabilities
+}
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -76,7 +104,7 @@ const SESSION_PROVEN: Duration = Duration::from_secs(5 * 60);
 /// before the session is given up. The HTTP/2 pings below only reach the first
 /// hop — a proxy answers them for a path whose far end is gone — so only data
 /// the master itself sent proves the whole path.
-const WATCHDOG_BEATS: u32 = 3;
+pub(crate) const WATCHDOG_BEATS: u32 = 3;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTTP/2 PING cadence towards whatever answers `--master` — the master itself or a
 /// TLS-terminating proxy in front of it. A path that stops answering is torn down after
@@ -89,6 +117,9 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// that hangs would stop the config stream being read, a `PollAgentUpdate` that
 /// hangs used to stop every health report. Well above any honest round trip.
 pub const UNARY_TIMEOUT: Duration = Duration::from_secs(30);
+/// The `ShellChannel` keep-alive period towards a master that announces none.
+#[cfg(feature = "remote-shell")]
+const SHELL_KEEPALIVE: Duration = Duration::from_secs(20);
 
 /// One unary call, bounded. The error names the call so the session log says which
 /// one the master swallowed.
@@ -105,7 +136,7 @@ async fn bounded<T>(
 
 /// Aborts the task when dropped. A session's side tasks must die with the session:
 /// a detached task stuck inside an `.await` never sees a cancellation token.
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+pub(crate) struct AbortOnDrop<T>(pub(crate) tokio::task::JoinHandle<T>);
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
@@ -188,7 +219,7 @@ async fn session(
         agent_version: VERSION.to_owned(),
         agent_arch: std::env::consts::ARCH.to_owned(),
         last_update_error: opts.last_update_error.lock().clone().unwrap_or_default(),
-        capabilities: CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
+        capabilities: capabilities(opts.remote_shell.is_some()),
     });
     register
         .metadata_mut()
@@ -261,14 +292,30 @@ async fn session(
         opts.unary_timeout,
         health_token,
     )));
+    // The remote shell's channel: a side task like the two above, except that its
+    // ending does not end the session — it reopens on its own, and the shells it
+    // served live on in the table.
+    #[cfg(feature = "remote-shell")]
+    let _shell = opts.remote_shell.clone().map(|table| {
+        AbortOnDrop(tokio::spawn(serve_shell(
+            client.clone(),
+            refresh_key.clone(),
+            keepalive.unwrap_or(SHELL_KEEPALIVE),
+            table,
+        )))
+    });
 
     let mut watch = tonic::Request::new(WatchConfigRequest { keep_alive: true });
     watch
         .metadata_mut()
         .insert("x-refresh-key", refresh_key.clone());
-    let mut stream = bounded(opts.unary_timeout, "WatchConfig", client.watch_config(watch))
-        .await?
-        .into_inner();
+    let mut stream = bounded(
+        opts.unary_timeout,
+        "WatchConfig",
+        client.watch_config(watch),
+    )
+    .await?
+    .into_inner();
     let silence = keepalive.map(|k| k.saturating_mul(WATCHDOG_BEATS));
 
     loop {
@@ -617,6 +664,35 @@ async fn poll_update(
             tracing::warn!(%error, "update poll failed");
             None
         }
+    }
+}
+
+/// Keeps `ShellChannel` open for as long as the agent session lives (the session
+/// aborts this task on its way out), reopening a channel that ended with capped
+/// exponential backoff. A channel that outlived its own watchdog proved the path,
+/// so the one after it starts the backoff over.
+#[cfg(feature = "remote-shell")]
+async fn serve_shell(
+    client: WorkerAgentClient<Channel>,
+    refresh_key: MetadataValue<Ascii>,
+    keepalive: Duration,
+    table: crate::shell::ShellTable,
+) {
+    let mut backoff = BACKOFF_START;
+    let proven = keepalive.saturating_mul(WATCHDOG_BEATS);
+    loop {
+        let started = tokio::time::Instant::now();
+        match crate::shell::channel::run(client.clone(), refresh_key.clone(), keepalive, &table)
+            .await
+        {
+            Ok(()) => tracing::warn!("master closed the shell channel; reopening"),
+            Err(error) => tracing::warn!(%error, "shell channel ended; reopening"),
+        }
+        if started.elapsed() >= proven {
+            backoff = BACKOFF_START;
+        }
+        tokio::time::sleep(jitter(backoff)).await;
+        backoff = std::cmp::min(backoff.saturating_mul(2), BACKOFF_CAP);
     }
 }
 

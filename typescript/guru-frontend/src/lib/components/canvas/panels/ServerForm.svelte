@@ -43,7 +43,7 @@ const serverNames = $derived(new Map(editor.graph.servers.map(entry => [entry.id
 
 <Separator class="my-6" />
 
-<ServerAgentSection {server} editable={editor.editable} />
+<ServerAgentSection {server} editable={editor.editable} remoteShell={editor.remoteShell} />
 
 <Separator class="my-6" />
 

@@ -6,4 +6,5 @@
  */
 export * from '../../../routes/(canvas)/canvas/[canvasId]/graph.remote.js';
 export * from '../../../routes/(canvas)/canvas/[canvasId]/servers.remote.js';
+export * from '../../../routes/(canvas)/canvas/[canvasId]/shell.remote.js';
 export * from '../../../routes/(canvas)/canvas/[canvasId]/subcanvas.remote.js';

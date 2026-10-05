@@ -30,6 +30,7 @@ fn grpc(w: &World) -> OrchestrationGrpc {
         },
         live: w.live.clone(),
         sessions: w.sessions.clone(),
+        shell: w.shell.clone(),
     }
 }
 

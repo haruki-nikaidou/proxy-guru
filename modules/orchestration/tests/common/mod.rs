@@ -18,6 +18,7 @@ use orchestration::entities::db::server::{
 use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
 use orchestration::hooks::live::LiveBus;
+use orchestration::hooks::shell::ShellRouter;
 use orchestration::services::acme::{AcmeService, InstantAcmeIssuer};
 use orchestration::services::agent::AgentService;
 use orchestration::services::ca::CaService;
@@ -29,6 +30,8 @@ use orchestration::services::live::LiveService;
 use orchestration::services::notify::{LivePublisher, Notifier};
 use orchestration::services::rollout::RolloutService;
 use orchestration::services::server::ServerService;
+use orchestration::services::shell::{ShellDownPublisher, ShellService, ShellTimings};
+use orchestration::services::shell_channel::{ShellChannels, ShellUpPublisher};
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
 
@@ -377,6 +380,11 @@ pub struct World {
     pub deriver: CanvasDeriver,
     pub live: LiveService,
     pub sessions: SessionService,
+    /// Both halves of the remote-shell relay, joined in process: the dashboard
+    /// side publishes into `shells` and the worker side answers into `shell`'s
+    /// router.
+    pub shells: ShellChannels,
+    pub shell: ShellService,
 }
 
 pub async fn world(pool: sqlx::PgPool) -> Result<World, Box<dyn std::error::Error>> {
@@ -398,6 +406,18 @@ pub async fn world_with(
     let notifier = Notifier {
         amqp: None,
         live: Some(LivePublisher::InProcess(bus.clone())),
+    };
+    let router = ShellRouter::new();
+    let shells = ShellChannels {
+        db: db.clone(),
+        hub: Default::default(),
+        up: ShellUpPublisher::InProcess(router.clone()),
+    };
+    let shell = ShellService {
+        db: db.clone(),
+        router,
+        down: ShellDownPublisher::InProcess(shells.clone()),
+        timings: ShellTimings::default(),
     };
     Ok(World {
         canvases: CanvasService {
@@ -459,6 +479,8 @@ pub async fn world_with(
             hasher: Argon2PasswordAlgorithm::default(),
             config: AuthConfig::default(),
         },
+        shells,
+        shell,
         bus,
         notifier,
         db,

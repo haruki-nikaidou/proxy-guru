@@ -22,13 +22,16 @@ pub enum Permission {
     ManageConfig,
     /// Machine-to-master calls made by a `guru-worker` (registration).
     ServerCall,
+    /// Run shell commands on a worker host through the dashboard, on workers
+    /// whose host opted in to remote shell.
+    RemoteShell,
 }
 
 impl AccountRole {
     /// Whether this role is granted `permission`.
     ///
-    /// - `Admin` holds every permission (including account management and the
-    ///   installation configuration).
+    /// - `Admin` holds every permission (including account management, the
+    ///   installation configuration and the remote shell).
     /// - `Maintainer` may view/edit the workspace and manage API keys, but not
     ///   accounts and not the configuration every process in the fleet runs on.
     /// - `Observer` may only view the workspace; notably it cannot manage API
@@ -45,5 +48,41 @@ impl AccountRole {
             ),
             AccountRole::Observer => matches!(permission, Permission::ViewWorkspace),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [Permission; 7] = [
+        Permission::ManageAccounts,
+        Permission::ManageApiKeys,
+        Permission::ViewWorkspace,
+        Permission::EditWorkspace,
+        Permission::ManageConfig,
+        Permission::ServerCall,
+        Permission::RemoteShell,
+    ];
+
+    fn held(role: AccountRole) -> Vec<Permission> {
+        ALL.into_iter().filter(|p| role.can(*p)).collect()
+    }
+
+    /// The whole matrix, row by row: a new permission has to be placed here
+    /// deliberately, and the remote shell belongs to the Admin alone.
+    #[test]
+    fn every_role_holds_exactly_its_row() {
+        assert_eq!(held(AccountRole::Admin), ALL.to_vec());
+        assert_eq!(
+            held(AccountRole::Maintainer),
+            vec![
+                Permission::ManageApiKeys,
+                Permission::ViewWorkspace,
+                Permission::EditWorkspace,
+                Permission::ServerCall,
+            ]
+        );
+        assert_eq!(held(AccountRole::Observer), vec![Permission::ViewWorkspace]);
     }
 }

@@ -101,29 +101,7 @@ impl Notifier {
                         return;
                     }
                 };
-                let publish = || async {
-                    redis::cmd("PUBLISH")
-                        .arg(LIVE_CHANNEL)
-                        .arg(&bytes[..])
-                        .query_async::<()>(&mut manager.clone())
-                        .await
-                };
-                let result = match publish().await {
-                    // A dropped connection, or a cached connect that failed on
-                    // one: the manager is replacing it, and the retry goes out on
-                    // the new connection if Redis answers in time. Not every I/O
-                    // error: a response timeout keeps the connection, where a
-                    // second PUBLISH queues behind the first and can deliver the
-                    // event twice.
-                    Err(error) if error.is_unrecoverable_error() => {
-                        match tokio::time::timeout(LIVE_RETRY_TIMEOUT, publish()).await {
-                            Ok(result) => result,
-                            Err(_) => Err(error),
-                        }
-                    }
-                    result => result,
-                };
-                if let Err(error) = result {
+                if let Err(error) = publish_with_retry(manager, LIVE_CHANNEL, &bytes).await {
                     tracing::warn!(%error, "publishing a live event failed");
                 }
             }
@@ -148,5 +126,36 @@ impl Notifier {
 
     pub async fn rollout_changed(&self, scope: RolloutScope) {
         self.live(LiveMessage::RolloutChanged { scope }).await;
+    }
+}
+
+/// `PUBLISH` on `channel`, retried once on a dead connection.
+///
+/// The manager reconnects on its own but only learns of a lost socket from the
+/// command that fails on it, so without the retry the first publish after a
+/// broker restart would silently reach nobody. The retry waits at most
+/// [`LIVE_RETRY_TIMEOUT`] for the new connection. Not every I/O error is
+/// retried: a response timeout keeps the connection, where a second `PUBLISH`
+/// queues behind the first and can deliver the message twice.
+pub(crate) async fn publish_with_retry(
+    manager: &redis::aio::ConnectionManager,
+    channel: &str,
+    bytes: &[u8],
+) -> redis::RedisResult<()> {
+    let publish = || async {
+        redis::cmd("PUBLISH")
+            .arg(channel)
+            .arg(bytes)
+            .query_async::<()>(&mut manager.clone())
+            .await
+    };
+    match publish().await {
+        Err(error) if error.is_unrecoverable_error() => {
+            match tokio::time::timeout(LIVE_RETRY_TIMEOUT, publish()).await {
+                Ok(result) => result,
+                Err(_) => Err(error),
+            }
+        }
+        result => result,
     }
 }

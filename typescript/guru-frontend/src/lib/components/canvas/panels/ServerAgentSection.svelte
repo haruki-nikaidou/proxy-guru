@@ -1,5 +1,6 @@
 <script lang="ts">
 import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
 import BoundaryError from '#lib/components/BoundaryError.svelte';
 import { getAgentRelease, requestAgentUpdate } from '#lib/components/canvas/commands.js';
@@ -7,20 +8,36 @@ import * as Alert from '#lib/components/ui/alert/index.js';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 import { Spinner } from '#lib/components/ui/spinner/index.js';
+import { REMOTE_SHELL_CAPABILITY } from '#lib/dto/shell.js';
 import type { ServerDto } from '#lib/dto/topology.js';
 import { formatTimestamp } from '#lib/i18n/format.js';
 import { m } from '#lib/paraglide/messages.js';
 import { panelWrites } from '#lib/writes.svelte.js';
 import AgentInstallDialog from './AgentInstallDialog.svelte';
+import ShellDialog from './ShellDialog.svelte';
 
 /**
  * The worker on this server: the version it registered as, the version that is
- * published, and the command that installs it.
+ * published, the command that installs it, and — for whoever may — a shell on it.
  */
-let { server, editable }: { server: ServerDto; editable: boolean } = $props();
+let {
+	server,
+	editable,
+	remoteShell
+}: {
+	server: ServerDto;
+	editable: boolean;
+	/** `Permission::RemoteShell`, which the control plane checks on every call. */
+	remoteShell: boolean;
+} = $props();
 
 const writes = panelWrites();
 let installOpen = $state(false);
+let shellOpen = $state(false);
+// Only a worker started with `--remote-shell` advertises it.
+const shellAvailable = $derived(
+	remoteShell && server.capabilities.includes(REMOTE_SHELL_CAPABILITY)
+);
 
 // The published worker release, read once per panel: it decides whether an
 // install command can be rendered and whether this server is behind it.
@@ -120,6 +137,15 @@ const updateAgent = () =>
 		{/if}
 	{/if}
 
+	{#if shellAvailable}
+		<div class="mt-3">
+			<Button size="sm" variant="outline" onclick={() => (shellOpen = true)}>
+				<SquareTerminalIcon data-icon="inline-start" />
+				{m.editor_shell_open()}
+			</Button>
+		</div>
+	{/if}
+
 	{#snippet failed(error, reset)}
 		<div class="mt-3">
 			<BoundaryError {error} {reset} variant="inline" />
@@ -133,3 +159,7 @@ const updateAgent = () =>
 	unit={server.agentUnit || suggestedUnit}
 	replacing={server.agentKeyIssuedAt !== ''}
 />
+
+{#if shellAvailable}
+	<ShellDialog bind:open={shellOpen} {server} />
+{/if}

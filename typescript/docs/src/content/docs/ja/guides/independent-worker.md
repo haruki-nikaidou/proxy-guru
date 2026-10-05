@@ -229,3 +229,5 @@ systemctl reload guru-worker
 1. そのノードをキャンバス上のサーバーとしてモデル化し、マスターに設定を導出させます。
 2. 2 つのファイルを比較します。`manage-tool orchestration export-config --server <key>` は、キャンバスが現在導出している内容、つまりマスターがストリーム配信するはずのファイルを出力します。（このコマンドはデータベースと通信するので、ワーカーノードではなくオペレーターのマシンで実行します。）
 3. `--config <file>` を `--master <url> --server <key>` に差し替え、API キーを `GURU_API_KEY` または `--api-key-file` で渡し、再起動後にノードが last-known-good の設定を復元できるよう、書き込み可能な `--state-dir` を追加します。
+
+[リモートシェル](/ja/features/remote-shell/)はエージェントモードの機能です。スタンドアロンのワーカーは `--remote-shell` 付きでは起動を拒否します。ノードをエージェントモードに移した後、Admin がダッシュボードからそのノードでコマンドを実行できるようにしたい場合は、ユニットに `--remote-shell`（または `GURU_REMOTE_SHELL=1`）を追加してください。

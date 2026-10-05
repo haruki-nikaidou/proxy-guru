@@ -72,3 +72,7 @@ pub mod orchestration_agent {
 pub mod notify {
     tonic::include_proto!("guru.notify");
 }
+
+/// Remote shell: transcript positions (`ShellEvent::end_offset`) and the
+/// worker → dashboard `ShellEvent` mapping (`orchestration::ShellEvent::from_agent`).
+mod shell;

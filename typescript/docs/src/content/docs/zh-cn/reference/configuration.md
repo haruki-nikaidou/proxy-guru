@@ -101,6 +101,11 @@ argv 在进程列表中是可见的。丢失该密钥意味着必须重新录入
 | `--public-ipv4-urls` | `GURU_PUBLIC_IPV4_URLS` | `https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com`（agent 模式；以逗号分隔的服务方列表，它们以纯文本返回调用方的 IPv4 地址，从一个轮转的起点开始依次尝试，每个 3 秒；每 60 秒重新检查一次，发生变化时上报；留空则禁用该查询，网卡地址仍会照常上报） |
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip`（IPv6 同上） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
+| `--remote-shell` | `GURU_REMOTE_SHELL` | 关闭（agent 模式；主机对[远程 Shell](/zh-cn/features/remote-shell/) 的开启开关，绝不属于 master 推送的配置；在没有 `remote-shell` feature 的构建上、独立模式下、`http://` 的 master 且未设置 `--remote-shell-allow-plaintext` 时，以及 `PATH` 中没有 `bash` 时，启动失败） |
+| `--remote-shell-buffer-bytes` | `GURU_REMOTE_SHELL_BUFFER_BYTES` | `1048576`（每个会话的记录环形缓冲区；必须 ≥ 4096） |
+| `--remote-shell-idle-timeout` | `GURU_REMOTE_SHELL_IDLE_TIMEOUT_SECS` | `1800`（没有命令运行、也没有查看者连接的会话可以保留的秒数；必须 ≥ 1） |
+| `--remote-shell-max-sessions` | `GURU_REMOTE_SHELL_MAX_SESSIONS` | `4`（同时运行的会话数；必须 ≥ 1） |
+| `--remote-shell-allow-plaintext` | `GURU_REMOTE_SHELL_ALLOW_PLAINTEXT` | 关闭（允许在 `http://` 的 master 下使用 `--remote-shell`） |
 
 `--config` 和 `--master` 互斥；两者都不给出时，Worker 以独立模式运行，并使用默认路径
 `/etc/guru-worker/config.toml`。`--log-level`/`GURU_LOG_LEVEL` 只配置 agent 模式，

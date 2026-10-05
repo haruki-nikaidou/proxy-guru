@@ -11,6 +11,13 @@ path = "src/lib.rs"
 name = "guru-worker"
 path = "src/main.rs"
 
+[features]
+default = ["remote-shell"]
+# Remote shell (`--remote-shell`): an Admin runs commands on this host from the
+# dashboard. Official builds carry it; a minimal build (`--no-default-features`)
+# refuses the opt-in at startup instead of ignoring it.
+remote-shell = ["dep:libc", "dep:rand"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 openssl = { version = "0.10", features = ["vendored"] }
@@ -45,6 +52,10 @@ tokio-stream = { workspace = true }
 parking_lot = "0.12"
 # Self-update verifies the downloaded binary against the published digest.
 sha2 = { workspace = true }
+# Remote shell: `kill(-pgid)` for a session's process group, and the random
+# session ids and sentinel nonces.
+libc = { version = "0.2", optional = true }
+rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 orchestration = { path = "../../modules/orchestration" }

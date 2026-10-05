@@ -71,4 +71,47 @@ pub struct Cli {
     /// update is reported back as refused, so the operator sees why.
     #[arg(long, env = "GURU_NO_SELF_UPDATE")]
     pub no_self_update: bool,
+    /// Agent mode: let an Admin run shell commands on this host from the dashboard
+    /// (`bash --noprofile --norc` as the worker's own user, `bash` taken from
+    /// `PATH`). Off unless set here: the master cannot turn it on. Needs a build
+    /// with the `remote-shell` feature and an `https://` master (see
+    /// `--remote-shell-allow-plaintext`).
+    #[arg(long, env = "GURU_REMOTE_SHELL", value_parser = clap::builder::BoolishValueParser::new())]
+    pub remote_shell: bool,
+    /// Remote shell: bytes of transcript (output, commands and a little per-record
+    /// overhead) each session keeps for viewers that reconnect; the oldest go first.
+    #[arg(
+        long,
+        env = "GURU_REMOTE_SHELL_BUFFER_BYTES",
+        default_value_t = 1_048_576,
+        value_parser = clap::value_parser!(u64).range(4096..)
+    )]
+    pub remote_shell_buffer_bytes: u64,
+    /// Remote shell: seconds a session may sit with no command running and no
+    /// viewer attached before it is closed.
+    #[arg(
+        long,
+        env = "GURU_REMOTE_SHELL_IDLE_TIMEOUT_SECS",
+        default_value_t = 1800,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub remote_shell_idle_timeout: u64,
+    /// Remote shell: how many sessions may be open at once; opening one more is
+    /// refused.
+    #[arg(
+        long,
+        env = "GURU_REMOTE_SHELL_MAX_SESSIONS",
+        default_value_t = 4,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub remote_shell_max_sessions: u32,
+    /// Remote shell: allow it over a plaintext `http://` master, where commands and
+    /// their output cross the network unencrypted. Without it, the worker refuses to
+    /// start with `--remote-shell` and an `http://` `--master`.
+    #[arg(
+        long,
+        env = "GURU_REMOTE_SHELL_ALLOW_PLAINTEXT",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub remote_shell_allow_plaintext: bool,
 }

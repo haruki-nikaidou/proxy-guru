@@ -29,6 +29,8 @@ redis = { workspace = true }
 # gRPC / transport
 tonic = { workspace = true }
 tower = { workspace = true }
+# The remote-shell relay carries the worker protocol's messages prost-encoded.
+prost = { workspace = true }
 
 # Serialization
 rkyv = { workspace = true }
@@ -64,3 +66,4 @@ tokio-util = { workspace = true }
 testcontainers-modules = { version = "0.15.0", features = ["rabbitmq", "redis"] }
 x509-parser = { workspace = true, features = ["verify-aws"] }
 tokio = { workspace = true }
+parking_lot = "0.12"

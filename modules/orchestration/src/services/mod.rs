@@ -28,10 +28,13 @@ pub mod live;
 pub mod notify;
 pub mod rollout;
 pub mod server;
+pub mod shell;
+pub mod shell_channel;
 pub mod watch;
 
 use crate::services::converge::ConvergeError;
 use crate::services::derive::DeriveError;
+use crate::services::shell::ShellError;
 use crate::utils::secret::SecretError;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +60,9 @@ pub enum OrchestrationError {
     NotFound,
     #[error("permission denied")]
     PermissionDenied,
+    /// A remote-shell call the worker refused or did not answer.
+    #[error("shell: {0}")]
+    Shell(#[from] ShellError),
 }
 
 use crate::entities::db::fence::STALE_GENERATION;
@@ -109,6 +115,7 @@ impl From<OrchestrationError> for tonic::Status {
             OrchestrationError::PermissionDenied => {
                 tonic::Status::permission_denied("Permission denied")
             }
+            OrchestrationError::Shell(e) => e.into(),
         }
     }
 }

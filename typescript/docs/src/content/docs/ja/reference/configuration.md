@@ -109,6 +109,11 @@ publish します。一方 consumer は、何かを始める前に各実行を c
 | `--public-ipv4-urls` | `GURU_PUBLIC_IPV4_URLS` | `https://checkip.amazonaws.com,https://api.ipify.org,https://ipv4.icanhazip.com`（エージェントモード。呼び出し元の IPv4 をテキストで返すプロバイダーをカンマ区切りで指定します。開始位置をローテーションしながら順に試し、それぞれ 3 秒。60 秒ごとに再確認し、変化したら報告します。空にするとルックアップを無効化しますが、インターフェイスのアドレスは引き続き報告されます） |
 | `--public-ipv6-urls` | `GURU_PUBLIC_IPV6_URLS` | `https://ipv6.icanhazip.com,https://api6.ipify.org,https://v6.ipinfo.io/ip`（IPv6 についての同じ設定） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
+| `--remote-shell` | `GURU_REMOTE_SHELL` | オフ（エージェントモード。[リモートシェル](/ja/features/remote-shell/)へのホストのオプトインで、マスターがプッシュする設定には決して含まれません。`remote-shell` フィーチャーなしのビルド、スタンドアロンモード、`--remote-shell-allow-plaintext` なしの `http://` マスター、`PATH` に `bash` がない場合は起動に失敗します） |
+| `--remote-shell-buffer-bytes` | `GURU_REMOTE_SHELL_BUFFER_BYTES` | `1048576`（セッションごとのトランスクリプトのリングバッファ。4096 以上である必要があります） |
+| `--remote-shell-idle-timeout` | `GURU_REMOTE_SHELL_IDLE_TIMEOUT_SECS` | `1800`（コマンドが実行されておらず、ビューアーもアタッチしていないセッションを残しておく秒数。1 以上である必要があります） |
+| `--remote-shell-max-sessions` | `GURU_REMOTE_SHELL_MAX_SESSIONS` | `4`（同時セッション数。1 以上である必要があります） |
+| `--remote-shell-allow-plaintext` | `GURU_REMOTE_SHELL_ALLOW_PLAINTEXT` | オフ（`http://` のマスターでも `--remote-shell` を許可します） |
 
 `--config` と `--master` は相互排他で、どちらも指定しない場合、ワーカーはデフォルトパス
 `/etc/guru-worker/config.toml` に対してスタンドアロンで動作します。`--log-level`/`GURU_LOG_LEVEL` が設定するのは

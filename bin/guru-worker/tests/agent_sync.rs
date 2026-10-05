@@ -33,6 +33,7 @@ use orchestration::entities::db::server::{
 };
 use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{self, CanvasDeriver};
+use orchestration::hooks::shell::ShellRouter;
 use orchestration::rpc::WorkerAgentGrpc;
 use orchestration::rpc::agent_middleware::AgentLayer;
 use orchestration::services::agent::AgentService;
@@ -42,6 +43,7 @@ use orchestration::services::graph::{ApplyGraph, GraphChange, GraphService};
 use orchestration::services::health::HealthService;
 use orchestration::services::notify::Notifier;
 use orchestration::services::server::{AddressOverrides, CreateServer, ServerService};
+use orchestration::services::shell_channel::{ShellChannelHub, ShellChannels, ShellUpPublisher};
 use orchestration::services::watch::{self, SessionLease, WatchHub};
 use orchestration::utils::secret::SecretKey;
 use rpguru_sdk::orchestration_agent::worker_agent_client::WorkerAgentClient;
@@ -49,7 +51,7 @@ use rpguru_sdk::orchestration_agent::worker_agent_server::{WorkerAgent, WorkerAg
 use rpguru_sdk::orchestration_agent::{
     AckConfigReply, AckConfigRequest, CertificateFile, ConfigRevision, HealthReport, PodStatus,
     PollAgentUpdateReply, PollAgentUpdateRequest, RegisterReply, RegisterRequest,
-    ReportHealthReply, WatchConfigRequest,
+    ReportHealthReply, ShellDown, ShellUp, WatchConfigRequest,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -197,6 +199,12 @@ async fn serve(
         db: db.clone(),
         hub: hub.clone(),
         lease,
+        // These workers never open `ShellChannel`; the relay only has to exist.
+        shells: ShellChannels {
+            db: db.clone(),
+            hub: ShellChannelHub::default(),
+            up: ShellUpPublisher::InProcess(ShellRouter::new()),
+        },
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -418,6 +426,7 @@ async fn worker_applies_config_reports_health_and_survives_a_bad_pod(
             update_done: Default::default(),
             last_update_error: Default::default(),
             unary_timeout: Duration::from_secs(5),
+            remote_shell: None,
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -1338,6 +1347,19 @@ impl WorkerAgent for FakeMaster {
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
+
+    type ShellChannelStream = ReceiverStream<Result<ShellDown, Status>>;
+
+    /// These workers never opted in to the remote shell, so none may open this; the
+    /// remote-shell suite has a master of its own that serves it.
+    async fn shell_channel(
+        &self,
+        _: Request<tonic::Streaming<ShellUp>>,
+    ) -> Result<Response<Self::ShellChannelStream>, Status> {
+        Err(Status::failed_precondition(
+            "this worker did not advertise remote_shell",
+        ))
+    }
 }
 
 #[tokio::test]
@@ -1414,6 +1436,7 @@ async fn worker_writes_delivered_certificates_serves_tls_and_reports_health() ->
             update_done: Default::default(),
             last_update_error: Default::default(),
             unary_timeout: Duration::from_secs(5),
+            remote_shell: None,
         },
         sup.clone(),
         agent_shutdown.clone(),
@@ -1566,6 +1589,7 @@ impl FakeRun {
                 update_done: Default::default(),
                 last_update_error: Default::default(),
                 unary_timeout,
+                remote_shell: None,
             },
             sup.clone(),
             shutdown.clone(),

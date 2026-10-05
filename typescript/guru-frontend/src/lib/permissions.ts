@@ -11,3 +11,5 @@ export const canManageTls = (role: RoleName) => role === 'admin';
  * credential is refused even for an Admin, which a browser session never is.
  */
 export const canManageConfig = (role: RoleName) => role === 'admin';
+/** `Permission::RemoteShell`: Admin only, and only ever for a human session. */
+export const canUseRemoteShell = (role: RoleName) => role === 'admin';

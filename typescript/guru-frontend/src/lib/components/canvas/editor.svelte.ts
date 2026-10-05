@@ -49,6 +49,8 @@ export type Editor = {
 	readonly drawing: Drawing<ServerDto>;
 	readonly editable: boolean;
 	readonly admin: boolean;
+	/** `Permission::RemoteShell`: may open a shell on a worker that offers one. */
+	readonly remoteShell: boolean;
 	/**
 	 * Applies one batch against the graph as it was read, keeping the drawing's
 	 * layout. Resolves `true` once it is written; a refusal is reported and
