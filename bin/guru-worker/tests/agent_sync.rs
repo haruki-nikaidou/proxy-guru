@@ -1689,6 +1689,65 @@ async fn an_ack_the_master_never_answers_ends_the_session() -> TestResult {
     Ok(())
 }
 
+/// The failure that took most of the Hong Kong fleet offline: a reconnect's TCP
+/// connect went through, the TLS handshake behind it was never answered, and the
+/// worker waited on it for sixteen days with the data plane still running.
+/// `connect_timeout` bounds the TCP connect alone, so the session bounds the whole
+/// connection itself and the next attempt follows its backoff.
+#[tokio::test]
+async fn a_tls_handshake_the_master_never_answers_is_given_up() -> TestResult {
+    // Accepts every connection and holds it open without sending a byte.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (accepted_tx, mut accepted) = mpsc::unbounded_channel();
+    let black_hole = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+            let _ = accepted_tx.send(());
+        }
+    });
+
+    let state_dir = std::env::temp_dir().join(format!("guru-worker-handshake-{}", free_port()));
+    let _ = std::fs::remove_dir_all(&state_dir);
+    let sup = Arc::new(Mutex::new(Supervisor::new()));
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(agent::run(
+        AgentOptions {
+            master: format!("https://{addr}"),
+            api_key: "unused".to_string(),
+            server_id: "edge-server".to_string(),
+            state_dir: state_dir.clone(),
+            applied_revision: Arc::new(AtomicI64::new(0)),
+            health_interval: Duration::from_millis(100),
+            sources: guru_worker::addresses::Sources::none(),
+            update_poll: Duration::from_secs(60),
+            self_update: false,
+            update_done: Default::default(),
+            last_update_error: Default::default(),
+            unary_timeout: Duration::from_millis(300),
+            remote_shell: None,
+        },
+        sup.clone(),
+        shutdown.clone(),
+    ));
+
+    // The first attempt hangs in the handshake; a second connection can only come
+    // from a worker that gave it up.
+    within("the first connection", accepted.recv())
+        .await
+        .expect("the worker connects");
+    within("a second connection", accepted.recv())
+        .await
+        .expect("the worker tries again");
+
+    shutdown.cancel();
+    let _ = within("the agent task to stop", task).await;
+    black_hole.abort();
+    let _ = std::fs::remove_dir_all(&state_dir);
+    Ok(())
+}
+
 /// A current master sends keep-alives, ahead of the revision and after it: the worker
 /// skips them — none is applied as an empty config or acknowledged — and a session
 /// whose streams carry keep-alives and replies outlasts both watchdogs.

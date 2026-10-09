@@ -55,7 +55,8 @@ pub struct AgentOptions {
     /// with the next successful registration and then forgotten.
     pub last_update_error: parking_lot::Mutex<Option<String>>,
     /// How long one unary call (`Register`, `AckConfig`, `PollAgentUpdate`) may
-    /// wait for its answer; [`UNARY_TIMEOUT`] outside tests.
+    /// wait for its answer, and how long the connection a session opens first may
+    /// take to come up; [`UNARY_TIMEOUT`] outside tests.
     pub unary_timeout: Duration,
     /// The remote-shell sessions to serve over `ShellChannel`: `Some` only on a host
     /// that opted in (`--remote-shell`). `None` advertises no `remote_shell` and
@@ -115,7 +116,8 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The bound on one unary call. A master (or a proxy in front of it) that takes a
 /// request and never answers it must not park the caller forever: an `AckConfig`
 /// that hangs would stop the config stream being read, a `PollAgentUpdate` that
-/// hangs used to stop every health report. Well above any honest round trip.
+/// hangs used to stop every health report. Well above any honest round trip. It
+/// also bounds bringing a session's connection up: TCP, TLS and HTTP/2 together.
 pub const UNARY_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `ShellChannel` keep-alive period towards a master that announces none.
 #[cfg(feature = "remote-shell")]
@@ -200,7 +202,22 @@ async fn session(
     shutdown: &CancellationToken,
     backoff: &mut Duration,
 ) -> Result<(), BoxError> {
-    let mut client = WorkerAgentClient::new(endpoint(&opts.master)?.connect().await?);
+    // `connect_timeout` bounds the TCP connect alone; the TLS handshake after it has
+    // no timer, and a ClientHello the far end never answers would park this session,
+    // and every reconnect behind it, for good. Seen live: workers behind Cloudflare
+    // waited sixteen days on one. The whole connection is bounded instead.
+    let master = endpoint(&opts.master)?;
+    let channel = match tokio::time::timeout(opts.unary_timeout, master.connect()).await {
+        Ok(channel) => channel?,
+        Err(_) => {
+            return Err(format!(
+                "connect: no connection within {}s",
+                opts.unary_timeout.as_secs()
+            )
+            .into());
+        }
+    };
+    let mut client = WorkerAgentClient::new(channel);
 
     let running_revision = opts.applied_revision.load(Ordering::Relaxed);
     // Best effort and time-bounded: a slow or failed lookup cannot delay the
