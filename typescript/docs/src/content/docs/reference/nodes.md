@@ -17,7 +17,7 @@ these cards sit on and the gestures that edit them.
 | **Pod** | One listener on one server: a port, an optional bind address, an optional advertise address, and its **ingress**. Every pod is its own vertex. |
 | **Ingress** | How traffic arrives at a pod. *Client* pods take connections from clients directly — raw TCP, or TLS terminated with an ACME certificate — and may receive a PROXY header. *Relay* pods take traffic other pods relay to them, over TCP, TLS or QUIC. |
 | **Exit** | A `host:port` outside the fabric where traffic leaves, optionally with a PROXY header. Any number of pods may lead to one exit. |
-| **Edge** | One way a pod's traffic goes on: to a relay pod or to an exit. Two pods may be joined by several edges (to dial different addresses, say). An edge into a pod also says which IP version it dials over: auto, IPv4 or IPv6. |
+| **Edge** | One way a pod's traffic goes on: to a relay pod or to an exit. Two pods may be joined by several edges (to dial different addresses, say). An edge into a pod also says which IP version it dials over: auto, IPv4 or IPv6. Auto dials the server's IPv4 address, and its IPv6 address beside it when the IPv4 one does not answer at once — when the server has both, the pod listens on both and the dialing server can reach IPv6. |
 | **Route** | Each pod's own tree over exactly its out-edges: a **balance** spreads connections over its members by weight, a **failover** uses the first member that is alive. Either may hold the other, to any depth. |
 
 A few rules follow from the model:

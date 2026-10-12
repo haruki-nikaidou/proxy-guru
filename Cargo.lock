@@ -1613,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "guru-master"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "amqprs",
  "auth",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "guru-worker"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "auth",
  "base",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "guru_topology"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "guru_worker_config",
  "serde",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "guru_worker_config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "compact_str",
  "serde",
