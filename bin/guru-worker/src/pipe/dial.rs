@@ -133,6 +133,7 @@ async fn connect_hop(hop: &Hop, connect_by: Instant) -> Result<(Connected, Socke
         HopTarget::Relay {
             protocol,
             destination,
+            alternates,
             ipv6_resolve,
             sni,
             relay_ca,
@@ -148,7 +149,7 @@ async fn connect_hop(hop: &Hop, connect_by: Instant) -> Result<(Connected, Socke
                 quic: *quic,
             };
             connect_within(connect_by, async {
-                let addrs = addresses(&hop.record, destination, &[], *ipv6_resolve).await?;
+                let addrs = addresses(&hop.record, destination, alternates, *ipv6_resolve).await?;
                 let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| {
                     let link = link.clone();
                     async move { relay::connect_link(link, addr).await.map(Connected::Relay) }

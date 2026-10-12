@@ -64,6 +64,8 @@ pub enum HopTarget {
     Relay {
         protocol: RelayProtocol,
         destination: Remote,
+        /// More addresses of the same listener, raced with `destination`'s.
+        alternates: Vec<Remote>,
         ipv6_resolve: Ipv6Resolve,
         sni: Option<String>,
         /// CA the relay peer is verified against; `None` means the system roots.
@@ -258,7 +260,7 @@ impl Compiler<'_> {
                 destination,
                 sni,
                 quic,
-            } => self.relay(*protocol, destination, sni.clone(), *quic, false),
+            } => self.relay(*protocol, destination, &[], sni.clone(), *quic, false),
             ForwardingTo::LoadBalance(group) => {
                 let members: Vec<Arc<Route>> = group
                     .members
@@ -299,6 +301,7 @@ impl Compiler<'_> {
                 TableTarget::Relay(relay) => self.relay(
                     relay.protocol,
                     &relay.destination,
+                    &relay.alternates,
                     relay.sni.clone(),
                     relay.quic,
                     relay.confirm,
@@ -351,6 +354,7 @@ impl Compiler<'_> {
         &self,
         protocol: RelayProtocol,
         destination: &Remote,
+        alternates: &[Remote],
         sni: Option<String>,
         own_quic: Option<QuicTuning>,
         confirm: bool,
@@ -363,6 +367,7 @@ impl Compiler<'_> {
             HopTarget::Relay {
                 protocol,
                 destination: destination.clone(),
+                alternates: alternates.to_vec(),
                 ipv6_resolve: self.ipv6_resolve,
                 sni,
                 relay_ca: self.relay_ca.map(Path::to_path_buf),

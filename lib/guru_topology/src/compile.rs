@@ -457,6 +457,7 @@ fn render_table(entry: &Entry<'_>) -> Result<Forwarding, ConfigError> {
                     sni: sni.clone(),
                     quic: *quic,
                     confirm: *confirm,
+                    alternates: Vec::new(),
                 }),
             },
         })

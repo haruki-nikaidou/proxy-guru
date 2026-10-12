@@ -27,8 +27,8 @@
 use crate::BoxError;
 use crate::liveness::{self, Availability, Claim};
 use crate::pipe::TargetStream;
-use crate::pipe::dial::{Bounds, dial_hop};
-use crate::prepared::{Balance, Hop, Pick, Route};
+use crate::pipe::dial::{ADDRESS_STAGGER, Bounds, dial_hop};
+use crate::prepared::{Balance, Hop, HopTarget, Pick, Route};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -146,6 +146,20 @@ pub fn hedge_delay(pace: Option<Duration>, sticky: bool) -> Duration {
     .clamp(HEDGE_DELAY, HEDGE_DELAY_MAX)
 }
 
+/// [`hedge_delay`] for `hop`, plus one [`ADDRESS_STAGGER`] while a hop with
+/// alternates has not shown which of its addresses answers: its own race
+/// between them comes first.
+fn hop_hedge_delay(hop: &Hop, sticky: bool) -> Duration {
+    let delay = hedge_delay(hop.record.pace(), sticky);
+    let unsettled = matches!(&hop.target, HopTarget::Relay { alternates, .. } if !alternates.is_empty())
+        && hop.record.preferred().is_none();
+    if unsettled {
+        delay.saturating_add(ADDRESS_STAGGER)
+    } else {
+        delay
+    }
+}
+
 /// Connects `client` along `route` by `deadline`, racing attempts as the
 /// module describes.
 pub(crate) async fn race<D: Dialer>(
@@ -194,7 +208,7 @@ pub(crate) async fn race<D: Dialer>(
                 }) => {
                     left = left.saturating_sub(1);
                     in_flight = in_flight.saturating_add(1);
-                    let delay = hedge_delay(hop.record.pace(), sticky);
+                    let delay = hop_hedge_delay(&hop, sticky);
                     if in_flight > 1 {
                         tracing::debug!(hop = %hop.label, "another next hop started beside a slow one");
                     }

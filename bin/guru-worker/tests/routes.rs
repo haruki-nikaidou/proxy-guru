@@ -141,6 +141,7 @@ fn relay(id: &str, addr: SocketAddr, confirm: bool) -> Upstream {
             sni: None,
             quic: None,
             confirm,
+            alternates: Vec::new(),
         }),
     }
 }
@@ -633,6 +634,74 @@ async fn a_failover_reaches_its_backup_while_every_balance_member_hangs() {
     sup.shutdown_all();
 }
 
+#[tokio::test]
+async fn a_relay_that_does_not_answer_over_ipv4_is_reached_over_its_ipv6_alternate() {
+    // The relay listens on IPv6 only; its IPv4 address takes no connection.
+    let Ok(probe) = std::net::TcpListener::bind("[::1]:0") else {
+        eprintln!("no IPv6 loopback here; skipping");
+        return;
+    };
+    let relay_v6 = probe.local_addr().unwrap();
+    drop(probe);
+    let far = backend("far").await;
+    let mut transit = Supervisor::new();
+    apply(
+        &mut transit,
+        vec![table(
+            "transit",
+            relay_v6,
+            ListenAs::Relay(RelayHost::Tcp),
+            "u:far",
+            vec![],
+            vec![exit("u:far", far)],
+        )],
+    )
+    .await;
+    let black = blackhole();
+    let listen = local(free_ports(1)[0]);
+    let mut dual = relay("u:relay", black, true);
+    if let Target::Relay(target) = &mut dual.target {
+        target.alternates = vec![Remote::Address(relay_v6)];
+    }
+    let mut entry = Supervisor::new();
+    apply(
+        &mut entry,
+        vec![table(
+            "entry",
+            listen,
+            ListenAs::Raw,
+            "u:relay",
+            vec![],
+            vec![dual],
+        )],
+    )
+    .await;
+
+    assert_eq!(
+        reaches_within(listen, Duration::from_millis(1500))
+            .await
+            .as_deref(),
+        Some("far"),
+        "the IPv6 alternate answers while IPv4 hangs"
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            reaches_within(listen, Duration::from_millis(300))
+                .await
+                .as_deref(),
+            Some("far"),
+            "the address that answered goes first"
+        );
+    }
+    assert!(
+        entry.liveness().dead().is_empty(),
+        "a relay that answers over one family is alive: {:?}",
+        entry.liveness().dead()
+    );
+    entry.shutdown_all();
+    transit.shutdown_all();
+}
+
 // --- relays over TLS and QUIC -------------------------------------------------
 
 const RELAY_SNI: &str = "pod1.relay.guru.internal";
@@ -726,6 +795,7 @@ async fn confirming_entry(
                     sni: Some(RELAY_SNI.to_string()),
                     quic: None,
                     confirm: true,
+                    alternates: Vec::new(),
                 }),
             },
             exit("u:fallback", fallback),
