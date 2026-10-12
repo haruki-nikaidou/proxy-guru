@@ -1,0 +1,19 @@
+ipv6_resolve = "tolerated"
+
+[log]
+level = "info"
+
+[[forwarding]]
+tag = "entryxxxxxxxxxxxxxxx"
+listen = "[::]:443"
+listen_as = "raw"
+to = "u:to0hopxxxxxxxxxxxxxx"
+
+[[forwarding.upstream]]
+id = "u:to0hopxxxxxxxxxxxxxx"
+
+[forwarding.upstream.relay]
+protocol = "tcp"
+destination = "198.51.100.10:9443"
+confirm = true
+alternates = ["[2001:db8::10]:9443"]

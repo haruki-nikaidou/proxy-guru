@@ -6,7 +6,10 @@ use guru_topology::{
     EdgeTarget, Exit, ExitId, Graph, Ingress, IpFamily, Pod, PodId, Problem, Route, Server,
     ServerId, ServerQuic, Sticky, Weighted, check, compile,
 };
-use guru_worker_config::{Config, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, TcpProxyProtocol};
+use guru_worker_config::table::Target;
+use guru_worker_config::{
+    Config, Ipv6Resolve, KeepAlive, LogConfig, QuicTuning, Remote, TcpProxyProtocol,
+};
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -89,6 +92,8 @@ fn random_graph(seed: u64, mode: Mode) -> (Graph, Certificates) {
             capabilities: Capabilities {
                 route_table: rng.chance(60),
                 relay_confirm: rng.chance(50),
+                // Drawn without the rng, so the seeds keep the graphs they had.
+                dual_stack_dial: i % 3 != 0,
             },
         });
     }
@@ -347,6 +352,32 @@ fn assert_properties(seed: u64, graph: &Graph, certificates: &Certificates) -> b
                     sockets.insert(forwarding.listen_key()),
                     "seed {seed}: two forwardings on one socket of {server}"
                 );
+                let dials_both = graph
+                    .servers
+                    .iter()
+                    .any(|s| s.id == *server && s.capabilities.dual_stack_dial);
+                for upstream in &forwarding.upstreams {
+                    let Target::Relay(relay) = &upstream.target else {
+                        continue;
+                    };
+                    assert!(
+                        relay.alternates.is_empty() || dials_both,
+                        "seed {seed}: alternates sent to {server}, whose worker does not dial them"
+                    );
+                    for alternate in &relay.alternates {
+                        let (Remote::Address(alternate), Remote::Address(destination)) =
+                            (alternate, &relay.destination)
+                        else {
+                            panic!("seed {seed}: an alternate beside a name: {relay:?}");
+                        };
+                        assert_ne!(
+                            alternate.is_ipv4(),
+                            destination.is_ipv4(),
+                            "seed {seed}: an alternate of the destination's own family"
+                        );
+                        assert_eq!(alternate.port(), destination.port(), "seed {seed}");
+                    }
+                }
             }
         } else {
             let config = Config {
@@ -440,6 +471,7 @@ fn deep_and_wide_graphs_stay_fast() {
         capabilities: Capabilities {
             route_table: true,
             relay_confirm: true,
+            dual_stack_dial: true,
         },
     });
     graph.exits.push(Exit {

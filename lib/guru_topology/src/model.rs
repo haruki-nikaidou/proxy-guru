@@ -161,6 +161,9 @@ pub struct Capabilities {
     pub route_table: bool,
     /// Confirms a relayed connection once its own next hop answered.
     pub relay_confirm: bool,
+    /// Dials a relay upstream's `alternates` beside its destination (see
+    /// [`Edge::alternate_host`]).
+    pub dual_stack_dial: bool,
 }
 
 /// One listener on one server, and where its traffic may go.
@@ -178,6 +181,20 @@ pub struct Pod {
     pub ingress: Ingress,
     /// A tree over exactly this pod's out-edges; `None` when it has none.
     pub route: Option<Route>,
+}
+
+impl Pod {
+    /// Whether the pod's listener takes connections over `family`. No bind, or
+    /// `::` (which workers bind dual-stack), takes both; an IPv4 bind, `0.0.0.0`
+    /// included, only IPv4; any other IPv6 bind only IPv6. A bind that is not an
+    /// address takes both here and is reported on its own.
+    pub fn listens_over(&self, family: IpFamily) -> bool {
+        match self.bind_ip.as_deref().map(str::parse::<IpAddr>) {
+            None | Some(Err(_)) => true,
+            Some(Ok(IpAddr::V6(address))) if address.is_unspecified() => true,
+            Some(Ok(address)) => family.admits(address),
+        }
+    }
 }
 
 /// How traffic arrives at a pod. A pod has one listener, so one of these.
@@ -257,6 +274,27 @@ pub struct Edge {
 }
 
 impl Edge {
+    /// The address of the other family an edge of [`IpFamily::Auto`] also dials
+    /// `target`, a pod on `far`, at from a pod on `near`: the far server's
+    /// address of the family its dial address is not. Only when the edge names
+    /// no address of its own, the pod advertises none, the far server has an
+    /// address of each family, the pod listens over both, and `near` has an
+    /// address of that family to dial from.
+    pub fn alternate_host(&self, target: &Pod, far: &Server, near: &Server) -> Option<IpAddr> {
+        if self.ip_family != IpFamily::Auto
+            || self.override_ip.is_some()
+            || target.advertise_ip.is_some()
+        {
+            return None;
+        }
+        let (other, family) = match far.dial_address? {
+            IpAddr::V4(_) => (IpAddr::V6(far.dial_v6?), IpFamily::V6),
+            IpAddr::V6(_) => (IpAddr::V4(far.dial_v4?), IpFamily::V4),
+        };
+        near.address_for(family)?;
+        (target.listens_over(IpFamily::V4) && target.listens_over(IpFamily::V6)).then_some(other)
+    }
+
     /// The host this edge dials `target`, a pod on `server`, at: its override
     /// address, else the address the pod advertises when that is of the edge's
     /// family, else the server's address of the edge's family. `None` when

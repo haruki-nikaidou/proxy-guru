@@ -201,9 +201,11 @@ export interface RegisterRequest {
    * What this worker understands beyond the config every worker reads:
    * `route_table` (a forwarding's `to` naming its own groups and upstreams),
    * `relay_confirm` (answering a dialer that asks, in its PROXY header, whether
-   * the relay's own next hop connected) and `remote_shell` (built with the
-   * feature *and* opted in on its host; it opens `ShellChannel`). Empty for
-   * workers built before any of them.
+   * the relay's own next hop connected), `dual_stack_dial` (dialing a relay
+   * upstream's `alternates`, its server's address of the other family, beside
+   * its destination) and `remote_shell` (built with the feature *and* opted in
+   * on its host; it opens `ShellChannel`). Empty for workers built before any of
+   * them.
    */
   capabilities: string[];
 }

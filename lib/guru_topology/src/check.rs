@@ -187,7 +187,7 @@ fn families(index: &Index<'_>, out: &mut Vec<Diagnostic>) {
                 .or_default()
                 .push(edge);
         }
-        if !listens_over(pod, edge.ip_family) {
+        if !pod.listens_over(edge.ip_family) {
             other_family
                 .entry((&pod.id, edge.ip_family))
                 .or_default()
@@ -224,18 +224,6 @@ fn families(index: &Index<'_>, out: &mut Vec<Diagnostic>) {
                 index.pod_name(pod)
             ),
         ));
-    }
-}
-
-/// Whether a pod's listener takes connections over `family`. No bind, or `::`
-/// (which workers bind dual-stack), takes both; an IPv4 bind, `0.0.0.0`
-/// included, only IPv4; any other IPv6 bind only IPv6. A bind that is not an
-/// address is reported on its own.
-fn listens_over(pod: &Pod, family: IpFamily) -> bool {
-    match pod.bind_ip.as_deref().map(str::parse::<IpAddr>) {
-        None | Some(Err(_)) => true,
-        Some(Ok(IpAddr::V6(address))) if address.is_unspecified() => true,
-        Some(Ok(address)) => family.admits(address),
     }
 }
 

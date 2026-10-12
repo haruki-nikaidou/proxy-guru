@@ -34,7 +34,8 @@ impl Fabric {
         }
     }
 
-    /// A server whose worker reads route tables and confirms relays.
+    /// A server whose worker reads route tables, confirms relays and dials a
+    /// relay's alternates.
     pub fn server(&mut self, id: &str, address: &str) -> &mut Self {
         self.server_with(
             id,
@@ -42,6 +43,7 @@ impl Fabric {
             Capabilities {
                 route_table: true,
                 relay_confirm: true,
+                dual_stack_dial: true,
             },
         )
     }
