@@ -7,8 +7,8 @@ use guru_worker_config::{
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Weak};
 
 /// Compiled ingest strategy for a listener (certs parsed once at apply time).
 #[derive(Clone)]
@@ -39,6 +39,19 @@ pub struct Hop {
     pub record: Arc<liveness::Hop>,
     /// What is dialed, for logs.
     pub label: String,
+}
+
+impl liveness::Probe for Hop {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn probe(self: Arc<Self>) -> liveness::ProbeFuture {
+        Box::pin(async move {
+            let bounds = crate::pipe::route::probe_bounds(tokio::time::Instant::now());
+            crate::pipe::dial::probe_hop(&self, bounds).await
+        })
+    }
 }
 
 pub enum HopTarget {
@@ -322,16 +335,16 @@ impl Compiler<'_> {
 
     fn exit(&self, destination: &Remote, send_pp: Option<TcpProxyProtocol>) -> Arc<Route> {
         let dialed = remote_text(destination);
-        Arc::new(Route::Hop(Arc::new(Hop {
-            record: self.liveness.hop(format!("exit|{dialed}")),
-            label: format!("exit {dialed}"),
-            target: HopTarget::Exit {
+        self.hop(
+            format!("exit|{dialed}"),
+            format!("exit {dialed}"),
+            HopTarget::Exit {
                 destination: destination.clone(),
                 ipv6_resolve: self.ipv6_resolve,
                 send_pp,
                 keepalive: self.keepalive,
             },
-        })))
+        )
     }
 
     fn relay(
@@ -344,12 +357,10 @@ impl Compiler<'_> {
     ) -> Arc<Route> {
         let dialed = remote_text(destination);
         let name = sni.as_deref().unwrap_or("");
-        Arc::new(Route::Hop(Arc::new(Hop {
-            record: self
-                .liveness
-                .hop(format!("relay|{protocol:?}|{dialed}|{name}")),
-            label: format!("relay {protocol:?} {dialed}"),
-            target: HopTarget::Relay {
+        self.hop(
+            format!("relay|{protocol:?}|{dialed}|{name}"),
+            format!("relay {protocol:?} {dialed}"),
+            HopTarget::Relay {
                 protocol,
                 destination: destination.clone(),
                 ipv6_resolve: self.ipv6_resolve,
@@ -359,7 +370,20 @@ impl Compiler<'_> {
                 quic: own_quic.unwrap_or(self.quic),
                 confirm,
             },
-        })))
+        )
+    }
+
+    /// A hop on the record `key` names, which learns how to probe it.
+    fn hop(&self, key: String, label: String, target: HopTarget) -> Arc<Route> {
+        let hop = Arc::new(Hop {
+            record: self.liveness.hop(key),
+            label,
+            target,
+        });
+        let weak: Weak<Hop> = Arc::downgrade(&hop);
+        let probe: Weak<dyn liveness::Probe> = weak;
+        hop.record.attach(probe);
+        Arc::new(Route::Hop(hop))
     }
 
     fn balance(&self, members: Vec<(Arc<Route>, u32)>, pick: Pick, group: &str) -> Arc<Route> {

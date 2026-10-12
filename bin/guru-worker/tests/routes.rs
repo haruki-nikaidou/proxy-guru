@@ -440,6 +440,48 @@ async fn a_dead_hop_is_tried_again_once_everything_else_fails() {
     sup.shutdown_all();
 }
 
+#[tokio::test]
+async fn a_dead_hop_comes_back_without_a_client_trying_it() {
+    let live = backend("live").await;
+    let first = local(free_ports(1)[0]);
+    let listen = local(free_ports(1)[0]);
+    let mut sup = Supervisor::new();
+    apply(
+        &mut sup,
+        vec![table(
+            "p",
+            listen,
+            ListenAs::Raw,
+            "g",
+            vec![failover("g", &["u:first", "u:live"])],
+            vec![exit("u:first", first), exit("u:live", live)],
+        )],
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(reaches(listen).await.as_deref(), Some("live"));
+    }
+    assert_eq!(sup.liveness().dead(), vec![format!("exit|{first}")]);
+
+    // `first` comes up; no client connects until the prober found it.
+    let listener = tokio::net::TcpListener::bind(first).await.unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let _ = stream.write_all(b"first\n").await;
+        }
+    });
+    let give_up = tokio::time::Instant::now() + guru_worker::liveness::RETRY_AFTER * 2;
+    while !sup.liveness().dead().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < give_up,
+            "the prober never retried the dead hop"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(reaches(listen).await.as_deref(), Some("first"));
+    sup.shutdown_all();
+}
+
 // --- relays over TLS and QUIC -------------------------------------------------
 
 const RELAY_SNI: &str = "pod1.relay.guru.internal";

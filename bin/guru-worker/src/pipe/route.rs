@@ -36,6 +36,19 @@ pub const CONNECT_BUDGET: Duration = Duration::from_secs(15);
 /// How many hops one client connection may try.
 pub const MAX_ATTEMPTS: u32 = 4;
 
+/// The time limits of a background probe of a dead hop (see [`crate::prober`]):
+/// one attempt's worth to connect, and as much again for a relay to confirm.
+pub fn probe_bounds(now: Instant) -> Bounds {
+    let connect_by = now.checked_add(ATTEMPT_TIMEOUT).unwrap_or(now);
+    Bounds {
+        connect_by,
+        confirm_wait: ATTEMPT_TIMEOUT,
+        deadline: connect_by
+            .checked_add(ATTEMPT_TIMEOUT)
+            .unwrap_or(connect_by),
+    }
+}
+
 /// One connection's progress through its route.
 pub struct Dial {
     client: SocketAddr,
@@ -92,10 +105,11 @@ pub async fn connect_until(
     }
 }
 
-/// Whether anything under `route` may be tried without forcing.
+/// Whether anything under `route` is alive: what is dead, due for a retry or
+/// not, is left to the prober and to a connection with nothing else left.
 pub fn available(route: &Route, now: Instant) -> bool {
     match route {
-        Route::Hop(hop) => hop.record.availability(now) != Availability::Dead,
+        Route::Hop(hop) => hop.record.availability(now) == Availability::Alive,
         Route::Balance(balance) => balance
             .members
             .iter()

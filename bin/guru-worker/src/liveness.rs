@@ -7,11 +7,16 @@
 //!
 //! A hop is alive until [`FAIL_AFTER`] connection attempts in a row have failed.
 //! A dead hop is passed over while anything else can be tried. Once
-//! [`RETRY_AFTER`] has passed since it last failed, one connection at a time is
-//! let through to try it, and the first success makes it alive again.
+//! [`RETRY_AFTER`] has passed since it last failed, the worker's prober (see
+//! [`crate::prober`]) tries it, one probe at a time, and the first success makes
+//! it alive again; no client connection waits on a hop that may well still be
+//! dead. Only a connection with nothing else left tries a dead hop itself.
 
+use crate::BoxError;
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -19,7 +24,7 @@ use tokio::time::Instant;
 /// Consecutive failed attempts after which a hop counts as dead.
 pub const FAIL_AFTER: u32 = 3;
 
-/// How long a dead hop is passed over before a connection may try it again.
+/// How long a dead hop is passed over before the prober tries it again.
 pub const RETRY_AFTER: Duration = Duration::from_secs(10);
 
 /// Every hop the worker's forwardings dial. A record lives for as long as some
@@ -42,6 +47,25 @@ impl Liveness {
         hop
     }
 
+    /// Claims the due retry of every dead hop that something can probe, for the
+    /// prober to make. A hop being probed is not due again until that probe is
+    /// settled.
+    pub fn due(&self, now: Instant) -> Vec<(Attempt, Arc<dyn Probe>)> {
+        let hops: Vec<Arc<Hop>> = self
+            .hops
+            .lock()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        hops.into_iter()
+            .filter_map(|hop| {
+                let probe = hop.probe()?;
+                let attempt = hop.begin(now, Claim::Probe)?;
+                Some((attempt, probe))
+            })
+            .collect()
+    }
+
     /// The hops currently dead, by key, for logs and reports.
     pub fn dead(&self) -> Vec<String> {
         let mut dead: Vec<String> = self
@@ -56,10 +80,25 @@ impl Liveness {
     }
 }
 
+/// What a background retry of a dead hop runs: a dial of the hop that is closed
+/// again at once. A record holds the probes of everything compiled that dials it.
+pub trait Probe: Send + Sync {
+    /// What is dialed, for logs.
+    fn label(&self) -> &str;
+    /// Dials the hop and lets go of it, `Ok` when it answered.
+    fn probe(self: Arc<Self>) -> ProbeFuture;
+}
+
+/// What [`Probe::probe`] returns.
+pub type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send>>;
+
 /// One hop's record.
 #[derive(Default)]
 pub struct Hop {
     state: parking_lot::Mutex<State>,
+    /// How to reach the hop without a client: one per compiled hop that dials
+    /// it, held weakly so a record does not keep a superseded route alive.
+    probes: parking_lot::Mutex<Vec<Weak<dyn Probe>>>,
 }
 
 #[derive(Default)]
@@ -82,6 +121,9 @@ pub enum Claim {
     Normal,
     /// A connection with nothing else left: any hop, dead or not.
     Forced,
+    /// The prober: only a dead hop whose retry is due and that nobody is
+    /// probing yet.
+    Probe,
 }
 
 /// Whether a connection should try a hop.
@@ -120,20 +162,36 @@ impl Hop {
         self.state.lock().preferred = Some(addr);
     }
 
-    /// Claims an attempt on the hop. An alive hop may be tried by anyone; a
-    /// dead one only by the one connection that claims its due try, or by a
-    /// [`Claim::Forced`] attempt made because nothing else is left. `None`
-    /// means the attempt should not be made.
+    /// Makes `probe` one of the ways to reach the hop without a client.
+    pub fn attach(&self, probe: Weak<dyn Probe>) {
+        let mut probes = self.probes.lock();
+        probes.retain(|held| held.strong_count() > 0);
+        if !probes.iter().any(|held| held.ptr_eq(&probe)) {
+            probes.push(probe);
+        }
+    }
+
+    fn probe(&self) -> Option<Arc<dyn Probe>> {
+        self.probes.lock().iter().find_map(Weak::upgrade)
+    }
+
+    /// Claims an attempt on the hop. An alive hop may be tried by any
+    /// connection; a dead one only by a [`Claim::Forced`] attempt made because
+    /// nothing else is left, or by the one [`Claim::Probe`] that takes its due
+    /// retry. `None` means the attempt should not be made.
     pub fn begin(self: &Arc<Self>, now: Instant, claim: Claim) -> Option<Attempt> {
         let mut state = self.state.lock();
-        let trial = match state.dead_since {
-            None => false,
-            Some(since) if !state.trying && now.saturating_duration_since(since) >= RETRY_AFTER => {
+        let trial = match (state.dead_since, claim) {
+            (None, Claim::Probe) => return None,
+            (None, Claim::Normal | Claim::Forced) => false,
+            (Some(since), Claim::Probe)
+                if !state.trying && now.saturating_duration_since(since) >= RETRY_AFTER =>
+            {
                 state.trying = true;
                 true
             }
-            Some(_) if claim == Claim::Forced => false,
-            Some(_) => return None,
+            (Some(_), Claim::Forced) => false,
+            (Some(_), Claim::Normal | Claim::Probe) => return None,
         };
         Some(Attempt {
             hop: self.clone(),
@@ -144,8 +202,8 @@ impl Hop {
 }
 
 /// An attempt in progress. Settle it with [`Attempt::succeeded`] or
-/// [`Attempt::failed`]; dropping it unsettled (the client went away mid-dial)
-/// only gives back a claimed try, and records nothing.
+/// [`Attempt::failed`]; dropping it unsettled (the client went away mid-dial,
+/// the prober was stopped) only gives back a claimed retry, and records nothing.
 pub struct Attempt {
     hop: Arc<Hop>,
     trial: bool,
@@ -221,13 +279,21 @@ mod tests {
         }
         let later = start + RETRY_AFTER;
         assert_eq!(hop.availability(later), Availability::Due);
-        let trial = hop.begin(later, Claim::Normal).unwrap();
+        assert!(
+            hop.begin(later, Claim::Normal).is_none(),
+            "a connection leaves a due retry to the prober"
+        );
+        let trial = hop.begin(later, Claim::Probe).unwrap();
         assert_eq!(
             hop.availability(later),
             Availability::Dead,
             "one try at a time"
         );
-        assert!(hop.begin(later, Claim::Normal).is_none());
+        assert!(hop.begin(later, Claim::Probe).is_none());
+        assert!(
+            hop.begin(later, Claim::Forced).is_some(),
+            "a connection with nothing else left still may"
+        );
 
         trial.failed(later);
         assert_eq!(
@@ -235,7 +301,7 @@ mod tests {
             Availability::Dead,
             "a failed try restarts the wait"
         );
-        let trial = hop.begin(later + RETRY_AFTER, Claim::Normal).unwrap();
+        let trial = hop.begin(later + RETRY_AFTER, Claim::Probe).unwrap();
         trial.succeeded();
         assert_eq!(hop.availability(later + RETRY_AFTER), Availability::Alive);
     }
@@ -248,8 +314,58 @@ mod tests {
             hop.begin(start, Claim::Normal).unwrap().failed(start);
         }
         let later = start + RETRY_AFTER;
-        drop(hop.begin(later, Claim::Normal).unwrap());
+        drop(hop.begin(later, Claim::Probe).unwrap());
         assert_eq!(hop.availability(later), Availability::Due);
+    }
+
+    struct Answers;
+
+    impl Probe for Answers {
+        fn label(&self) -> &str {
+            "answers"
+        }
+
+        fn probe(self: Arc<Self>) -> ProbeFuture {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn only_dead_hops_something_can_probe_are_due_one_probe_at_a_time() {
+        let liveness = Liveness::default();
+        let hop = liveness.hop("exit|10.0.0.1:80".to_string());
+        let start = Instant::now();
+        let later = start + RETRY_AFTER;
+        let probe: Arc<dyn Probe> = Arc::new(Answers);
+        hop.attach(Arc::downgrade(&probe));
+        hop.attach(Arc::downgrade(&probe));
+        assert!(liveness.due(later).is_empty(), "an alive hop is not probed");
+
+        for _ in 0..FAIL_AFTER {
+            hop.begin(start, Claim::Normal).unwrap().failed(start);
+        }
+        assert!(liveness.due(start).is_empty(), "not due before RETRY_AFTER");
+        let mut due = liveness.due(later);
+        assert_eq!(due.len(), 1, "a probe attached twice is one probe");
+        assert!(liveness.due(later).is_empty(), "one probe at a time");
+        let (attempt, _) = due.pop().unwrap();
+        attempt.failed(later);
+        assert!(
+            liveness.due(later).is_empty(),
+            "a failed probe restarts the wait"
+        );
+        let (attempt, _) = liveness.due(later + RETRY_AFTER).pop().unwrap();
+        attempt.succeeded();
+        assert!(!hop.is_dead());
+
+        for _ in 0..FAIL_AFTER {
+            hop.begin(start, Claim::Normal).unwrap().failed(start);
+        }
+        drop(probe);
+        assert!(
+            liveness.due(later).is_empty(),
+            "a hop whose routes are gone has nothing to probe it with"
+        );
     }
 
     #[test]

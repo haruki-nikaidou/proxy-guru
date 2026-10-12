@@ -137,6 +137,10 @@ pub struct Supervisor {
     stats: Arc<Stats>,
     /// What is known about every next hop, kept across applies.
     liveness: Arc<Liveness>,
+    /// Stops the background retries of dead hops ([`crate::prober`]), started
+    /// with the first apply.
+    prober: CancellationToken,
+    prober_started: bool,
 }
 
 impl Default for Supervisor {
@@ -155,6 +159,8 @@ impl Supervisor {
             log: LogConfig::default(),
             stats: Arc::new(Stats::default()),
             liveness: Arc::new(Liveness::default()),
+            prober: CancellationToken::new(),
+            prober_started: false,
         }
     }
 
@@ -190,6 +196,13 @@ impl Supervisor {
     /// becomes the process log filter before anything else ([`crate::apply_log_level`]).
     pub async fn apply(&mut self, cfg: &Config) -> ApplyOutcome {
         crate::apply_log_level(&cfg.log.level);
+        if !self.prober_started {
+            self.prober_started = true;
+            tokio::spawn(crate::prober::run(
+                self.liveness.clone(),
+                self.prober.clone(),
+            ));
+        }
         self.log = cfg.log.clone();
         let settings = Settings::of(cfg);
         self.settings = settings.clone();
@@ -518,5 +531,12 @@ impl Supervisor {
         for h in self.listeners.values() {
             h.token.cancel();
         }
+        self.prober.cancel();
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.prober.cancel();
     }
 }

@@ -17,6 +17,7 @@ pub mod listener;
 pub mod liveness;
 pub mod pipe;
 pub mod prepared;
+pub mod prober;
 pub mod quic;
 pub mod resolver;
 #[cfg(feature = "remote-shell")]

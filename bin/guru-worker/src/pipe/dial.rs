@@ -38,30 +38,23 @@ pub struct Bounds {
     pub deadline: Instant,
 }
 
+/// Where a background probe of a hop says the connection comes from.
+pub const PROBE_CLIENT: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+
 /// Dials `hop` for `client` within `bounds`.
 pub async fn dial_hop(
     hop: &Hop,
     client: SocketAddr,
     bounds: Bounds,
 ) -> Result<TargetStream, BoxError> {
-    match &hop.target {
-        HopTarget::Exit {
-            destination,
-            ipv6_resolve,
-            send_pp,
-            keepalive,
-        } => {
-            let keepalive = *keepalive;
-            let (mut stream, addr) = connect_within(bounds.connect_by, async {
-                let addrs = addresses(&hop.record, destination, &[], *ipv6_resolve).await?;
-                let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| {
-                    exit::connect_exit(addr, keepalive)
-                })
-                .await;
-                settle(&hop.record, destination, *ipv6_resolve, &addrs, raced).await
-            })
-            .await?;
-            if let Some(version) = send_pp {
+    match connect_hop(hop, bounds.connect_by).await? {
+        (Connected::Exit(mut stream), addr) => {
+            if let HopTarget::Exit {
+                send_pp: Some(version),
+                ..
+            } = &hop.target
+            {
                 let header = write_proxy_header(&mut stream, *version, client, addr);
                 match tokio::time::timeout_at(bounds.connect_by, header).await {
                     Ok(written) => written?,
@@ -69,6 +62,73 @@ pub async fn dial_hop(
                 }
             }
             Ok(TargetStream::Exit(stream))
+        }
+        (Connected::Relay(mut out), addr) => {
+            let confirm_by = confirms(hop).then(|| confirm_by(bounds));
+            relay::introduce(&mut out, client, addr, bounds.connect_by, confirm_by).await?;
+            Ok(TargetStream::Relay(out))
+        }
+    }
+}
+
+/// Dials `hop` without a client, to learn whether it answers, and lets go of it:
+/// an exit or a relay that does not confirm once its transport is up (nothing is
+/// sent, so the relay dials nothing on), a confirming relay once it confirmed.
+pub async fn probe_hop(hop: &Hop, bounds: Bounds) -> Result<(), BoxError> {
+    match connect_hop(hop, bounds.connect_by).await? {
+        (Connected::Exit(_), _) => Ok(()),
+        (Connected::Relay(mut out), addr) if confirms(hop) => {
+            relay::introduce(
+                &mut out,
+                PROBE_CLIENT,
+                addr,
+                bounds.connect_by,
+                Some(confirm_by(bounds)),
+            )
+            .await
+        }
+        (Connected::Relay(_), _) => Ok(()),
+    }
+}
+
+fn confirms(hop: &Hop) -> bool {
+    matches!(hop.target, HopTarget::Relay { confirm: true, .. })
+}
+
+/// When a relay connected now must have confirmed.
+fn confirm_by(bounds: Bounds) -> Instant {
+    Instant::now()
+        .checked_add(bounds.confirm_wait)
+        .map_or(bounds.deadline, |by| by.min(bounds.deadline))
+}
+
+/// A hop's transport, up and nothing written yet.
+enum Connected {
+    Exit(tokio::net::TcpStream),
+    Relay(relay::RelayStream),
+}
+
+/// Connects `hop` on the first of its addresses to answer, by `connect_by`.
+async fn connect_hop(hop: &Hop, connect_by: Instant) -> Result<(Connected, SocketAddr), BoxError> {
+    match &hop.target {
+        HopTarget::Exit {
+            destination,
+            ipv6_resolve,
+            keepalive,
+            ..
+        } => {
+            let keepalive = *keepalive;
+            connect_within(connect_by, async {
+                let addrs = addresses(&hop.record, destination, &[], *ipv6_resolve).await?;
+                let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| async move {
+                    exit::connect_exit(addr, keepalive)
+                        .await
+                        .map(Connected::Exit)
+                })
+                .await;
+                settle(&hop.record, destination, *ipv6_resolve, &addrs, raced).await
+            })
+            .await
         }
         HopTarget::Relay {
             protocol,
@@ -78,7 +138,7 @@ pub async fn dial_hop(
             relay_ca,
             keepalive,
             quic,
-            confirm,
+            ..
         } => {
             let link = relay::Link {
                 protocol: *protocol,
@@ -87,22 +147,16 @@ pub async fn dial_hop(
                 keepalive: *keepalive,
                 quic: *quic,
             };
-            let (mut out, addr) = connect_within(bounds.connect_by, async {
+            connect_within(connect_by, async {
                 let addrs = addresses(&hop.record, destination, &[], *ipv6_resolve).await?;
                 let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| {
-                    relay::connect_link(link.clone(), addr)
+                    let link = link.clone();
+                    async move { relay::connect_link(link, addr).await.map(Connected::Relay) }
                 })
                 .await;
                 settle(&hop.record, destination, *ipv6_resolve, &addrs, raced).await
             })
-            .await?;
-            let confirm_by = confirm.then(|| {
-                Instant::now()
-                    .checked_add(bounds.confirm_wait)
-                    .map_or(bounds.deadline, |by| by.min(bounds.deadline))
-            });
-            relay::introduce(&mut out, client, addr, bounds.connect_by, confirm_by).await?;
-            Ok(TargetStream::Relay(out))
+            .await
         }
     }
 }
