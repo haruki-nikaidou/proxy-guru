@@ -23,8 +23,9 @@ pub enum Ingest {
 /// Where a connection may go, compiled once per apply from either form of a
 /// forwarding's `to`.
 pub enum Route {
-    /// One next hop.
-    Hop(Hop),
+    /// One next hop, shared so a connection's attempt on it can outlive the
+    /// connection's own choice of it.
+    Hop(Arc<Hop>),
     /// Spread connections over the members that are alive, by weight.
     Balance(Balance),
     /// The first member that is alive, in order.
@@ -321,7 +322,7 @@ impl Compiler<'_> {
 
     fn exit(&self, destination: &Remote, send_pp: Option<TcpProxyProtocol>) -> Arc<Route> {
         let dialed = remote_text(destination);
-        Arc::new(Route::Hop(Hop {
+        Arc::new(Route::Hop(Arc::new(Hop {
             record: self.liveness.hop(format!("exit|{dialed}")),
             label: format!("exit {dialed}"),
             target: HopTarget::Exit {
@@ -330,7 +331,7 @@ impl Compiler<'_> {
                 send_pp,
                 keepalive: self.keepalive,
             },
-        }))
+        })))
     }
 
     fn relay(
@@ -343,7 +344,7 @@ impl Compiler<'_> {
     ) -> Arc<Route> {
         let dialed = remote_text(destination);
         let name = sni.as_deref().unwrap_or("");
-        Arc::new(Route::Hop(Hop {
+        Arc::new(Route::Hop(Arc::new(Hop {
             record: self
                 .liveness
                 .hop(format!("relay|{protocol:?}|{dialed}|{name}")),
@@ -358,7 +359,7 @@ impl Compiler<'_> {
                 quic: own_quic.unwrap_or(self.quic),
                 confirm,
             },
-        }))
+        })))
     }
 
     fn balance(&self, members: Vec<(Arc<Route>, u32)>, pick: Pick, group: &str) -> Arc<Route> {

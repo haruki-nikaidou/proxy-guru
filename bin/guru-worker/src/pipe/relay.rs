@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
+use tokio::time::Instant;
 
 pub enum RelayStream {
     Tcp(tokio::net::TcpStream),
@@ -91,13 +91,13 @@ pub async fn dial_relay(
     connect_by: Instant,
     confirm_by: Option<Instant>,
 ) -> Result<RelayStream, BoxError> {
-    let (mut out, addr) = match tokio::time::timeout_at(connect_by.into(), connect(dialing)).await {
+    let (mut out, addr) = match tokio::time::timeout_at(connect_by, connect(dialing)).await {
         Ok(connected) => connected?,
         Err(_) => return Err("timed out connecting".into()),
     };
     let Some(confirm_by) = confirm_by else {
         let header = write_proxy_header(&mut out, TcpProxyProtocol::V2, dialing.client_addr, addr);
-        match tokio::time::timeout_at(connect_by.into(), header).await {
+        match tokio::time::timeout_at(connect_by, header).await {
             Ok(written) => written?,
             Err(_) => return Err("timed out writing the PROXY header".into()),
         }
@@ -117,7 +117,7 @@ pub async fn dial_relay(
             [other] => Err(format!("relay answered {other:#04x} instead of a confirmation").into()),
         }
     };
-    match tokio::time::timeout_at(confirm_by.into(), confirmed).await {
+    match tokio::time::timeout_at(confirm_by, confirmed).await {
         Ok(result) => result?,
         Err(_) => return Err("relay did not confirm in time".into()),
     }

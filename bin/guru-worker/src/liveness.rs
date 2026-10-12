@@ -12,7 +12,8 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Consecutive failed attempts after which a hop counts as dead.
 pub const FAIL_AFTER: u32 = 3;
@@ -69,6 +70,16 @@ struct State {
     trying: bool,
 }
 
+/// Who is asking to try a hop, which decides whether a dead one may be tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// A connection choosing among what it can try: a dead hop only when its
+    /// retry is due and nobody is making it yet.
+    Normal,
+    /// A connection with nothing else left: any hop, dead or not.
+    Forced,
+}
+
 /// Whether a connection should try a hop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Availability {
@@ -96,9 +107,9 @@ impl Hop {
 
     /// Claims an attempt on the hop. An alive hop may be tried by anyone; a
     /// dead one only by the one connection that claims its due try, or by a
-    /// `forced` attempt made because nothing else is left. `None` means the
-    /// attempt should not be made.
-    pub fn begin(self: &Arc<Self>, now: Instant, forced: bool) -> Option<Attempt> {
+    /// [`Claim::Forced`] attempt made because nothing else is left. `None`
+    /// means the attempt should not be made.
+    pub fn begin(self: &Arc<Self>, now: Instant, claim: Claim) -> Option<Attempt> {
         let mut state = self.state.lock();
         let trial = match state.dead_since {
             None => false,
@@ -106,7 +117,7 @@ impl Hop {
                 state.trying = true;
                 true
             }
-            Some(_) if forced => false,
+            Some(_) if claim == Claim::Forced => false,
             Some(_) => return None,
         };
         Some(Attempt {
@@ -166,22 +177,22 @@ mod tests {
         let hop = Arc::new(Hop::default());
         let now = Instant::now();
         for _ in 0..FAIL_AFTER - 1 {
-            hop.begin(now, false).unwrap().failed(now);
+            hop.begin(now, Claim::Normal).unwrap().failed(now);
         }
-        hop.begin(now, false).unwrap().succeeded();
+        hop.begin(now, Claim::Normal).unwrap().succeeded();
         for _ in 0..FAIL_AFTER - 1 {
-            hop.begin(now, false).unwrap().failed(now);
+            hop.begin(now, Claim::Normal).unwrap().failed(now);
         }
         assert_eq!(
             hop.availability(now),
             Availability::Alive,
             "a success resets the count"
         );
-        hop.begin(now, false).unwrap().failed(now);
+        hop.begin(now, Claim::Normal).unwrap().failed(now);
         assert_eq!(hop.availability(now), Availability::Dead);
-        assert!(hop.begin(now, false).is_none());
+        assert!(hop.begin(now, Claim::Normal).is_none());
         assert!(
-            hop.begin(now, true).is_some(),
+            hop.begin(now, Claim::Forced).is_some(),
             "a forced attempt is always allowed"
         );
     }
@@ -191,17 +202,17 @@ mod tests {
         let hop = Arc::new(Hop::default());
         let start = Instant::now();
         for _ in 0..FAIL_AFTER {
-            hop.begin(start, false).unwrap().failed(start);
+            hop.begin(start, Claim::Normal).unwrap().failed(start);
         }
         let later = start + RETRY_AFTER;
         assert_eq!(hop.availability(later), Availability::Due);
-        let trial = hop.begin(later, false).unwrap();
+        let trial = hop.begin(later, Claim::Normal).unwrap();
         assert_eq!(
             hop.availability(later),
             Availability::Dead,
             "one try at a time"
         );
-        assert!(hop.begin(later, false).is_none());
+        assert!(hop.begin(later, Claim::Normal).is_none());
 
         trial.failed(later);
         assert_eq!(
@@ -209,7 +220,7 @@ mod tests {
             Availability::Dead,
             "a failed try restarts the wait"
         );
-        let trial = hop.begin(later + RETRY_AFTER, false).unwrap();
+        let trial = hop.begin(later + RETRY_AFTER, Claim::Normal).unwrap();
         trial.succeeded();
         assert_eq!(hop.availability(later + RETRY_AFTER), Availability::Alive);
     }
@@ -219,10 +230,10 @@ mod tests {
         let hop = Arc::new(Hop::default());
         let start = Instant::now();
         for _ in 0..FAIL_AFTER {
-            hop.begin(start, false).unwrap().failed(start);
+            hop.begin(start, Claim::Normal).unwrap().failed(start);
         }
         let later = start + RETRY_AFTER;
-        drop(hop.begin(later, false).unwrap());
+        drop(hop.begin(later, Claim::Normal).unwrap());
         assert_eq!(hop.availability(later), Availability::Due);
     }
 
@@ -234,7 +245,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
         let now = Instant::now();
         for _ in 0..FAIL_AFTER {
-            a.begin(now, false).unwrap().failed(now);
+            a.begin(now, Claim::Normal).unwrap().failed(now);
         }
         assert_eq!(liveness.dead(), vec!["exit|10.0.0.1:80".to_string()]);
         drop((a, b));

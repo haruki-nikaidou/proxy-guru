@@ -12,9 +12,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 
 /// Any owned, boxable bidirectional stream (TCP, TLS-over-TCP, or a joined QUIC bi-stream).
 pub trait AsyncRw: AsyncRead + AsyncWrite + Unpin + Send {}

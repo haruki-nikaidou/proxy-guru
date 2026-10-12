@@ -15,12 +15,13 @@
 //! relay here, and the choice moves on.
 
 use crate::BoxError;
-use crate::liveness::Availability;
+use crate::liveness::{Availability, Claim};
 use crate::pipe::{TargetStream, exit, relay};
 use crate::prepared::{Balance, Hop, HopTarget, Pick, Route};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// How long one attempt may take to connect: DNS, TCP, and a TLS or QUIC
 /// handshake. A relay's confirmation is bounded by the connection's deadline
@@ -185,7 +186,9 @@ async fn attempt(hop: &Hop, dial: &mut Dial, forced: bool) -> Option<TargetStrea
         return None;
     }
     // Another connection holds this dead hop's one try; it counts as tried.
-    let claim = hop.record.begin(now, forced)?;
+    let claim = hop
+        .record
+        .begin(now, if forced { Claim::Forced } else { Claim::Normal })?;
     dial.attempts_left = dial.attempts_left.saturating_sub(1);
     let connect_by = dial
         .deadline
@@ -197,7 +200,7 @@ async fn attempt(hop: &Hop, dial: &mut Dial, forced: bool) -> Option<TargetStrea
             send_pp,
             keepalive,
         } => match tokio::time::timeout_at(
-            connect_by.into(),
+            connect_by,
             exit::connect_exit(destination, *ipv6_resolve, *send_pp, keepalive, dial.client),
         )
         .await
