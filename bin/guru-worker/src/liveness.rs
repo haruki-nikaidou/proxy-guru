@@ -111,6 +111,8 @@ struct State {
     /// The address the hop last answered on, tried first next time when the
     /// hop has several.
     preferred: Option<SocketAddr>,
+    /// How long the hop usually takes to answer (see [`Hop::pace`]).
+    pace: Option<Duration>,
 }
 
 /// Who is asking to try a hop, which decides whether a dead one may be tried.
@@ -162,6 +164,14 @@ impl Hop {
         self.state.lock().preferred = Some(addr);
     }
 
+    /// How long the hop usually takes to answer a connection: a minimum of the
+    /// successful attempts that only creeps up, a sixteenth of the way to each
+    /// slower one, so the odd slow answer of a lossy path barely moves it while a
+    /// hop that became slower for good is followed. `None` before any success.
+    pub fn pace(&self) -> Option<Duration> {
+        self.state.lock().pace
+    }
+
     /// Makes `probe` one of the ways to reach the hop without a client.
     pub fn attach(&self, probe: Weak<dyn Probe>) {
         let mut probes = self.probes.lock();
@@ -211,6 +221,23 @@ pub struct Attempt {
 }
 
 impl Attempt {
+    /// [`Attempt::succeeded`] for an attempt that took `took`, which the hop's
+    /// [`Hop::pace`] learns from.
+    pub fn succeeded_in(self, took: Duration) {
+        {
+            let mut state = self.hop.state.lock();
+            state.pace = Some(match state.pace {
+                Some(pace) if took > pace => pace.saturating_add(
+                    took.saturating_sub(pace)
+                        .checked_div(16)
+                        .unwrap_or_default(),
+                ),
+                _ => took,
+            });
+        }
+        self.succeeded();
+    }
+
     pub fn succeeded(mut self) {
         let mut state = self.hop.state.lock();
         state.failures = 0;
@@ -366,6 +393,28 @@ mod tests {
             liveness.due(later).is_empty(),
             "a hop whose routes are gone has nothing to probe it with"
         );
+    }
+
+    #[test]
+    fn pace_follows_the_fast_answers_and_creeps_up_to_slow_ones() {
+        let hop = Arc::new(Hop::default());
+        let now = Instant::now();
+        assert_eq!(hop.pace(), None);
+        let ms = Duration::from_millis;
+        hop.begin(now, Claim::Normal).unwrap().succeeded_in(ms(100));
+        assert_eq!(hop.pace(), Some(ms(100)));
+        hop.begin(now, Claim::Normal).unwrap().succeeded_in(ms(80));
+        assert_eq!(hop.pace(), Some(ms(80)));
+        hop.begin(now, Claim::Normal)
+            .unwrap()
+            .succeeded_in(ms(1680));
+        assert_eq!(
+            hop.pace(),
+            Some(ms(180)),
+            "a slow answer moves it a sixteenth"
+        );
+        hop.begin(now, Claim::Normal).unwrap().succeeded();
+        assert_eq!(hop.pace(), Some(ms(180)), "an untimed success leaves it");
     }
 
     #[test]

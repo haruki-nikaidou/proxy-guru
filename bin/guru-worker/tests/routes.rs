@@ -63,6 +63,52 @@ fn refused() -> SocketAddr {
     addr
 }
 
+/// An address that never answers: a listener whose one-place accept queue is
+/// already full with a connection nobody accepts, so the kernel drops every SYN
+/// after it and a connect hangs until it gives up. The sockets live as long as
+/// the test process.
+fn blackhole() -> SocketAddr {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    socket.bind(&local(0).into()).unwrap();
+    socket.listen(0).unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
+    let filler = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).unwrap();
+    assert!(
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_err(),
+        "the accept queue is full"
+    );
+    std::mem::forget((socket, filler));
+    addr
+}
+
+/// A relay that takes connections and reads them but never answers, confirming
+/// nothing.
+async fn silent_relay() -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut sink = tokio::io::sink();
+                let _ = tokio::io::copy(&mut stream, &mut sink).await;
+            });
+        }
+    });
+    addr
+}
+
+/// [`reaches`], failing the test when the answer takes longer than `within`.
+async fn reaches_within(listen: SocketAddr, within: Duration) -> Option<String> {
+    let started = std::time::Instant::now();
+    let reached = reaches(listen).await;
+    assert!(
+        started.elapsed() < within,
+        "took {:?} through {listen}",
+        started.elapsed()
+    );
+    reached
+}
+
 /// Which backend a new connection through `listen` reaches, or `None` when the
 /// worker could not connect it anywhere.
 async fn reaches(listen: SocketAddr) -> Option<String> {
@@ -374,15 +420,22 @@ async fn a_confirming_relay_whose_next_hop_is_dead_fails_over_at_the_dialer() {
             "the dead exit behind the relay moves the entry to its next tier"
         );
     }
-    assert!(
-        entry
-            .liveness()
-            .dead()
-            .iter()
-            .any(|hop| hop.starts_with("relay|")),
-        "the relay is known to be of no use: {:?}",
-        entry.liveness().dead()
-    );
+    // An attempt raced past records its failure when it ends, which may be just
+    // after the connection that raced past it.
+    let give_up = std::time::Instant::now() + Duration::from_secs(3);
+    while !entry
+        .liveness()
+        .dead()
+        .iter()
+        .any(|hop| hop.starts_with("relay|"))
+    {
+        assert!(
+            std::time::Instant::now() < give_up,
+            "the relay is known to be of no use: {:?}",
+            entry.liveness().dead()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     entry.shutdown_all();
     transit.shutdown_all();
 }
@@ -479,6 +532,104 @@ async fn a_dead_hop_comes_back_without_a_client_trying_it() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(reaches(listen).await.as_deref(), Some("first"));
+    sup.shutdown_all();
+}
+
+#[tokio::test]
+async fn a_member_that_never_answers_costs_a_hedge_not_a_timeout() {
+    let live = backend("live").await;
+    let listen = local(free_ports(1)[0]);
+    let black = blackhole();
+    let mut sup = Supervisor::new();
+    apply(
+        &mut sup,
+        vec![table(
+            "p",
+            listen,
+            ListenAs::Raw,
+            "g",
+            vec![balance("g", &[("u:black", 1), ("u:live", 1)])],
+            vec![exit("u:black", black), exit("u:live", live)],
+        )],
+    )
+    .await;
+    for _ in 0..6 {
+        assert_eq!(
+            reaches_within(listen, Duration::from_secs(2))
+                .await
+                .as_deref(),
+            Some("live")
+        );
+    }
+    // The attempts left on the blackhole run out on their own and kill it.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(sup.liveness().dead(), vec![format!("exit|{black}")]);
+    sup.shutdown_all();
+}
+
+#[tokio::test]
+async fn a_relay_that_never_confirms_is_raced_past() {
+    let live = backend("live").await;
+    let listen = local(free_ports(1)[0]);
+    let silent = silent_relay().await;
+    let mut sup = Supervisor::new();
+    apply(
+        &mut sup,
+        vec![table(
+            "p",
+            listen,
+            ListenAs::Raw,
+            "g",
+            vec![balance("g", &[("u:silent", 1), ("u:live", 1)])],
+            vec![relay("u:silent", silent, true), exit("u:live", live)],
+        )],
+    )
+    .await;
+    for _ in 0..4 {
+        assert_eq!(
+            reaches_within(listen, Duration::from_secs(2))
+                .await
+                .as_deref(),
+            Some("live")
+        );
+    }
+    sup.shutdown_all();
+}
+
+#[tokio::test]
+async fn a_failover_reaches_its_backup_while_every_balance_member_hangs() {
+    let backup = backend("backup").await;
+    let listen = local(free_ports(1)[0]);
+    let (a, b, c) = (blackhole(), blackhole(), blackhole());
+    let mut sup = Supervisor::new();
+    apply(
+        &mut sup,
+        vec![table(
+            "p",
+            listen,
+            ListenAs::Raw,
+            "g",
+            vec![
+                failover("g", &["g.0", "u:backup"]),
+                balance("g.0", &[("u:a", 1), ("u:b", 1), ("u:c", 1)]),
+            ],
+            vec![
+                exit("u:a", a),
+                exit("u:b", b),
+                exit("u:c", c),
+                exit("u:backup", backup),
+            ],
+        )],
+    )
+    .await;
+    for _ in 0..4 {
+        assert_eq!(
+            reaches_within(listen, Duration::from_secs(2))
+                .await
+                .as_deref(),
+            Some("backup")
+        );
+    }
     sup.shutdown_all();
 }
 
