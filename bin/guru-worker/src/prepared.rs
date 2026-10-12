@@ -7,8 +7,8 @@ use guru_worker_config::{
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Weak};
 
 /// Compiled ingest strategy for a listener (certs parsed once at apply time).
 #[derive(Clone)]
@@ -23,8 +23,9 @@ pub enum Ingest {
 /// Where a connection may go, compiled once per apply from either form of a
 /// forwarding's `to`.
 pub enum Route {
-    /// One next hop.
-    Hop(Hop),
+    /// One next hop, shared so a connection's attempt on it can outlive the
+    /// connection's own choice of it.
+    Hop(Arc<Hop>),
     /// Spread connections over the members that are alive, by weight.
     Balance(Balance),
     /// The first member that is alive, in order.
@@ -40,6 +41,19 @@ pub struct Hop {
     pub label: String,
 }
 
+impl liveness::Probe for Hop {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn probe(self: Arc<Self>) -> liveness::ProbeFuture {
+        Box::pin(async move {
+            let bounds = crate::pipe::route::probe_bounds(tokio::time::Instant::now());
+            crate::pipe::dial::probe_hop(&self, bounds).await
+        })
+    }
+}
+
 pub enum HopTarget {
     Exit {
         destination: Remote,
@@ -50,6 +64,8 @@ pub enum HopTarget {
     Relay {
         protocol: RelayProtocol,
         destination: Remote,
+        /// More addresses of the same listener, raced with `destination`'s.
+        alternates: Vec<Remote>,
         ipv6_resolve: Ipv6Resolve,
         sni: Option<String>,
         /// CA the relay peer is verified against; `None` means the system roots.
@@ -244,7 +260,7 @@ impl Compiler<'_> {
                 destination,
                 sni,
                 quic,
-            } => self.relay(*protocol, destination, sni.clone(), *quic, false),
+            } => self.relay(*protocol, destination, &[], sni.clone(), *quic, false),
             ForwardingTo::LoadBalance(group) => {
                 let members: Vec<Arc<Route>> = group
                     .members
@@ -285,6 +301,7 @@ impl Compiler<'_> {
                 TableTarget::Relay(relay) => self.relay(
                     relay.protocol,
                     &relay.destination,
+                    &relay.alternates,
                     relay.sni.clone(),
                     relay.quic,
                     relay.confirm,
@@ -321,36 +338,36 @@ impl Compiler<'_> {
 
     fn exit(&self, destination: &Remote, send_pp: Option<TcpProxyProtocol>) -> Arc<Route> {
         let dialed = remote_text(destination);
-        Arc::new(Route::Hop(Hop {
-            record: self.liveness.hop(format!("exit|{dialed}")),
-            label: format!("exit {dialed}"),
-            target: HopTarget::Exit {
+        self.hop(
+            format!("exit|{dialed}"),
+            format!("exit {dialed}"),
+            HopTarget::Exit {
                 destination: destination.clone(),
                 ipv6_resolve: self.ipv6_resolve,
                 send_pp,
                 keepalive: self.keepalive,
             },
-        }))
+        )
     }
 
     fn relay(
         &self,
         protocol: RelayProtocol,
         destination: &Remote,
+        alternates: &[Remote],
         sni: Option<String>,
         own_quic: Option<QuicTuning>,
         confirm: bool,
     ) -> Arc<Route> {
         let dialed = remote_text(destination);
         let name = sni.as_deref().unwrap_or("");
-        Arc::new(Route::Hop(Hop {
-            record: self
-                .liveness
-                .hop(format!("relay|{protocol:?}|{dialed}|{name}")),
-            label: format!("relay {protocol:?} {dialed}"),
-            target: HopTarget::Relay {
+        self.hop(
+            format!("relay|{protocol:?}|{dialed}|{name}"),
+            format!("relay {protocol:?} {dialed}"),
+            HopTarget::Relay {
                 protocol,
                 destination: destination.clone(),
+                alternates: alternates.to_vec(),
                 ipv6_resolve: self.ipv6_resolve,
                 sni,
                 relay_ca: self.relay_ca.map(Path::to_path_buf),
@@ -358,7 +375,20 @@ impl Compiler<'_> {
                 quic: own_quic.unwrap_or(self.quic),
                 confirm,
             },
-        }))
+        )
+    }
+
+    /// A hop on the record `key` names, which learns how to probe it.
+    fn hop(&self, key: String, label: String, target: HopTarget) -> Arc<Route> {
+        let hop = Arc::new(Hop {
+            record: self.liveness.hop(key),
+            label,
+            target,
+        });
+        let weak: Weak<Hop> = Arc::downgrade(&hop);
+        let probe: Weak<dyn liveness::Probe> = weak;
+        hop.record.attach(probe);
+        Arc::new(Route::Hop(hop))
     }
 
     fn balance(&self, members: Vec<(Arc<Route>, u32)>, pick: Pick, group: &str) -> Arc<Route> {

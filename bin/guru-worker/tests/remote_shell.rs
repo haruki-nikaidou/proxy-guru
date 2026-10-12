@@ -211,7 +211,11 @@ async fn without_the_opt_in_the_worker_neither_advertises_nor_opens_a_shell_chan
         .expect("the worker registers");
     assert_eq!(
         registration.capabilities,
-        vec!["route_table".to_string(), "relay_confirm".to_string()]
+        vec![
+            "route_table".to_string(),
+            "relay_confirm".to_string(),
+            "dual_stack_dial".to_string()
+        ]
     );
     // Well past the moment an opted-in worker opens it, right after registering.
     tokio::time::sleep(Duration::from_millis(1500)).await;

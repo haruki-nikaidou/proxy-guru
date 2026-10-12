@@ -334,7 +334,11 @@ async fn agent_state_changes_are_announced(pool: sqlx::PgPool) -> TestResult {
             reported: None,
             agent_version: Some("0.1.0".to_string()),
             agent_arch: Some("x86_64".to_string()),
-            capabilities: vec!["route_table".to_string(), "bogus".to_string()],
+            capabilities: vec![
+                "route_table".to_string(),
+                "bogus".to_string(),
+                "dual_stack_dial".to_string(),
+            ],
             last_update_error: None,
         })
         .await?;
@@ -403,7 +407,7 @@ async fn agent_state_changes_are_announced(pool: sqlx::PgPool) -> TestResult {
     );
     assert_eq!(
         failed.capabilities,
-        vec!["route_table".to_string()],
+        vec!["dual_stack_dial".to_string(), "route_table".to_string()],
         "only the capabilities the master compiles for are kept"
     );
     Ok(())

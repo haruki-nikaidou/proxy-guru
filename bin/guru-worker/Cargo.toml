@@ -1,6 +1,6 @@
 [package]
 name = "guru-worker"
-version = "1.0.0"  # worker side
+version = "1.1.0"  # worker side
 edition = "2024"
 
 [lib]
@@ -58,6 +58,8 @@ libc = { version = "0.2", optional = true }
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Paused time for the route tests: hedges and deadlines without real waiting.
+tokio = { version = "1", features = ["full", "test-util"] }
 orchestration = { path = "../../modules/orchestration" }
 # The codec a raw `client_streaming` call needs: the tests speak ReportHealth the way
 # a worker built before its replies does.

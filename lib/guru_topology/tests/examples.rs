@@ -1129,3 +1129,93 @@ fn a_route_is_the_documented_json() {
         assert!(serde_json::from_str::<Route>(bad).is_err(), "{bad} parsed");
     }
 }
+
+// --- 10b. An auto edge into a dual-stack server names its other address ------
+
+/// [`dual_stack`] with `s1` able to dial IPv6 too.
+fn dual_both_sides() -> Fabric {
+    let mut f = dual_stack();
+    f.addresses("s1", Some("198.51.100.1"), Some("2001:db8::1"));
+    f
+}
+
+/// The alternates `p` dials `q` at beside its destination.
+fn alternates(f: &Fabric) -> Vec<Remote> {
+    let compiled = f.compile();
+    relay_target(upstream(entry(table(&compiled, "s1"), "p"), "p-q"))
+        .alternates
+        .clone()
+}
+
+#[test]
+fn an_auto_edge_also_names_the_other_family_to_a_worker_that_dials_it() {
+    let mut f = dual_both_sides();
+    assert_eq!(
+        dialed(&f),
+        socket("192.0.2.10:40000"),
+        "the server's dial address stays first"
+    );
+    assert_eq!(alternates(&f), vec![socket("[2001:db8::10]:40000")]);
+    f.edge_mut("p-q").override_port = Some(40001);
+    assert_eq!(
+        alternates(&f),
+        vec![socket("[2001:db8::10]:40001")],
+        "on the port the edge dials"
+    );
+
+    // A server known only by its IPv6 address is dialed over it, with its IPv4
+    // address beside.
+    f.edge_mut("p-q").override_port = None;
+    f.graph.servers[1].dial_address = Some("2001:db8::10".parse().unwrap());
+    assert_eq!(dialed(&f), socket("[2001:db8::10]:40000"));
+    assert_eq!(alternates(&f), vec![socket("192.0.2.10:40000")]);
+}
+
+#[test]
+fn no_alternate_where_it_could_not_or_should_not_be_dialed() {
+    let none = |f: &Fabric, why: &str| assert!(alternates(f).is_empty(), "{why}");
+
+    let mut f = dual_both_sides();
+    f.graph.servers[0].capabilities.dual_stack_dial = false;
+    none(&f, "the dialing worker does not dial alternates");
+
+    none(
+        &dual_stack(),
+        "the dialing server has no IPv6 address to dial from",
+    );
+
+    for family in [IpFamily::V4, IpFamily::V6] {
+        let mut f = dual_both_sides();
+        f.edge_mut("p-q").ip_family = family;
+        none(&f, "the edge insists on one family");
+    }
+
+    let mut f = dual_both_sides();
+    f.edge_mut("p-q").override_ip = Some("192.0.2.99".to_string());
+    none(&f, "the edge names its own address");
+
+    let mut f = dual_both_sides();
+    f.pod_mut("q").advertise_ip = Some("10.8.0.2".to_string());
+    none(&f, "the pod advertises the address to dial");
+
+    for bind in ["0.0.0.0", "192.0.2.10", "2001:db8::10"] {
+        let mut f = dual_both_sides();
+        f.pod_mut("q").bind_ip = Some(bind.to_string());
+        none(&f, "the pod listens over one family only");
+    }
+
+    let mut f = dual_both_sides();
+    f.addresses("s2", Some("192.0.2.10"), None);
+    none(&f, "the relay server has one family only");
+}
+
+#[test]
+fn a_worker_that_reads_only_trees_is_never_sent_alternates() {
+    let mut f = dual_both_sides();
+    f.graph.servers[0].capabilities.route_table = false;
+    let compiled = f.compile();
+    let ForwardingTo::Relay { destination, .. } = tree(&legacy(&compiled, "s1")[0]) else {
+        panic!("expected a relay");
+    };
+    assert_eq!(*destination, socket("192.0.2.10:40000"));
+}

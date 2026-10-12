@@ -85,7 +85,7 @@ pub const REMOTE_SHELL_CAPABILITY: &str = "remote_shell";
 /// What this worker reads beyond the config every worker reads, and serves beyond
 /// it; the master only sends a server what its worker reported here.
 pub fn capabilities(remote_shell: bool) -> Vec<String> {
-    let mut capabilities: Vec<String> = ["route_table", "relay_confirm"]
+    let mut capabilities: Vec<String> = ["route_table", "relay_confirm", "dual_stack_dial"]
         .into_iter()
         .map(str::to_owned)
         .collect();

@@ -374,6 +374,77 @@ async fn an_edge_dials_the_address_family_it_asks_for(pool: sqlx::PgPool) -> Tes
     Ok(())
 }
 
+/// An auto edge from a dual-stack server whose worker dials alternates names the
+/// relay server's address of the other family beside its dial address; the same
+/// edge from a worker that does not report `dual_stack_dial` names none.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_auto_edge_names_the_other_family_to_a_worker_that_dials_it(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let c = canvas(&w.db, "prod").await?;
+    let tokyo = server_dual(&w.db, &c, "tokyo", "198.51.100.1", "2001:db8::1").await?;
+    let osaka = server_dual(&w.db, &c, "osaka", "198.51.100.10", "2001:db8::10").await?;
+    let capable = |dual: bool| {
+        let mut capabilities = vec!["relay_confirm", "route_table"];
+        if dual {
+            capabilities.insert(0, "dual_stack_dial");
+        }
+        capabilities
+    };
+    for server in [&tokyo, &osaka] {
+        sqlx::query!(
+            "UPDATE orchestration_server SET capabilities = $2 WHERE id = $1",
+            &server.id as _,
+            &capable(true) as _
+        )
+        .execute(w.db.db())
+        .await?;
+    }
+    let entry = client(&c, &tokyo, "entry", 443, None);
+    let hop = pod(&c, &osaka, "osaka-hop", 9443, PodIngress::RelayTcp);
+    let origin = exit(&c, "origin", "10.0.0.5:8080");
+    let to_hop = edge_to_pod("to-hop", &entry, &hop);
+    let out = edge_to_exit("out", &hop, &origin);
+    w.apply(
+        &c,
+        GraphChange {
+            put_pods: vec![routed(entry, via(&to_hop)), routed(hop, via(&out))],
+            put_exits: vec![origin],
+            put_edges: vec![to_hop, out],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
+    let load = || LoadCanvasGraph {
+        canvas: c.id.clone(),
+    };
+
+    let configs = derived(&w.db.process(load()).await?, &issued());
+    let toml = configs[&tokyo.id].config.to_toml_string().unwrap();
+    assert!(
+        toml.contains(r#"destination = "198.51.100.10:9443""#),
+        "{toml}"
+    );
+    assert!(
+        toml.contains(r#"alternates = ["[2001:db8::10]:9443"]"#),
+        "{toml}"
+    );
+    assert_golden("fabric_dual_stack", &toml);
+
+    sqlx::query!(
+        "UPDATE orchestration_server SET capabilities = $2 WHERE id = $1",
+        &tokyo.id as _,
+        &capable(false) as _
+    )
+    .execute(w.db.db())
+    .await?;
+    let configs = derived(&w.db.process(load()).await?, &issued());
+    let toml = configs[&tokyo.id].config.to_toml_string().unwrap();
+    assert!(!toml.contains("alternates"), "{toml}");
+    Ok(())
+}
+
 /// A graph that does not check — something only a write around the service
 /// could store — fails every server of the tree rather than half of it.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]

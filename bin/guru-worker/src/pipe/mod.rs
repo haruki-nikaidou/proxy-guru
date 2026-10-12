@@ -1,3 +1,4 @@
+pub mod dial;
 pub mod entry;
 pub mod exit;
 pub mod relay;
@@ -12,9 +13,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 
 /// Any owned, boxable bidirectional stream (TCP, TLS-over-TCP, or a joined QUIC bi-stream).
 pub trait AsyncRw: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -88,6 +90,20 @@ const CONFIRM_MARGIN: Duration = Duration::from_millis(300);
 /// The least a relay gives its own attempts, however little the dialer has left.
 const CONFIRM_FLOOR: Duration = Duration::from_millis(500);
 
+/// A dialer that closed before sending a byte: a probe of the listener (see
+/// [`crate::prober`]), or a raced attempt let go of before it got this far. Not
+/// worth a warning.
+#[derive(Debug)]
+pub struct LeftBeforeHeader;
+
+impl std::fmt::Display for LeftBeforeHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("eof before proxy protocol header")
+    }
+}
+
+impl std::error::Error for LeftBeforeHeader {}
+
 /// A PROXY protocol header, read.
 pub struct ProxyHeader {
     /// The true client address.
@@ -117,6 +133,9 @@ pub async fn read_header<S: AsyncRead + Unpin>(stream: &mut S) -> Result<ProxyHe
     loop {
         let n = stream.read(&mut chunk).await?;
         if n == 0 {
+            if buf.is_empty() {
+                return Err(Box::new(LeftBeforeHeader));
+            }
             return Err("eof before proxy protocol header".into());
         }
         buf.extend_from_slice(&chunk[..n]);
@@ -392,7 +411,11 @@ pub async fn handle_tcp_connection(
     cfg: Arc<PreparedForwarding>,
 ) {
     if let Err(e) = handle_tcp_inner(stream, peer, &cfg).await {
-        tracing::warn!(tag = %cfg.forwarding.tag, error = %e, "connection failed");
+        if e.is::<LeftBeforeHeader>() {
+            tracing::debug!(tag = %cfg.forwarding.tag, error = %e, "connection failed");
+        } else {
+            tracing::warn!(tag = %cfg.forwarding.tag, error = %e, "connection failed");
+        }
     }
 }
 
@@ -450,7 +473,11 @@ pub async fn handle_relay_quic_stream_logged(
     cfg: Arc<PreparedForwarding>,
 ) {
     if let Err(e) = handle_relay_quic_stream(joined, remote, &cfg).await {
-        tracing::warn!(tag = %cfg.forwarding.tag, error = %e, "quic relay stream failed");
+        if e.is::<LeftBeforeHeader>() {
+            tracing::debug!(tag = %cfg.forwarding.tag, error = %e, "quic relay stream failed");
+        } else {
+            tracing::warn!(tag = %cfg.forwarding.tag, error = %e, "quic relay stream failed");
+        }
     }
 }
 

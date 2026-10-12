@@ -341,7 +341,7 @@ relay = { protocol = "quic", destination = "203.0.113.1:40000", sni = "hk-1.rela
 
 [[forwarding.upstream]]
 id = "u:hk-2"
-relay = { protocol = "tcp", destination = "203.0.113.2:40000" }
+relay = { protocol = "tcp", destination = "203.0.113.2:40000", alternates = ["[2001:db8::2]:40000"] }
 
 [[forwarding.upstream]]
 id = "u:backup"
@@ -351,9 +351,33 @@ exit = { destination = "backend.internal:8080", send_proxy_protocol = "v2" }
 A balance spreads connections over the members that are alive in proportion to their weights —
 smooth round robin, or, with `sticky = "client_ip"`, a weighted rendezvous hash of the client
 address, so a client stays on its member while that member is alive. A failover uses the first
-member that is alive. Both pass over members whose every hop is dead, and a failed attempt moves on
-to the next choice within the same client connection. An upstream that fails three times in a row
-is dead; after ten seconds one connection at a time may try it again.
+member that is alive. Both pass over members whose every hop is dead.
+
+Within one client connection, attempts are raced. When the first has neither connected nor failed
+after its hop's hedge delay — one and a half times what the hop usually takes to answer, 300 ms to
+2 s, and 2 s under a sticky balance — the next choice starts beside it, and a failed attempt starts
+the next choice at once; the first to connect carries the connection and whatever the others
+connect is closed. The next choice is the one the route moves on to: the rest of the current
+failover member first, then the next member, and within a balance the next pick among the members
+not tried yet; a failover member always leaves one attempt for each live member after it. A
+connection may start six attempts within fifteen seconds; each has five seconds to connect and, for
+a relay asked to confirm, five more for the confirmation.
+
+An upstream that fails three times in a row is dead, attempts left to finish after the connection
+moved on included. The worker probes a dead upstream in the background ten seconds after it last
+failed, again and again until it answers, and it is alive for the next connection once it does: no
+client connection waits on a dead upstream unless nothing alive is left to try, in which case the
+dead ones are tried, in route order.
+
+`alternates` on a relay upstream names more addresses of the same listener, at most three. The
+master fills it with the relay server's address of the other family when the edge's IP version is
+auto, the edge names no address of its own, the pod advertises none and listens over both families,
+and both servers have an address of each family — and only for a worker that reports
+`dual_stack_dial`. A worker dials a hop's addresses — its destination's (a domain may resolve to
+several, families interleaved) and then its alternates — in that order every time, the Happy Eyeballs
+way: the next one 700 ms after the one before, or at once when one fails, the first to connect
+winning. The destination always goes first, so the other family is only a fallback, and the hop is
+alive as long as any of its addresses answers.
 
 `confirm = true` on a relay upstream asks the relay to answer once its *own* next hop connected, so
 a dead exit behind a live relay fails the hop at the dialer and the choice moves on. Only set it

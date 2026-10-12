@@ -176,7 +176,17 @@ pub struct RelayTarget {
     /// hop counts as connected. Only set toward a worker that understands it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub confirm: bool,
+    /// More addresses of the same listener — the relay server's address of the
+    /// other family, in practice — dialed beside `destination` the Happy Eyeballs
+    /// way when it does not answer at once. Only set toward a worker that reports
+    /// `dual_stack_dial`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternates: Vec<Remote>,
 }
+
+/// The most alternates a relay upstream may name: with its destination, as many
+/// addresses as a worker dials for one hop.
+pub const MAX_ALTERNATES: usize = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,6 +284,12 @@ pub(crate) fn validate(forwarding: &Forwarding, to: &str) -> Result<(), ConfigEr
                     return Err(ConfigError::QuicTuningWithoutQuic(tag.to_string()));
                 }
                 quic.validate(&format!("forwarding {tag} upstream {}", upstream.id))?;
+            }
+            let repeated = relay.alternates.iter().enumerate().any(|(i, alternate)| {
+                *alternate == relay.destination || relay.alternates[..i].contains(alternate)
+            });
+            if repeated || relay.alternates.len() > MAX_ALTERNATES {
+                return Err(route_error(ConfigError::BadAlternate, tag, &upstream.id));
             }
         }
     }
@@ -378,6 +394,7 @@ mod tests {
                 sni,
                 quic: None,
                 confirm: true,
+                alternates: Vec::new(),
             }),
         }
     }
@@ -616,6 +633,60 @@ mod tests {
             tuned.validate(),
             Err(ConfigError::QuicTuningWithoutQuic(_))
         ));
+    }
+
+    #[test]
+    fn alternates_round_trip_and_are_left_out_when_there_are_none() {
+        let mut dual = relay("u:a", RelayProtocol::Tcp);
+        let none = toml::to_string(&Doc {
+            forwarding: vec![entry("u:a", vec![], vec![dual.clone()])],
+        })
+        .unwrap();
+        assert!(!none.contains("alternates"), "{none}");
+        if let Target::Relay(r) = &mut dual.target {
+            r.alternates = vec![Remote::parse("[2001:db8::1]:40000").unwrap()];
+        }
+        let doc = Doc {
+            forwarding: vec![entry("u:a", vec![], vec![dual])],
+        };
+        let text = toml::to_string(&doc).unwrap();
+        assert!(
+            text.contains("alternates = [\"[2001:db8::1]:40000\"]"),
+            "{text}"
+        );
+        let parsed: Doc = toml::from_str(&text).unwrap();
+        assert_eq!(parsed, doc);
+        parsed.forwarding[0].validate().unwrap();
+    }
+
+    #[test]
+    fn alternates_are_few_distinct_and_not_the_destination() {
+        let with = |alternates: &[&str]| {
+            let mut upstream = relay("u:a", RelayProtocol::Tcp);
+            if let Target::Relay(r) = &mut upstream.target {
+                r.alternates = alternates
+                    .iter()
+                    .map(|a| Remote::parse(a).unwrap())
+                    .collect();
+            }
+            entry("u:a", vec![], vec![upstream]).validate()
+        };
+        with(&["[2001:db8::1]:40000", "198.51.100.1:40000"]).unwrap();
+        for bad in [
+            &["203.0.113.1:40000"][..],
+            &["[2001:db8::1]:40000", "[2001:db8::1]:40000"],
+            &[
+                "[2001:db8::1]:1",
+                "[2001:db8::2]:1",
+                "[2001:db8::3]:1",
+                "[2001:db8::4]:1",
+            ],
+        ] {
+            assert!(
+                matches!(with(bad), Err(ConfigError::BadAlternate(..))),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

@@ -45,6 +45,9 @@ pub const DEFAULT_POD_PORTS: RangeInclusive<u16> = 40000..=59999;
 /// The capability names a worker registers with.
 pub const ROUTE_TABLE: &str = "route_table";
 pub const RELAY_CONFIRM: &str = "relay_confirm";
+/// Dials a relay upstream's `alternates` (the relay server's address of the other
+/// family) beside its destination.
+pub const DUAL_STACK_DIAL: &str = "dual_stack_dial";
 /// Not a derivation input: the worker was built with remote shell *and* its
 /// host opted in, so it opens `ShellChannel` (see [`crate::services::shell`]).
 pub const REMOTE_SHELL: &str = "remote_shell";
@@ -54,6 +57,7 @@ pub fn server_capabilities(server: &ServerEntity) -> topo::Capabilities {
     topo::Capabilities {
         route_table: has(ROUTE_TABLE),
         relay_confirm: has(RELAY_CONFIRM),
+        dual_stack_dial: has(DUAL_STACK_DIAL),
     }
 }
 

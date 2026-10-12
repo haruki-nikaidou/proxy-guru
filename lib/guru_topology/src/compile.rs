@@ -186,6 +186,8 @@ pub(crate) enum HopKind {
         sni: Option<String>,
         quic: Option<QuicTuning>,
         confirm: bool,
+        /// The relay's address of the other family, for a worker that dials it.
+        alternates: Vec<Remote>,
     },
 }
 
@@ -349,9 +351,19 @@ fn entry<'g>(
                 let quic = (relay_protocol == RelayProtocol::Quic)
                     .then(|| link_tuning(&server.quic, &far.quic))
                     .flatten();
+                // Only a worker that reads them is told about them.
+                let alternates = server
+                    .capabilities
+                    .dual_stack_dial
+                    .then(|| edge.alternate_host(target, far, server))
+                    .flatten()
+                    .map(|address| Remote::Address(SocketAddr::new(address, port)))
+                    .into_iter()
+                    .collect();
                 Hop {
                     destination,
                     kind: HopKind::Relay {
+                        alternates,
                         protocol: relay_protocol,
                         sni: (relay_protocol != RelayProtocol::Tcp).then(|| relay_sni(&target.id)),
                         quic,
@@ -451,12 +463,14 @@ fn render_table(entry: &Entry<'_>) -> Result<Forwarding, ConfigError> {
                     sni,
                     quic,
                     confirm,
+                    alternates,
                 } => Target::Relay(RelayTarget {
                     protocol: *protocol,
                     destination: hop.destination.clone(),
                     sni: sni.clone(),
                     quic: *quic,
                     confirm: *confirm,
+                    alternates: alternates.clone(),
                 }),
             },
         })

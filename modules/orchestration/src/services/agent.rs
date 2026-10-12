@@ -496,11 +496,12 @@ fn ack_pod_records(
 /// The capabilities the master compiles for, sorted and deduplicated; anything
 /// else a newer worker reports is dropped rather than stored.
 fn known_capabilities(reported: Vec<String>) -> Vec<String> {
-    use crate::services::graph::{RELAY_CONFIRM, REMOTE_SHELL, ROUTE_TABLE};
+    use crate::services::graph::{DUAL_STACK_DIAL, RELAY_CONFIRM, REMOTE_SHELL, ROUTE_TABLE};
     let mut known: Vec<String> = reported
         .into_iter()
         .filter(|capability| {
-            [ROUTE_TABLE, RELAY_CONFIRM, REMOTE_SHELL].contains(&capability.as_str())
+            [ROUTE_TABLE, RELAY_CONFIRM, DUAL_STACK_DIAL, REMOTE_SHELL]
+                .contains(&capability.as_str())
         })
         .collect();
     known.sort();
