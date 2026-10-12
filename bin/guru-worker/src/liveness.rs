@@ -11,6 +11,7 @@
 //! let through to try it, and the first success makes it alive again.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -68,6 +69,9 @@ struct State {
     dead_since: Option<Instant>,
     /// A connection is trying the dead hop right now.
     trying: bool,
+    /// The address the hop last answered on, tried first next time when the
+    /// hop has several.
+    preferred: Option<SocketAddr>,
 }
 
 /// Who is asking to try a hop, which decides whether a dead one may be tried.
@@ -103,6 +107,17 @@ impl Hop {
 
     pub fn is_dead(&self) -> bool {
         self.state.lock().dead_since.is_some()
+    }
+
+    /// The address the hop last answered on, if it has answered since it was
+    /// first dialed.
+    pub fn preferred(&self) -> Option<SocketAddr> {
+        self.state.lock().preferred
+    }
+
+    /// Remembers the address the hop answered on.
+    pub fn prefer(&self, addr: SocketAddr) {
+        self.state.lock().preferred = Some(addr);
     }
 
     /// Claims an attempt on the hop. An alive hop may be tried by anyone; a

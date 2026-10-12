@@ -1,3 +1,4 @@
+pub mod dial;
 pub mod entry;
 pub mod exit;
 pub mod relay;

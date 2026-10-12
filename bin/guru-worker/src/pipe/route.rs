@@ -16,8 +16,9 @@
 
 use crate::BoxError;
 use crate::liveness::{Availability, Claim};
-use crate::pipe::{TargetStream, exit, relay};
-use crate::prepared::{Balance, Hop, HopTarget, Pick, Route};
+use crate::pipe::TargetStream;
+use crate::pipe::dial::{Bounds, dial_hop};
+use crate::prepared::{Balance, Hop, Pick, Route};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -193,48 +194,12 @@ async fn attempt(hop: &Hop, dial: &mut Dial, forced: bool) -> Option<TargetStrea
     let connect_by = dial
         .deadline
         .min(now.checked_add(ATTEMPT_TIMEOUT).unwrap_or(now));
-    let result = match &hop.target {
-        HopTarget::Exit {
-            destination,
-            ipv6_resolve,
-            send_pp,
-            keepalive,
-        } => match tokio::time::timeout_at(
-            connect_by,
-            exit::connect_exit(destination, *ipv6_resolve, *send_pp, keepalive, dial.client),
-        )
-        .await
-        {
-            Ok(Ok(stream)) => Ok(TargetStream::Exit(stream)),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(format!("timed out after {ATTEMPT_TIMEOUT:?}").into()),
-        },
-        HopTarget::Relay {
-            protocol,
-            destination,
-            ipv6_resolve,
-            sni,
-            relay_ca,
-            keepalive,
-            quic,
-            confirm,
-        } => relay::dial_relay(
-            &relay::Dialing {
-                protocol: *protocol,
-                destination,
-                ipv6_resolve: *ipv6_resolve,
-                sni: sni.as_deref(),
-                relay_ca: relay_ca.as_deref(),
-                keepalive,
-                quic,
-                client_addr: dial.client,
-            },
-            connect_by,
-            confirm.then_some(dial.deadline),
-        )
-        .await
-        .map(TargetStream::Relay),
+    let bounds = Bounds {
+        connect_by,
+        confirm_wait: dial.deadline.saturating_duration_since(now),
+        deadline: dial.deadline,
     };
+    let result = dial_hop(hop, dial.client, bounds).await;
     match result {
         Ok(stream) => {
             if hop.record.is_dead() {

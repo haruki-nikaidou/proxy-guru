@@ -1,10 +1,8 @@
 use crate::BoxError;
 use crate::pipe::{CONFIRM_FAILED, CONFIRM_OK, write_proxy_header, write_relay_header};
-use guru_worker_config::{
-    Ipv6Resolve, KeepAlive, QuicTuning, RelayProtocol, Remote, TcpProxyProtocol,
-};
+use guru_worker_config::{KeepAlive, QuicTuning, RelayProtocol, TcpProxyProtocol};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
@@ -64,48 +62,73 @@ impl tokio::io::AsyncWrite for RelayStream {
     }
 }
 
-/// Everything a relay dial needs besides its time limits.
-pub struct Dialing<'a> {
+/// How a relay hop is reached, whichever of its addresses is dialed: owned, so a
+/// dial of each address can run on its own while they race.
+#[derive(Clone)]
+pub struct Link {
     pub protocol: RelayProtocol,
-    pub destination: &'a Remote,
-    pub ipv6_resolve: Ipv6Resolve,
-    pub sni: Option<&'a str>,
-    pub relay_ca: Option<&'a Path>,
-    pub keepalive: &'a KeepAlive,
-    pub quic: &'a QuicTuning,
-    pub client_addr: SocketAddr,
+    pub sni: Option<String>,
+    /// CA the relay peer is verified against; `None` means the system roots.
+    pub relay_ca: Option<PathBuf>,
+    pub keepalive: KeepAlive,
+    /// This side of the link when `protocol` is QUIC; ignored otherwise.
+    pub quic: QuicTuning,
 }
 
-/// Dials the next relay hop over the configured transport and writes the PROXY v2
-/// framing header carrying the true client address. TLS and QUIC peers are verified
-/// against `relay_ca` when given, else the system roots; the hop probes for liveness
-/// per `keepalive`. A QUIC hop is a stream on the link's pooled connection, sent
-/// and received per `quic`.
+/// Connects the link to one of the relay's addresses over the configured transport:
+/// TCP, TLS over TCP, or a stream on the pooled QUIC connection, sent and received per
+/// `quic`. TLS and QUIC peers are verified against `relay_ca` when given, else the
+/// system roots; the hop probes for liveness per `keepalive`. Nothing is written yet.
+pub async fn connect_link(link: Link, addr: SocketAddr) -> Result<RelayStream, BoxError> {
+    let connect_tcp = || async {
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        if let Err(error) = crate::keepalive::apply_tcp(&tcp, &link.keepalive) {
+            tracing::warn!(%addr, %error, "keepalive not set on relay socket");
+        }
+        Ok::<_, BoxError>(tcp)
+    };
+    Ok(match link.protocol {
+        RelayProtocol::Tcp => RelayStream::Tcp(connect_tcp().await?),
+        RelayProtocol::TlsOverTcp => {
+            let sni = link.sni.as_deref().ok_or("relay tls dial requires sni")?;
+            let tcp = connect_tcp().await?;
+            RelayStream::Tls(crate::tls::connect_tls(sni, tcp, link.relay_ca.as_deref()).await?)
+        }
+        RelayProtocol::Quic => {
+            let sni = link.sni.as_deref().ok_or("relay quic dial requires sni")?;
+            let client = crate::tls::quic_client(link.relay_ca.as_deref())?;
+            RelayStream::Quic(
+                client
+                    .stream(addr, sni, &link.keepalive, &link.quic)
+                    .await?,
+            )
+        }
+    })
+}
+
+/// Writes the PROXY v2 framing header carrying the true client address on a link
+/// connected to `addr`, by `connect_by`.
 ///
-/// Connecting (resolution, TCP, the TLS or QUIC handshake, the header) must be done
-/// by `connect_by`. With `confirm_by`, the header also asks the relay to confirm,
-/// and tells it how long this side will wait: the dial only succeeds once the relay
-/// answers that its own next hop connected, which it must do by `confirm_by`.
-pub async fn dial_relay(
-    dialing: &Dialing<'_>,
+/// With `confirm_by`, the header also asks the relay to confirm, and tells it how long
+/// this side will wait: this only succeeds once the relay answers that its own next
+/// hop connected, which it must do by `confirm_by`.
+pub async fn introduce(
+    out: &mut RelayStream,
+    client_addr: SocketAddr,
+    addr: SocketAddr,
     connect_by: Instant,
     confirm_by: Option<Instant>,
-) -> Result<RelayStream, BoxError> {
-    let (mut out, addr) = match tokio::time::timeout_at(connect_by, connect(dialing)).await {
-        Ok(connected) => connected?,
-        Err(_) => return Err("timed out connecting".into()),
-    };
+) -> Result<(), BoxError> {
     let Some(confirm_by) = confirm_by else {
-        let header = write_proxy_header(&mut out, TcpProxyProtocol::V2, dialing.client_addr, addr);
-        match tokio::time::timeout_at(connect_by, header).await {
-            Ok(written) => written?,
-            Err(_) => return Err("timed out writing the PROXY header".into()),
-        }
-        return Ok(out);
+        let header = write_proxy_header(out, TcpProxyProtocol::V2, client_addr, addr);
+        return match tokio::time::timeout_at(connect_by, header).await {
+            Ok(written) => written,
+            Err(_) => Err("timed out writing the PROXY header".into()),
+        };
     };
     let budget = confirm_by.saturating_duration_since(Instant::now());
     let confirmed = async {
-        write_relay_header(&mut out, dialing.client_addr, addr, Some(budget)).await?;
+        write_relay_header(out, client_addr, addr, Some(budget)).await?;
         out.flush().await?;
         let mut status = [0u8; 1];
         out.read_exact(&mut status)
@@ -118,37 +141,7 @@ pub async fn dial_relay(
         }
     };
     match tokio::time::timeout_at(confirm_by, confirmed).await {
-        Ok(result) => result?,
-        Err(_) => return Err("relay did not confirm in time".into()),
+        Ok(result) => result,
+        Err(_) => Err("relay did not confirm in time".into()),
     }
-    Ok(out)
-}
-
-async fn connect(dialing: &Dialing<'_>) -> Result<(RelayStream, SocketAddr), BoxError> {
-    let addr = crate::resolver::resolve(dialing.destination, dialing.ipv6_resolve).await?;
-    let connect_tcp = || async {
-        let tcp = tokio::net::TcpStream::connect(addr).await?;
-        if let Err(error) = crate::keepalive::apply_tcp(&tcp, dialing.keepalive) {
-            tracing::warn!(%addr, %error, "keepalive not set on relay socket");
-        }
-        Ok::<_, BoxError>(tcp)
-    };
-    let out = match dialing.protocol {
-        RelayProtocol::Tcp => RelayStream::Tcp(connect_tcp().await?),
-        RelayProtocol::TlsOverTcp => {
-            let sni = dialing.sni.ok_or("relay tls dial requires sni")?;
-            let tcp = connect_tcp().await?;
-            RelayStream::Tls(crate::tls::connect_tls(sni, tcp, dialing.relay_ca).await?)
-        }
-        RelayProtocol::Quic => {
-            let sni = dialing.sni.ok_or("relay quic dial requires sni")?;
-            let client = crate::tls::quic_client(dialing.relay_ca)?;
-            RelayStream::Quic(
-                client
-                    .stream(addr, sni, dialing.keepalive, dialing.quic)
-                    .await?,
-            )
-        }
-    };
-    Ok((out, addr))
 }

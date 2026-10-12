@@ -9,19 +9,22 @@ use std::time::Duration;
 const DNS_TTL: Duration = Duration::from_secs(300);
 
 /// The [`Ipv6Resolve`] policy is part of the cache key, so two config generations with
-/// different policies (e.g. across a `SIGHUP` reload) never share a resolved address.
-type DnsCache = moka::future::Cache<(CompactString, u16, Ipv6Resolve), SocketAddr>;
+/// different policies (e.g. across a `SIGHUP` reload) never share a resolution.
+type DnsCache = moka::future::Cache<(CompactString, u16, Ipv6Resolve), Arc<[SocketAddr]>>;
 
 static DNS_CACHE: LazyLock<DnsCache> =
     LazyLock::new(|| moka::future::Cache::builder().time_to_live(DNS_TTL).build());
 
-/// Resolves a forwarding target to a concrete socket address. Literal addresses are
-/// returned as-is; domains are resolved via the system resolver, filtered by the given
-/// [`Ipv6Resolve`] policy, and cached (single-flight per key via `try_get_with`) for
-/// `DNS_TTL`.
-pub async fn resolve(remote: &Remote, ipv6_resolve: Ipv6Resolve) -> Result<SocketAddr, BoxError> {
+/// Every address a forwarding target stands for, in the order to try them. A literal
+/// address is itself; a domain is resolved via the system resolver, filtered and ordered
+/// by the given [`Ipv6Resolve`] policy (see [`order`]), and cached (single-flight per
+/// key via `try_get_with`) for `DNS_TTL`, or until [`forget`].
+pub async fn resolve_all(
+    remote: &Remote,
+    ipv6_resolve: Ipv6Resolve,
+) -> Result<Arc<[SocketAddr]>, BoxError> {
     match remote {
-        Remote::Address(addr) => Ok(*addr),
+        Remote::Address(addr) => Ok(Arc::from([*addr])),
         Remote::Domain(host, port) => {
             let key = (host.clone(), *port, ipv6_resolve);
             DNS_CACHE
@@ -32,38 +35,71 @@ pub async fn resolve(remote: &Remote, ipv6_resolve: Ipv6Resolve) -> Result<Socke
     }
 }
 
-async fn lookup(host: CompactString, port: u16, mode: Ipv6Resolve) -> Result<SocketAddr, BoxError> {
-    let addrs = tokio::net::lookup_host((host.as_str(), port)).await?;
-    select_addr(addrs, mode).ok_or_else(|| {
+/// Drops a domain's cached addresses, so the next dial resolves it afresh: none of
+/// the ones it had answered.
+pub async fn forget(remote: &Remote, ipv6_resolve: Ipv6Resolve) {
+    if let Remote::Domain(host, port) = remote {
+        DNS_CACHE
+            .invalidate(&(host.clone(), *port, ipv6_resolve))
+            .await;
+    }
+}
+
+async fn lookup(
+    host: CompactString,
+    port: u16,
+    mode: Ipv6Resolve,
+) -> Result<Arc<[SocketAddr]>, BoxError> {
+    let addrs = order(tokio::net::lookup_host((host.as_str(), port)).await?, mode);
+    if addrs.is_empty() {
         let family = match mode {
             Ipv6Resolve::Required => "IPv6 ",
             Ipv6Resolve::Forbidden => "IPv4 ",
             Ipv6Resolve::Preferred | Ipv6Resolve::Tolerated => "",
         };
-        format!("no {family}DNS records for {host}:{port}").into()
-    })
+        return Err(format!("no {family}DNS records for {host}:{port}").into());
+    }
+    Ok(addrs.into())
 }
 
-/// Picks one address from a resolver result set according to `mode`. Returns `None` when
-/// the policy cannot be satisfied (which the caller surfaces as a resolution failure).
-fn select_addr(addrs: impl Iterator<Item = SocketAddr>, mode: Ipv6Resolve) -> Option<SocketAddr> {
-    let mut first_v4 = None;
-    let mut first_v6 = None;
-    for a in addrs {
-        match a {
-            SocketAddr::V4(_) => first_v4 = first_v4.or(Some(a)),
-            SocketAddr::V6(_) => first_v6 = first_v6.or(Some(a)),
-        }
-        if first_v4.is_some() && first_v6.is_some() {
-            break;
-        }
-    }
+/// Whether `mode` lets an address of this family be dialed at all.
+pub fn admits(mode: Ipv6Resolve, addr: SocketAddr) -> bool {
     match mode {
-        Ipv6Resolve::Required => first_v6,
-        Ipv6Resolve::Preferred => first_v6.or(first_v4),
-        Ipv6Resolve::Tolerated => first_v4.or(first_v6),
-        Ipv6Resolve::Forbidden => first_v4,
+        Ipv6Resolve::Required => addr.is_ipv6(),
+        Ipv6Resolve::Forbidden => addr.is_ipv4(),
+        Ipv6Resolve::Preferred | Ipv6Resolve::Tolerated => true,
     }
+}
+
+/// The addresses of a resolver result set that `mode` admits, each once, with the
+/// families interleaved (RFC 8305 §4) starting with the one `mode` prefers: IPv6 for
+/// `Required` and `Preferred`, IPv4 for `Tolerated` and `Forbidden`. Within a family
+/// the resolver's order is kept.
+pub fn order(addrs: impl IntoIterator<Item = SocketAddr>, mode: Ipv6Resolve) -> Vec<SocketAddr> {
+    let mut v4: Vec<SocketAddr> = Vec::new();
+    let mut v6: Vec<SocketAddr> = Vec::new();
+    for addr in addrs {
+        if !admits(mode, addr) {
+            continue;
+        }
+        let family = if addr.is_ipv4() { &mut v4 } else { &mut v6 };
+        if !family.contains(&addr) {
+            family.push(addr);
+        }
+    }
+    let (first, second) = match mode {
+        Ipv6Resolve::Required | Ipv6Resolve::Preferred => (v6, v4),
+        Ipv6Resolve::Tolerated | Ipv6Resolve::Forbidden => (v4, v6),
+    };
+    let mut out = Vec::with_capacity(first.len().saturating_add(second.len()));
+    let (mut first, mut second) = (first.into_iter(), second.into_iter());
+    loop {
+        match (first.next(), second.next()) {
+            (None, None) => break,
+            (a, b) => out.extend(a.into_iter().chain(b)),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -71,72 +107,64 @@ fn select_addr(addrs: impl Iterator<Item = SocketAddr>, mode: Ipv6Resolve) -> Op
 mod tests {
     use super::*;
 
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
     fn v4() -> SocketAddr {
-        "127.0.0.1:9000".parse().unwrap()
+        addr("127.0.0.1:9000")
     }
 
     fn v6() -> SocketAddr {
-        "[::1]:9000".parse().unwrap()
+        addr("[::1]:9000")
     }
 
     #[test]
-    fn required_picks_v6_when_present() {
-        assert_eq!(
-            select_addr([v4(), v6()].into_iter(), Ipv6Resolve::Required),
-            Some(v6())
-        );
+    fn required_keeps_only_v6() {
+        assert_eq!(order([v4(), v6()], Ipv6Resolve::Required), vec![v6()]);
+        assert!(order([v4()], Ipv6Resolve::Required).is_empty());
     }
 
     #[test]
-    fn required_fails_without_v6() {
-        assert_eq!(select_addr([v4()].into_iter(), Ipv6Resolve::Required), None);
+    fn preferred_starts_with_v6_and_falls_back_to_v4() {
+        assert_eq!(
+            order([v4(), v6()], Ipv6Resolve::Preferred),
+            vec![v6(), v4()]
+        );
+        assert_eq!(order([v4()], Ipv6Resolve::Preferred), vec![v4()]);
     }
 
     #[test]
-    fn preferred_picks_v6_but_falls_back_to_v4() {
+    fn tolerated_starts_with_v4_and_falls_back_to_v6() {
         assert_eq!(
-            select_addr([v4(), v6()].into_iter(), Ipv6Resolve::Preferred),
-            Some(v6())
+            order([v6(), v4()], Ipv6Resolve::Tolerated),
+            vec![v4(), v6()]
         );
-        assert_eq!(
-            select_addr([v4()].into_iter(), Ipv6Resolve::Preferred),
-            Some(v4())
-        );
+        assert_eq!(order([v6()], Ipv6Resolve::Tolerated), vec![v6()]);
     }
 
     #[test]
-    fn tolerated_picks_v4_but_falls_back_to_v6() {
-        assert_eq!(
-            select_addr([v6(), v4()].into_iter(), Ipv6Resolve::Tolerated),
-            Some(v4())
-        );
-        assert_eq!(
-            select_addr([v6()].into_iter(), Ipv6Resolve::Tolerated),
-            Some(v6())
-        );
+    fn forbidden_keeps_only_v4() {
+        assert_eq!(order([v6(), v4()], Ipv6Resolve::Forbidden), vec![v4()]);
+        assert!(order([v6()], Ipv6Resolve::Forbidden).is_empty());
     }
 
     #[test]
-    fn forbidden_picks_v4_when_present() {
+    fn families_interleave_and_repeats_go() {
+        let (a4, b4, c4) = (addr("10.0.0.1:1"), addr("10.0.0.2:1"), addr("10.0.0.3:1"));
+        let (a6, b6) = (addr("[2001:db8::1]:1"), addr("[2001:db8::2]:1"));
         assert_eq!(
-            select_addr([v6(), v4()].into_iter(), Ipv6Resolve::Forbidden),
-            Some(v4())
+            order([a4, b4, a6, c4, b6, a4], Ipv6Resolve::Tolerated),
+            vec![a4, a6, b4, b6, c4]
         );
-    }
-
-    #[test]
-    fn forbidden_fails_without_v4() {
         assert_eq!(
-            select_addr([v6()].into_iter(), Ipv6Resolve::Forbidden),
-            None
+            order([a4, b4, a6, c4, b6], Ipv6Resolve::Preferred),
+            vec![a6, a4, b6, b4, c4]
         );
     }
 
     #[test]
-    fn empty_result_is_none() {
-        assert_eq!(
-            select_addr(std::iter::empty(), Ipv6Resolve::Tolerated),
-            None
-        );
+    fn empty_result_is_empty() {
+        assert!(order(std::iter::empty(), Ipv6Resolve::Tolerated).is_empty());
     }
 }
