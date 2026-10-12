@@ -4,13 +4,14 @@
 //!
 //! A hop's addresses are its destination's (a domain may resolve to several) and,
 //! for a relay, the alternates the control plane named — the same server over the
-//! other address family. The address the hop last answered on goes first; the next
-//! one starts [`ADDRESS_STAGGER`] later, or at once when one fails, and the first
-//! to connect wins while the others are dropped. All of them failing is one failed
+//! other address family. They are dialed in the same order every time, the
+//! destination's first: the address the control plane chose to dial (IPv4 when the
+//! server has one) always goes first, and the others are only a fallback. The next
+//! one starts [`ADDRESS_STAGGER`] later, or at once when one fails, and the first to
+//! connect wins while the others are dropped. All of them failing is one failed
 //! attempt on the hop.
 
 use crate::BoxError;
-use crate::liveness;
 use crate::pipe::{TargetStream, exit, relay, write_proxy_header};
 use crate::prepared::{Hop, HopTarget};
 use guru_worker_config::{Ipv6Resolve, Remote};
@@ -20,8 +21,9 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-/// How long one address of a hop has to connect before the next one starts.
-pub const ADDRESS_STAGGER: Duration = Duration::from_millis(250);
+/// How long one address of a hop has to connect before the next one, the
+/// fallback, starts beside it.
+pub const ADDRESS_STAGGER: Duration = Duration::from_millis(700);
 
 /// The most addresses of one hop an attempt dials.
 pub const MAX_ADDRESSES: usize = 4;
@@ -119,14 +121,14 @@ async fn connect_hop(hop: &Hop, connect_by: Instant) -> Result<(Connected, Socke
         } => {
             let keepalive = *keepalive;
             connect_within(connect_by, async {
-                let addrs = addresses(&hop.record, destination, &[], *ipv6_resolve).await?;
+                let addrs = addresses(destination, &[], *ipv6_resolve).await?;
                 let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| async move {
                     exit::connect_exit(addr, keepalive)
                         .await
                         .map(Connected::Exit)
                 })
                 .await;
-                settle(&hop.record, destination, *ipv6_resolve, &addrs, raced).await
+                settle(destination, *ipv6_resolve, raced).await
             })
             .await
         }
@@ -149,13 +151,13 @@ async fn connect_hop(hop: &Hop, connect_by: Instant) -> Result<(Connected, Socke
                 quic: *quic,
             };
             connect_within(connect_by, async {
-                let addrs = addresses(&hop.record, destination, alternates, *ipv6_resolve).await?;
+                let addrs = addresses(destination, alternates, *ipv6_resolve).await?;
                 let raced = race_addresses(&addrs, ADDRESS_STAGGER, move |addr| {
                     let link = link.clone();
                     async move { relay::connect_link(link, addr).await.map(Connected::Relay) }
                 })
                 .await;
-                settle(&hop.record, destination, *ipv6_resolve, &addrs, raced).await
+                settle(destination, *ipv6_resolve, raced).await
             })
             .await
         }
@@ -172,12 +174,11 @@ async fn connect_within<T>(
     }
 }
 
-/// Every address to dial for a hop, best first: the destination's, then the
-/// alternates `ipv6_resolve` admits, each once, the one the hop last answered on
-/// moved to the front, at most [`MAX_ADDRESSES`]. An alternate that does not
-/// resolve is left out; the destination not resolving fails the attempt.
+/// Every address to dial for a hop, in order: the destination's, then the
+/// alternates `ipv6_resolve` admits, each once, at most [`MAX_ADDRESSES`]. An
+/// alternate that does not resolve is left out; the destination not resolving
+/// fails the attempt.
 async fn addresses(
-    record: &liveness::Hop,
     destination: &Remote,
     alternates: &[Remote],
     ipv6_resolve: Ipv6Resolve,
@@ -201,36 +202,20 @@ async fn addresses(
         seen.push(*addr);
         first
     });
-    if let Some(preferred) = record.preferred()
-        && let Some(at) = addrs.iter().position(|addr| *addr == preferred)
-    {
-        addrs[..=at].rotate_right(1);
-    }
     addrs.truncate(MAX_ADDRESSES);
     Ok(addrs)
 }
 
-/// Remembers which address answered when there was a choice, and lets a domain be
-/// resolved afresh when none of its addresses did.
+/// Lets a domain be resolved afresh when none of its addresses answered.
 async fn settle<T>(
-    record: &liveness::Hop,
     destination: &Remote,
     ipv6_resolve: Ipv6Resolve,
-    addrs: &[SocketAddr],
     raced: Result<(T, SocketAddr), BoxError>,
 ) -> Result<(T, SocketAddr), BoxError> {
-    match raced {
-        Ok((connected, addr)) => {
-            if addrs.len() > 1 {
-                record.prefer(addr);
-            }
-            Ok((connected, addr))
-        }
-        Err(error) => {
-            crate::resolver::forget(destination, ipv6_resolve).await;
-            Err(error)
-        }
+    if raced.is_err() {
+        crate::resolver::forget(destination, ipv6_resolve).await;
     }
+    raced
 }
 
 /// Dials `addrs` in order, each [`ADDRESS_STAGGER`]-like `stagger` after the one
@@ -353,8 +338,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(won, b);
-        assert_eq!(epoch.elapsed(), Duration::from_millis(300));
-        assert_eq!(*started.lock().unwrap(), vec![(a, 0), (b, 250)]);
+        let stagger = ADDRESS_STAGGER.as_millis();
+        assert_eq!(epoch.elapsed().as_millis(), stagger + 50);
+        assert_eq!(*started.lock().unwrap(), vec![(a, 0), (b, stagger)]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -401,26 +387,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_preferred_address_goes_first() {
-        let record = liveness::Hop::default();
+    async fn the_destination_always_goes_first_and_alternates_only_after_it() {
         let (a, b) = (addr("192.0.2.1:1"), addr("[2001:db8::1]:1"));
-        let alternates = [Remote::Address(b)];
+        let alternates = [Remote::Address(b), Remote::Address(a)];
         let dest = Remote::Address(a);
         assert_eq!(
-            addresses(&record, &dest, &alternates, Ipv6Resolve::Tolerated)
+            addresses(&dest, &alternates, Ipv6Resolve::Tolerated)
                 .await
                 .unwrap(),
-            vec![a, b]
+            vec![a, b],
+            "an alternate repeating the destination is dialed once"
         );
-        record.prefer(b);
         assert_eq!(
-            addresses(&record, &dest, &alternates, Ipv6Resolve::Tolerated)
+            addresses(&dest, &alternates, Ipv6Resolve::Preferred)
                 .await
                 .unwrap(),
-            vec![b, a]
+            vec![a, b],
+            "the order is the control plane's, whatever the resolve policy"
         );
         assert_eq!(
-            addresses(&record, &dest, &alternates, Ipv6Resolve::Forbidden)
+            addresses(&dest, &alternates, Ipv6Resolve::Forbidden)
                 .await
                 .unwrap(),
             vec![a],

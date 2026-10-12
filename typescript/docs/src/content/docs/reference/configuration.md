@@ -374,9 +374,10 @@ master fills it with the relay server's address of the other family when the edg
 auto, the edge names no address of its own, the pod advertises none and listens over both families,
 and both servers have an address of each family — and only for a worker that reports
 `dual_stack_dial`. A worker dials a hop's addresses — its destination's (a domain may resolve to
-several, families interleaved) and its alternates — the Happy Eyeballs way: the next one 250 ms after
-the one before, or at once when one fails, the first to connect winning. The address that answered
-goes first next time, and the hop is alive as long as any of its addresses answers.
+several, families interleaved) and then its alternates — in that order every time, the Happy Eyeballs
+way: the next one 700 ms after the one before, or at once when one fails, the first to connect
+winning. The destination always goes first, so the other family is only a fallback, and the hop is
+alive as long as any of its addresses answers.
 
 `confirm = true` on a relay upstream asks the relay to answer once its *own* next hop connected, so
 a dead exit behind a live relay fails the hop at the dialer and the choice moves on. Only set it

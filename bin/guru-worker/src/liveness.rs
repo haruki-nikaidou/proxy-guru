@@ -15,7 +15,6 @@
 use crate::BoxError;
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -108,9 +107,6 @@ struct State {
     dead_since: Option<Instant>,
     /// A connection is trying the dead hop right now.
     trying: bool,
-    /// The address the hop last answered on, tried first next time when the
-    /// hop has several.
-    preferred: Option<SocketAddr>,
     /// How long the hop usually takes to answer (see [`Hop::pace`]).
     pace: Option<Duration>,
 }
@@ -151,17 +147,6 @@ impl Hop {
 
     pub fn is_dead(&self) -> bool {
         self.state.lock().dead_since.is_some()
-    }
-
-    /// The address the hop last answered on, if it has answered since it was
-    /// first dialed.
-    pub fn preferred(&self) -> Option<SocketAddr> {
-        self.state.lock().preferred
-    }
-
-    /// Remembers the address the hop answered on.
-    pub fn prefer(&self, addr: SocketAddr) {
-        self.state.lock().preferred = Some(addr);
     }
 
     /// How long the hop usually takes to answer a connection: a minimum of the

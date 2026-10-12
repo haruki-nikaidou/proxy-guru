@@ -686,11 +686,11 @@ async fn a_relay_that_does_not_answer_over_ipv4_is_reached_over_its_ipv6_alterna
     );
     for _ in 0..3 {
         assert_eq!(
-            reaches_within(listen, Duration::from_millis(300))
+            reaches_within(listen, Duration::from_millis(1500))
                 .await
                 .as_deref(),
             Some("far"),
-            "the address that answered goes first"
+            "IPv4 is tried first every time, and IPv6 takes over after the stagger"
         );
     }
     assert!(
@@ -700,6 +700,68 @@ async fn a_relay_that_does_not_answer_over_ipv4_is_reached_over_its_ipv6_alterna
     );
     entry.shutdown_all();
     transit.shutdown_all();
+}
+
+#[tokio::test]
+async fn a_relay_that_answers_over_ipv4_is_never_dialed_over_its_alternate() {
+    let Ok(probe) = std::net::TcpListener::bind("[::1]:0") else {
+        eprintln!("no IPv6 loopback here; skipping");
+        return;
+    };
+    let relay_v6 = probe.local_addr().unwrap();
+    drop(probe);
+    let relay_v4 = local(free_ports(1)[0]);
+    // Two listeners stand for the two families of one relay, each exiting to a
+    // backend that names the family it was reached over.
+    let mut relays = Vec::new();
+    for (listen, name) in [(relay_v4, "over v4"), (relay_v6, "over v6")] {
+        let exit_to = backend(name).await;
+        let mut relay = Supervisor::new();
+        apply(
+            &mut relay,
+            vec![table(
+                "relay",
+                listen,
+                ListenAs::Relay(RelayHost::Tcp),
+                "u:x",
+                vec![],
+                vec![exit("u:x", exit_to)],
+            )],
+        )
+        .await;
+        relays.push(relay);
+    }
+    let listen = local(free_ports(1)[0]);
+    let mut dual = relay("u:relay", relay_v4, true);
+    if let Target::Relay(target) = &mut dual.target {
+        target.alternates = vec![Remote::Address(relay_v6)];
+    }
+    let mut entry = Supervisor::new();
+    apply(
+        &mut entry,
+        vec![table(
+            "entry",
+            listen,
+            ListenAs::Raw,
+            "u:relay",
+            vec![],
+            vec![dual],
+        )],
+    )
+    .await;
+    for _ in 0..5 {
+        assert_eq!(
+            reaches_within(listen, Duration::from_millis(500))
+                .await
+                .as_deref(),
+            Some("over v4"),
+            "IPv6 is only a fallback"
+        );
+    }
+    entry.shutdown_all();
+    for relay in relays {
+        relay.shutdown_all();
+    }
 }
 
 // --- relays over TLS and QUIC -------------------------------------------------
