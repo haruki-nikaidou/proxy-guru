@@ -16,7 +16,7 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（1 以上である必要があります） |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（1 以上である必要があります） |
 | `--iggy-url` | `IGGY_URL` | *すべてのモードで必須* |
-| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | 空 = すべて（`0,1,2,3`）。`consumer` が読むパーティション（0 始まり、カンマ区切り） |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | `0`。`consumer` / `notifier` が読むパーティション（0 始まり、カンマ区切り） |
 | `--redis-url` | `REDIS_URL` | *`notifier` 以外のすべてのモードで必須* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（1 以上である必要があります） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
@@ -33,10 +33,11 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 **すべて**のモードで必須です。未設定なら起動は
 `Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090` で失敗します。
 どのモードも起動時にストリーム `guru` とトピック（`orchestration_canvas_dirty`、`orchestration_health_changed`、
-`notify_health_notice`、それぞれ 4 パーティション）を冪等に作成するため、事前に作るものはありません。
+`notify_health_notice`、それぞれ 1 パーティション、id `0`）を冪等に作成するため、事前に作るものはありません。
 consumer は起動時に `retry_<topic>` トピックも作成します。
 
-`--iggy-partitions` は `consumer` が読むパーティションを選びます。空ならすべて（`0,1,2,3`）です。`consumer` の
+`--iggy-partitions` は `consumer` / `notifier` が読むパーティションを選びます（既定は `0`）。すべてのパーティションを
+暗黙に読むことはありません。トピックを分割したら、各レプリカに自分の集合を明示的に与えてください。`consumer` の
 レプリカを複数動かす場合は、互いに重ならない集合を与えてください。レプリカは同じ consumer 名を共有するため、
 重なるとオフセットを奪い合います。ハンドラーが失敗した場合、データベースが応答しなければその場で再試行し、
 その他のデータベースエラーと衝突はキーを retry トピックへ送り（2、4、8、16 秒後に再試行）、それ以外は

@@ -101,17 +101,22 @@ src/
   `tree::RootOf`), never a free function taking a connection; a query that
   needs it calls `Helper { .. }.execute(&mut *conn).await?`.
 - A multi-statement write is one transaction with the statements in Rust order,
-  and every one is a `TxFlow`: a private `enum XFlow { Start(X), End(TxEnd<XFlow>) }`
+  and every one is a `TxFlow`, not a query: a public
+  `pub enum XFlow { Start(X), End(TxEnd<XFlow>) }` built with `XFlow::new(input)`,
   whose `Effect` is the union of the queries it runs, with `Commit = <output>`,
-  `Abort = Result<<output>, base::db::Error>` and `Report = ()`. `step` runs
-  each statement with `tx.run(query)` and ends with `base::db::commit(tx, v)`,
-  `base::db::rollback(tx, Error::Conflict(<token>))` when a fence loses, or
-  `base::db::refuse(tx, v)` for a refused conditional write
-  (`UPDATE … WHERE <fence> RETURNING …` that matches nothing: nothing written,
-  never an error). The public input keeps `impl Processor<X> for Db` calling
-  `base::db::transact(self, XFlow::Start(input))`, so callers write
-  `db.process(X { .. })`. A snapshot read is a flow whose `Effect` holds only
-  `Read`s (it begins `READ ONLY`) with
+  `Abort = base::db::Error` and `Report = ()`. `step` carries
+  `#[tracing::instrument(name = "Transaction:X", skip_all)]`, runs each
+  statement with `tx.run(query)` and ends with `base::db::commit(tx, v)` or
+  `base::db::rollback(tx, e)` (`Error::Conflict(<token>)` when a fence loses).
+  A conditional write (`UPDATE … WHERE <fence> RETURNING …`) that matches
+  nothing commits its empty result: nothing was written, and it is not an
+  error. There is no `impl Processor<X> for Db`: the caller runs
+  `db.process(Transaction(XFlow::new(X { .. })))` and folds the outcome itself —
+  `match … .await? { TxOutput::Committed(v) => v, TxOutput::RolledBack(e) => return Err(e.into()) }`;
+  `From<TxError> for OrchestrationError` turns a lost `COMMIT` answer into
+  `OrchestrationError::CommitUnknown` (gRPC `UNKNOWN`: it may have committed,
+  so it is never a conflict to retry). A snapshot read is a flow whose `Effect`
+  holds only `Read`s (it begins `READ ONLY`) with
   `const ISOLATION = Some(IsolationLevel::RepeatableRead)`. Transactions that
   write the same rows lock them in one order, or two of them deadlock: in
   `orchestration`, a write to a canvas tree takes the tree's root row first
@@ -264,7 +269,7 @@ src/
   indistinguishable span for every impl. Naming convention:
   - `entities/db` queries → `name = "Query:<Input>"` on `Execute::execute`
     (e.g. `"Query:FindAccountByEmail"`); a transaction gets
-    `name = "Query-Transaction:<Input>"` on its `Processor<Input> for Db` impl.
+    `name = "Transaction:<Input>"` on its flow's `step`.
     Helper queries and a flow's private statements carry no span of their own.
   - `services` operations → `name = "Service:<Input>"` (e.g.
     `"Service:RegisterAccount"`).

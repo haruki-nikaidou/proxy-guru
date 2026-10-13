@@ -77,10 +77,13 @@ Every module crate mirrors `modules/base`:
   touches, `Read<tables::X>` / `Write<tables::X>` over the per-crate table markers in
   `entities/db/tables.rs` — and `Execute<PgSource>`; `base::db::Db`
   (= `wakuwaku::entity::Db<PgSource, ReadWrite>`) runs it; `Execute` returns `base::db::Error`.
-  Every multi-statement transaction is a `TxFlow` state machine whose steps `tx.run` plain or helper
-  queries in order, run by `base::db::transact` and ended with `base::db::commit`, `rollback` (a
-  lost fence: `Error::Conflict`) or `refuse` (a refused conditional write: nothing written, not an
-  error); snapshot reads are read-only flows at `RepeatableRead`. Every statement goes through sqlx's `query!`
+  Every multi-statement transaction is a public `TxFlow` state machine (`XFlow::new(input)`) whose
+  steps `tx.run` plain or helper queries in order and end with `base::db::commit` or
+  `base::db::rollback` (a lost fence: `Error::Conflict`); a conditional write that matched nothing
+  commits its empty result. A flow is not a query: the caller runs
+  `db.process(Transaction(XFlow::new(..)))` and folds `TxOutput::Committed` / `RolledBack` itself,
+  and a lost `COMMIT` answer becomes `OrchestrationError::CommitUnknown` (gRPC `UNKNOWN`). Snapshot
+  reads are read-only flows at `RepeatableRead`. Every statement goes through sqlx's `query!`
   family, so the SQL is checked against the schema at compile time; behaviour is still covered by
   integration tests against a real database (`#[sqlx::test]`).
 - **`services`:** `Clone` structs owning their dependencies, one `Processor` impl per operation,
@@ -107,7 +110,7 @@ Every module crate mirrors `modules/base`:
 - **Lints:** crate-level `deny(clippy::unwrap_used)`, `expect_used` and `panic`. No panics on the
   request path.
 - **Tracing:** `#[tracing::instrument(skip_all, err)]` with an explicit span `name` —
-  `Query:<Input>` (or `Query-Transaction:<Input>`) for entities, `Service:<Input>` for services,
+  `Query:<Input>` for entities (`Transaction:<Input>` on a flow's `step`), `Service:<Input>` for services,
   `Hook:<Input>` for event handlers and cron jobs. gRPC handlers need none; the trait-method name
   already labels the span. Tracing is plain `tracing` + `tracing-subscriber`.
 

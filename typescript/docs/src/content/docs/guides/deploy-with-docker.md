@@ -258,7 +258,8 @@ What each mode is for, and how it scales:
 - **`consumer`** — the Iggy event handlers: it re-derives a canvas when a `CanvasDirty` event
   arrives and fans each `HealthChanged` event out into notices. This is the mode the operator
   API's edits wait on. Replicate it for throughput and for failover, but give every replica a
-  **disjoint** `GURU_IGGY_PARTITIONS` set (0-based; empty = all of `0,1,2,3`): replicas share the
+  **disjoint** `GURU_IGGY_PARTITIONS` set (0-based, default `0`; topics have one partition until you
+  split one, so a second replica needs a split topic first): replicas share the
   consumer names `guru_orchestration_canvas_dirty` and `guru_notify_health_changed` and would
   otherwise race on the stored offsets. Derivation is guarded by the canvas generation counter, so
   an event processed twice (delivery is at least once) is harmless.
@@ -318,7 +319,7 @@ running, and `cron` one line naming every job interval:
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
 master-consumer-1   | INFO guru_master: consuming
-master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases=AtLeast(30s) rotate_relay_certificates=AtLeast(3600s) sweep_liveness=AtLeast(30s) trim_health_history=AtLeast(300s) renew_certificates=AtLeast(60s) resolve_server_countries=AtLeast(60s)
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
 master-notifier-1   | INFO guru_master: consuming
 ```
@@ -695,7 +696,7 @@ usual Docker log driver.
 | Master exits immediately with `Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`, or with an Iggy connection error | `IGGY_URL` is unset, or the server is unreachable or rejects the credentials. All five modes require Iggy. Check that `docker compose exec iggy iggy -u <user> -p <password> stream list` works. |
 | Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. Every mode except `notifier` requires it. |
 | An open canvas or health page stops updating (a reload shows the change), or a `Watch*` stream stops delivering snapshots | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
-| Two `consumer` replicas process the same events twice | They read overlapping partitions under the same consumer names. Give each a disjoint `GURU_IGGY_PARTITIONS` set (0-based, out of `0,1,2,3`); empty means all of them. |
+| Two `consumer` replicas process the same events twice | They read overlapping partitions under the same consumer names. Give each a disjoint `GURU_IGGY_PARTITIONS` set (0-based, default `0`) after splitting the topic; nothing reads every partition implicitly. |
 | A second `notifier` exits with `another notifier already holds the advisory lock; run exactly one` | Expected: delivery is single-instance. Scale it to one replica, or stop the peer that holds the lock. |
 | `relation "…" does not exist` right after a clean install | The migrations never ran: the role in `GURU_DATABASE_URL` may lack `CREATE` on the database. Run `manage-tool db migrate` and read its error. |
 | `manage-tool` wrote to the wrong database | A `.env` in the working directory supplied `GURU_DATABASE_URL`. Always pass `--database-url`. |

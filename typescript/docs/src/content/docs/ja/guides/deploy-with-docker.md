@@ -256,7 +256,7 @@ services:
   届いたら通知をファンアウトします。ACME の発行と DNS-01 のチャレンジは `cron` 側なので、外向きの通信は
   主にデータベースと Iggy です。スループットとフェイルオーバーのためにレプリケートできますが、レプリカは
   同じ consumer 名を共有するため、`GURU_IGGY_PARTITIONS` で互いに重ならないパーティション集合（0 始まり、
-  既定はすべての `0,1,2,3`）を与えてください。導出はキャンバスの世代カウンターで保護されます。失敗した
+  既定は `0`。トピックは分割するまで 1 パーティションなので、2 台目のレプリカにはまずトピックの分割が必要です）を明示的に与えてください。導出はキャンバスの世代カウンターで保護されます。失敗した
   ハンドラーは、データベースが応答しなければその場で、その他のデータベースエラーと衝突は retry トピック
   経由で（2、4、8、16 秒後）再試行され、それ以外はログに残して破棄されます。
 - **`cron`** — 6 つの定期パスすべてをプロセス内で実行します: `derive_stale_canvases` と `sweep_liveness` は
@@ -312,7 +312,7 @@ docker compose logs master-dashboard master-workers master-consumer master-cron 
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
 master-consumer-1   | INFO guru_master: consuming
-master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases=AtLeast(30s) rotate_relay_certificates=AtLeast(3600s) sweep_liveness=AtLeast(30s) trim_health_history=AtLeast(300s) renew_certificates=AtLeast(60s) resolve_server_countries=AtLeast(60s)
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
 master-notifier-1   | INFO guru_master: consuming
 ```

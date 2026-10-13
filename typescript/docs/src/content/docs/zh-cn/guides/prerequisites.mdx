@@ -242,7 +242,7 @@ Docker 或其他主机管理权限。
 | PostgreSQL | **16 或更高版本。** 一个数据库，通过一个 URL 访问。控制平面自己拥有它的 schema：它会应用随二进制一起发布的 migration，因此它连接时所用的角色只需要对该数据库拥有普通的 `CREATE`/`ALTER` 权限，不需要任何集群级权限。 |
 | | **持久化存储**，放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。对这一个数据库执行 `pg_dump` 就是一份完整备份。 |
 | | **给连接池留出余量。** 每个 master 进程最多持有 `GURU_DB_POOL_SIZE` 个连接（默认 10 个），而五种模式都会连接数据库，所以请把 `max_connections` 留得明显高于 50。 |
-| Iggy | **服务端 0.9.x**（与 wakuwaku 1.0.0-rc1 所用的 Rust SDK 0.11 配套的版本）。控制平面会在启动时幂等地创建 stream `guru` 及其 topic（每个 4 个分区）和 `retry_<topic>` 重试 topic，因此无需预先创建——服务端创建的 root 用户就够了。 |
+| Iggy | **服务端 0.9.x**（与 wakuwaku 1.0.0-rc1 所用的 Rust SDK 0.11 配套的版本）。控制平面会在启动时幂等地创建 stream `guru` 及其 topic（每个 1 个分区，id 为 `0`）和 `retry_<topic>` 重试 topic，因此无需预先创建——服务端创建的 root 用户就够了。 |
 | | URL 形式：`iggy://<user>:<password>@<host>:8090`，通过 `IGGY_URL` 传入。 |
 | | 在**全部五种 master 模式中都是必需的**。它持久保存 `canvas_dirty` 提示、健康事实与通知的日志以及重试 topic，与 PostgreSQL 一起构成系统的全部持久状态。请把它当作依赖，而不是可选的优化。 |
 | Redis | **7.x 或更高版本。** 只用到 pub/sub —— 控制平面不在其中存储任何东西，不声明任何东西，也不需要持久化，因此任何可访问的服务端都可以，包括托管服务。整个集群共用一个实例：各副本正是通过它彼此发现的。 |
@@ -410,7 +410,7 @@ Compose 示例有一个细节需要解释。Iggy 把数据存放在容器内的 
 `./data/iggy`，因此重新创建容器不会丢失日志。Redis
 刻意没有卷：它的服务命令关掉了 RDB 与 AOF，因为经过它的一切都只是过路的实时事件。
 
-Iggy 的拓扑会自动为你创建：stream `guru`，以及各有 4 个分区的 topic `orchestration_canvas_dirty`、
+Iggy 的拓扑会自动为你创建：stream `guru`，以及各有 1 个分区（id `0`）的 topic `orchestration_canvas_dirty`、
 `orchestration_health_changed` 和 `notify_health_notice`；消费者启动时还会创建对应的 `retry_<topic>`
 （`consumer` 创建前两个，`notifier` 创建第三个）。六个周期任务不使用任何 topic：它们在 `cron` 进程内运行。
 手动检查健康状况：`docker exec guru-iggy iggy -u <user> -p <password> stream list`（原生安装则直接用 `iggy` CLI 加 `-u/-p`）。

@@ -74,9 +74,10 @@ Processor = State + async fn(Input) -> Result<Output, Error>
   实现 wakuwaku-entity 的 `Query`（其 `Effect` 为 `Read<tables::X>` / `Write<tables::X>`，作用于各 crate 在
   `entities/db/tables.rs` 中定义的表标记）与 `Execute<PgSource>`；由 `base::db::Db`（即
   `wakuwaku::entity::Db<PgSource, ReadWrite>`）执行；`Execute` 返回 `base::db::Error`。每个多语句事务都是一个
-  `TxFlow` 状态机，其步骤按顺序以 `tx.run` 执行普通查询或辅助查询，由 `base::db::transact` 运行，并以
-  `base::db::commit`、`rollback`（栅栏失败：`Error::Conflict`）或 `refuse`（条件写入被拒：什么都不写，也不算错误）
-  结束；快照读取是 `RepeatableRead` 隔离级别的只读事务流。所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在编译期就会按真实 schema 校验；行为
+  公开的 `TxFlow` 状态机（`XFlow::new(input)`），其步骤按顺序以 `tx.run` 执行普通查询或辅助查询，并以
+  `base::db::commit` 或 `base::db::rollback`（栅栏失败：`Error::Conflict`）结束；条件写入什么都没匹配到时，提交其空结果。
+  事务流不是查询：调用方执行 `db.process(Transaction(XFlow::new(..)))`，自行处理 `TxOutput::Committed` / `RolledBack`；
+  丢失的 `COMMIT` 应答变成 `OrchestrationError::CommitUnknown`（gRPC `UNKNOWN`）。快照读取是 `RepeatableRead` 隔离级别的只读事务流。所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在编译期就会按真实 schema 校验；行为
   仍然由针对真实数据库的集成测试覆盖（`#[sqlx::test]`）。
 - **`services`：** 持有自身依赖的 `Clone` 结构体，每个操作一个 `Processor` 实现，返回领域类型 ——
   绝不返回 protobuf 类型。
@@ -95,7 +96,7 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 - **Lint：** crate 级别 `deny(clippy::unwrap_used)`、`expect_used` 与 `panic`。请求路径上不允许
   panic。
 - **Tracing：** 只使用 `tracing` + `tracing-subscriber`（没有 OpenTelemetry）。使用 `#[tracing::instrument(skip_all, err)]` 并显式指定 span `name` —— entities 用
-  `Query:<Input>`（或 `Query-Transaction:<Input>`），services 用 `Service:<Input>`，hook processor 用
+  `Query:<Input>`（事务流的 `step` 用 `Transaction:<Input>`），services 用 `Service:<Input>`，hook processor 用
   `Hook:<Input>`。gRPC handler 不需要指定；trait 方法名本身就标识了 span。
 
 ## PostgreSQL 注意事项
