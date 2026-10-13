@@ -15,9 +15,8 @@ use crate::entities::db::tables::{
     OrchestrationCanvas, OrchestrationServer, OrchestrationServerConfigView,
 };
 use crate::entities::db::tree::TreeOf;
-use base::db::{Db, Error};
+use base::db::Error;
 use db_types::table_record;
-use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
@@ -452,9 +451,17 @@ impl Execute<PgSource> for ClearAppliedState<'_> {
     }
 }
 
-enum ForgetServerAppliedRowFlow {
+/// Clears the applied state of [`ForgetServerAppliedRow`] after the tree's
+/// root. Run it with `db.process(Transaction(ForgetServerAppliedRowFlow::new(input)))`.
+pub enum ForgetServerAppliedRowFlow {
     Start(ForgetServerAppliedRow),
     End(TxEnd<ForgetServerAppliedRowFlow>),
+}
+
+impl ForgetServerAppliedRowFlow {
+    pub fn new(input: ForgetServerAppliedRow) -> Self {
+        ForgetServerAppliedRowFlow::Start(input)
+    }
 }
 
 impl Query for ForgetServerAppliedRowFlow {
@@ -473,9 +480,10 @@ impl From<TxEnd<ForgetServerAppliedRowFlow>> for ForgetServerAppliedRowFlow {
 impl TxFlow for ForgetServerAppliedRowFlow {
     type Database = Postgres;
     type Commit = ();
-    type Abort = Result<(), Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:ForgetServerAppliedRow", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let ForgetServerAppliedRowFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -506,15 +514,6 @@ impl TxFlow for ForgetServerAppliedRowFlow {
             ForgetServerAppliedRowFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<ForgetServerAppliedRow> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:ForgetServerAppliedRow", skip_all, err)]
-    async fn process(&self, input: ForgetServerAppliedRow) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, ForgetServerAppliedRowFlow::Start(input)).await
     }
 }
 
@@ -598,12 +597,21 @@ impl Execute<PgSource> for DerivedViewSeq<'_> {
     }
 }
 
-// The terminal state carries the whole derivation input; the flow value lives
-// for one transaction, so boxing it would only add an allocation.
+/// Reads a [`DerivationInput`] in one snapshot; commits `None` when the canvas
+/// has been deleted. Run it with
+/// `db.process(Transaction(LoadCanvasDerivationInputFlow::new(input)))`.
+// The end carries the whole derivation input (~248 B), the start one canvas
+// id. One value per transaction; boxing would only add an allocation.
 #[allow(clippy::large_enum_variant)]
-enum LoadCanvasDerivationInputFlow {
+pub enum LoadCanvasDerivationInputFlow {
     Start(LoadCanvasDerivationInput),
     End(TxEnd<LoadCanvasDerivationInputFlow>),
+}
+
+impl LoadCanvasDerivationInputFlow {
+    pub fn new(input: LoadCanvasDerivationInput) -> Self {
+        LoadCanvasDerivationInputFlow::Start(input)
+    }
 }
 
 impl Query for LoadCanvasDerivationInputFlow {
@@ -619,10 +627,11 @@ impl From<TxEnd<LoadCanvasDerivationInputFlow>> for LoadCanvasDerivationInputFlo
 impl TxFlow for LoadCanvasDerivationInputFlow {
     type Database = Postgres;
     type Commit = Option<DerivationInput>;
-    type Abort = Result<Option<DerivationInput>, Error>;
+    type Abort = Error;
     type Report = ();
     const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
 
+    #[tracing::instrument(name = "Transaction:LoadCanvasDerivationInput", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let LoadCanvasDerivationInputFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -642,7 +651,7 @@ impl TxFlow for LoadCanvasDerivationInputFlow {
             .find(|c| c.id == rows.root)
             .map(|root| (root.generation, root.derived_generation))
         else {
-            return base::db::refuse(tx, None).await;
+            return base::db::commit(tx, None).await;
         };
         let (tx, derived_view_seq) = tx.run(DerivedViewSeq { root: &rows.root }).await;
         let derived_view_seq = match derived_view_seq {
@@ -677,16 +686,6 @@ impl TxFlow for LoadCanvasDerivationInputFlow {
             LoadCanvasDerivationInputFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<LoadCanvasDerivationInput> for Db {
-    /// `None` when the canvas has been deleted.
-    type Output = Option<DerivationInput>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:LoadCanvasDerivationInput", skip_all, err)]
-    async fn process(&self, input: LoadCanvasDerivationInput) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, LoadCanvasDerivationInputFlow::Start(input)).await
     }
 }
 
@@ -801,9 +800,18 @@ impl Execute<PgSource> for LevelSubcanvases<'_> {
     }
 }
 
-enum CommitCanvasDerivationFlow {
+/// Commits a derivation pass under its fence; commits `false` (nothing
+/// written) when the canvas moved on and the pass has to be redone. Run it
+/// with `db.process(Transaction(CommitCanvasDerivationFlow::new(input)))`.
+pub enum CommitCanvasDerivationFlow {
     Start(CommitCanvasDerivation),
     End(TxEnd<CommitCanvasDerivationFlow>),
+}
+
+impl CommitCanvasDerivationFlow {
+    pub fn new(input: CommitCanvasDerivation) -> Self {
+        CommitCanvasDerivationFlow::Start(input)
+    }
 }
 
 impl Query for CommitCanvasDerivationFlow {
@@ -822,9 +830,10 @@ impl From<TxEnd<CommitCanvasDerivationFlow>> for CommitCanvasDerivationFlow {
 impl TxFlow for CommitCanvasDerivationFlow {
     type Database = Postgres;
     type Commit = bool;
-    type Abort = Result<bool, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:CommitCanvasDerivation", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let CommitCanvasDerivationFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -844,7 +853,7 @@ impl TxFlow for CommitCanvasDerivationFlow {
             .await;
         let mut tx = match fenced {
             Ok(true) => tx,
-            Ok(false) => return base::db::refuse(tx, false).await,
+            Ok(false) => return base::db::commit(tx, false).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
         for update in &input.updates {
@@ -890,16 +899,6 @@ impl TxFlow for CommitCanvasDerivationFlow {
             CommitCanvasDerivationFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<CommitCanvasDerivation> for Db {
-    /// `false` when the canvas moved on and the pass has to be redone.
-    type Output = bool;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CommitCanvasDerivation", skip_all, err)]
-    async fn process(&self, input: CommitCanvasDerivation) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, CommitCanvasDerivationFlow::Start(input)).await
     }
 }
 

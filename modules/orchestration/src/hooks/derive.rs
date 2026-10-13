@@ -31,15 +31,16 @@ use crate::entities::db::ca::{
     FindInternalCa, ListRelayCertificatesByPods, ListRelayCertificatesExpiringBefore,
 };
 use crate::entities::db::canvas::CanvasId;
-use crate::entities::db::certificate::{ListCertificatesBySnis, TouchCanvases};
+use crate::entities::db::certificate::{ListCertificatesBySnis, TouchCanvases, TouchCanvasesFlow};
 use crate::entities::db::graph::GraphRows;
 use crate::entities::db::health::{InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus};
 use crate::entities::db::job_run::ClaimJobRun;
 use crate::entities::db::pod::{ListCanvasesOfPods, PodId};
 use crate::entities::db::server::ServerId;
 use crate::entities::db::view::{
-    CertificateRef, CommitCanvasDerivation, ConfigSnapshot, ListStaleCanvases,
-    LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
+    CertificateRef, CommitCanvasDerivation, CommitCanvasDerivationFlow, ConfigSnapshot,
+    ListStaleCanvases, LoadCanvasDerivationInput, LoadCanvasDerivationInputFlow,
+    ServerConfigViewEntity, ViewUpdate,
 };
 use crate::events::live::{LiveMessage, RolloutScope};
 use crate::events::{CanvasDirty, HealthFact};
@@ -59,6 +60,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 use time::{OffsetDateTime, PrimitiveDateTime};
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 use wakuwaku::iggy::EventHandler;
 use wakuwaku::iggy::error::HandleError;
 use wakuwaku::{CronJob, CronJobInterval, CronTick, ServiceCreation};
@@ -209,13 +211,14 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
     #[tracing::instrument(name = "Hook:DeriveCanvas", skip_all, err, fields(canvas = ?input.canvas))]
     async fn process(&self, input: DeriveCanvas) -> Result<Self::Output, Self::Error> {
         for _ in 0..MAX_ATTEMPTS {
-            let Some(state) = self
-                .db
-                .process(LoadCanvasDerivationInput {
-                    canvas: input.canvas.clone(),
-                })
-                .await?
-            else {
+            let flow = LoadCanvasDerivationInputFlow::new(LoadCanvasDerivationInput {
+                canvas: input.canvas.clone(),
+            });
+            let state = match self.db.process(Transaction(flow)).await? {
+                TxOutput::Committed(state) => state,
+                TxOutput::RolledBack(error) => return Err(error.into()),
+            };
+            let Some(state) = state else {
                 // The canvas was deleted; its servers keep their last config.
                 return Ok(());
             };
@@ -263,16 +266,17 @@ impl Processor<DeriveCanvas> for CanvasDeriver {
                 updates.push(update);
             }
 
-            if self
-                .db
-                .process(CommitCanvasDerivation {
-                    canvas: state.root.clone(),
-                    generation: state.generation,
-                    view_seq: state.view_seq,
-                    updates,
-                })
-                .await?
-            {
+            let flow = CommitCanvasDerivationFlow::new(CommitCanvasDerivation {
+                canvas: state.root.clone(),
+                generation: state.generation,
+                view_seq: state.view_seq,
+                updates,
+            });
+            let committed = match self.db.process(Transaction(flow)).await? {
+                TxOutput::Committed(committed) => committed,
+                TxOutput::RolledBack(error) => return Err(error.into()),
+            };
+            if committed {
                 // Status flips the moment a revision is published, not when the
                 // worker's next report happens to mention it.
                 let rows = self
@@ -536,12 +540,12 @@ pub async fn rotate_expiring_relay_certificates(
         .db
         .process(ListCanvasesOfPods { pods: rotated })
         .await?;
-    deriver
-        .db
-        .process(TouchCanvases {
-            canvases: canvases.clone(),
-        })
-        .await?;
+    if let Some(flow) = TouchCanvasesFlow::new(TouchCanvases {
+        canvases: canvases.clone(),
+    }) && let TxOutput::RolledBack(error) = deriver.db.process(Transaction(flow)).await?
+    {
+        return Err(error.into());
+    }
     for canvas in canvases {
         if let Err(e) = deriver.process(DeriveCanvas { canvas }).await {
             tracing::error!(error = %e, "re-deriving a canvas after rotation failed");

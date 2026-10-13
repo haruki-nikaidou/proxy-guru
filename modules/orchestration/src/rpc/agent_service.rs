@@ -2,8 +2,8 @@
 //! acknowledgement, health reporting and the remote-shell channel.
 
 use crate::entities::db::server::{
-    ClaimServerWatchSession, FindServerById, ReleaseServerWatchSession, RenewServerWatchSession,
-    ReportedAddresses, ServerEntity, ServerId,
+    ClaimServerWatchSession, ClaimServerWatchSessionFlow, FindServerById,
+    ReleaseServerWatchSession, RenewServerWatchSession, ReportedAddresses, ServerEntity, ServerId,
 };
 use crate::entities::db::view::TakeInFlight;
 use crate::events::live::RolloutScope;
@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 const STREAM_CAPACITY: usize = 4;
 /// How many down messages a worker's shell channel may have queued. Beyond it
@@ -363,17 +364,22 @@ impl pb::worker_agent_server::WorkerAgent for WorkerAgentGrpc {
         // generation still being current, so a request that authenticated just
         // before a registration rotated the key cannot open a stream afterwards.
         let now = OffsetDateTime::now_utc();
-        let server = self
+        let flow = ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
+            server: agent.server.clone(),
+            generation: agent.generation,
+            now,
+            lease_until: self.lease.until(now),
+        });
+        let server = match self
             .db
-            .process(ClaimServerWatchSession {
-                server: agent.server.clone(),
-                generation: agent.generation,
-                now,
-                lease_until: self.lease.until(now),
-            })
+            .process(Transaction(flow))
             .await
             .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::unauthenticated("refresh key superseded"))?;
+        {
+            TxOutput::Committed(server) => server,
+            TxOutput::RolledBack(error) => return Err(Status::internal(error.to_string())),
+        }
+        .ok_or_else(|| Status::unauthenticated("refresh key superseded"))?;
         let fence = WatchFence {
             generation: server.refresh_key_generation,
             epoch: server.watch_epoch,

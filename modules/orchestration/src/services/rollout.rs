@@ -4,8 +4,8 @@ use crate::entities::db::canvas::{CanvasEntity, CanvasId, FindRootCanvas};
 use crate::entities::db::server::FindCanvasOfServer;
 use crate::entities::db::server::{FindServerById, ServerEntity, ServerId};
 use crate::entities::db::view::{
-    ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, InvalidPod,
-    ServerConfigViewEntity,
+    ConfigSnapshot, FindServerConfigView, ForgetServerAppliedRow, ForgetServerAppliedRowFlow,
+    InvalidPod, ServerConfigViewEntity,
 };
 use crate::events::live::RolloutScope;
 use crate::services::OrchestrationError;
@@ -16,6 +16,7 @@ use auth::utils::rbac::Permission;
 use base::db::Db;
 use kanau::processor::Processor;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 #[derive(Clone)]
 pub struct RolloutService {
@@ -155,12 +156,13 @@ impl Processor<ForgetServerApplied> for RolloutService {
         }
         let canvas = canvas_of_server(&self.db, &input.server).await?;
         let server = input.server.to_string();
-        self.db
-            .process(ForgetServerAppliedRow {
-                server: input.server,
-                canvas: canvas.clone(),
-            })
-            .await?;
+        let flow = ForgetServerAppliedRowFlow::new(ForgetServerAppliedRow {
+            server: input.server,
+            canvas: canvas.clone(),
+        });
+        if let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await? {
+            return Err(error.into());
+        }
         self.notifier.notify(&canvas).await;
         self.notifier
             .rollout_changed(RolloutScope::Server(server))

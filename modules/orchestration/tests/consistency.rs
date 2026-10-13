@@ -17,16 +17,23 @@ mod common;
 use base::db::Db;
 use common::*;
 use kanau::processor::Processor;
-use orchestration::entities::db::canvas::{CanvasEntity, DeleteCanvasRow, FindCanvasById};
-use orchestration::entities::db::graph::{ApplyGraphBatch, LoadCanvasGraph, MoveGraphItems};
+use orchestration::entities::db::canvas::{
+    CanvasEntity, DeleteCanvasRow, DeleteCanvasRowFlow, FindCanvasById,
+};
+use orchestration::entities::db::graph::{
+    ApplyGraphBatch, ApplyGraphBatchFlow, LoadCanvasGraph, LoadCanvasGraphFlow, MoveGraphItems,
+    MoveGraphItemsFlow,
+};
 use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use orchestration::entities::db::pod::PodIngress;
 use orchestration::entities::db::server::{
-    DeleteServerRow, FindServerById, ReportedAddresses, UpdateReportedAddresses,
-    UpdateServerSettings,
+    DeleteServerRow, DeleteServerRowFlow, FindServerById, ReportedAddresses,
+    UpdateReportedAddresses, UpdateReportedAddressesFlow, UpdateServerSettings,
+    UpdateServerSettingsFlow,
 };
 use orchestration::entities::db::view::{
-    CommitCanvasDerivation, ConfigSnapshot, FindServerConfigView, ViewUpdate,
+    CommitCanvasDerivation, CommitCanvasDerivationFlow, ConfigSnapshot, FindServerConfigView,
+    ViewUpdate,
 };
 use orchestration::hooks::derive::DeriveCanvas;
 use orchestration::services::OrchestrationError;
@@ -37,6 +44,16 @@ use sqlx::PgPool;
 use std::future::Future;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxError, TxOutput};
+
+/// The value a raced transaction committed; anything else fails the test.
+fn landed<C>(outcome: Result<TxOutput<C, base::db::Error>, TxError>, what: &str) -> C {
+    match outcome {
+        Ok(TxOutput::Committed(value)) => value,
+        Ok(TxOutput::RolledBack(error)) => panic!("{what}: rolled back: {error:?}"),
+        Err(error) => panic!("{what}: {error:?}"),
+    }
+}
 
 /// Two relay pods that each dial the other close a loop. Drawing either edge
 /// alone is legal; drawing both is a cycle. Two operators who each check against
@@ -154,11 +171,13 @@ async fn concurrent_edits_that_jointly_form_a_cycle_do_not_both_commit(
         "exactly one of the jointly-invalid pair may commit: {first:?} {second:?}"
     );
 
-    let after =
-        w.db.process(LoadCanvasGraph {
+    let after = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     assert_eq!(after.edges.len(), 1, "only the winning edge persists");
     Ok(())
 }
@@ -399,20 +418,26 @@ async fn a_derivation_commit_and_an_address_report_do_not_deadlock(pool: PgPool)
         s.id.as_str(),
         {
             let sp = sp.clone();
-            async move { sp.process(commit).await }
+            async move {
+                sp.process(Transaction(CommitCanvasDerivationFlow::new(commit)))
+                    .await
+            }
         },
         {
             let sp = sp.clone();
-            async move { sp.process(report).await }
+            async move {
+                sp.process(Transaction(UpdateReportedAddressesFlow::new(report)))
+                    .await
+            }
         },
     )
     .await;
     assert!(
-        committed.expect("the commit is not aborted"),
+        landed(committed, "the commit is not aborted"),
         "nothing moved the canvas, so the pass publishes"
     );
     assert!(
-        reported.expect("the report is not aborted"),
+        landed(reported, "the report is not aborted"),
         "and the report lands"
     );
 
@@ -471,7 +496,12 @@ async fn a_subcanvas_deleted_while_its_tree_derives_does_not_deadlock(pool: PgPo
     let delete = {
         let db = w.db.clone();
         let id = sub.id.clone();
-        async move { db.process(DeleteCanvasRow { id }).await }
+        async move {
+            db.process(Transaction(DeleteCanvasRowFlow::new(DeleteCanvasRow {
+                id,
+            })))
+            .await
+        }
     };
     let (deleted, derived) = race(
         &pool,
@@ -481,7 +511,7 @@ async fn a_subcanvas_deleted_while_its_tree_derives_does_not_deadlock(pool: PgPo
         deriving(&w, &root),
     )
     .await;
-    deleted.expect("the delete commits");
+    landed(deleted, "the delete commits");
     derived.expect("the derivation is not aborted");
 
     assert!(w.db.process(FindServerById { id: s.id }).await?.is_none());
@@ -523,16 +553,22 @@ async fn a_server_edited_while_it_is_deleted_does_not_deadlock(pool: PgPool) -> 
         s.id.as_str(),
         {
             let sp = sp.clone();
-            async move { sp.process(update).await }
+            async move {
+                sp.process(Transaction(UpdateServerSettingsFlow::new(update)))
+                    .await
+            }
         },
         {
             let sp = sp.clone();
-            async move { sp.process(delete).await }
+            async move {
+                sp.process(Transaction(DeleteServerRowFlow::new(delete)))
+                    .await
+            }
         },
     )
     .await;
-    assert_eq!(updated.expect("the edit commits").name, "tokyo-1");
-    deleted.expect("the delete commits after it");
+    assert_eq!(landed(updated, "the edit commits").name, "tokyo-1");
+    landed(deleted, "the delete commits after it");
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
     Ok(())
 }
@@ -561,17 +597,25 @@ async fn items_moved_while_their_subcanvas_is_deleted_do_not_deadlock(pool: PgPo
         origin.id.as_str(),
         {
             let sp = sp.clone();
-            async move { sp.process(moves).await }
+            async move {
+                sp.process(Transaction(MoveGraphItemsFlow::new(moves)))
+                    .await
+            }
         },
         {
             let sp = sp.clone();
             let id = sub.id.clone();
-            async move { sp.process(DeleteCanvasRow { id }).await }
+            async move {
+                sp.process(Transaction(DeleteCanvasRowFlow::new(DeleteCanvasRow {
+                    id,
+                })))
+                .await
+            }
         },
     )
     .await;
-    moved.expect("the move commits");
-    deleted.expect("the delete commits after it");
+    landed(moved, "the move commits");
+    landed(deleted, "the delete commits after it");
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
     Ok(())
 }
@@ -596,19 +640,22 @@ async fn groups_rewritten_while_their_server_is_deleted_do_not_deadlock(
         members: vec![GroupMember::Server(s.id.clone())],
     };
     let before = group("before");
-    sp.process(ApplyGraphBatch {
-        canvas: Some(c.id.clone()),
-        insert_groups: vec![before.clone()],
-        ..ApplyGraphBatch::default()
-    })
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(c.id.clone()),
+            insert_groups: vec![before.clone()],
+            ..ApplyGraphBatch::default()
+        })?,
+    )
     .await?;
 
-    let regroup = ApplyGraphBatch {
+    let regroup = ApplyGraphBatchFlow::new(ApplyGraphBatch {
         canvas: Some(c.id.clone()),
         delete_groups: vec![before.id.clone()],
         insert_groups: vec![group("after")],
         ..ApplyGraphBatch::default()
-    };
+    })?;
     let delete = DeleteServerRow {
         id: s.id.clone(),
         canvas: c.id.clone(),
@@ -620,16 +667,19 @@ async fn groups_rewritten_while_their_server_is_deleted_do_not_deadlock(
         c.id.as_str(),
         {
             let sp = sp.clone();
-            async move { sp.process(regroup).await }
+            async move { sp.process(Transaction(regroup)).await }
         },
         {
             let sp = sp.clone();
-            async move { sp.process(delete).await }
+            async move {
+                sp.process(Transaction(DeleteServerRowFlow::new(delete)))
+                    .await
+            }
         },
     )
     .await;
-    regrouped.expect("the groups commit");
-    deleted.expect("the delete commits after them");
+    landed(regrouped, "the groups commit");
+    landed(deleted, "the delete commits after them");
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
     Ok(())
 }

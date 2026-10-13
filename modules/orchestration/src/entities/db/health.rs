@@ -12,9 +12,8 @@ use crate::entities::db::server::ServerId;
 use crate::entities::db::tables::{
     OrchestrationCanvas, OrchestrationPod, OrchestrationServer, PodHealthRecord, ServerHealthRecord,
 };
-use base::db::{Db, Error};
+use base::db::Error;
 use db_types::{table_record, text_enum};
-use kanau::processor::Processor;
 use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
@@ -256,9 +255,17 @@ pub struct InsertServerHealthRecord {
     pub pods: Vec<NewPodHealthRecord>,
 }
 
-enum InsertServerHealthRecordFlow {
+/// Run it with `db.process(Transaction(InsertServerHealthRecordFlow::new(..)))`;
+/// commits `None` when the server no longer holds `generation`.
+pub enum InsertServerHealthRecordFlow {
     Start(InsertServerHealthRecord),
     End(TxEnd<InsertServerHealthRecordFlow>),
+}
+
+impl InsertServerHealthRecordFlow {
+    pub fn new(input: InsertServerHealthRecord) -> Self {
+        InsertServerHealthRecordFlow::Start(input)
+    }
 }
 
 impl Query for InsertServerHealthRecordFlow {
@@ -280,9 +287,10 @@ impl From<TxEnd<InsertServerHealthRecordFlow>> for InsertServerHealthRecordFlow 
 impl TxFlow for InsertServerHealthRecordFlow {
     type Database = Postgres;
     type Commit = Option<HealthWrite>;
-    type Abort = Result<Option<HealthWrite>, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:InsertServerHealthRecord", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let InsertServerHealthRecordFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -294,11 +302,11 @@ impl TxFlow for InsertServerHealthRecordFlow {
             .await;
         let before = match r {
             Ok(Some(before)) => before,
-            Ok(None) => return base::db::refuse(tx, None).await,
+            Ok(None) => return base::db::commit(tx, None).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
         if before.refresh_key_generation != input.generation {
-            return base::db::refuse(tx, None).await;
+            return base::db::commit(tx, None).await;
         }
         let (tx, r) = tx
             .run(MarkServerReported {
@@ -355,16 +363,6 @@ impl TxFlow for InsertServerHealthRecordFlow {
     }
 }
 
-impl Processor<InsertServerHealthRecord> for Db {
-    /// `None` when the server no longer holds `generation`.
-    type Output = Option<HealthWrite>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:InsertServerHealthRecord", skip_all, err)]
-    async fn process(&self, input: InsertServerHealthRecord) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, InsertServerHealthRecordFlow::Start(input)).await
-    }
-}
-
 /// A status change that is not a report (the master noticed the worker is gone):
 /// writes the status and a zero-counter record, but leaves
 /// `last_health_report_at` alone — only the worker's own report advances it.
@@ -385,9 +383,17 @@ pub struct SetServerHealthStatus {
     pub now: OffsetDateTime,
 }
 
-enum SetServerHealthStatusFlow {
+/// Run it with `db.process(Transaction(SetServerHealthStatusFlow::new(..)))`;
+/// commits `None` when nothing changed.
+pub enum SetServerHealthStatusFlow {
     Start(SetServerHealthStatus),
     End(TxEnd<SetServerHealthStatusFlow>),
+}
+
+impl SetServerHealthStatusFlow {
+    pub fn new(input: SetServerHealthStatus) -> Self {
+        SetServerHealthStatusFlow::Start(input)
+    }
 }
 
 impl Query for SetServerHealthStatusFlow {
@@ -407,9 +413,10 @@ impl From<TxEnd<SetServerHealthStatusFlow>> for SetServerHealthStatusFlow {
 impl TxFlow for SetServerHealthStatusFlow {
     type Database = Postgres;
     type Commit = Option<HealthWrite>;
-    type Abort = Result<Option<HealthWrite>, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:SetServerHealthStatus", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let SetServerHealthStatusFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -421,17 +428,17 @@ impl TxFlow for SetServerHealthStatusFlow {
             .await;
         let before = match r {
             Ok(Some(before)) => before,
-            Ok(None) => return base::db::refuse(tx, None).await,
+            Ok(None) => return base::db::commit(tx, None).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
         if before.health_status == input.status {
-            return base::db::refuse(tx, None).await;
+            return base::db::commit(tx, None).await;
         }
         if input
             .generation
             .is_some_and(|generation| generation != before.refresh_key_generation)
         {
-            return base::db::refuse(tx, None).await;
+            return base::db::commit(tx, None).await;
         }
         let (tx, r) = tx
             .run(WriteServerHealthStatus {
@@ -471,16 +478,6 @@ impl TxFlow for SetServerHealthStatusFlow {
             SetServerHealthStatusFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<SetServerHealthStatus> for Db {
-    /// `None` when nothing changed.
-    type Output = Option<HealthWrite>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:SetServerHealthStatus", skip_all, err)]
-    async fn process(&self, input: SetServerHealthStatus) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, SetServerHealthStatusFlow::Start(input)).await
     }
 }
 

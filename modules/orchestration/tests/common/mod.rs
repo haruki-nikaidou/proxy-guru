@@ -9,12 +9,15 @@ use auth::utils::validation::prove_email;
 use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
-use orchestration::entities::db::canvas::{CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas};
+use orchestration::entities::db::canvas::{
+    CanvasEntity, CanvasId, CanvasUiPosition, CreateCanvas, CreateCanvasFlow,
+};
 use orchestration::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget, IpFamily};
 use orchestration::entities::db::exit::{ExitEntity, ExitId};
+use orchestration::entities::db::graph::{ApplyGraphBatch, ApplyGraphBatchFlow};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{
-    CreateServer, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
+    CreateServer, CreateServerFlow, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{FindServerConfigView, ServerConfigViewEntity};
 use orchestration::hooks::derive::{CanvasDeriver, DeriveCanvas};
@@ -35,8 +38,23 @@ use orchestration::services::shell::{ShellDownPublisher, ShellService, ShellTimi
 use orchestration::services::shell_channel::{ShellChannels, ShellUpPublisher};
 use orchestration::utils::secret::SecretKey;
 use std::sync::Arc;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxError, TxFlow, TxOutput};
 
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Runs `flow` as a transaction and returns what it committed; a rollback or a
+/// transaction failure is an error. Tests asserting a rollback match the
+/// `TxOutput` themselves.
+pub async fn committed<F>(db: &Db, flow: F) -> Result<F::Commit, Box<dyn std::error::Error>>
+where
+    F: TxFlow<Abort = base::db::Error>,
+    Db: Processor<Transaction<F>, Output = TxOutput<F::Commit, base::db::Error>, Error = TxError>,
+{
+    match db.process(Transaction(flow)).await? {
+        TxOutput::Committed(value) => Ok(value),
+        TxOutput::RolledBack(error) => Err(error.into()),
+    }
+}
 
 /// The database `#[sqlx::test]` created for this test, migrated with the
 /// workspace schema, wrapped in the handle services hold. Raw SQL in a test
@@ -49,13 +67,16 @@ pub fn pos(x: i64, y: i64) -> CanvasUiPosition {
     CanvasUiPosition { x, y }
 }
 
-pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, base::db::Error> {
-    sp.process(CreateCanvas {
-        name: name.to_string(),
-        description: String::new(),
-        parent: None,
-        position: pos(0, 0),
-    })
+pub async fn canvas(sp: &Db, name: &str) -> Result<CanvasEntity, Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        CreateCanvasFlow::new(CreateCanvas {
+            name: name.to_string(),
+            description: String::new(),
+            parent: None,
+            position: pos(0, 0),
+        }),
+    )
     .await
 }
 
@@ -63,13 +84,16 @@ pub async fn subcanvas(
     sp: &Db,
     parent: &CanvasEntity,
     name: &str,
-) -> Result<CanvasEntity, base::db::Error> {
-    sp.process(CreateCanvas {
-        name: name.to_string(),
-        description: String::new(),
-        parent: Some(parent.id.clone()),
-        position: pos(0, 0),
-    })
+) -> Result<CanvasEntity, Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        CreateCanvasFlow::new(CreateCanvas {
+            name: name.to_string(),
+            description: String::new(),
+            parent: Some(parent.id.clone()),
+            position: pos(0, 0),
+        }),
+    )
     .await
 }
 
@@ -77,7 +101,7 @@ pub async fn server(
     sp: &Db,
     canvas: &CanvasEntity,
     name: &str,
-) -> Result<ServerEntity, base::db::Error> {
+) -> Result<ServerEntity, Box<dyn std::error::Error>> {
     server_at(sp, canvas, name, "203.0.113.10").await
 }
 
@@ -88,19 +112,22 @@ pub async fn server_at(
     canvas: &CanvasEntity,
     name: &str,
     address: &str,
-) -> Result<ServerEntity, base::db::Error> {
-    sp.process(CreateServer {
-        canvas: canvas.id.clone(),
-        name: name.to_string(),
-        icon: String::new(),
-        comment: String::new(),
-        position: pos(0, 0),
-        ipv6_resolve: ServerIpv6Resolve::Tolerated,
-        log_level: ServerLogLevel::Info,
-        override_v4: Some(address.to_string()),
-        override_v6: None,
-        extra_addresses: Vec::new(),
-    })
+) -> Result<ServerEntity, Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        CreateServerFlow::new(CreateServer {
+            canvas: canvas.id.clone(),
+            name: name.to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: pos(0, 0),
+            ipv6_resolve: ServerIpv6Resolve::Tolerated,
+            log_level: ServerLogLevel::Info,
+            override_v4: Some(address.to_string()),
+            override_v6: None,
+            extra_addresses: Vec::new(),
+        }),
+    )
     .await
 }
 
@@ -111,19 +138,22 @@ pub async fn server_dual(
     name: &str,
     v4: &str,
     v6: &str,
-) -> Result<ServerEntity, base::db::Error> {
-    sp.process(CreateServer {
-        canvas: canvas.id.clone(),
-        name: name.to_string(),
-        icon: String::new(),
-        comment: String::new(),
-        position: pos(0, 0),
-        ipv6_resolve: ServerIpv6Resolve::Tolerated,
-        log_level: ServerLogLevel::Info,
-        override_v4: Some(v4.to_string()),
-        override_v6: Some(v6.to_string()),
-        extra_addresses: Vec::new(),
-    })
+) -> Result<ServerEntity, Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        CreateServerFlow::new(CreateServer {
+            canvas: canvas.id.clone(),
+            name: name.to_string(),
+            icon: String::new(),
+            comment: String::new(),
+            position: pos(0, 0),
+            ipv6_resolve: ServerIpv6Resolve::Tolerated,
+            log_level: ServerLogLevel::Info,
+            override_v4: Some(v4.to_string()),
+            override_v6: Some(v6.to_string()),
+            extra_addresses: Vec::new(),
+        }),
+    )
     .await
 }
 
@@ -272,15 +302,18 @@ pub async fn insert_rows(
     pods: Vec<PodEntity>,
     exits: Vec<ExitEntity>,
     edges: Vec<EdgeEntity>,
-) -> Result<(), base::db::Error> {
-    sp.process(orchestration::entities::db::graph::ApplyGraphBatch {
-        canvas: Some(canvas.id.clone()),
-        derives: true,
-        insert_pods: pods,
-        insert_exits: exits,
-        insert_edges: edges,
-        ..Default::default()
-    })
+) -> Result<(), Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(canvas.id.clone()),
+            derives: true,
+            insert_pods: pods,
+            insert_exits: exits,
+            insert_edges: edges,
+            ..Default::default()
+        })?,
+    )
     .await?;
     Ok(())
 }
@@ -291,14 +324,17 @@ pub async fn delete_rows(
     canvas: &CanvasEntity,
     pods: Vec<PodId>,
     edges: Vec<EdgeId>,
-) -> Result<(), base::db::Error> {
-    sp.process(orchestration::entities::db::graph::ApplyGraphBatch {
-        canvas: Some(canvas.id.clone()),
-        derives: true,
-        delete_pods: pods,
-        delete_edges: edges,
-        ..Default::default()
-    })
+) -> Result<(), Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(canvas.id.clone()),
+            derives: true,
+            delete_pods: pods,
+            delete_edges: edges,
+            ..Default::default()
+        })?,
+    )
     .await?;
     Ok(())
 }

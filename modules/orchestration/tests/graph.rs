@@ -9,7 +9,7 @@ use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::canvas::FindCanvasById;
 use orchestration::entities::db::edge::{EdgeTarget, IpFamily};
-use orchestration::entities::db::graph::LoadCanvasGraph;
+use orchestration::entities::db::graph::{LoadCanvasGraph, LoadCanvasGraphFlow};
 use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use orchestration::entities::db::pod::{PodEntity, PodIngress};
 use orchestration::entities::db::server::FindServerById;
@@ -46,11 +46,13 @@ async fn a_pod_put_with_port_zero_gets_a_free_port(pool: sqlx::PgPool) -> TestRe
     let ports: std::collections::HashSet<u16> = outcome.pods.iter().map(|p| p.port).collect();
     assert_eq!(ports.len(), 20, "no two pods share a port: {ports:?}");
     assert!(ports.iter().all(|p| DEFAULT_POD_PORTS.contains(p)));
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     let stored: std::collections::HashSet<u16> = graph.pods.iter().map(|p| p.port).collect();
     assert_eq!(stored, ports, "the ports written are the ports answered");
     Ok(())
@@ -112,11 +114,13 @@ async fn ids_must_be_well_formed_unique_and_this_trees(pool: sqlx::PgPool) -> Te
         .find(|d| d.problem == "id_in_use")
         .unwrap();
     assert_eq!(taken.subjects, vec![GraphSubject::Pod(pod_id("taken"))]);
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: prod.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     assert!(
         graph.pods.is_empty(),
         "nothing of a refused batch is written"
@@ -172,11 +176,13 @@ async fn an_edge_keeps_its_ends(pool: sqlx::PgPool) -> TestResult {
         )
         .await?;
     assert_eq!(problems(&refused), ["edge_ends_changed"]);
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     let stored = graph.edges.iter().find(|e| e.id == dial.id).unwrap();
     assert_eq!(stored.override_port, Some(19443));
     assert_eq!(stored.ip_family, IpFamily::V4);
@@ -256,11 +262,13 @@ async fn groups_follow_their_members(pool: sqlx::PgPool) -> TestResult {
         },
     )
     .await?;
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     assert_eq!(graph.groups[0].members, vec![GroupMember::Pod(a.id)]);
     Ok(())
 }
@@ -470,11 +478,13 @@ async fn items_move_without_touching_the_topology(pool: sqlx::PgPool) -> TestRes
         },
     )
     .await?;
-    let before =
-        w.db.process(LoadCanvasGraph {
+    let before = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: root.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     w.graph
         .process(MoveItems {
             actor: operator(),
@@ -487,11 +497,13 @@ async fn items_move_without_touching_the_topology(pool: sqlx::PgPool) -> TestRes
             canvases: vec![(sub.id.clone(), pos(5, 6))],
         })
         .await?;
-    let after =
-        w.db.process(LoadCanvasGraph {
+    let after = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: root.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     assert_eq!(after.generation(), before.generation());
     assert_eq!(after.servers[0].position, pos(1, 2));
     assert_eq!(after.exits[0].position, pos(3, 4));

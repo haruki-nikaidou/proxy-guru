@@ -6,11 +6,11 @@
 
 use crate::entities::db::canvas::{
     CanvasEntity, CanvasId, CanvasTree, CanvasUiPosition, CreateCanvas as CreateCanvasRow,
-    DeleteCanvasRow, FindCanvasById, ListCanvases as ListCanvasesRow, LoadCanvasTree,
-    UpdateCanvasMeta,
+    CreateCanvasFlow, DeleteCanvasRow, DeleteCanvasRowFlow, FindCanvasById,
+    ListCanvases as ListCanvasesRow, LoadCanvasTree, LoadCanvasTreeFlow, UpdateCanvasMeta,
 };
 use crate::entities::db::edge::EdgeTarget;
-use crate::entities::db::graph::LoadCanvasGraph;
+use crate::entities::db::graph::{LoadCanvasGraph, LoadCanvasGraphFlow};
 use crate::events::live::CanvasChangeKind;
 use crate::services::OrchestrationError;
 use crate::services::notify::Notifier;
@@ -19,6 +19,7 @@ use auth::utils::rbac::Permission;
 use base::db::Db;
 use kanau::processor::Processor;
 use std::collections::HashSet;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 #[derive(Clone)]
 pub struct CanvasService {
@@ -44,15 +45,16 @@ impl Processor<CreateCanvas> for CanvasService {
         if input.name.trim().is_empty() {
             return Err(OrchestrationError::Invalid("name must not be empty".into()));
         }
-        let canvas = self
-            .db
-            .process(CreateCanvasRow {
-                name: input.name,
-                description: input.description,
-                parent: input.parent.clone(),
-                position: input.position,
-            })
-            .await?;
+        let flow = CreateCanvasFlow::new(CreateCanvasRow {
+            name: input.name,
+            description: input.description,
+            parent: input.parent.clone(),
+            position: input.position,
+        });
+        let canvas = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(canvas) => canvas,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         if let Some(parent) = &input.parent {
             self.notifier
                 .canvas_changed(
@@ -99,12 +101,13 @@ impl Processor<GetCanvasTree> for CanvasService {
     #[tracing::instrument(name = "Service:GetCanvasTree", skip_all, err)]
     async fn process(&self, input: GetCanvasTree) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ViewWorkspace)?;
-        self.db
-            .process(LoadCanvasTree {
-                canvas: input.canvas,
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)
+        let flow = LoadCanvasTreeFlow::new(LoadCanvasTree {
+            canvas: input.canvas,
+        });
+        match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(tree) => tree.ok_or(OrchestrationError::NotFound),
+            TxOutput::RolledBack(error) => Err(error.into()),
+        }
     }
 }
 
@@ -195,19 +198,20 @@ impl Processor<DeleteCanvas> for CanvasService {
             })
             .await?
             .ok_or(OrchestrationError::NotFound)?;
-        let graph = self
-            .db
-            .process(LoadCanvasGraph {
-                canvas: input.canvas.clone(),
-            })
-            .await?;
-        let tree = self
-            .db
-            .process(LoadCanvasTree {
-                canvas: input.canvas.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: input.canvas.clone(),
+        });
+        let graph = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(graph) => graph,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
+        let flow = LoadCanvasTreeFlow::new(LoadCanvasTree {
+            canvas: input.canvas.clone(),
+        });
+        let tree = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(tree) => tree.ok_or(OrchestrationError::NotFound)?,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         let mut doomed: HashSet<CanvasId> = HashSet::new();
         if let Some(subtree) = find_subtree(&tree, &input.canvas) {
             collect(subtree, &mut doomed);
@@ -261,11 +265,12 @@ impl Processor<DeleteCanvas> for CanvasService {
                 pod.name
             )));
         }
-        self.db
-            .process(DeleteCanvasRow {
-                id: input.canvas.clone(),
-            })
-            .await?;
+        let flow = DeleteCanvasRowFlow::new(DeleteCanvasRow {
+            id: input.canvas.clone(),
+        });
+        if let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await? {
+            return Err(error.into());
+        }
         if let Some(parent) = &canvas.parent {
             self.notifier.notify(parent).await;
         }

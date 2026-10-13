@@ -385,9 +385,13 @@ async fn export_config(db: Db, server: String) -> Result<(), Box<dyn std::error:
         eprintln!("No server with key {server}");
         std::process::exit(1);
     };
-    let graph = db
-        .process(orchestration::entities::db::graph::LoadCanvasGraph { canvas: row.canvas })
-        .await?;
+    use orchestration::entities::db::graph::{LoadCanvasGraph, LoadCanvasGraphFlow};
+    use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
+    let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph { canvas: row.canvas });
+    let graph = match db.process(Transaction(flow)).await? {
+        TxOutput::Committed(graph) => graph,
+        TxOutput::RolledBack(error) => return Err(error.into()),
+    };
     let certificates = DerivationCertificates {
         acme: db
             .process(ListCertificatesBySnis {

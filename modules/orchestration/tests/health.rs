@@ -13,13 +13,14 @@ use orchestration::entities::db::canvas::CanvasEntity;
 use orchestration::entities::db::edge::EdgeEntity;
 use orchestration::entities::db::exit::ExitEntity;
 use orchestration::entities::db::health::{
-    InsertServerHealthRecord, ListPodHealthHistory, ListServerHealthHistory, NewPodHealthRecord,
-    PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
+    InsertServerHealthRecord, InsertServerHealthRecordFlow, ListPodHealthHistory,
+    ListServerHealthHistory, NewPodHealthRecord, PodHealthRecordEntity, PodHealthStatus,
+    ServerHealthRecordEntity, ServerHealthStatus,
 };
 use orchestration::entities::db::pod::{PodEntity, PodId};
 use orchestration::entities::db::server::{
-    ClaimServerWatchSession, FindServerById, RenewServerWatchSession, ServerEntity, ServerId,
-    ServerIpv6Resolve, ServerLogLevel,
+    ClaimServerWatchSession, ClaimServerWatchSessionFlow, FindServerById, RenewServerWatchSession,
+    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
 use orchestration::events::{HealthFact, health_facts};
@@ -759,15 +760,17 @@ async fn an_offline_server_held_by_a_session_that_never_reported_is_revoked(
 
     let agent = register(&w, &f.server).await?;
     let now = OffsetDateTime::now_utc();
-    let claimed =
-        w.db.process(ClaimServerWatchSession {
+    let claimed = committed(
+        &w.db,
+        ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
             server: f.server.clone(),
             generation: agent.generation,
             now,
             lease_until: now + Duration::seconds(30),
-        })
-        .await?
-        .unwrap();
+        }),
+    )
+    .await?
+    .unwrap();
     assert_eq!(claimed.health_status, ServerHealthStatus::Offline);
     let registered_at = claimed.registered_at.unwrap();
     assert!(
@@ -843,17 +846,20 @@ async fn a_session_that_keeps_reporting_is_never_revoked(pool: sqlx::PgPool) -> 
     // A report an hour into the session, and a sweep just after it.
     let reported_at = held.registered_at.unwrap() + Duration::hours(1);
     assert!(
-        w.db.process(InsertServerHealthRecord {
-            server: f.server.clone(),
-            generation: agent.generation,
-            status: ServerHealthStatus::Online,
-            report_time: reported_at,
-            upload_bytes: 0,
-            download_bytes: 0,
-            current_connections: 0,
-            max_connections: 0,
-            pods: Vec::new(),
-        })
+        committed(
+            &w.db,
+            InsertServerHealthRecordFlow::new(InsertServerHealthRecord {
+                server: f.server.clone(),
+                generation: agent.generation,
+                status: ServerHealthStatus::Online,
+                report_time: reported_at,
+                upload_bytes: 0,
+                download_bytes: 0,
+                current_connections: 0,
+                max_connections: 0,
+                pods: Vec::new(),
+            }),
+        )
         .await?
         .is_some()
     );
@@ -937,22 +943,25 @@ async fn retention_deletes_only_records_older_than_their_ttl(pool: sqlx::PgPool)
     let now = OffsetDateTime::now_utc();
     let now = now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)?;
     let insert = async |report_time: OffsetDateTime| {
-        w.db.process(InsertServerHealthRecord {
-            server: f.server.clone(),
-            generation: agent.generation,
-            status: ServerHealthStatus::Online,
-            report_time,
-            upload_bytes: 1,
-            download_bytes: 1,
-            current_connections: 1,
-            max_connections: 1,
-            pods: vec![NewPodHealthRecord {
-                pod: f.web.id.clone(),
-                status: PodHealthStatus::Ready,
-                message: String::new(),
+        committed(
+            &w.db,
+            InsertServerHealthRecordFlow::new(InsertServerHealthRecord {
+                server: f.server.clone(),
+                generation: agent.generation,
+                status: ServerHealthStatus::Online,
                 report_time,
-            }],
-        })
+                upload_bytes: 1,
+                download_bytes: 1,
+                current_connections: 1,
+                max_connections: 1,
+                pods: vec![NewPodHealthRecord {
+                    pod: f.web.id.clone(),
+                    status: PodHealthStatus::Ready,
+                    message: String::new(),
+                    report_time,
+                }],
+            }),
+        )
         .await
     };
     let stale = now - w.health.config.server_health_ttl() - Duration::hours(1);
@@ -991,17 +1000,20 @@ async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> OffsetDateT
     let stale =
         OffsetDateTime::now_utc() - w.health.config.health_offline_after() - Duration::hours(1);
     assert!(
-        w.db.process(InsertServerHealthRecord {
-            server: f.server.clone(),
-            generation,
-            status: ServerHealthStatus::Online,
-            report_time: stale,
-            upload_bytes: 0,
-            download_bytes: 0,
-            current_connections: 0,
-            max_connections: 0,
-            pods: Vec::new(),
-        })
+        committed(
+            &w.db,
+            InsertServerHealthRecordFlow::new(InsertServerHealthRecord {
+                server: f.server.clone(),
+                generation,
+                status: ServerHealthStatus::Online,
+                report_time: stale,
+                upload_bytes: 0,
+                download_bytes: 0,
+                current_connections: 0,
+                max_connections: 0,
+                pods: Vec::new(),
+            }),
+        )
         .await
         .unwrap()
         .is_some()
@@ -1383,22 +1395,25 @@ async fn a_health_write_carries_labels_and_announces_only_a_flip(pool: sqlx::PgP
     let agent = register(&w, &f.server).await?;
     let report_time = OffsetDateTime::now_utc();
     let online = async |report_time: OffsetDateTime| {
-        w.db.process(InsertServerHealthRecord {
-            server: f.server.clone(),
-            generation: agent.generation,
-            status: ServerHealthStatus::Online,
-            report_time,
-            upload_bytes: 0,
-            download_bytes: 0,
-            current_connections: 0,
-            max_connections: 0,
-            pods: vec![NewPodHealthRecord {
-                pod: f.web.id.clone(),
-                status: PodHealthStatus::Ready,
-                message: String::new(),
+        committed(
+            &w.db,
+            InsertServerHealthRecordFlow::new(InsertServerHealthRecord {
+                server: f.server.clone(),
+                generation: agent.generation,
+                status: ServerHealthStatus::Online,
                 report_time,
-            }],
-        })
+                upload_bytes: 0,
+                download_bytes: 0,
+                current_connections: 0,
+                max_connections: 0,
+                pods: vec![NewPodHealthRecord {
+                    pod: f.web.id.clone(),
+                    status: PodHealthStatus::Ready,
+                    message: String::new(),
+                    report_time,
+                }],
+            }),
+        )
         .await
     };
 

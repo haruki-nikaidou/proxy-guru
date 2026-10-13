@@ -12,7 +12,9 @@ use orchestration::entities::db::ca::{
     relay_sni,
 };
 use orchestration::entities::db::canvas::CanvasId;
-use orchestration::entities::db::certificate::{EnsureCertificate, StoreIssuedCertificate};
+use orchestration::entities::db::certificate::{
+    EnsureCertificate, StoreIssuedCertificate, TouchCanvases, TouchCanvasesFlow,
+};
 use orchestration::entities::db::dns::{CreateDnsProvider, DnsProvider};
 use orchestration::entities::db::health::{ListPodHealthHistory, PodHealthStatus};
 use orchestration::entities::db::pod::{PodEntity, PodId, PodIngress, TlsConfig};
@@ -532,10 +534,10 @@ async fn a_relay_tls_canvas_derives_once_the_ca_exists_and_follows_leaf_versions
     assert!(osaka.invalid_pods.is_empty() && tokyo.invalid_pods.is_empty());
 
     // A pass with nothing changed publishes nothing new.
-    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+    let touch = TouchCanvasesFlow::new(TouchCanvases {
         canvases: vec![f.canvas.clone()],
-    })
-    .await?;
+    });
+    committed(&w.db, touch.expect("one canvas to touch")).await?;
     w.derive(&f.canvas).await?;
     assert_eq!(w.view(&f.osaka).await?.desired.unwrap().revision, 2);
 
@@ -664,10 +666,10 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
         now: OffsetDateTime::now_utc(),
     })
     .await?;
-    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+    let touch = TouchCanvasesFlow::new(TouchCanvases {
         canvases: vec![f.canvas.clone()],
-    })
-    .await?;
+    });
+    committed(&w.db, touch.expect("one canvas to touch")).await?;
     w.derive(&f.canvas).await?;
     let tokyo = w.view(&f.tokyo).await?;
     let desired = tokyo.desired.as_ref().expect("tokyo publishes");
@@ -698,10 +700,10 @@ async fn publishing_a_tls_pod_marks_it_deploying(pool: sqlx::PgPool) -> TestResu
     );
 
     // A pass that changes nothing adds no records.
-    w.db.process(orchestration::entities::db::certificate::TouchCanvases {
+    let touch = TouchCanvasesFlow::new(TouchCanvases {
         canvases: vec![f.canvas.clone()],
-    })
-    .await?;
+    });
+    committed(&w.db, touch.expect("one canvas to touch")).await?;
     w.derive(&f.canvas).await?;
     assert_eq!(history(&f.ingress.id).await?.len(), 1);
     Ok(())

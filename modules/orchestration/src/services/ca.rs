@@ -19,7 +19,7 @@ use crate::entities::db::ca::{
     ListRelayCertificatesByPods, RelayCertificateEntity, StoreRelayCertificate, relay_sni,
 };
 use crate::entities::db::canvas::CanvasId;
-use crate::entities::db::certificate::{ListCertificatesByIds, TouchCanvases};
+use crate::entities::db::certificate::{ListCertificatesByIds, TouchCanvases, TouchCanvasesFlow};
 use crate::entities::db::pod::{ListCanvasesWithRelayTls, PodId};
 use crate::entities::db::view::{CertificateKind, CertificateRef};
 use crate::services::OrchestrationError;
@@ -33,6 +33,7 @@ use rcgen::{
 };
 use std::collections::HashMap;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 pub const CA_COMMON_NAME: &str = "guru internal relay CA";
 const CA_VALID_DAYS: i64 = 3650;
@@ -142,11 +143,12 @@ impl Processor<InitInternalCa> for CaService {
             ));
         }
         let touched_canvases = self.db.process(ListCanvasesWithRelayTls).await?;
-        self.db
-            .process(TouchCanvases {
-                canvases: touched_canvases.clone(),
-            })
-            .await?;
+        if let Some(flow) = TouchCanvasesFlow::new(TouchCanvases {
+            canvases: touched_canvases.clone(),
+        }) && let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await?
+        {
+            return Err(error.into());
+        }
         Ok(InitializedCa {
             certificate_pem,
             touched_canvases,

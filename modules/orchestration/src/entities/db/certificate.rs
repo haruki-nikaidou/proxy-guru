@@ -12,9 +12,8 @@ use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::fence;
 use crate::entities::db::pod::TlsConfig;
 use crate::entities::db::tables::{Certificate, OrchestrationCanvas, OrchestrationPod};
-use base::db::{Db, Error};
+use base::db::Error;
 use db_types::{table_record, text_enum};
-use kanau::processor::Processor;
 use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
@@ -510,9 +509,22 @@ pub struct TouchCanvases {
     pub canvases: Vec<CanvasId>,
 }
 
-enum TouchCanvasesFlow {
+/// Run it with `db.process(Transaction(flow))` for a flow from
+/// [`TouchCanvasesFlow::new`].
+pub enum TouchCanvasesFlow {
     Start(TouchCanvases),
     End(TxEnd<TouchCanvasesFlow>),
+}
+
+impl TouchCanvasesFlow {
+    /// `None` when there is nothing to touch (no transaction is needed).
+    pub fn new(input: TouchCanvases) -> Option<Self> {
+        if input.canvases.is_empty() {
+            None
+        } else {
+            Some(TouchCanvasesFlow::Start(input))
+        }
+    }
 }
 
 impl Query for TouchCanvasesFlow {
@@ -528,9 +540,10 @@ impl From<TxEnd<TouchCanvasesFlow>> for TouchCanvasesFlow {
 impl TxFlow for TouchCanvasesFlow {
     type Database = Postgres;
     type Commit = ();
-    type Abort = Result<(), Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:TouchCanvases", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let TouchCanvasesFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -551,17 +564,5 @@ impl TxFlow for TouchCanvasesFlow {
             TouchCanvasesFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<TouchCanvases> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:TouchCanvases", skip_all, err)]
-    async fn process(&self, input: TouchCanvases) -> Result<Self::Output, Self::Error> {
-        if input.canvases.is_empty() {
-            return Ok(());
-        }
-        base::db::transact(self, TouchCanvasesFlow::Start(input)).await
     }
 }
