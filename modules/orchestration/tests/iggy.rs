@@ -85,11 +85,7 @@ async fn an_edit_reaches_the_deriver_through_iggy(db_pool: sqlx::PgPool) -> Test
         .iggy_consumer::<CanvasDirtyHandler, CanvasDirty, _>()
         .start(
             iggy_client.clone(),
-            ConsumerConfig::new(
-                STREAM,
-                "guru_orchestration_canvas_dirty",
-                all_partitions(),
-            ),
+            ConsumerConfig::new(STREAM, "guru_orchestration_canvas_dirty", all_partitions()),
         )
         .await?;
 
