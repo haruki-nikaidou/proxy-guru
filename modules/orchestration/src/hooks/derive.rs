@@ -12,11 +12,12 @@
 //! `derived_generation`, so a dropped message, a broker outage or a crashed
 //! consumer costs at most one sweep interval.
 //!
-//! Neither periodic pass is an in-process loop any more. `--mode cron` publishes
-//! [`DeriveStaleCanvasesSignal`] and [`RotateRelayCertificatesSignal`] and this
-//! hook consumes them, so the work is spread over the consumer fleet and runs at
-//! most once per tick. The generation counters still carry correctness, so a
-//! lost or late signal costs latency, never a wrong config.
+//! [`CanvasDirtyHandler`] consumes the hint from Iggy (`--mode consumer`); the
+//! two periodic passes are `CronJob`s ([`DeriveStaleCanvasesJob`],
+//! [`RotateRelayCertificatesJob`]) run by `--mode cron`, each claiming its run
+//! so it happens at most once per interval fleet-wide. The generation counters
+//! still carry correctness, so a lost hint or a late run costs latency, never a
+//! wrong config.
 //!
 //! Certificates are part of the input: a pass first issues the relay leaves its
 //! tree needs (when the internal CA exists), then derives against the ACME rows,
@@ -41,9 +42,8 @@ use crate::entities::db::view::{
     LoadCanvasDerivationInput, ServerConfigViewEntity, ViewUpdate,
 };
 use crate::events::live::{LiveMessage, RolloutScope};
-use crate::events::{
-    CanvasDirty, DeriveStaleCanvasesSignal, HealthFact, RotateRelayCertificatesSignal,
-};
+use crate::events::{CanvasDirty, HealthFact};
+use crate::services::OrchestrationError;
 use crate::services::ca::{CaService, EnsureRelayCertificates, RotateRelayCertificate};
 use crate::services::converge::converge;
 use crate::services::derive::{
@@ -56,8 +56,12 @@ use base::db::Db;
 use guru_worker_config::{Config, Forwarding};
 use kanau::processor::Processor;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::time::Duration;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::integration::amqp::AmqpMessageProcessor;
+use wakuwaku::iggy::EventHandler;
+use wakuwaku::iggy::error::HandleError;
+use wakuwaku::{CronJob, CronJobInterval, CronTick, ServiceCreation};
 
 /// How many times one pass retries after losing the generation race before it
 /// leaves the canvas to the next message or sweep tick.
@@ -68,25 +72,50 @@ pub struct CanvasDeriver {
     pub db: Db,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
-    /// A derivation pass publishes no AMQP event, but it does move every
+    /// A derivation pass publishes no Iggy event, but it does move every
     /// server's rollout state, which is what the dashboard's rollout views
     /// follow.
     pub notifier: Notifier,
 }
 
-/// Derives one canvas. The typed input the AMQP consumer and the sweeper share.
+/// Derives one canvas. The typed input the Iggy consumer and the sweeper share.
 pub struct DeriveCanvas {
     pub canvas: CanvasId,
 }
 
-impl AmqpMessageProcessor<CanvasDirty> for CanvasDeriver {
-    const QUEUE: &'static str = "guru_orchestration_canvas_dirty";
+/// Consumes [`CanvasDirty`] from Iggy (`--mode consumer`, consumer
+/// `guru_orchestration_canvas_dirty`): derives the canvas each hint names.
+pub struct CanvasDirtyHandler {
+    pub deriver: CanvasDeriver,
+}
+
+impl ServiceCreation for CanvasDirtyHandler {
+    type Dep = CanvasDeriver;
+    fn create_service(deriver: CanvasDeriver) -> Self {
+        Self { deriver }
+    }
+}
+
+impl EventHandler<CanvasDirty> for CanvasDirtyHandler {
+    const MAX_BATCH: NonZeroUsize = NonZeroUsize::MIN;
+
+    #[tracing::instrument(name = "Hook:CanvasDirty", skip_all, err)]
+    async fn handle(&self, run: &[CanvasDirty]) -> Result<(), HandleError> {
+        for event in run {
+            self.deriver
+                .process(DeriveCanvas {
+                    canvas: ids::canvas_id(&event.canvas),
+                })
+                .await
+                .map_err(OrchestrationError::into_handle_error)?;
+        }
+        Ok(())
+    }
 }
 
 impl Processor<CanvasDirty> for CanvasDeriver {
     type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:CanvasDirty", skip_all, err, fields(canvas = %input.canvas))]
+    type Error = OrchestrationError;
     async fn process(&self, input: CanvasDirty) -> Result<Self::Output, Self::Error> {
         <Self as Processor<DeriveCanvas>>::process(
             self,
@@ -98,60 +127,85 @@ impl Processor<CanvasDirty> for CanvasDeriver {
     }
 }
 
-impl AmqpMessageProcessor<DeriveStaleCanvasesSignal> for CanvasDeriver {
-    const QUEUE: &'static str = "guru_orchestration_derive_stale_canvases";
+/// Derives every canvas whose edits outran their derivation, at most once per
+/// `sweep_interval` fleet-wide. The backstop for a lost [`CanvasDirty`].
+pub struct DeriveStaleCanvasesJob {
+    pub deriver: CanvasDeriver,
 }
 
-impl Processor<DeriveStaleCanvasesSignal> for CanvasDeriver {
-    type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:DeriveStaleCanvasesSignal", skip_all, err)]
-    async fn process(&self, input: DeriveStaleCanvasesSignal) -> Result<Self::Output, Self::Error> {
-        if !self
-            .db
-            .process(ClaimJobRun::for_tick(
-                "derive_stale_canvases",
-                self.config.sweep_interval(),
-                input.tick_time(),
-            ))
-            .await?
-        {
-            return Ok(());
-        }
-        sweep_stale_canvases(self).await
+impl ServiceCreation for DeriveStaleCanvasesJob {
+    type Dep = CanvasDeriver;
+    fn create_service(deriver: CanvasDeriver) -> Self {
+        Self { deriver }
     }
 }
 
-impl AmqpMessageProcessor<RotateRelayCertificatesSignal> for CanvasDeriver {
-    const QUEUE: &'static str = "guru_orchestration_rotate_relay_certificates";
+impl CronJob for DeriveStaleCanvasesJob {
+    const INTERVAL: CronJobInterval = CronJobInterval::AtLeast(Duration::from_secs(30));
 }
 
-impl Processor<RotateRelayCertificatesSignal> for CanvasDeriver {
+impl Processor<CronTick> for DeriveStaleCanvasesJob {
     type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:RotateRelayCertificatesSignal", skip_all, err)]
-    async fn process(
-        &self,
-        input: RotateRelayCertificatesSignal,
-    ) -> Result<Self::Output, Self::Error> {
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Hook:DeriveStaleCanvasesJob", skip_all, err)]
+    async fn process(&self, tick: CronTick) -> Result<Self::Output, Self::Error> {
         if !self
+            .deriver
             .db
             .process(ClaimJobRun::for_tick(
-                "rotate_relay_certificates",
-                self.config.relay_rotation_interval(),
-                input.tick_time(),
+                "derive_stale_canvases",
+                self.deriver.config.sweep_interval(),
+                OffsetDateTime::from(tick.fired_at),
             ))
             .await?
         {
             return Ok(());
         }
-        rotate_expiring_relay_certificates(self).await
+        sweep_stale_canvases(&self.deriver).await
+    }
+}
+
+/// Re-issues relay leaves that are about to expire and re-derives their
+/// canvases, at most once per `relay_rotation_interval` fleet-wide.
+pub struct RotateRelayCertificatesJob {
+    pub deriver: CanvasDeriver,
+}
+
+impl ServiceCreation for RotateRelayCertificatesJob {
+    type Dep = CanvasDeriver;
+    fn create_service(deriver: CanvasDeriver) -> Self {
+        Self { deriver }
+    }
+}
+
+impl CronJob for RotateRelayCertificatesJob {
+    const INTERVAL: CronJobInterval = CronJobInterval::AtLeast(Duration::from_secs(3600));
+}
+
+impl Processor<CronTick> for RotateRelayCertificatesJob {
+    type Output = ();
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Hook:RotateRelayCertificatesJob", skip_all, err)]
+    async fn process(&self, tick: CronTick) -> Result<Self::Output, Self::Error> {
+        if !self
+            .deriver
+            .db
+            .process(ClaimJobRun::for_tick(
+                "rotate_relay_certificates",
+                self.deriver.config.relay_rotation_interval(),
+                OffsetDateTime::from(tick.fired_at),
+            ))
+            .await?
+        {
+            return Ok(());
+        }
+        rotate_expiring_relay_certificates(&self.deriver).await
     }
 }
 
 impl Processor<DeriveCanvas> for CanvasDeriver {
     type Output = ();
-    type Error = wakuwaku::Error;
+    type Error = OrchestrationError;
     #[tracing::instrument(name = "Hook:DeriveCanvas", skip_all, err, fields(canvas = ?input.canvas))]
     async fn process(&self, input: DeriveCanvas) -> Result<Self::Output, Self::Error> {
         for _ in 0..MAX_ATTEMPTS {
@@ -264,7 +318,7 @@ impl CanvasDeriver {
     async fn certificates(
         &self,
         graph: &GraphRows,
-    ) -> Result<DerivationCertificates, wakuwaku::Error> {
+    ) -> Result<DerivationCertificates, OrchestrationError> {
         let ca_present = self.db.process(FindInternalCa).await?.is_some();
         let relay_pods = relay_tls_pods(graph);
         if ca_present
@@ -422,11 +476,11 @@ fn deploying_records(
 
 /// One sweep pass: re-derives every canvas whose edits outran its derivation.
 ///
-/// This is what makes the AMQP path optional: correctness lives in the
+/// This is what makes the Iggy path optional: correctness lives in the
 /// generation counters, [`CanvasDirty`] only shortens the delay. A canvas that
 /// fails is logged and the pass continues; only a failure to list is returned,
 /// because then there is nothing to sweep.
-pub async fn sweep_stale_canvases(deriver: &CanvasDeriver) -> Result<(), wakuwaku::Error> {
+pub async fn sweep_stale_canvases(deriver: &CanvasDeriver) -> Result<(), OrchestrationError> {
     let canvases = deriver.db.process(ListStaleCanvases).await?;
     for canvas in canvases {
         if let Err(e) = deriver.process(DeriveCanvas { canvas }).await {
@@ -440,12 +494,12 @@ pub async fn sweep_stale_canvases(deriver: &CanvasDeriver) -> Result<(), wakuwak
 /// `relay_cert_renew_before` and re-derives the canvases of their pods, so the
 /// rotated material ships as a new revision. Callable directly by tests.
 ///
-/// A duplicate [`RotateRelayCertificatesSignal`] delivery cannot double-rotate a
+/// A duplicate [`RotateRelayCertificatesJob`] run cannot double-rotate a
 /// leaf: the write is conditional on the `version` the row was read at, so the
 /// second pass sees `None` and leaves the pod alone.
 pub async fn rotate_expiring_relay_certificates(
     deriver: &CanvasDeriver,
-) -> Result<(), wakuwaku::Error> {
+) -> Result<(), OrchestrationError> {
     let before = OffsetDateTime::now_utc()
         .checked_add(
             time::Duration::try_from(deriver.config.relay_cert_renew_before())

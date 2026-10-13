@@ -14,11 +14,12 @@
 //!   convergence, the worker agent and the remote-shell relay.
 //! - [`rpc`] — the transport edge: the operator `Orchestration` service and the
 //!   `WorkerAgent` service workers talk to, plus their middleware.
-//! - [`events`] — AMQP payloads this module publishes or consumes, and the live
+//! - [`events`] — Iggy events this module publishes or consumes, and the live
 //!   and remote-shell messages it relays over Redis.
-//! - [`hooks`] — background reactors: the derivation hook and its sweep, relay
-//!   leaf rotation, the health liveness sweep and retention, ACME renewal, and
-//!   the Redis subscribers.
+//! - [`hooks`] — background reactors: the derivation event handler, and the
+//!   cron jobs for the stale-canvas sweep, relay leaf rotation, the health
+//!   liveness sweep and retention, ACME renewal and country lookup; plus the
+//!   Redis subscribers.
 //! - [`config`] — [`config::OrchestrationConfig`], loaded from the database
 //!   under the `"orchestration"` key: health intervals and retention, ACME and
 //!   relay-certificate knobs.
@@ -37,8 +38,8 @@
 //!    published. Canvases nest by `parent`; the tree is the unit of checking and
 //!    derivation, and edges cross canvases freely.
 //! 2. [`hooks::derive`] re-derives the whole tree and commits only while the
-//!    root's generation still matches; a cron sweep catches anything the message
-//!    missed.
+//!    root's generation still matches; the `derive_stale_canvases` cron job
+//!    catches anything the event missed.
 //! 3. Derivation is convergent, not sequenced: a server switches a destination
 //!    only once the target's `applied` snapshot serves it, and keeps serving a
 //!    listener for as long as any snapshot still points at it.

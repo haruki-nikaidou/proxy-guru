@@ -6,13 +6,10 @@
 //! takes minutes and the providers rate-limit — and a failure is recorded on its
 //! row without stopping the pass.
 //!
-//! The pass is not run by the process that schedules it: `--mode cron` publishes
-//! [`RenewCertificatesSignal`] and this consumer does the work, so renewal fails
-//! over and scales like any other consumer. That takes two claims, not one:
+//! The pass is the [`RenewCertificatesJob`] `CronJob`, run by `--mode cron`.
+//! Several cron replicas may run at once, so it takes two claims, not one:
 //!
-//! * [`ClaimJobRun`] keeps one pass per configured `acme_interval` fleet-wide,
-//!   which is what AMQP's at-least-once delivery and horizontally scaled
-//!   consumers would otherwise break.
+//! * [`ClaimJobRun`] keeps one pass per configured `acme_interval` fleet-wide.
 //! * [`ClaimCertificateAttempt`] keeps one *order* per certificate. It is an
 //!   exact compare-and-set on the `last_attempt_at` the pass observed while
 //!   listing, not a time window: rows are ordered one at a time and an order
@@ -26,13 +23,14 @@
 
 use crate::entities::db::certificate::{ClaimCertificateAttempt, ListCertificatesDue};
 use crate::entities::db::job_run::ClaimJobRun;
-use crate::events::RenewCertificatesSignal;
+use crate::services::OrchestrationError;
 use crate::services::acme::{
     AcmeService, EnsureRequestedCertificates, IssueCertificate, IssueOutcome,
 };
 use kanau::processor::Processor;
+use std::time::Duration;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::integration::amqp::AmqpMessageProcessor;
+use wakuwaku::{CronJob, CronJobInterval, CronTick, ServiceCreation};
 
 /// One pass: ensure rows, then work through the due ones.
 pub async fn renew_due(acme: &AcmeService) {
@@ -107,28 +105,35 @@ pub async fn renew_due(acme: &AcmeService) {
 /// The `job_run` key this cron claims its fleet-wide pass under.
 const JOB: &str = "renew_certificates";
 
-/// Consumes the ACME renewal execution signal.
-#[derive(Clone)]
-pub struct AcmeCronHook {
+/// Ensures and renews ACME certificates, at most once per `acme_interval`
+/// fleet-wide.
+pub struct RenewCertificatesJob {
     pub acme: AcmeService,
 }
 
-impl AmqpMessageProcessor<RenewCertificatesSignal> for AcmeCronHook {
-    const QUEUE: &'static str = "guru_orchestration_renew_certificates";
+impl ServiceCreation for RenewCertificatesJob {
+    type Dep = AcmeService;
+    fn create_service(acme: AcmeService) -> Self {
+        Self { acme }
+    }
 }
 
-impl Processor<RenewCertificatesSignal> for AcmeCronHook {
+impl CronJob for RenewCertificatesJob {
+    const INTERVAL: CronJobInterval = CronJobInterval::AtLeast(Duration::from_secs(60));
+}
+
+impl Processor<CronTick> for RenewCertificatesJob {
     type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:RenewCertificatesSignal", skip_all, err)]
-    async fn process(&self, input: RenewCertificatesSignal) -> Result<Self::Output, Self::Error> {
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Hook:RenewCertificatesJob", skip_all, err)]
+    async fn process(&self, tick: CronTick) -> Result<Self::Output, Self::Error> {
         if !self
             .acme
             .db
             .process(ClaimJobRun::for_tick(
                 JOB,
                 self.acme.config.acme_interval(),
-                input.tick_time(),
+                OffsetDateTime::from(tick.fired_at),
             ))
             .await?
         {

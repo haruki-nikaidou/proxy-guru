@@ -6,49 +6,56 @@
 //! It also revokes the watch session of a server that is already `Offline` when
 //! the registration holding it never reported: nothing else would ever end it.
 //!
-//! Neither pass is run by the process that schedules it: `--mode cron` publishes
-//! [`SweepLivenessSignal`] / [`TrimHealthHistorySignal`] and this consumer does
-//! the work, so the crons fail over and scale like any other consumer. Because
-//! AMQP is at-least-once and consumers are horizontally scaled, every pass gates
-//! on [`ClaimJobRun::for_tick`] first: whoever wins the compare-and-set runs it
-//! once per configured interval fleet-wide, everybody else returns immediately.
+//! Both passes are `CronJob`s run by `--mode cron` ([`SweepLivenessJob`],
+//! [`TrimHealthHistoryJob`]). Several cron replicas may run at once, so every
+//! pass gates on [`ClaimJobRun::for_tick`] first: whoever wins the
+//! compare-and-set runs it once per configured interval fleet-wide, everybody
+//! else returns immediately.
 //!
 //! One layer is enough here, unlike [`crate::hooks::acme`], which claims each
 //! certificate row on top of the job: both passes are a single idempotent write
 //! over whatever the sweep finds, so a pass that runs twice, or late, reaches the
-//! same state. A failure is returned rather than swallowed, so the consumer logs
-//! it; the retry is the next scheduled tick, not the redelivery, because the
-//! claim has already recorded this one.
+//! same state. A failure is returned rather than swallowed, so the cron runtime
+//! logs it; the retry is the next run, because the claim has already recorded
+//! this one.
 
 use crate::entities::db::job_run::ClaimJobRun;
-use crate::events::{SweepLivenessSignal, TrimHealthHistorySignal};
+use crate::services::OrchestrationError;
 use crate::services::health::{HealthService, SweepLiveness, TrimHealthHistory};
 use kanau::processor::Processor;
+use std::time::Duration;
 use time::OffsetDateTime;
-use wakuwaku::integration::amqp::AmqpMessageProcessor;
+use wakuwaku::{CronJob, CronJobInterval, CronTick, ServiceCreation};
 
-/// Consumes the two health execution signals.
-#[derive(Clone)]
-pub struct HealthCronHook {
+/// Flips servers that stopped reporting to `Offline`, at most once per
+/// `liveness_interval` fleet-wide.
+pub struct SweepLivenessJob {
     pub health: HealthService,
 }
 
-impl AmqpMessageProcessor<SweepLivenessSignal> for HealthCronHook {
-    const QUEUE: &'static str = "guru_orchestration_sweep_liveness";
+impl ServiceCreation for SweepLivenessJob {
+    type Dep = HealthService;
+    fn create_service(health: HealthService) -> Self {
+        Self { health }
+    }
 }
 
-impl Processor<SweepLivenessSignal> for HealthCronHook {
+impl CronJob for SweepLivenessJob {
+    const INTERVAL: CronJobInterval = CronJobInterval::AtLeast(Duration::from_secs(30));
+}
+
+impl Processor<CronTick> for SweepLivenessJob {
     type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:SweepLivenessSignal", skip_all, err)]
-    async fn process(&self, input: SweepLivenessSignal) -> Result<Self::Output, Self::Error> {
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Hook:SweepLivenessJob", skip_all, err)]
+    async fn process(&self, tick: CronTick) -> Result<Self::Output, Self::Error> {
         if !self
             .health
             .db
             .process(ClaimJobRun::for_tick(
                 "sweep_liveness",
                 self.health.config.liveness_interval(),
-                input.tick_time(),
+                OffsetDateTime::from(tick.fired_at),
             ))
             .await?
         {
@@ -76,22 +83,35 @@ impl Processor<SweepLivenessSignal> for HealthCronHook {
     }
 }
 
-impl AmqpMessageProcessor<TrimHealthHistorySignal> for HealthCronHook {
-    const QUEUE: &'static str = "guru_orchestration_trim_health_history";
+/// Deletes health records past their retention TTLs, at most once per
+/// `health_retention_interval` fleet-wide.
+pub struct TrimHealthHistoryJob {
+    pub health: HealthService,
 }
 
-impl Processor<TrimHealthHistorySignal> for HealthCronHook {
+impl ServiceCreation for TrimHealthHistoryJob {
+    type Dep = HealthService;
+    fn create_service(health: HealthService) -> Self {
+        Self { health }
+    }
+}
+
+impl CronJob for TrimHealthHistoryJob {
+    const INTERVAL: CronJobInterval = CronJobInterval::AtLeast(Duration::from_secs(300));
+}
+
+impl Processor<CronTick> for TrimHealthHistoryJob {
     type Output = ();
-    type Error = wakuwaku::Error;
-    #[tracing::instrument(name = "Hook:TrimHealthHistorySignal", skip_all, err)]
-    async fn process(&self, input: TrimHealthHistorySignal) -> Result<Self::Output, Self::Error> {
+    type Error = OrchestrationError;
+    #[tracing::instrument(name = "Hook:TrimHealthHistoryJob", skip_all, err)]
+    async fn process(&self, tick: CronTick) -> Result<Self::Output, Self::Error> {
         if !self
             .health
             .db
             .process(ClaimJobRun::for_tick(
                 "trim_health_history",
                 self.health.config.health_retention_interval(),
-                input.tick_time(),
+                OffsetDateTime::from(tick.fired_at),
             ))
             .await?
         {

@@ -1,4 +1,4 @@
-//! The two publishers every mutation uses: the dirty-canvas hint (AMQP) and the
+//! The two publishers every mutation uses: the dirty-canvas hint (Iggy) and the
 //! live dashboard events (Redis pub/sub).
 //!
 //! They are deliberately one struct. Every mutation needs both, they fail the
@@ -11,17 +11,17 @@ use crate::events::live::{CanvasChangeKind, LIVE_CHANNEL, LiveMessage, RolloutSc
 use crate::events::{CanvasDirty, HealthChanged, HealthFact};
 use crate::hooks::live::LiveBus;
 use kanau::message::MessageSer;
-use wakuwaku::integration::amqp::{AmqpMessageSend, AmqpPool};
+use wakuwaku::iggy::Publisher;
 
 /// Tells the derivation hook that canvases have pending edits, and the fleet's
 /// dashboards that something they render changed.
 ///
-/// Publishing the dirty hint is mandatory in every serving mode: since periodic
-/// work became AMQP-driven, the `derive_stale_canvases` sweep is itself a message
-/// from the broker, so a master with no broker derives nothing at all.
-/// `amqp: None` — and with it `Default` — is for tests that drive
-/// `CanvasDeriver` directly instead of through a consumer, not for a broker-less
-/// deployment. `live: None` is the same bargain for the live bus.
+/// Publishing the dirty hint is what makes an edit reach the deriver promptly in
+/// every serving mode; the `derive_stale_canvases` cron job is the safety net
+/// that catches up whatever a lost hint left behind. `events: None` — and with
+/// it `Default` — is for tests that drive `CanvasDeriver` directly instead of
+/// through a consumer, not for an Iggy-less deployment. `live: None` is the
+/// same bargain for the live bus.
 ///
 /// Correctness still lives in the canvas generation counters — the write that
 /// precedes the publish has already bumped the generation, and the hook
@@ -32,7 +32,7 @@ use wakuwaku::integration::amqp::{AmqpMessageSend, AmqpPool};
 /// the subscriber's next resync, which is the same bargain one level up.
 #[derive(Clone, Default)]
 pub struct Notifier {
-    pub amqp: Option<AmqpPool>,
+    pub events: Option<Publisher>,
     pub live: Option<LivePublisher>,
 }
 
@@ -53,36 +53,46 @@ pub enum LivePublisher {
     /// mutation for the manager's whole reconnect backoff.
     Redis(redis::aio::ConnectionManager),
     /// Tests: hand the message straight to this process's bus, skipping the
-    /// round trip. The same shortcut `amqp: None` is for.
+    /// round trip. The same shortcut `events: None` is for.
     InProcess(LiveBus),
 }
 
 impl Notifier {
     pub async fn notify(&self, canvas: &CanvasId) {
-        let Some(pool) = &self.amqp else {
+        let Some(publisher) = &self.events else {
             return;
         };
         let event = CanvasDirty {
             canvas: canvas.to_string(),
         };
-        if let Err(e) = event.send(pool).await {
-            tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once the broker is back");
+        if let Err(e) = publisher.publish(event).await {
+            tracing::warn!(error = %e, "publishing canvas_dirty failed; the sweep catches it up once Iggy is back");
         }
     }
 
     /// Publishes the health facts one write settled, for the modules that
-    /// notify on them. Failure is logged: a lost fact costs one notification,
-    /// never state.
+    /// notify on them, as one event per canvas (the partition key), in the
+    /// order each canvas first appears. Failure is logged: a lost fact costs
+    /// one notification, never state.
     pub async fn health_changed(&self, facts: Vec<HealthFact>) {
         if facts.is_empty() {
             return;
         }
-        let Some(pool) = &self.amqp else {
+        let Some(publisher) = &self.events else {
             return;
         };
-        let event = HealthChanged { facts };
-        if let Err(e) = event.send(pool).await {
-            tracing::warn!(error = %e, "publishing health_changed failed; the notification it carried is lost");
+        let mut events: Vec<HealthChanged> = Vec::new();
+        for fact in facts {
+            match events
+                .iter_mut()
+                .find(|event| event.facts.first().map(HealthFact::canvas) == Some(fact.canvas()))
+            {
+                Some(event) => event.facts.push(fact),
+                None => events.push(HealthChanged { facts: vec![fact] }),
+            }
+        }
+        if let Err(e) = publisher.publish_batch(events).await {
+            tracing::warn!(error = %e, "publishing health_changed to Iggy failed; the notification it carried is lost");
         }
     }
 
