@@ -16,7 +16,7 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10` (must be ≥ 1) |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000` (must be ≥ 1) |
 | `--iggy-url` | `IGGY_URL` | *required in every mode* |
-| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | empty = all partitions (`0,1,2,3`); `consumer` only |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | `0`; partitions a `consumer` or `notifier` reads (0-based, comma-separated) |
 | `--redis-url` | `REDIS_URL` | *required in every mode but `notifier`* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
@@ -33,12 +33,13 @@ looks like `iggy://<user>:<password>@<host>:8090`, for example `iggy://iggy:iggy
 Iggy is required in **every** mode; without it startup fails with `Iggy is required: set IGGY_URL
 (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`. Every mode creates the topology
 it needs at startup, idempotently, so nothing has to be pre-created: one stream `guru` with the
-topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, 4
-partitions each. The consumers add a `retry_<topic>` topic for each topic they read (`consumer` the
+topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, one
+partition (id `0`) each. The consumers add a `retry_<topic>` topic for each topic they read (`consumer` the
 first two, `notifier` the third).
 
-`--iggy-partitions` takes comma-separated, 0-based partition ids that a `consumer` reads; empty
-means all of them. Several `consumer` replicas need **disjoint** sets — they share consumer names
+`--iggy-partitions` takes the comma-separated, 0-based partition ids a `consumer` or `notifier`
+reads (default `0`). Nothing reads every partition implicitly: after splitting a topic into more
+partitions, give each replica its own set explicitly. Several `consumer` replicas need **disjoint** sets — they share consumer names
 (`guru_orchestration_canvas_dirty`, `guru_notify_health_changed`) and would otherwise race on the
 stored offsets. Offsets are stored after processing, so delivery is at least once. A handler that
 fails because the database is unavailable is retried in place; other database errors and conflicts

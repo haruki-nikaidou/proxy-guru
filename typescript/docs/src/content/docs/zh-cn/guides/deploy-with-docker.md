@@ -235,7 +235,7 @@ services:
 - **`consumer`** —— Iggy 事件处理器都在这里：收到 `CanvasDirty` 事件时重新派生一个画布，收到
   `HealthChanged` 时做通知扇出。offset 在处理之后才提交（至少一次）；派生由画布代数计数器守护，因此重复投递是无害的。
   为了吞吐和故障转移可以复制它，但每个副本必须通过 `GURU_IGGY_PARTITIONS`（`--iggy-partitions`）读取
-  互不相交的分区集合（共 `0,1,2,3`；留空表示全部）—— 副本共享消费者名称，否则会在 offset 上互相竞争。
+  互不相交的分区集合（从 0 开始，默认 `0`；topic 在拆分前只有一个分区，因此第二个副本需要先拆分 topic，再为每个副本显式指定分区）—— 副本共享消费者名称，否则会在 offset 上互相竞争。
 - **`cron`** —— 在进程内运行全部六个周期任务：`derive_stale_canvases` 与 `sweep_liveness` 每 30 秒，
   `renew_certificates` 与 `resolve_server_countries` 每 60 秒，`trim_health_history` 每 5 分钟，
   `rotate_relay_certificates` 每小时；每个任务的第一次运行都在启动时。这也是需要出站 HTTPS 访问 ACME
@@ -287,7 +287,7 @@ docker compose logs master-dashboard master-workers master-consumer master-cron 
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
 master-consumer-1   | INFO guru_master: consuming
-master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases=AtLeast(30s) rotate_relay_certificates=AtLeast(3600s) sweep_liveness=AtLeast(30s) trim_health_history=AtLeast(300s) renew_certificates=AtLeast(60s) resolve_server_countries=AtLeast(60s)
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
 master-notifier-1   | INFO guru_master: consuming
 ```

@@ -38,7 +38,8 @@ A processor is a `Clone`-able struct that owns its dependencies and implements
 
 - **Entities** are wakuwaku-entity queries: an input struct implementing `Query`
   (its `Read`/`Write` effect) and `Execute<PgSource>`, run by `base::db::Db`;
-  multi-statement transactions are `TxFlow`s run through `base::db::transact`.
+  multi-statement transactions are `TxFlow`s the caller runs as
+  `db.process(Transaction(XFlow::new(..)))`.
 - **Services** implement `Processor` on a service struct that owns the database,
   Redis, the event publisher, and any collaborating services.
 - **Hooks** implement `wakuwaku::iggy::EventHandler<E>` to react to events, or

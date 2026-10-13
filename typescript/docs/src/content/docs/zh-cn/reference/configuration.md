@@ -16,7 +16,7 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（必须 ≥ 1） |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（必须 ≥ 1） |
 | `--iggy-url` | `IGGY_URL` | *所有模式下均必填* |
-| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | 空 = 全部分区（`0,1,2,3`）；仅 `consumer` |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | `0`；`consumer` 或 `notifier` 读取的分区（从 0 开始，逗号分隔） |
 | `--redis-url` | `REDIS_URL` | *除 `notifier` 外所有模式均必填* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（必须 ≥ 1） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
@@ -30,10 +30,10 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 `--mode` 接受 `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` 和 `cron`。Iggy URL 形如
 `iggy://<user>:<password>@<host>:8090`（例如 `iggy://iggy:iggy@127.0.0.1:8090`）。**所有**模式都需要 Iggy；
 缺少它时启动会失败并报出 `Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`。
-每种模式都会在启动时幂等地创建 stream `guru` 及其 topic（每个 4 个分区），无需预先创建任何东西。
+每种模式都会在启动时幂等地创建 stream `guru` 及其 topic（每个 1 个分区，id 为 `0`），无需预先创建任何东西。
 
-`--iggy-partitions` 是逗号分隔、从 0 开始的分区 id 列表，指定这个 `consumer` 读取哪些分区；留空表示全部
-（`0,1,2,3`）。多个 `consumer` 副本必须使用互不相交的分区集合——它们共享消费者名称，否则会在 offset 上互相竞争。
+`--iggy-partitions` 是逗号分隔、从 0 开始的分区 id 列表，指定这个 `consumer` 或 `notifier` 读取哪些分区（默认 `0`）。
+不会隐式读取全部分区：拆分 topic 之后，必须为每个副本显式指定各自的分区集合。多个 `consumer` 副本必须使用互不相交的分区集合——它们共享消费者名称，否则会在 offset 上互相竞争。
 
 `notifier` 是[通知](/zh-cn/features/notifications/)的投递侧：恰好一个实例，由一把 PostgreSQL
 advisory lock 强制保证。它在启动时读取 `notify` 配置，并且只需要数据库和 Iggy —— 既不需要

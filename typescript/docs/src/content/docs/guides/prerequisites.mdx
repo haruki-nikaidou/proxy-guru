@@ -420,8 +420,8 @@ published port and no healthcheck — the masters reach it over the Compose netw
 server is exactly as useful as the one it replaces.
 
 The Iggy topology is created for you by every master as it starts: one stream `guru` with the
-topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, 4
-partitions each, plus a `retry_<topic>` for each once its consumer has started.
+topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, one
+partition (id `0`) each, plus a `retry_<topic>` for each once its consumer has started.
 
 ## 5. A hostname and a certificate
 

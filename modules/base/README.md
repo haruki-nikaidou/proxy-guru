@@ -38,8 +38,9 @@ A processor is a `Clone`-able struct that owns its dependencies and implements
 `Processor<Input>` once per operation. The same abstraction is used everywhere:
 
 - **Entities** implement `Query` + `Execute<PgSource>` so `base::db::Db` runs
-  them; a multi-statement transaction is a `TxFlow` run through
-  `base::db::transact`. Redis values implement `Processor` on their own type.
+  them; a multi-statement transaction is a `TxFlow` the caller runs as
+  `db.process(Transaction(XFlow::new(..)))`, ended with `base::db::commit` or
+  `base::db::rollback`. Redis values implement `Processor` on their own type.
 - **Services** implement `Processor` on a service struct that owns the database,
   Redis, event publisher, and any collaborating services.
 - **Hooks** implement `EventHandler` to consume events from Iggy, or `CronJob`
