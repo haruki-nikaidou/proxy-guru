@@ -34,7 +34,7 @@ use auth::services::config::AuthConfigService;
 use auth::services::session::SessionService;
 use auth::utils::password::Argon2PasswordAlgorithm;
 use base::db::{Db, PoolSettings};
-use base::events::{STREAM, all_partitions};
+use base::events::STREAM;
 use base::services::config::{ConfigStore, LoadConfig};
 use clap::Parser;
 use kanau::processor::Processor;
@@ -93,7 +93,7 @@ use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 use wakuwaku::deps::iggy::prelude::IggyClient;
 use wakuwaku::iggy::{ConsumerConfig, Publisher};
-use wakuwaku::{CronJob, CronJobInterval, ServiceBuilder};
+use wakuwaku::{CronJob, ServiceBuilder};
 
 /// How long `--mode cron` waits for the runs in progress at shutdown before it
 /// aborts them: inside systemd's `TimeoutStopSec=30s`, so the process exits on
@@ -149,8 +149,10 @@ struct Cli {
         long,
         env = "GURU_IGGY_PARTITIONS",
         value_delimiter = ',',
-        help = "Partitions this consumer reads (consumer mode only); empty = all. \
-                Replicas need disjoint sets."
+        default_value = "0",
+        help = "Partitions this process consumes (consumer and notifier modes). Topics \
+                are created with one partition, 0; after splitting a topic, give each \
+                replica its own disjoint set."
     )]
     iggy_partitions: Vec<u32>,
     #[arg(
@@ -265,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // nothing and publishes nothing, so handing a notifier host the key that
     // opens every stored secret would widen the blast radius for no gain.
     if let WorkerMode::Notifier = cli.mode {
-        return run_notifier(&pool, iggy, notify_config).await;
+        return run_notifier(&pool, iggy, notify_config, cli.iggy_partitions).await;
     }
 
     // Environment only, never argv: the key would otherwise be visible in process
@@ -538,11 +540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         WorkerMode::Consumer => {
             // Each replica reads the partitions it is given; replicas sharing a
             // consumer name need disjoint sets, or they race on the offsets.
-            let partitions = if cli.iggy_partitions.is_empty() {
-                all_partitions()
-            } else {
-                cli.iggy_partitions.clone()
-            };
+            let partitions = cli.iggy_partitions.clone();
             // One consumer per topic: a consumer reads exactly one main topic.
             let (services, canvas) = shared
                 .compose_subservice(|s| CanvasDeriver {
@@ -615,14 +613,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cron_job::<RenewCertificatesJob, _>()
                 .cron_job::<ResolveServerCountriesJob, _>()
                 .start();
+            // Each schedule with its kind (`AtLeast(30s)`, …): the kinds space
+            // runs differently, so a bare number would hide which one a job has.
             tracing::info!(
-                derive_stale_canvases_secs = interval_secs(DeriveStaleCanvasesJob::INTERVAL),
-                rotate_relay_certificates_secs =
-                    interval_secs(RotateRelayCertificatesJob::INTERVAL),
-                sweep_liveness_secs = interval_secs(SweepLivenessJob::INTERVAL),
-                trim_health_history_secs = interval_secs(TrimHealthHistoryJob::INTERVAL),
-                renew_certificates_secs = interval_secs(RenewCertificatesJob::INTERVAL),
-                resolve_server_countries_secs = interval_secs(ResolveServerCountriesJob::INTERVAL),
+                derive_stale_canvases = ?DeriveStaleCanvasesJob::INTERVAL,
+                rotate_relay_certificates = ?RotateRelayCertificatesJob::INTERVAL,
+                sweep_liveness = ?SweepLivenessJob::INTERVAL,
+                trim_health_history = ?TrimHealthHistoryJob::INTERVAL,
+                renew_certificates = ?RenewCertificatesJob::INTERVAL,
+                resolve_server_countries = ?ResolveServerCountriesJob::INTERVAL,
                 "running periodic jobs"
             );
             shutdown().await;
@@ -658,6 +657,7 @@ async fn run_notifier(
     pool: &sqlx::PgPool,
     iggy: Arc<IggyClient>,
     config: NotifyConfig,
+    partitions: Vec<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Exactly one instance delivers: two would double every notice a restart
     // overlapped. The lock lives as long as this connection, so a killed
@@ -674,7 +674,7 @@ async fn run_notifier(
         .iggy_consumer::<NoticeDelivery, HealthNotifyPersonalEvent, _>()
         .start(
             iggy,
-            ConsumerConfig::new(STREAM, "guru_notify_health_notice", all_partitions()),
+            ConsumerConfig::new(STREAM, "guru_notify_health_notice", partitions),
         )
         .await
         .map_err(|e| format!("starting the notice consumer failed: {e}"))?;
@@ -682,16 +682,6 @@ async fn run_notifier(
     shutdown().await;
     runtime.shutdown().await;
     Ok(())
-}
-
-/// A job's interval in seconds, for the startup log. `CronJobInterval` keeps
-/// its own `duration()` private, so every variant is matched here.
-fn interval_secs(interval: CronJobInterval) -> u64 {
-    match interval {
-        CronJobInterval::AfterFinish(d)
-        | CronJobInterval::AtLeast(d)
-        | CronJobInterval::AfterStart(d) => d.as_secs(),
-    }
 }
 
 /// The configured Redis URL, or an actionable error: the live bus is not
