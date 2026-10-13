@@ -29,18 +29,19 @@ const SERVER_NAME: &str = "hkg-1";
 struct World {
     fanout: FanoutService,
     published: Arc<tokio::sync::Mutex<Vec<PublishedNotice>>>,
-    db: base::db::Db,
+    /// The pool behind the handle, for raw fixtures and assertions.
+    pool: sqlx::PgPool,
 }
 
 impl World {
     async fn new(pool: sqlx::PgPool) -> Result<Self, Box<dyn std::error::Error>> {
-        let db = base::db::Db::new(pool);
+        let db = base::db::handle(pool.clone());
         sqlx::query!(
             "INSERT INTO orchestration_canvas (id, name, description) VALUES ($1, $2, '')",
             CANVAS,
             CANVAS_NAME
         )
-        .execute(db.db())
+        .execute(&pool)
         .await?;
         sqlx::query!(
             "INSERT INTO orchestration_server
@@ -50,7 +51,7 @@ impl World {
             CANVAS,
             SERVER_NAME
         )
-        .execute(db.db())
+        .execute(&pool)
         .await?;
         let publisher = NoticePublisher::collecting();
         let NoticePublisher::Collect(published) = publisher.clone() else {
@@ -58,11 +59,11 @@ impl World {
         };
         Ok(Self {
             fanout: FanoutService {
-                db: db.clone(),
+                db,
                 publisher,
             },
             published,
-            db,
+            pool,
         })
     }
 
@@ -120,7 +121,7 @@ impl World {
             emails as _,
             chats as _
         )
-        .execute(self.db.db())
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -133,7 +134,7 @@ impl World {
             id as _,
             email
         )
-        .execute(self.db.db())
+        .execute(&self.pool)
         .await?;
         Ok(id)
     }
@@ -161,7 +162,7 @@ async fn a_first_sighting_is_recorded_and_announced_to_nobody(pool: sqlx::PgPool
         r#"SELECT status AS "status!" FROM notify_server_state WHERE server = $1"#,
         SERVER
     )
-    .fetch_one(w.db.db())
+    .fetch_one(&w.pool)
     .await?;
     assert_eq!(stored, "online");
     Ok(())
@@ -255,7 +256,7 @@ async fn personal_rows_beat_defaults_and_defaults_serve_the_rest(pool: sqlx::PgP
         per_canvas as _,
         CANVAS
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
     sqlx::query!(
         "INSERT INTO notify_account_default
@@ -263,7 +264,7 @@ async fn personal_rows_beat_defaults_and_defaults_serve_the_rest(pool: sqlx::PgP
          VALUES ($1, 'ja', ARRAY['pod_failed'], false, '999')",
         per_canvas as _
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
     // No row for the canvas: its default row is what serves it.
     sqlx::query!(
@@ -272,7 +273,7 @@ async fn personal_rows_beat_defaults_and_defaults_serve_the_rest(pool: sqlx::PgP
          VALUES ($1, 'ja', ARRAY['server_offline'], false, '4242')",
         by_default as _
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
     // Subscribed to a different kind.
     sqlx::query!(
@@ -281,7 +282,7 @@ async fn personal_rows_beat_defaults_and_defaults_serve_the_rest(pool: sqlx::PgP
          VALUES ($1, 'en', ARRAY['server_online'], true, NULL)",
         silent as _
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
 
     w.report(ServerHealthStatus::Online).await?;
@@ -334,7 +335,7 @@ async fn a_vanished_subject_is_dropped_not_retried(pool: sqlx::PgPool) -> TestRe
     w.report(ServerHealthStatus::Online).await?;
     w.drain().await;
     sqlx::query!("DELETE FROM orchestration_server WHERE id = $1", SERVER)
-        .execute(w.db.db())
+        .execute(&w.pool)
         .await?;
 
     w.report(ServerHealthStatus::Offline).await?;
@@ -358,7 +359,7 @@ async fn one_batch_asks_about_each_pod_once(pool: sqlx::PgPool) -> TestResult {
         CANVAS,
         SERVER
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
     let fact = |status: orchestration::entities::db::health::PodHealthStatus, message: &str| {
         HealthFact::Pod {
@@ -411,14 +412,14 @@ async fn an_unchanged_status_leaves_its_timestamp_alone(pool: sqlx::PgPool) -> T
         r#"SELECT changed_at AS "changed_at!" FROM notify_server_state WHERE server = $1"#,
         SERVER
     )
-    .fetch_one(w.db.db())
+    .fetch_one(&w.pool)
     .await?;
     sqlx::query!(
         "UPDATE notify_server_state SET changed_at = $2 WHERE server = $1",
         SERVER,
         first - Duration::hours(1)
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
 
     w.report(ServerHealthStatus::Online).await?;
@@ -426,7 +427,7 @@ async fn an_unchanged_status_leaves_its_timestamp_alone(pool: sqlx::PgPool) -> T
         r#"SELECT changed_at AS "changed_at!" FROM notify_server_state WHERE server = $1"#,
         SERVER
     )
-    .fetch_one(w.db.db())
+    .fetch_one(&w.pool)
     .await?;
     assert_eq!(again, first - Duration::hours(1));
     Ok(())
