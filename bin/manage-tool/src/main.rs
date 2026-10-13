@@ -13,6 +13,7 @@
 use auth::config::AuthConfig;
 use auth::entities::db::account::{AccountRole, CreateAccount};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use auth::utils::validation::{NEW_PASSWORD, prove_email};
 use base::db::{Db, PoolSettings};
 use base::entities::db::app_config::{ConfigJson, FindRawConfig};
 use base::services::config::{
@@ -32,7 +33,9 @@ use orchestration::services::derive::{
 };
 use orchestration::utils::secret::SecretKey;
 use sha2::{Digest, Sha256};
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
+use wakuwaku::proof::ValidateError;
 
 /// Administration CLI.
 #[derive(Debug, Parser)]
@@ -159,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Some(database_url) = cli.database_url.as_deref().filter(|v| !v.is_empty()) else {
         return Err("--database-url (GURU_DATABASE_URL) is required for this subcommand".into());
     };
-    let db = base::db::connect(
+    let pool = base::db::connect(
         database_url,
         PoolSettings {
             statement_timeout: std::time::Duration::from_secs(30),
@@ -168,6 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )
     .await?;
+    let db = base::db::handle(pool.clone());
 
     match cli.command {
         Command::CreateAdmin { email, password } => create_admin(db, email, password).await,
@@ -175,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Db {
             command: DbCommand::Migrate,
         } => {
-            base::db::MIGRATOR.run(db.db()).await?;
+            base::db::MIGRATOR.run(&pool).await?;
             eprintln!("schema is up to date");
             Ok(())
         }
@@ -411,23 +415,37 @@ async fn create_admin(
     email: String,
     password: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let email = email.trim().to_lowercase();
+    let email = proven_or_exit(prove_email(&email));
+    let password = proven_or_exit(NEW_PASSWORD.prove(password));
 
-    let password_hash = Argon2PasswordAlgorithm::default().hash_password(&password)?;
+    let password_hash = Argon2PasswordAlgorithm::default().hash_password(password.subject())?;
+    let shown = email.subject().clone();
     let Some(account) = db
         .process(CreateAccount {
-            email: email.clone(),
+            email,
             password_hash,
             role: AccountRole::Admin,
         })
         .await?
     else {
-        eprintln!("An account with email {email} already exists");
+        eprintln!("An account with email {shown} already exists");
         std::process::exit(1);
     };
 
     println!("Created admin account {}", account.id);
     Ok(())
+}
+
+/// The proven value, or the policy's refusal on stderr and exit status 1.
+fn proven_or_exit<T>(result: Result<T, ValidateError<Infallible>>) -> T {
+    match result {
+        Ok(proven) => proven,
+        Err(ValidateError::Deny(reason)) => {
+            eprintln!("{}", reason.0);
+            std::process::exit(1);
+        }
+        Err(ValidateError::IoError(never)) => match never {},
+    }
 }
 
 /// What `agent publish` ships next to the binary. Embedded, so the tool needs
