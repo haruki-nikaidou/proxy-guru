@@ -1,6 +1,6 @@
 //! Business logic: who hears about a health change, and how they hear it.
 //!
-//! Two halves, joined by the broker:
+//! Two halves, joined by Iggy:
 //!
 //! - [`fanout`] runs wherever the orchestration consumers run. It filters the
 //!   health facts down to real changes ([`crate::entities::db::state`]), reads
@@ -21,8 +21,6 @@ pub mod telegram;
 #[derive(Debug, thiserror::Error)]
 pub enum NotifyError {
     #[error(transparent)]
-    Core(#[from] wakuwaku::Error),
-    #[error(transparent)]
     Database(#[from] base::db::Error),
     #[error(transparent)]
     Config(#[from] base::services::config::ConfigError),
@@ -41,19 +39,27 @@ pub enum NotifyError {
     PermissionDenied,
 }
 
-/// What a hook hands back to the AMQP consumer, which decides from the variant
-/// whether to requeue the delivery or ack it: a database failure stays one, so
-/// the next consumer may succeed, and everything else is non-retryable and gets
-/// acked with its message logged.
-impl From<NotifyError> for wakuwaku::Error {
-    fn from(error: NotifyError) -> Self {
-        match error {
-            NotifyError::Core(e) => e,
-            NotifyError::Database(e) => e.into(),
-            NotifyError::NotFound => wakuwaku::Error::NotFound,
-            NotifyError::PermissionDenied => wakuwaku::Error::PermissionsDenied,
-            other => wakuwaku::Error::BusinessPanic(anyhow::anyhow!("{other}")),
-        }
+impl From<auth::services::identity::PermissionDenied> for NotifyError {
+    fn from(_: auth::services::identity::PermissionDenied) -> Self {
+        NotifyError::PermissionDenied
+    }
+}
+
+impl NotifyError {
+    /// How an Iggy consumer treats a hook that failed with this error: a
+    /// database that did not answer is transient (the chunk is retried in
+    /// place), any other database failure is retryable (the key goes to the
+    /// retry topic, the next attempt may succeed), and everything else is
+    /// unrecoverable — dropped with its message logged, because a notice
+    /// nobody can be found for will not become findable on a retry.
+    pub fn into_handle_error(self) -> wakuwaku::iggy::error::HandleError {
+        use wakuwaku::iggy::error::{ErrorClass, HandleError};
+        let class = match &self {
+            NotifyError::Database(e) if base::db::is_unavailable(e) => ErrorClass::Transient,
+            NotifyError::Database(_) => ErrorClass::Retryable,
+            _ => ErrorClass::Unrecoverable,
+        };
+        HandleError::new(class, self)
     }
 }
 
@@ -63,7 +69,6 @@ impl From<NotifyError> for tonic::Status {
             // A database that did not answer is not a bug in the control
             // plane: it is retryable, and a caller told `INTERNAL` has no
             // reason to try again.
-            NotifyError::Core(e) => base::db::status_of(e),
             NotifyError::Database(e) if base::db::is_unavailable(&e) => {
                 tracing::warn!(error = %e, "database unavailable");
                 tonic::Status::unavailable("Database unavailable")

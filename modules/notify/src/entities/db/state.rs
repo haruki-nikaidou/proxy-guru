@@ -12,12 +12,16 @@
 //! between the write and the fan-out) records nothing and reads as a first
 //! sighting: there is nobody left to announce.
 
-use base::db::{Db, Error};
-use kanau::processor::Processor;
+use crate::entities::db::tables::{NotifyPodState, NotifyServerState};
+use base::db::Error;
 use orchestration::entities::db::health::{PodHealthStatus, ServerHealthStatus};
 use orchestration::entities::db::pod::PodId;
 use orchestration::entities::db::server::ServerId;
+use orchestration::entities::db::tables::{OrchestrationPod, OrchestrationServer};
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 /// Records one server's status and answers with the previous one.
 pub struct ObserveServerStatus {
@@ -26,19 +30,23 @@ pub struct ObserveServerStatus {
     pub at: OffsetDateTime,
 }
 
-impl Processor<ObserveServerStatus> for Db {
+impl Query for ObserveServerStatus {
+    type Effect = (Write<NotifyServerState>, Read<OrchestrationServer>);
+}
+
+impl Execute<PgSource> for ObserveServerStatus {
     /// The status last announced, or `None` for a first sighting.
     type Output = Option<ServerHealthStatus>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ObserveServerStatus", skip_all, err)]
-    async fn process(&self, input: ObserveServerStatus) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_scalar!(
             "sql/observe_server_status.sql",
-            input.server as _,
-            input.status as _,
-            input.at
+            self.server as _,
+            self.status as _,
+            self.at
         )
-        .fetch_one(self.db())
+        .fetch_one(&mut *conn)
         .await?)
     }
 }
@@ -61,23 +69,27 @@ pub struct ObservePodStatuses {
     pub at: OffsetDateTime,
 }
 
-impl Processor<ObservePodStatuses> for Db {
+impl Query for ObservePodStatuses {
+    type Effect = (Write<NotifyPodState>, Read<OrchestrationPod>);
+}
+
+impl Execute<PgSource> for ObservePodStatuses {
     /// One entry per input pod, in no particular order.
     type Output = Vec<PodObservation>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ObservePodStatuses", skip_all, err)]
-    async fn process(&self, input: ObservePodStatuses) -> Result<Self::Output, Self::Error> {
-        if input.pods.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.pods.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_file_as!(
             PodObservation,
             "sql/observe_pod_statuses.sql",
-            &input.pods as _,
-            &input.statuses as _,
-            input.at
+            &self.pods as _,
+            &self.statuses as _,
+            self.at
         )
-        .fetch_all(self.db())
+        .fetch_all(&mut *conn)
         .await?)
     }
 }

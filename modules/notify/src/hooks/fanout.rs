@@ -1,33 +1,45 @@
 //! The fan-out hook: health facts in, notices out.
 //!
 //! Bound in `--mode consumer`, so it scales and fails over with the
-//! orchestration hooks. A database failure is returned and the delivery is
-//! requeued; everything else is acked, because a fact nobody can be found for
-//! will not become findable on a retry.
+//! orchestration handlers. A database failure is retried (in place when the
+//! database did not answer, through the retry topic otherwise); everything else
+//! is dropped and logged, because a fact nobody can be found for will not
+//! become findable on a retry.
 
+use crate::services::NotifyError;
 use crate::services::fanout::{FanOutHealthFacts, FanoutService};
 use kanau::processor::Processor;
 use orchestration::events::HealthChanged;
-use wakuwaku::integration::amqp::AmqpMessageProcessor;
+use std::num::NonZeroUsize;
+use wakuwaku::ServiceCreation;
+use wakuwaku::iggy::EventHandler;
+use wakuwaku::iggy::error::HandleError;
 
 /// Consumes [`HealthChanged`].
-#[derive(Clone)]
 pub struct HealthFanout {
     pub fanout: FanoutService,
 }
 
-impl AmqpMessageProcessor<HealthChanged> for HealthFanout {
-    const QUEUE: &'static str = "guru_notify_health_changed";
+impl ServiceCreation for HealthFanout {
+    type Dep = FanoutService;
+    fn create_service(fanout: FanoutService) -> Self {
+        Self { fanout }
+    }
 }
 
-impl Processor<HealthChanged> for HealthFanout {
-    type Output = ();
-    type Error = wakuwaku::Error;
+impl EventHandler<HealthChanged> for HealthFanout {
+    const MAX_BATCH: NonZeroUsize = NonZeroUsize::MIN;
+
     #[tracing::instrument(name = "Hook:HealthChanged", skip_all, err)]
-    async fn process(&self, input: HealthChanged) -> Result<Self::Output, Self::Error> {
-        self.fanout
-            .process(FanOutHealthFacts { facts: input.facts })
-            .await?;
+    async fn handle(&self, run: &[HealthChanged]) -> Result<(), HandleError> {
+        for event in run {
+            self.fanout
+                .process(FanOutHealthFacts {
+                    facts: event.facts.clone(),
+                })
+                .await
+                .map_err(NotifyError::into_handle_error)?;
+        }
         Ok(())
     }
 }

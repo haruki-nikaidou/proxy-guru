@@ -11,11 +11,18 @@
 //! on purpose: installing this module notifies nobody until an operator opts in.
 
 use auth::entities::db::account::AccountId;
-use base::db::{Db, Error};
+use crate::entities::db::tables::{
+    NotifyAccountDefault, NotifyAccountSetting, NotifyCanvasSetting,
+};
+use auth::entities::db::tables::AuthAccount;
+use base::db::Error;
 use db_types::text_enum;
-use kanau::processor::Processor;
 use orchestration::entities::db::canvas::CanvasId;
+use orchestration::entities::db::tables::OrchestrationCanvas;
 use serde::{Deserialize, Serialize};
+use sqlx::PgConnection;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 /// The languages a notice can be rendered in.
 ///
@@ -114,19 +121,23 @@ pub struct FindCanvasSetting {
     pub canvas: CanvasId,
 }
 
-impl Processor<FindCanvasSetting> for Db {
+impl Query for FindCanvasSetting {
+    type Effect = Read<NotifyCanvasSetting>;
+}
+
+impl Execute<PgSource> for FindCanvasSetting {
     type Output = Option<CanvasSetting>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCanvasSetting", skip_all, err)]
-    async fn process(&self, input: FindCanvasSetting) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             CanvasSetting,
             r#"SELECT canvas AS "canvas: CanvasId", language AS "language: Language",
                       events AS "events: Vec<NoticeKind>", emails, telegram_chats
                FROM notify_canvas_setting WHERE canvas = $1"#,
-            input.canvas as _
+            self.canvas as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?)
     }
 }
@@ -136,13 +147,17 @@ pub struct UpsertCanvasSetting {
     pub setting: CanvasSetting,
 }
 
-impl Processor<UpsertCanvasSetting> for Db {
+impl Query for UpsertCanvasSetting {
+    type Effect = Write<NotifyCanvasSetting>;
+}
+
+impl Execute<PgSource> for UpsertCanvasSetting {
     /// The row as stored.
     type Output = CanvasSetting;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpsertCanvasSetting", skip_all, err)]
-    async fn process(&self, input: UpsertCanvasSetting) -> Result<Self::Output, Self::Error> {
-        let setting = input.setting;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let setting = self.setting;
         Ok(sqlx::query_file_as!(
             CanvasSetting,
             "sql/upsert_canvas_setting.sql",
@@ -152,7 +167,7 @@ impl Processor<UpsertCanvasSetting> for Db {
             &setting.emails,
             &setting.telegram_chats
         )
-        .fetch_one(self.db())
+        .fetch_one(&mut *conn)
         .await?)
     }
 }
@@ -188,21 +203,25 @@ pub struct FindAccountSetting {
     pub canvas: CanvasId,
 }
 
-impl Processor<FindAccountSetting> for Db {
+impl Query for FindAccountSetting {
+    type Effect = Read<NotifyAccountSetting>;
+}
+
+impl Execute<PgSource> for FindAccountSetting {
     type Output = Option<AccountSetting>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAccountSetting", skip_all, err)]
-    async fn process(&self, input: FindAccountSetting) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             AccountSettingRow,
             r#"SELECT account AS "account: AccountId", canvas AS "canvas?: CanvasId",
                       language AS "language: Language", events AS "events: Vec<NoticeKind>",
                       email_enabled, telegram_chat
                FROM notify_account_setting WHERE account = $1 AND canvas = $2"#,
-            input.account as _,
-            input.canvas as _
+            self.account as _,
+            self.canvas as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?
         .map(Into::into))
     }
@@ -213,20 +232,24 @@ pub struct FindAccountDefault {
     pub account: AccountId,
 }
 
-impl Processor<FindAccountDefault> for Db {
+impl Query for FindAccountDefault {
+    type Effect = Read<NotifyAccountDefault>;
+}
+
+impl Execute<PgSource> for FindAccountDefault {
     type Output = Option<AccountSetting>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAccountDefault", skip_all, err)]
-    async fn process(&self, input: FindAccountDefault) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             AccountSettingRow,
             r#"SELECT account AS "account: AccountId", NULL::text AS "canvas?: CanvasId",
                       language AS "language: Language", events AS "events: Vec<NoticeKind>",
                       email_enabled, telegram_chat
                FROM notify_account_default WHERE account = $1"#,
-            input.account as _
+            self.account as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?
         .map(Into::into))
     }
@@ -242,22 +265,26 @@ pub struct UpsertAccountSetting {
     pub telegram_chat: Option<String>,
 }
 
-impl Processor<UpsertAccountSetting> for Db {
+impl Query for UpsertAccountSetting {
+    type Effect = Write<NotifyAccountSetting>;
+}
+
+impl Execute<PgSource> for UpsertAccountSetting {
     type Output = AccountSetting;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpsertAccountSetting", skip_all, err)]
-    async fn process(&self, input: UpsertAccountSetting) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             AccountSettingRow,
             "sql/upsert_account_setting.sql",
-            input.account as _,
-            input.canvas as _,
-            input.language as _,
-            &input.events as _,
-            input.email_enabled,
-            input.telegram_chat.as_deref()
+            self.account as _,
+            self.canvas as _,
+            self.language as _,
+            &self.events as _,
+            self.email_enabled,
+            self.telegram_chat.as_deref()
         )
-        .fetch_one(self.db())
+        .fetch_one(&mut *conn)
         .await?
         .into())
     }
@@ -272,21 +299,25 @@ pub struct UpsertAccountDefault {
     pub telegram_chat: Option<String>,
 }
 
-impl Processor<UpsertAccountDefault> for Db {
+impl Query for UpsertAccountDefault {
+    type Effect = Write<NotifyAccountDefault>;
+}
+
+impl Execute<PgSource> for UpsertAccountDefault {
     type Output = AccountSetting;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpsertAccountDefault", skip_all, err)]
-    async fn process(&self, input: UpsertAccountDefault) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             AccountSettingRow,
             "sql/upsert_account_default.sql",
-            input.account as _,
-            input.language as _,
-            &input.events as _,
-            input.email_enabled,
-            input.telegram_chat.as_deref()
+            self.account as _,
+            self.language as _,
+            &self.events as _,
+            self.email_enabled,
+            self.telegram_chat.as_deref()
         )
-        .fetch_one(self.db())
+        .fetch_one(&mut *conn)
         .await?
         .into())
     }
@@ -310,18 +341,26 @@ pub struct ListPersonalRecipients {
     pub canvas: CanvasId,
 }
 
-impl Processor<ListPersonalRecipients> for Db {
+impl Query for ListPersonalRecipients {
+    type Effect = (
+        Read<AuthAccount>,
+        Read<NotifyAccountSetting>,
+        Read<NotifyAccountDefault>,
+    );
+}
+
+impl Execute<PgSource> for ListPersonalRecipients {
     type Output = Vec<PersonalRecipient>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListPersonalRecipients", skip_all, err)]
-    async fn process(&self, input: ListPersonalRecipients) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             PersonalRecipient,
             "sql/list_personal_recipients.sql",
-            input.kind as _,
-            input.canvas as _
+            self.kind as _,
+            self.canvas as _
         )
-        .fetch_all(self.db())
+        .fetch_all(&mut *conn)
         .await?)
     }
 }
@@ -334,18 +373,26 @@ pub struct FindPersonalRecipient {
     pub canvas: CanvasId,
 }
 
-impl Processor<FindPersonalRecipient> for Db {
+impl Query for FindPersonalRecipient {
+    type Effect = (
+        Read<AuthAccount>,
+        Read<NotifyAccountSetting>,
+        Read<NotifyAccountDefault>,
+    );
+}
+
+impl Execute<PgSource> for FindPersonalRecipient {
     type Output = Option<PersonalRecipient>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindPersonalRecipient", skip_all, err)]
-    async fn process(&self, input: FindPersonalRecipient) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             PersonalRecipient,
             "sql/find_personal_recipient.sql",
-            input.account as _,
-            input.canvas as _
+            self.account as _,
+            self.canvas as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?)
     }
 }
@@ -356,16 +403,20 @@ pub struct FindCanvasLabel {
     pub canvas: CanvasId,
 }
 
-impl Processor<FindCanvasLabel> for Db {
+impl Query for FindCanvasLabel {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for FindCanvasLabel {
     type Output = Option<String>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCanvasLabel", skip_all, err)]
-    async fn process(&self, input: FindCanvasLabel) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar!(
             r#"SELECT name AS "name!" FROM orchestration_canvas WHERE id = $1"#,
-            input.canvas as _
+            self.canvas as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?)
     }
 }

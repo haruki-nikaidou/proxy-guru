@@ -30,7 +30,7 @@ use orchestration::events::HealthFact;
 use std::collections::HashMap;
 use std::sync::Arc;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use wakuwaku::integration::amqp::{AmqpMessageSend, AmqpPool};
+use wakuwaku::iggy::Publisher;
 
 /// Decides the audience of every health fact and publishes one notice per
 /// audience found.
@@ -43,9 +43,10 @@ pub struct FanoutService {
 /// Where notices go.
 #[derive(Clone)]
 pub enum NoticePublisher {
-    /// Production: the `notify` exchange, consumed by the single notifier.
-    Amqp(AmqpPool),
-    /// Tests: collect what would have been published, skipping the broker.
+    /// Production: the `notify_health_notice` Iggy topic, consumed by the
+    /// single notifier.
+    Iggy(Publisher),
+    /// Tests: collect what would have been published, skipping Iggy.
     Collect(Arc<tokio::sync::Mutex<Vec<PublishedNotice>>>),
 }
 
@@ -64,8 +65,8 @@ impl NoticePublisher {
 
     async fn group(&self, event: HealthNotifyGroupEvent) {
         match self {
-            Self::Amqp(pool) => {
-                if let Err(error) = event.send(pool).await {
+            Self::Iggy(publisher) => {
+                if let Err(error) = publisher.publish(event).await {
                     tracing::warn!(%error, "publishing a group notice failed; it is lost");
                 }
             }
@@ -75,8 +76,8 @@ impl NoticePublisher {
 
     async fn personal(&self, event: HealthNotifyPersonalEvent) {
         match self {
-            Self::Amqp(pool) => {
-                if let Err(error) = event.send(pool).await {
+            Self::Iggy(publisher) => {
+                if let Err(error) = publisher.publish(event).await {
                     tracing::warn!(%error, "publishing a personal notice failed; it is lost");
                 }
             }

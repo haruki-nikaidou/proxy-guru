@@ -5,6 +5,8 @@
 //! - [`state`] — `notify_server_state` / `notify_pod_state`: what was last
 //!   announced about one subject, which is what makes a repeated report of the
 //!   same status notify nobody.
+//! - [`tables`] — the entity markers queries name in their effects.
 
 pub mod setting;
 pub mod state;
+pub mod tables;
