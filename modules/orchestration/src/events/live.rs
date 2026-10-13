@@ -1,7 +1,7 @@
 //! Live dashboard events: the Redis pub/sub contract between master replicas.
 //!
-//! These are *not* AMQP messages. AMQP carries work (a canvas needs deriving, a
-//! periodic job is due) and is therefore queued and acked; the messages here
+//! These are *not* Iggy events. Iggy carries work (a canvas needs deriving,
+//! health facts to notify about) and is therefore stored and acked; the messages here
 //! carry *notice that something changed* to whichever replicas happen to hold an
 //! open `Watch*` stream. A replica with no watchers must drop them, which is
 //! exactly what pub/sub does and what a queue does not.
@@ -12,7 +12,7 @@
 //! broadcasts [`crate::hooks::live::LiveEvent::Resync`] so nothing stays stale
 //! across a broker blip.
 //!
-//! Encoding matches the AMQP events (rkyv via `kanau`), so the two halves of the
+//! Encoding matches the Iggy events (rkyv via `kanau`), so the two halves of the
 //! fleet never disagree about a wire format.
 
 use crate::entities::db::certificate::CertificateStatus;

@@ -2,7 +2,7 @@
 //! serves a dashboard call and the replica that holds the worker's
 //! `ShellChannel`.
 //!
-//! Like [`crate::events::live`], these are *not* AMQP messages. A shell request
+//! Like [`crate::events::live`], these are *not* Iggy events. A shell request
 //! is only worth delivering while the dashboard call that sent it still waits
 //! for the answer, and a transcript event only while somebody watches; the
 //! worker owns every session and its output buffer, so a lost message costs a

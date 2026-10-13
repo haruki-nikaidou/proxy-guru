@@ -51,11 +51,11 @@ pub struct OrchestrationConfig {
     pub relay_cert_renew_before_secs: u64,
     /// How often the stale-canvas derivation sweep may run.
     ///
-    /// This and the four cadences below gate the *execution* of a periodic job,
-    /// not its scheduling: the `cron` scheduler publishes each signal on a fixed
-    /// cadence (it opens no database), and the consumer claims a run only once
-    /// per interval. A value below the signal's own cadence therefore means
-    /// "every signal", and a larger one slows the job down fleet-wide.
+    /// This and the four cadences below gate the *execution* of a periodic job:
+    /// each cron job runs on its own fixed `CronJob::INTERVAL` in every
+    /// `--mode cron` replica, and claims a run only once per configured
+    /// interval fleet-wide. A value below the job's own interval therefore
+    /// means "every run", and a larger one slows the job down fleet-wide.
     pub sweep_interval_secs: u64,
     /// How often silent servers are flipped to `Offline`.
     pub liveness_interval_secs: u64,

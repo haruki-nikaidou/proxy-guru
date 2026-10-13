@@ -40,8 +40,6 @@ use crate::utils::secret::SecretError;
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestrationError {
     #[error(transparent)]
-    Core(#[from] wakuwaku::Error),
-    #[error(transparent)]
     Db(base::db::Error),
     #[error("derive: {0}")]
     Derive(#[from] DeriveError),
@@ -63,6 +61,9 @@ pub enum OrchestrationError {
     /// A remote-shell call the worker refused or did not answer.
     #[error("shell: {0}")]
     Shell(#[from] ShellError),
+    /// A broken invariant: logged, answered as `INTERNAL`.
+    #[error(transparent)]
+    Internal(anyhow::Error),
 }
 
 use crate::entities::db::fence::STALE_GENERATION;
@@ -85,12 +86,17 @@ impl From<base::db::Error> for OrchestrationError {
     }
 }
 
+impl From<auth::services::identity::PermissionDenied> for OrchestrationError {
+    fn from(_: auth::services::identity::PermissionDenied) -> Self {
+        OrchestrationError::PermissionDenied
+    }
+}
+
 impl From<OrchestrationError> for tonic::Status {
     fn from(error: OrchestrationError) -> Self {
         match error {
             // A database that did not answer is not a bug in the control plane: it is
             // retryable, and a caller told `INTERNAL` has no reason to try again.
-            OrchestrationError::Core(e) => base::db::status_of(e),
             OrchestrationError::Db(e) if base::db::is_unavailable(&e) => {
                 tracing::warn!(error = %e, "database unavailable");
                 tonic::Status::unavailable("Database unavailable")
@@ -116,26 +122,31 @@ impl From<OrchestrationError> for tonic::Status {
                 tonic::Status::permission_denied("Permission denied")
             }
             OrchestrationError::Shell(e) => e.into(),
+            OrchestrationError::Internal(e) => {
+                tracing::error!(error = %e, "internal error");
+                tonic::Status::internal("Internal server error")
+            }
         }
     }
 }
 
-/// What a hook hands back to the AMQP consumer, which decides from the variant
-/// whether to requeue the message or ack it:
-///
-/// - a database failure stays a database failure, so the delivery is requeued —
-///   the next consumer may well succeed;
-/// - a missing row, a permission failure and every rule violation become the
-///   matching non-retryable variant, keeping their message, so the delivery is
-///   acked and logged instead of looping forever on work that cannot succeed.
-impl From<OrchestrationError> for wakuwaku::Error {
-    fn from(error: OrchestrationError) -> Self {
-        match error {
-            OrchestrationError::Core(e) => e,
-            OrchestrationError::Db(e) => e.into(),
-            OrchestrationError::NotFound => wakuwaku::Error::NotFound,
-            OrchestrationError::PermissionDenied => wakuwaku::Error::PermissionsDenied,
-            other => wakuwaku::Error::BusinessPanic(anyhow::anyhow!("{other}")),
-        }
+impl OrchestrationError {
+    /// How an Iggy consumer treats a hook that failed with this error:
+    ///
+    /// - a database that did not answer is transient: the chunk is retried in
+    ///   place until it answers;
+    /// - any other database failure or a conflict is retryable: the key goes to
+    ///   the retry topic, and the next attempt may well succeed;
+    /// - a missing row, a permission failure and every rule violation are
+    ///   unrecoverable: the event is dropped and logged instead of looping
+    ///   forever on work that cannot succeed.
+    pub fn into_handle_error(self) -> wakuwaku::iggy::error::HandleError {
+        use wakuwaku::iggy::error::{ErrorClass, HandleError};
+        let class = match &self {
+            OrchestrationError::Db(e) if base::db::is_unavailable(e) => ErrorClass::Transient,
+            OrchestrationError::Db(_) | OrchestrationError::Conflict(_) => ErrorClass::Retryable,
+            _ => ErrorClass::Unrecoverable,
+        };
+        HandleError::new(class, self)
     }
 }

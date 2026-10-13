@@ -47,8 +47,8 @@ pub struct HealthService {
 
 impl HealthService {
     /// Puts one accepted health write on the live bus: the server record every
-    /// server-health stream follows, plus the pod rows it carried — and on the
-    /// broker, as the health facts the notifying modules react to.
+    /// server-health stream follows, plus the pod rows it carried — and on
+    /// Iggy, as the health facts the notifying modules react to.
     async fn publish(&self, server: &ServerId, write: &HealthWrite) {
         self.notifier
             .live(LiveMessage::ServerHealth {

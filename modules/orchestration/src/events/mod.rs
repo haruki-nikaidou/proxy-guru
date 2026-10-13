@@ -1,8 +1,10 @@
-//! AMQP event definitions: the edit hint, and the periodic execution signals.
+//! Event definitions: the edit hint and the health facts, published to Iggy.
 //!
-//! Periodic work is not run by the process that schedules it. `--mode cron`
-//! publishes one signal per due job and `--mode consumer` runs the pass, so a
-//! sweep fails over and scales exactly like an edit does.
+//! Both live in the shared stream (`base::events::STREAM`), each on its own
+//! topic named by its partition key's `SUPER_PARTITION_NAME`; [`TOPICS`] lists
+//! them for `base::events::ensure_topology`. Periodic work is not an event any
+//! more: it is the `CronJob`s in [`crate::hooks`], run by `guru-master --mode
+//! cron`.
 //!
 //! The two Redis pub/sub contracts live beside them: [`live`] (dashboard change
 //! notices) and [`shell`] (the remote-shell relay).
@@ -13,14 +15,17 @@ pub mod shell;
 use crate::entities::db::health::{
     HealthWrite, PodHealthStatus, PodHealthWrite, ServerHealthStatus,
 };
-use amqprs::BasicProperties;
-use amqprs::channel::{BasicPublishArguments, Channel, ConfirmSelectArguments};
 use kanau::{RkyvMessageDe, RkyvMessageSer};
-use std::task::Poll;
-use time::OffsetDateTime;
-use wakuwaku::integration::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpPool, AmqpRouting};
-use wakuwaku::interval_job::IntervalJobExecutionSignal;
-use wakuwaku::pool::Pooled;
+use wakuwaku::iggy::{
+    Event, EventAtomicOrdering, EventBody, EventTypeTag, Idempotent, IggySuperPartitionName,
+    NonAssociative, PartitionKey,
+};
+
+/// The main topics this module publishes to, created at startup.
+pub const TOPICS: [&str; 2] = [
+    CanvasDirtyKey::SUPER_PARTITION_NAME.0,
+    HealthChangedKey::SUPER_PARTITION_NAME.0,
+];
 
 /// **Public event**
 ///
@@ -28,27 +33,24 @@ use wakuwaku::pool::Pooled;
 ///
 /// Published by: every config-affecting mutation (dashboard), plus `Register`,
 /// `AckConfig` and `ForgetServerApplied` (workers and dashboard).
-/// Consumed by: [`crate::hooks::derive::CanvasDeriver`].
-/// Route: exchange `orchestration` (direct), key `canvas_dirty`.
+/// Consumed by: [`crate::hooks::derive::CanvasDirtyHandler`] (`--mode consumer`).
+/// Topic: `orchestration_canvas_dirty` (keyed by canvas), tag 1.
 ///
 /// The payload is only a hint: the canvas generation counter, not this message, is
 /// what decides whether a derivation is needed, so a lost message costs latency
-/// (until the cron sweep) and never correctness.
+/// (until the `derive_stale_canvases` cron job) and never correctness. For the
+/// same reason it is [`Idempotent`]: a run of hints for one canvas collapses to
+/// one derivation.
 #[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
 )]
 pub struct CanvasDirty {
     /// The canvas id, as text.
     pub canvas: String,
 }
-
-impl AmqpRouting for CanvasDirty {
-    const EXCHANGE: &'static str = "orchestration";
-    const EXCHANGE_TYPE: AmqpExchangeType = AmqpExchangeType::Direct;
-    const ROUTING_KEY: &'static str = "canvas_dirty";
-}
-
-impl AmqpMessageSend for CanvasDirty {}
 
 /// **Public event**
 ///
@@ -59,8 +61,8 @@ impl AmqpMessageSend for CanvasDirty {}
 /// close and liveness sweep), `AckConfig`
 /// ([`crate::services::agent::AgentService`]) and
 /// [`crate::hooks::derive::CanvasDeriver`].
-/// Consumed by: `notify`'s fan-out hook.
-/// Route: exchange `orchestration` (direct), key `health_changed`.
+/// Consumed by: `notify`'s fan-out hook (`--mode consumer`).
+/// Topic: `orchestration_health_changed` (keyed by the first fact's canvas), tag 1.
 ///
 /// The facts carry their own labels (server, pod and canvas names) so a
 /// consumer can phrase a notification without a database of its own. A lost
@@ -98,6 +100,13 @@ pub enum HealthFact {
 }
 
 impl HealthFact {
+    /// The canvas the fact happened in, as text.
+    pub fn canvas(&self) -> &str {
+        match self {
+            HealthFact::Server { canvas, .. } | HealthFact::Pod { canvas, .. } => canvas,
+        }
+    }
+
     /// The fact a server write settled, or `None` when the write only recorded
     /// the status the server already held: a routine report is not news.
     pub fn server(write: &HealthWrite) -> Option<Self> {
@@ -138,238 +147,65 @@ pub fn health_facts(write: &HealthWrite) -> Vec<HealthFact> {
         .collect()
 }
 
-impl AmqpRouting for HealthChanged {
-    const EXCHANGE: &'static str = "orchestration";
-    const EXCHANGE_TYPE: AmqpExchangeType = AmqpExchangeType::Direct;
-    const ROUTING_KEY: &'static str = "health_changed";
+/// Partition key of [`CanvasDirty`]: the canvas id. Hints for one canvas stay in
+/// order on one partition; the deriver fences on generations, so the order is
+/// not load-bearing.
+#[derive(Hash)]
+pub struct CanvasDirtyKey(pub String);
+
+impl PartitionKey for CanvasDirtyKey {
+    type PartitionMerge = std::hash::DefaultHasher;
+    const SUPER_PARTITION_NAME: IggySuperPartitionName =
+        IggySuperPartitionName("orchestration_canvas_dirty");
 }
 
-impl AmqpMessageSend for HealthChanged {}
+impl EventBody for CanvasDirty {}
 
-// --- periodic execution signals ----------------------------------------------
+impl Event for CanvasDirty {
+    const TYPE_TAG: EventTypeTag = EventTypeTag::new(1);
+    type Key = CanvasDirtyKey;
+    type Algebra = Idempotent;
 
-/// Whether `every` seconds have passed between two scheduling ticks.
-///
-/// Compared in whole seconds, which is also the resolution a signal carries, and
-/// saturating so a clock jump cannot overflow into a missed or duplicated tick.
-fn elapsed(every: i64, now: OffsetDateTime, last_time: OffsetDateTime) -> bool {
-    now.unix_timestamp()
-        .saturating_sub(last_time.unix_timestamp())
-        >= every
+    fn key(&self) -> CanvasDirtyKey {
+        CanvasDirtyKey(self.canvas.clone())
+    }
+
+    fn atomic_ordering(&self) -> EventAtomicOrdering {
+        EventAtomicOrdering::Relaxed
+    }
 }
 
-/// Publishes `message` with a per-message TTL of `ttl_secs` seconds, so the
-/// broker discards a delivery nobody consumed in time.
-///
-/// This is [`AmqpMessageSend::send`] with one property added, and it exists for
-/// the periodic signals only: a tick is worth exactly as much as the next one,
-/// so a queue nobody is draining holds about one cadence's worth, not a day of
-/// them. The TTL is carried by the message rather than declared on the queue
-/// (`x-message-ttl`) because a queue's arguments are immutable once it is
-/// declared: a queue argument would need every existing deployment to rename or
-/// re-declare its signal queues, while a published property takes effect on the
-/// next publish.
-///
-/// Every message in a signal queue is the same type with the same TTL and they
-/// arrive in order, so the head expires first and the queue drains itself —
-/// the lazy-expiry caveat of per-message TTLs (an expired message stuck behind
-/// a live one) cannot arise here.
-#[tracing::instrument(skip_all, err, name = "Publish:IntervalSignal")]
-async fn send_expiring<M: AmqpMessageSend>(
-    message: M,
-    pool: &AmqpPool,
-    ttl_secs: i64,
-) -> Result<(), wakuwaku::Error> {
-    let expiration = ttl_secs.saturating_mul(1_000).to_string();
-    let bytes = message.to_bytes().map_err(|e| e.into())?;
-    let channel: Result<Pooled<Channel, _>, wakuwaku::Error> = pool.get().await.into();
-    let channel = channel?;
-    let channel = channel
-        .get_ref()
-        .ok_or_else(|| wakuwaku::Error::Io(anyhow::anyhow!("the AMQP channel is closed")))?;
-    channel
-        .confirm_select(ConfirmSelectArguments::new(false))
-        .await?;
-    channel
-        .basic_publish(
-            BasicProperties::default()
-                .with_expiration(&expiration)
-                .finish(),
-            bytes.into_vec(),
-            BasicPublishArguments::new(M::EXCHANGE, M::ROUTING_KEY)
-                .mandatory(true)
-                .finish(),
+/// Partition key of [`HealthChanged`]: the canvas of its first fact (one write
+/// settles the facts of one server, so of one canvas).
+#[derive(Hash)]
+pub struct HealthChangedKey(pub String);
+
+impl PartitionKey for HealthChangedKey {
+    type PartitionMerge = std::hash::DefaultHasher;
+    const SUPER_PARTITION_NAME: IggySuperPartitionName =
+        IggySuperPartitionName("orchestration_health_changed");
+}
+
+impl EventBody for HealthChanged {}
+
+impl Event for HealthChanged {
+    const TYPE_TAG: EventTypeTag = EventTypeTag::new(1);
+    type Key = HealthChangedKey;
+    type Algebra = NonAssociative;
+
+    /// `""` for an empty event, which the [`Notifier`](crate::services::notify::Notifier)
+    /// never publishes.
+    fn key(&self) -> HealthChangedKey {
+        HealthChangedKey(
+            self.facts
+                .first()
+                .map(HealthFact::canvas)
+                .unwrap_or_default()
+                .to_owned(),
         )
-        .await?;
-    // The counter the default `send` emits; a signal publish still counts.
-    tracing::info!(monotonic_counter.mq_event_push = 1);
-    Ok(())
+    }
+
+    fn atomic_ordering(&self) -> EventAtomicOrdering {
+        EventAtomicOrdering::Relaxed
+    }
 }
-
-/// Implements the AMQP route and [`IntervalJobExecutionSignal`] for one signal.
-///
-/// The publication cadence is a constant, and it has to be: `time_pool` is a
-/// static function over two timestamps, and the scheduler that calls it opens no
-/// database, so it cannot read [`crate::config::OrchestrationConfig`]. The
-/// constant is therefore a *floor*, not the schedule an operator sees — the hook
-/// that consumes the signal loads the configuration and claims a run only once
-/// per its configured interval, so a job can be slowed down in the database and
-/// never needs to run faster than this.
-macro_rules! interval_signal {
-    ($ty:ident, $key:literal, $every:expr) => {
-        impl $ty {
-            /// Seconds between publications of this signal.
-            pub const EVERY_SECS: i64 = $every;
-
-            /// The scheduling tick this signal was published for; a hook logs its
-            /// age to make a consumer backlog visible.
-            pub fn tick_time(&self) -> OffsetDateTime {
-                OffsetDateTime::from_unix_timestamp(self.tick_unix_secs)
-                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
-            }
-        }
-
-        impl AmqpRouting for $ty {
-            const EXCHANGE: &'static str = "orchestration";
-            const EXCHANGE_TYPE: AmqpExchangeType = AmqpExchangeType::Direct;
-            const ROUTING_KEY: &'static str = $key;
-        }
-
-        // The one place a signal departs from the default `send`: a tick that
-        // outlives its own cadence has been superseded by the next one, and the
-        // hook's run claim would discard it anyway — so the broker drops it
-        // instead of holding a backlog for a fleet that is down.
-        impl AmqpMessageSend for $ty {
-            async fn send(self, pool: &AmqpPool) -> Result<(), wakuwaku::Error> {
-                send_expiring(self, pool, Self::EVERY_SECS).await
-            }
-        }
-
-        impl IntervalJobExecutionSignal for $ty {
-            fn tick(now: OffsetDateTime) -> Self {
-                Self {
-                    tick_unix_secs: now.unix_timestamp(),
-                }
-            }
-
-            fn time_pool(now: OffsetDateTime, last_time: OffsetDateTime) -> Poll<Self> {
-                if elapsed(Self::EVERY_SECS, now, last_time) {
-                    Poll::Ready(Self::tick(now))
-                } else {
-                    Poll::Pending
-                }
-            }
-        }
-    };
-}
-
-/// **Periodic signal**
-///
-/// Derive every canvas whose edits outran their derivation.
-///
-/// Published by: the `cron` scheduler, every 30 s.
-/// Consumed by: [`crate::hooks::derive::CanvasDeriver`].
-/// Route: exchange `orchestration` (direct), key `derive_stale_canvases`.
-///
-/// This is the backstop for a lost [`CanvasDirty`]: correctness lives in the
-/// canvas generation counters, so a late or dropped signal costs latency only.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct DeriveStaleCanvasesSignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(DeriveStaleCanvasesSignal, "derive_stale_canvases", 30);
-
-/// **Periodic signal**
-///
-/// Re-issue relay leaves that are about to expire and re-derive their canvases.
-///
-/// Published by: the `cron` scheduler, every hour.
-/// Consumed by: [`crate::hooks::derive::CanvasDeriver`].
-/// Route: exchange `orchestration` (direct), key `rotate_relay_certificates`.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct RotateRelayCertificatesSignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(
-    RotateRelayCertificatesSignal,
-    "rotate_relay_certificates",
-    3600
-);
-
-/// **Periodic signal**
-///
-/// Flip servers that stopped reporting to `Offline`.
-///
-/// Published by: the `cron` scheduler, every 30 s.
-/// Consumed by: [`crate::hooks::health::HealthCronHook`].
-/// Route: exchange `orchestration` (direct), key `sweep_liveness`.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct SweepLivenessSignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(SweepLivenessSignal, "sweep_liveness", 30);
-
-/// **Periodic signal**
-///
-/// Delete health records past their retention TTLs.
-///
-/// Published by: the `cron` scheduler, every 5 minutes.
-/// Consumed by: [`crate::hooks::health::HealthCronHook`].
-/// Route: exchange `orchestration` (direct), key `trim_health_history`.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct TrimHealthHistorySignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(TrimHealthHistorySignal, "trim_health_history", 300);
-
-/// **Periodic signal**
-///
-/// Ensure a `certificate` row exists for every Entry's TLS request, then issue
-/// or renew whatever is due.
-///
-/// Published by: the `cron` scheduler, every 60 s.
-/// Consumed by: [`crate::hooks::acme::AcmeCronHook`].
-/// Route: exchange `orchestration` (direct), key `renew_certificates`.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct RenewCertificatesSignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(RenewCertificatesSignal, "renew_certificates", 60);
-
-/// **Periodic signal**
-///
-/// Look up the country of every server IPv4 address that has none: a new or
-/// changed address, or one whose last lookup failed long enough ago.
-///
-/// Published by: the `cron` scheduler, every 60 s.
-/// Consumed by: [`crate::hooks::country::CountryCronHook`].
-/// Route: exchange `orchestration` (direct), key `resolve_server_countries`.
-#[derive(
-    Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
-)]
-pub struct ResolveServerCountriesSignal {
-    /// The scheduling tick, as a Unix timestamp in seconds.
-    pub tick_unix_secs: i64,
-}
-
-interval_signal!(ResolveServerCountriesSignal, "resolve_server_countries", 60);

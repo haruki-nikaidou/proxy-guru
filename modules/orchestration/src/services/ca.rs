@@ -258,8 +258,8 @@ impl Processor<EnsureRelayCertificates> for CaService {
                 }
                 // Unfenced, so the row is always written: a missing one is a bug.
                 None => {
-                    return Err(OrchestrationError::Core(wakuwaku::Error::BusinessPanic(
-                        anyhow::anyhow!("relay certificate row was not written"),
+                    return Err(OrchestrationError::Internal(anyhow::anyhow!(
+                        "relay certificate row was not written"
                     )));
                 }
             };
@@ -271,9 +271,9 @@ impl Processor<EnsureRelayCertificates> for CaService {
 
 /// Re-issues one leaf regardless of its expiry: the rotation cron's step.
 ///
-/// `expected_version` is the version the caller read. Rotation runs from an
-/// AMQP signal that may be delivered more than once, so the re-issue is fenced
-/// on it: `None` means another consumer rotated this leaf first and this pass
+/// `expected_version` is the version the caller read. Rotation runs from a
+/// cron job that every `--mode cron` replica runs, so the re-issue is fenced
+/// on it: `None` means another replica rotated this leaf first and this pass
 /// must leave it alone.
 pub struct RotateRelayCertificate {
     pub pod: PodId,
