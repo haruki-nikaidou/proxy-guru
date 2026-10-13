@@ -25,8 +25,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
 	<Card title="控制平面" icon="setting">
-		`guru-master` 提供运维 API、Worker API、用于推导配置并运行所有周期任务的 AMQP 钩子，
-		以及负责调度它们的时钟 —— 一个二进制文件，四种模式。
+		`guru-master` 提供运维 API、Worker API、用于推导配置与扇出通知的 Iggy 事件处理器，
+		以及进程内运行的周期任务（cron job）—— 一个二进制文件，五种模式。
 	</Card>
 	<Card title="数据平面" icon="rocket">
 		`guru-worker` 负责终结监听器并转发流量，配置既可以来自本地 TOML 文件，

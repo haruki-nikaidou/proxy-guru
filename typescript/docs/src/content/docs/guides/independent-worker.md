@@ -18,7 +18,7 @@ and never constructs a gRPC client, never reads `GURU_API_KEY`, and never touche
 |                              | Standalone (`--config`) | Agent (`--master`) |
 |---|---|---|
 | Source of truth | The file on the node | The canvas in the database |
-| Needs PostgreSQL / RabbitMQ / master | No | Yes |
+| Needs PostgreSQL / Iggy / master | No | Yes |
 | Needs an operator API key | No | Yes |
 | How a change lands | You edit the file, then `SIGHUP` | Master streams a revision |
 | Rollout ordering across nodes | Yours to arrange | Convergent, dependency-ordered |
@@ -50,7 +50,7 @@ The config format is `lib/guru_worker_config`, shared by both planes — see
   host**. The worker reads them from the paths in the config; it never fetches or generates
   certificates in either mode.
 
-You do **not** need Docker, PostgreSQL, RabbitMQ, the dashboard, an API key, or network reachability
+You do **not** need Docker, PostgreSQL, Iggy, the dashboard, an API key, or network reachability
 to anything except your own upstreams.
 
 ## 3. Install the binary

@@ -6,15 +6,15 @@ description: 一次 Pod 图编辑如何变成由 Worker 应用的配置修订版
 ## 从编辑到已应用的配置
 
 每次编辑都是一批经过检查的图修改（`ApplyGraph`，见[画布](/zh-cn/reference/canvas/)），它会递增根画布的 generation 并发布 `CanvasDirty`；Worker 的 ack、注册和地址变化则只递增它自己服务器
-配置视图上的一个计数器，所以整批 Worker 同时确认也不会在画布行上互相冲突。派生钩子会重新派生整棵画布树；周期性的
-`derive_stale_canvases` 信号由同一个钩子消费，把这两个计数器与上一次派生记下的值比较，兜住消息丢失时漏掉的画布。这两个触发源都是消息代理上
-的消息，所以这道兜底并不独立于消息代理：`CanvasDirty` 丢失的画布只能等到投递恢复，而连不上消息代理的
-master 根本不会派生任何东西。
+配置视图上的一个计数器，所以整批 Worker 同时确认也不会在画布行上互相冲突。派生钩子（`--mode consumer` 中的 Iggy
+`CanvasDirty` 事件处理器）会重新派生整棵画布树；周期任务 `derive_stale_canvases` 在 `--mode cron` 中于进程内运行，
+把这两个计数器与上一次派生记下的值比较，兜住事件丢失时漏掉的画布。这道兜底不经过 Iggy 投递：即使某条
+`CanvasDirty` 丢失，只要 `cron` 在运行，过期的画布仍会在下一个配置间隔内被重新派生。
 
 每台服务器都有**一份配置视图**，其中保存三个快照 —— `desired`、`in_flight` 和 `applied`。Worker 的流
 会把 `desired` 提升为 `in_flight`，而它的 `AckConfig` 会把 `in_flight` 提升为 `applied`。
 
-![图的编辑发布 CanvasDirty，cron 发布 derive_stale_canvases；两者都到达以 consumer 模式运行的派生钩子，由它写入某台服务器配置视图的 desired 快照。Worker 的流把 desired 提升为 in_flight，AckConfig 再把 in_flight 提升为 applied —— 也就是 Worker 确认自己正在跑的东西](/img/rollout/edit-to-applied.svg)
+![图的编辑发布 CanvasDirty 事件，由以 consumer 模式运行的派生钩子处理；cron 模式中的 derive_stale_canvases 任务兜住遗漏的画布。两者都写入某台服务器配置视图的 desired 快照。Worker 的流把 desired 提升为 in_flight，AckConfig 再把 in_flight 提升为 applied —— 也就是 Worker 确认自己正在跑的东西](/img/rollout/edit-to-applied.svg)
 
 ## 收敛
 
@@ -40,9 +40,8 @@ pod 状态：`Ready`（pod 运行的正是 `desired` 要求的内容）、`Deplo
 master 会结束一条变得沉默的健康流，`sweep_liveness` 任务则负责彻底消失的 Worker；仅仅是流关闭不构成判定）。两份历史都是原始记录，由
 `trim_health_history` 任务裁剪；`ListServerHealthHistory` / `ListPodHealthHistory` 按时间范围读取。
 
-这两个任务都在 `--mode consumer` 中运行，其触发信号由 `cron` 调度器在任务到期时发布。调度器除了自己的
-时钟之外不保存任何状态；消费者会在一行 `orchestration_job_run` 中声明每一次运行，因此无论有多少个消费者
-在运行，该任务在每个配置间隔内都只执行一次。
+这两个任务都由 `--mode cron` 在进程内运行。每次运行都会先在一行 `orchestration_job_run` 中声明这一次 tick，
+因此无论有多少个 `cron` 进程在运行，该任务在每个配置间隔内都只执行一次。
 
 在控制台中，画布的**健康状况**页面会按选定的时间窗口（1 小时 / 6 小时 / 24 小时 / 7 天）读取这两份历史：
 每台服务器一张卡片，显示其状态、该窗口内*最后一次上报时*的连接数以及峰值，另外还有两张图表 —— 由每次

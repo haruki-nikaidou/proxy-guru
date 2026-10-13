@@ -1,13 +1,13 @@
 ---
 title: Local Development
-description: Bring up PostgreSQL, RabbitMQ, Redis, the control plane and the dashboard on one machine.
+description: Bring up PostgreSQL, Iggy, Redis, the control plane and the dashboard on one machine.
 ---
 
-The control plane needs a PostgreSQL database, an AMQP broker and a Redis server. Everything else
+The control plane needs a PostgreSQL database, an Apache Iggy server and a Redis server. Everything else
 runs from the workspace.
 
 :::caution[The repository `.env` is not a dev profile]
-The root `.env` can hold **production** credentials (`GURU_DATABASE_URL`, `AMQP_URI`,
+The root `.env` can hold **production** credentials (`GURU_DATABASE_URL`, `IGGY_URL`,
 `REDIS_URL`), and every process you start inherits it. Pass `--database-url` explicitly — or
 override the variable — so a local run cannot talk to a remote database by accident.
 :::
@@ -19,7 +19,14 @@ docker run -d --name guru-postgres -p 15432:5432 \
   -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
   postgres:18.6-alpine
 
-docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+# Iggy needs SYS_NICE, seccomp=unconfined and an unlimited memlock (io_uring);
+# `docker compose up iggy` from the repository root starts the same thing.
+docker run -d --name guru-iggy -p 8090:8090 \
+  --cap-add SYS_NICE --security-opt seccomp=unconfined --ulimit memlock=-1:-1 \
+  -e IGGY_ROOT_USERNAME=iggy -e IGGY_ROOT_PASSWORD=iggy \
+  -e IGGY_TCP_ADDRESS=0.0.0.0:8090 -e IGGY_NODE_ADVERTISED_ADDRESS=localhost \
+  -e IGGY_QUIC_ENABLED=false -e IGGY_WEBSOCKET_ENABLED=false \
+  apache/iggy:0.9.0
 
 # Pub/sub only, so nothing is persisted; `docker compose up redis` from the
 # repository root starts the same thing.
@@ -29,7 +36,8 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 Use PostgreSQL **16 or newer**.
 
-The broker URI form matters: use `amqp://guest:guest@127.0.0.1:5672/` for the default vhost. Redis
+The Iggy URL carries the root user: `iggy://iggy:iggy@127.0.0.1:8090`. Every mode creates the
+stream and topics it needs at startup, so there is nothing to pre-create. Redis
 takes `redis://127.0.0.1:6379/` and no credentials. If something else already listens on `6379`, set
 `REDIS_PORT` in `.env` before `docker compose up redis` to move the host side (say to `16379`) and
 name that port in `REDIS_URL`.
@@ -82,30 +90,31 @@ Each mode is a separate process. The operator API the dashboard talks to is `das
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-Nothing derives a canvas until a `consumer` runs, so start one in a second shell — it is both the
-edit hook and the executor of every periodic job (the stale-canvas sweep, the liveness sweep,
-health retention, ACME and relay-leaf rotation):
+Nothing derives a canvas on edit until a `consumer` runs, so start one in a second shell — it runs
+the Iggy event handlers: the derivation of dirty canvases and the notification fan-out:
 
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-In a third shell, the clock. `cron` publishes one execution signal per due job and nothing else:
-it opens no database connection, never reads `GURU_MASTER_KEY`, and takes no database arguments,
-so the broker URI is the whole configuration:
+In a third shell, the periodic jobs. `cron` runs all six of them in-process (the stale-canvas
+sweep, the liveness sweep, health retention, ACME, relay-leaf rotation and the country lookup),
+so it takes the same arguments as the two above:
 
 ```sh
-env -u GURU_MASTER_KEY cargo run -p guru-master -- \
+cargo run -p guru-master -- \
   --mode cron \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --database-url "$GURU_DATABASE_URL" \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 Notifications are delivered by their own mode, of which there is exactly one instance. It needs
@@ -116,7 +125,7 @@ notification settings ([Notifications](/features/notifications/)):
 env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
   --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090'
 ```
 
 A second `notifier` refuses to start — `another notifier already holds the advisory lock; run
@@ -126,10 +135,9 @@ local sink (`docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit`, then
 and read what arrives at `http://127.0.0.1:8025`.
 
 `workers_grpc` is the fifth mode — the worker API plus the config-view poller — and takes exactly
-the same arguments as `dashboard_grpc`. Every mode needs the broker: with RabbitMQ down, nothing
-starts, and with `cron` or the `consumer` down, no periodic job happens. `--redis-url` (or
-`REDIS_URL`) is required by the three serving and deriving modes above, and unused by `cron` and
-`notifier`; without it they abort with
+the same arguments as `dashboard_grpc`. Every mode needs PostgreSQL and Iggy: with either down,
+nothing starts, and with `cron` down, no periodic job happens. `--redis-url` (or `REDIS_URL`) is
+required by every mode except `notifier`; without it they abort with
 `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/`. It
 is the live bus behind the operator API's `Watch*` streams, which the dashboard's canvas editor and
 health page follow: with Redis down, an open page stops updating (its *Live* badge stays green — that
@@ -138,8 +146,8 @@ by itself once Redis is back.
 
 To make a periodic job run without waiting for its interval, delete its claim row — the table is
 `orchestration_job_run`, one row per job keyed by the job name, so
-`DELETE orchestration_job_run:sweep_liveness` makes the next `sweep_liveness` signal the one that
-runs.
+`DELETE orchestration_job_run:sweep_liveness` makes the next `sweep_liveness` tick the one that
+runs (restarting `cron` runs every job at once, too).
 
 ## 5. Dashboard
 

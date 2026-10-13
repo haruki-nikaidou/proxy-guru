@@ -31,22 +31,31 @@ services:
       timeout: 3s
       retries: 20
 
-  rabbitmq:
-    image: rabbitmq:4-alpine
-    container_name: guru-rabbitmq
-    # The node name (rabbit@<hostname>) selects the data directory; pin it so the
-    # data survives container recreation.
-    hostname: guru-rabbitmq
+  iggy:
+    image: apache/iggy:0.9.0
+    container_name: guru-iggy
     restart: unless-stopped
+    # The server pins its shards to cores and locks its I/O buffers in memory.
+    cap_add: [SYS_NICE]
+    security_opt: ["seccomp=unconfined"]
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+      IGGY_ROOT_USERNAME: ${IGGY_USER}
+      IGGY_ROOT_PASSWORD: ${IGGY_PASSWORD}
+      IGGY_TCP_ADDRESS: 0.0.0.0:8090
+      IGGY_NODE_ADVERTISED_ADDRESS: localhost
+      IGGY_QUIC_ENABLED: "false"
+      IGGY_WEBSOCKET_ENABLED: "false"
     volumes:
-      - ./data/mq:/var/lib/rabbitmq
+      - ./data/iggy:/app/local_data
     ports:
-      - "127.0.0.1:5672:5672"
+      # IGGY_PORT moves the host side off 8090; IGGY_URL must name the same port.
+      - "127.0.0.1:${IGGY_PORT:-8090}:8090"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      test: ["CMD-SHELL", "iggy -u \"$$IGGY_ROOT_USERNAME\" -p \"$$IGGY_ROOT_PASSWORD\" stream list"]
       interval: 10s
       timeout: 10s
       retries: 12

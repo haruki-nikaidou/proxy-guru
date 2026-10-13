@@ -1,11 +1,11 @@
 ---
 title: ネイティブにデプロイ
-description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、PostgreSQL、RabbitMQ、Redis に接続し、スキーマを適用し、ワーカー向けの TLS を nginx で終端します。
+description: 1 台の Linux ホストに前提条件をインストールし、チェックアウトからコントロールプレーンとダッシュボードを systemd で実行し、PostgreSQL、Iggy、Redis に接続し、スキーマを適用し、ワーカー向けの TLS を nginx で終端します。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。PostgreSQL、RabbitMQ、Redis はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
+[Docker でデプロイ](/ja/guides/deploy-with-docker/)ガイドでは、アプリケーションをイメージから実行します。本ガイドはもう 1 つのよくある構成、すなわち**ビルドマシンとコントロールプレーンを兼ねる 1 台のマシン**を扱います。Rust のバイナリは `target/release/` から systemd 経由で実行し、ダッシュボードはそのビルド出力から実行します。PostgreSQL、Iggy、Redis はネイティブサービス、マネージドサービス、コンテナのいずれでもよく、Docker は必須ではありません。コードを変更したときの反映は `cargo build` とユニットの再起動だけで、アプリケーションイメージは介しません。
 
 さらに、イメージ版のガイドが扱っていない点も説明します。それは、ワーカー API を**ダッシュボードと同じ公開ホスト名上の TLS** の背後に置くことです。これにより、インターネット上のどこにいるワーカーでも VPN なしで `--master https://guru.example.com` で到達できます。
 
@@ -16,7 +16,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | コンポーネント | 実行方法 | リスニング先 |
 |---|---|---|
 | PostgreSQL 16+ | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5432` |
-| RabbitMQ 4 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:5672` |
+| Iggy 0.9.x | ネイティブサービスまたはコンテナ | デフォルトは `127.0.0.1:8090` |
 | Redis 7 | ネイティブサービス、マネージドサービス、またはコンテナ | デフォルトは `127.0.0.1:6379` |
 | `guru-master` ×5 | systemd テンプレート `guru-master@<mode>` | `127.0.0.1:50051`、`127.0.0.1:50052` |
 | ダッシュボード | systemd `guru-frontend` | `127.0.0.1:3100` |
@@ -26,7 +26,7 @@ nginx 以外はすべてループバックにバインドします。公開さ�
 
 ## 2. 前提条件
 
-まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、Bun、チェックアウト、到達可能な PostgreSQL・RabbitMQ・Redis、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
+まず **[前提条件](/ja/guides/prerequisites/)** を一通り済ませてください。ホストのパッケージ（C ツールチェーン、`cmake`、`perl`、`protoc`、`openssl`、nginx）、rustup、Bun、チェックアウト、到達可能な PostgreSQL・Iggy・Redis、そして証明書付きのホスト名が必要です。ネイティブビルドでは vendored OpenSSL と aws-lc をコンパイルし、Bun からダッシュボードを実行します。Docker は任意であり、いずれかのデータストアをコンテナで実行する場合だけ必要です。
 
 チェックアウトから実行することによる 2 つの帰結は、始める前に改めて確認しておく価値があります。
 
@@ -53,7 +53,7 @@ cargo build --release --locked -p guru-master -p manage-tool -p guru-worker
 
 ### シークレットファイル
 
-[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報を含む `/path/to/proxy-guru/.env` はすでに作成済みです — `GURU_DATABASE_URL`、`RABBIT_USER`、`RABBIT_PASSWORD`、`AMQP_URI`、そして認証情報をまったく必要としない `REDIS_URL=redis://127.0.0.1:6379/` です。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
+[前提条件](/ja/guides/prerequisites/)の手順で、データストアの認証情報を含む `/path/to/proxy-guru/.env` はすでに作成済みです — `GURU_DATABASE_URL`、`IGGY_USER`、`IGGY_PASSWORD`、`IGGY_URL`、そして認証情報をまったく必要としない `REDIS_URL=redis://127.0.0.1:6379/` です。マスターは `EnvironmentFile=` を通じて同じファイルを読むので、マスターが追加で必要とする項目を追記します。
 
 <Steps>
 
@@ -147,7 +147,7 @@ sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc 
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer`、`notifier`、`cron` は、ブローカーへの接続が切れると非ゼロで終了します。それを回復させているのが `Restart=always` なので、必ず残しておいてください。これらのユニットを有効化する前に、PostgreSQL、RabbitMQ、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。`dashboard_grpc`、`workers_grpc`、`consumer` は到達可能な `REDIS_URL` がなければ起動を拒み — `cron` は Redis もデータベースも必要とせず、`notifier` はデータベースを必要としますが Redis は不要です — 遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` です。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
+これらのユニットを有効化する前に、PostgreSQL、Iggy、Redis を起動しておく（またはブート時に有効化しておく）ようにしてください。5 つのモードはいずれも PostgreSQL と Iggy に到達できなければ起動を拒み、`notifier` 以外は到達可能な `REDIS_URL` も必要とします。遅れて立ち上がってきたデータストアを乗り越えさせるのが `Restart=always` なので、必ず残しておいてください。`cron` は停止時に実行中のジョブを最大 20 秒待つため、`TimeoutStopSec=30s` の内側で終了します。マスターがいったん起動したあとで Redis が落ちた場合は、その場で再接続されます。その間止まるのは、開いている `Watch*` ストリームへの配信だけです。
 
 `guru-master@notifier` は、唯一つねに単一インスタンスでなければならないユニットです。起動時に PostgreSQL のアドバイザリロックを取得するため、これを動かす 2 台目のホストは、すべてのメッセージを二重に送る代わりに `another notifier already holds the advisory lock; run exactly one` で終了します（[通知](/ja/features/notifications/)）。このモードの 2 つのチャンネルのシークレット `GURU_SMTP_PASSWORD` と `GURU_TELEGRAM_BOT_TOKEN` は任意で、同じ `.env` に置きます。master キーは読みません。
 
@@ -319,7 +319,7 @@ sudo nginx -t && sudo systemctl reload nginx
 # 1. ローカルにネイティブインストールした場合の例のみ。リモートサービスはプロバイダーのヘルスチェックで
 #    確認してください
 pg_isready -h 127.0.0.1 -p 5432
-rabbitmq-diagnostics -q ping
+iggy -u <IGGY_USER> -p <IGGY_PASSWORD> stream list    # コンテナなら docker exec <container> iggy …
 redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
 # 2. スキーマ

@@ -22,7 +22,7 @@ rolls it out; data-plane workers (`bin/guru-worker`) terminate the listeners and
 pick up every new revision automatically — standalone from a TOML file or in
 agent mode.
 
-Rust 2024 on Tokio with PostgreSQL, AMQP, Redis and gRPC, plus a Bun workspace
+Rust 2024 on Tokio with PostgreSQL, Apache Iggy, Redis and gRPC, plus a Bun workspace
 under `typescript/` for the dashboard and the docs.
 
 ## Start here

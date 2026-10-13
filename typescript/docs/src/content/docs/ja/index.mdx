@@ -25,8 +25,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
 	<Card title="コントロールプレーン" icon="setting">
-		`guru-master` は、オペレーター API、ワーカー API、設定を導出して定期ジョブを実行する AMQP フック、
-		そしてそれらをスケジュールするクロックを提供します — 1つのバイナリ、4つのモード。
+		`guru-master` は、オペレーター API、ワーカー API、設定を導出する Iggy イベントハンドラー、
+		通知の配信、そして定期ジョブを実行する cron を提供します — 1つのバイナリ、5つのモード。
 	</Card>
 	<Card title="データプレーン" icon="rocket">
 		`guru-worker` はリスナーを終端してトラフィックを転送します。ローカルの TOML ファイルから、

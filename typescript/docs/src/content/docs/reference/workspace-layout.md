@@ -72,5 +72,7 @@ Add a page by dropping a Markdown/MDX file with `title` and `description` frontm
 3. Define the schema in `database/schema/<name>.surql` and the API in `proto/` (register it in
    `rpguru_sdk`).
 4. Implement from the inside out: `entities` → `services` → `rpc`/`hooks`.
-5. Wire the new services and hooks into `bin/guru-master`'s workers.
+5. Wire the new services and hooks into `bin/guru-master` through wakuwaku's `ServiceBuilder`
+   (`grpc_service`, `iggy_consumer`, `cron_job`), and add any new event topics to the
+   `ensure_topology` call there.
 6. Keep `config` values seedable from `bin/manage-tool`.

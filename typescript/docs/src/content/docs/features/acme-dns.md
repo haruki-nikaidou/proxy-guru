@@ -44,9 +44,8 @@ certificate: the failure is recorded on the row while the status stays `issued`.
 
 ## The issuance pass
 
-`renew_certificates` is published every 60 s and consumed in `--mode consumer`, where the tick is
-claimed in `orchestration_job_run` so the pass runs once fleet-wide per `acme_interval_secs`. One
-pass:
+`renew_certificates` is a job that wakes every 60 s inside `--mode cron`; each run claims its tick in
+`orchestration_job_run` so the pass runs once fleet-wide per `acme_interval_secs`. One pass:
 
 1. reads every `client_tls` pod, resolves its directory, and creates the missing certificate rows;
 2. lists the rows that are due — never attempted, or attempted longer ago than

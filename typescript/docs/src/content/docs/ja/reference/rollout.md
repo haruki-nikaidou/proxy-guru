@@ -8,17 +8,17 @@ description: ポッドグラフの編集がどのように設定リビジョン�
 編集はグラフ変更の検査済みバッチ 1 つです（`ApplyGraph`、[キャンバス](/ja/reference/canvas/)を参照）。ルートキャンバスの
 generation を進め、`CanvasDirty` を publish します。ワーカーの ack・登録・アドレス
 変更は、代わりに自分のサーバーの設定ビュー上のカウンターだけを進めるので、多数のワーカーが同時に ack しても
-キャンバス行で衝突しません。導出フックはキャンバスツリー全体を再導出し、定期的な `derive_stale_canvases` シグナル
-（消費するのは同じフックです）が、この 2 つのカウンターを前回の導出が記録した値と比べて、メッセージの喪失で
-取りこぼされたものを拾います。どちらのトリガーもブローカーのメッセージなので、このバックストップは
-ブローカーから独立ではありません。`CanvasDirty` を失ったキャンバスは配信が回復するまで待ち、ブローカーに
-到達できないマスターは何も導出しません。
+キャンバス行で衝突しません。導出フックはキャンバスツリー全体を再導出し、定期ジョブ `derive_stale_canvases`
+（`--mode cron` で動きます）が、この 2 つのカウンターを前回の導出が記録した値と比べて、イベントの喪失で
+取りこぼされたものを拾います。このバックストップはメッセージではなく、データベースを走査するプロセス内の
+ジョブです。`CanvasDirty` は Iggy のイベントなので、それを失ったキャンバスは次の `derive_stale_canvases`
+の実行で拾われます。
 
 すべてのサーバーは**単一の設定ビュー**を持ち、そこに `desired`、`in_flight`、`applied` の 3 つのスナップショットが
 入ります。ワーカーのストリームが `desired` → `in_flight` を昇格させ、その `AckConfig` が `in_flight` → `applied` を
 昇格させます。
 
-![グラフの編集が CanvasDirty を publish し、cron が derive_stale_canvases を publish する。どちらも consumer モードで動く導出フックに届き、フックがサーバーの設定ビューの desired スナップショットを書く。ワーカーのストリームが desired を in_flight に昇格させ、AckConfig が in_flight を applied — ワーカーが実際に動かしていると確認したもの — に昇格させる](/img/rollout/edit-to-applied.svg)
+![グラフの編集が Iggy に CanvasDirty を publish し、consumer モードのキャンバス導出がそれを処理する。cron モードの derive_stale_canvases ジョブは 30 秒ごとに取りこぼしたキャンバスを導出する。どちらもサーバーの設定ビューの desired スナップショットを書く。ワーカーのストリームが desired を in_flight に昇格させ、AckConfig が in_flight を applied — ワーカーが実際に動かしていると確認したもの — に昇格させる](/img/rollout/edit-to-applied.svg)
 
 ## 収束
 
@@ -49,9 +49,8 @@ pod のステータス: `Ready`（pod は `desired` が求めるものを実行�
 拾います。ストリームが単に閉じただけでは判定になりません）。どちらの履歴も生のまま保持され、`trim_health_history` パスで
 切り詰められます。`ListServerHealthHistory` / `ListPodHealthHistory` は時間範囲を読み取ります。
 
-どちらのパスも `--mode consumer` で、ジョブの期限が来たときに `cron` スケジューラーが publish するシグナルに
-応じて実行されます。スケジューラーは自身の時計以外の状態を持たず、consumer は各実行を 1 つの
-`orchestration_job_run` 行で claim するため、consumer が何台起動していても、パスは設定された間隔につき
+どちらのパスも `--mode cron` のプロセス内で動く定期ジョブです。各実行は作業の前に 1 つの
+`orchestration_job_run` 行で claim するため、`cron` プロセスが何台起動していても、パスは設定された間隔につき
 1 回だけ実行されます。
 
 ダッシュボードでは、キャンバスの**ヘルス**ページが選択したウィンドウ（1 時間 / 6 時間 / 24 時間 / 7 日）で

@@ -1,6 +1,6 @@
 ---
 title: 前置条件
-description: 在部署控制平面之前先准备好它依赖的一切——PostgreSQL、RabbitMQ、Redis、Docker、构建工具链、Bun，以及一个带证书的主机名。
+description: 在部署控制平面之前先准备好它依赖的一切——PostgreSQL、Iggy、Redis、Docker、构建工具链、Bun，以及一个带证书的主机名。
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -14,7 +14,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 | | 使用 Docker 部署 | 原生部署 |
 |---|---|---|
 | PostgreSQL ≥ 16 | 需要 | 需要 |
-| RabbitMQ 3.13/4.x | 需要 | 需要 |
+| Apache Iggy 0.9.x | 需要 | 需要 |
 | Redis ≥ 7 | 需要 | 需要 |
 | Docker Engine + Compose | 需要（用于运行已发布的应用镜像；数据存储是否使用它可自行选择） | 不需要 |
 | Rust 工具链 + `protoc` | 仅在你选择自行构建 `manage-tool` 时需要——它也可以从 `master-v*` release 下载 | 需要——它要构建全部二进制 |
@@ -26,7 +26,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 ## 1. Docker Engine 与 Compose（仅镜像部署）
 
 只有选择镜像部署时才需要安装 Docker。原生部署不要求 Docker：你可以直接安装 PostgreSQL 和
-RabbitMQ，也可以使用托管服务或其他运行方式。先选定你的发行版；本页所有标签页都会随之联动。
+Iggy，也可以使用托管服务或其他运行方式。先选定你的发行版；本页所有标签页都会随之联动。
 
 <Tabs syncKey="distro">
 <TabItem label="Debian">
@@ -233,7 +233,7 @@ Docker 或其他主机管理权限。
 
 </Steps>
 
-## 4. PostgreSQL、RabbitMQ 与 Redis
+## 4. PostgreSQL、Iggy 与 Redis
 
 ### 控制平面对它们的要求
 
@@ -241,33 +241,33 @@ Docker 或其他主机管理权限。
 |---|---|
 | PostgreSQL | **16 或更高版本。** 一个数据库，通过一个 URL 访问。控制平面自己拥有它的 schema：它会应用随二进制一起发布的 migration，因此它连接时所用的角色只需要对该数据库拥有普通的 `CREATE`/`ALTER` 权限，不需要任何集群级权限。 |
 | | **持久化存储**，放在一个你会备份的卷上。这是整个系统中唯一无法重建的状态。对这一个数据库执行 `pg_dump` 就是一份完整备份。 |
-| | **给连接池留出余量。** 每个提供服务的 master 最多持有 `GURU_DB_POOL_SIZE` 个连接（默认 10 个），而这样的 master 有三个，所以请把 `max_connections` 留得明显高于 30。 |
-| RabbitMQ | 任意 3.13/4.x 服务端。控制平面会在启动时自行声明所需的 exchange 和持久化队列，因此无需预先创建——默认 vhost 上的一个用户就够了。本项目只测试过 RabbitMQ。 |
-| | URI 形式：`amqp://user:password@host:5672/`，其中**结尾的斜杠**表示选择默认 vhost。`/%2f` 这种写法会被解析器拒绝。 |
-| | 在**全部五种 master 模式中消息代理都是必需的**。周期性工作本身*就是*消息：它停机期间，没有任何过期画布被清扫，没有任何静默的服务器被标记为 `Offline`，也没有任何证书会被续期。请把它当作依赖，而不是可选的优化。 |
+| | **给连接池留出余量。** 每个 master 进程最多持有 `GURU_DB_POOL_SIZE` 个连接（默认 10 个），而五种模式都会连接数据库，所以请把 `max_connections` 留得明显高于 50。 |
+| Iggy | **服务端 0.9.x**（与 wakuwaku 1.0.0-rc1 所用的 Rust SDK 0.11 配套的版本）。控制平面会在启动时幂等地创建 stream `guru` 及其 topic（每个 4 个分区）和 `retry_<topic>` 重试 topic，因此无需预先创建——服务端创建的 root 用户就够了。 |
+| | URL 形式：`iggy://<user>:<password>@<host>:8090`，通过 `IGGY_URL` 传入。 |
+| | 在**全部五种 master 模式中都是必需的**。它持久保存 `canvas_dirty` 提示、健康事实与通知的日志以及重试 topic，与 PostgreSQL 一起构成系统的全部持久状态。请把它当作依赖，而不是可选的优化。 |
 | Redis | **7.x 或更高版本。** 只用到 pub/sub —— 控制平面不在其中存储任何东西，不声明任何东西，也不需要持久化，因此任何可访问的服务端都可以，包括托管服务。整个集群共用一个实例：各副本正是通过它彼此发现的。 |
-| | URL 形式：`redis://127.0.0.1:6379/`，通过 `REDIS_URL` 传入。在提供服务与派生的**那三种 master 模式下必填**（`dashboard_grpc`、`workers_grpc`、`consumer`）；`cron` 和 `notifier` 从不接触它。 |
+| | URL 形式：`redis://127.0.0.1:6379/`，通过 `REDIS_URL` 传入。**除 `notifier` 外的所有 master 模式下必填**；`notifier` 从不接触它。 |
 | | 它承载运维 API 的 `Watch*` 流：每一次变更都会在频道 `guru:orchestration:live` 上发布一个事件，而每个 `dashboard_grpc` 副本只订阅它一次，再把事件分发给自己提供的那些流。中断只会让已打开的流收不到投递，除此之外别无影响——编辑照样生效、照样派生，订阅端也会带退避地重连，并在之后让每个 watcher 重新读取数据库。控制台的画布编辑器和健康状况页面跟随这些流，因此中断期间已打开的页面会停止更新，并在之后自行追上最新状态；某个 master 日志里的 `live bus connected` 仍然是直接的检查依据。 |
 
-:::caution[非 RabbitMQ 消息代理并非可直接替换的实现]
-控制平面使用 AMQP 0-9-1 客户端 `amqprs`，并依赖 RabbitMQ 的 exchange 与 queue 声明语义。
-其他消息代理均未经过测试。尤其是 Azure Service Bus 使用 AMQP 1.0，不能假定它与本项目兼容；
-控制平面的部分或全部消息传递都可能失败。除非你能端到端验证其他实现，否则请使用 RabbitMQ。
+:::note[Iggy 服务端的要求]
+Iggy 服务端只支持 Linux，并使用 io_uring：容器需要 `SYS_NICE` 能力、`seccomp=unconfined` 以及不受限的
+`memlock`（下方 Compose 示例都已设置）。原生安装请使用 [iggy.apache.org](https://iggy.apache.org) 提供的
+官方二进制或软件包，版本选 0.9.x 服务端。
 :::
 
 数据存储不要求使用容器或 Docker Compose。你可以按照官方
 [PostgreSQL 下载页面](https://www.postgresql.org/download/)、
-[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
+[Iggy 官网](https://iggy.apache.org)和
 [Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装，使用托管服务，或采用
 下方的 Compose 示例。无论选择哪种方式，都必须满足上表的要求。
 
 ### 凭据
 
-生成的密码要**对 URL 安全**——两个密码都会被插入某个 URI（`GURU_DATABASE_URL` 与
-`AMQP_URI`），其中 `@`、`:`、`/` 和 `%` 会改变 URI 的含义：
+生成的密码要**对 URL 安全**——两个密码都会被插入某个 URL（`GURU_DATABASE_URL` 与
+`IGGY_URL`），其中 `@`、`:`、`/` 和 `%` 会改变 URL 的含义：
 
 ```sh
-openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
+openssl rand -hex 32          # once for PostgreSQL, once for Iggy
 ```
 
 十六进制字符串可以规避所有引号和百分号编码的问题。如果你坚持要用标点符号，请在两个 URI
@@ -282,14 +282,14 @@ openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
 ```sh
 # /path/to/proxy-guru/.env   (chmod 600; gitignored)
 GURU_DATABASE_URL=postgres://guru:<first hex string>@127.0.0.1:5432/guru
-RABBIT_USER=guru
-RABBIT_PASSWORD=<second hex string>
-AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+IGGY_USER=guru
+IGGY_PASSWORD=<second hex string>
+IGGY_URL=iggy://guru:<second hex string>@127.0.0.1:8090
 REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd 之后会通过 `EnvironmentFile=` 逐字读取这个文件。请完整写出 `GURU_DATABASE_URL` 和
-`AMQP_URI`，因为 systemd **不会**展开 `${…}`。
+`IGGY_URL`，因为 systemd **不会**展开 `${…}`。
 
 </TabItem>
 <TabItem label="镜像部署">
@@ -300,13 +300,13 @@ POSTGRES_USER=guru
 POSTGRES_PASSWORD=<first hex string>
 POSTGRES_DB=guru
 
-RABBIT_USER=guru
-RABBIT_PASSWORD=<second hex string>
+IGGY_USER=guru
+IGGY_PASSWORD=<second hex string>
 ```
 
 请先创建 `/srv/guru`（`sudo mkdir -p /srv/guru`）；下面的 Compose 文件就放在这个 `.env`
 旁边，镜像部署指南之后还会向它追加 `MASTER_VERSION`、`FRONTEND_VERSION` 和
-`GURU_MASTER_KEY`。`GURU_DATABASE_URL` 和 `AMQP_URI` 同样不会出现在其中：Compose 会用上面这些
+`GURU_MASTER_KEY`。`GURU_DATABASE_URL` 和 `IGGY_URL` 同样不会出现在其中：Compose 会用上面这些
 变量把两者拼出来，就像 Redis 不需要凭据、于是它直接把 URL 写死成 `redis://redis:6379/` 一样。
 
 </TabItem>
@@ -318,10 +318,10 @@ RABBIT_PASSWORD=<second hex string>
 <TabItem label="原生部署">
 
 按照官方 [PostgreSQL 下载页面](https://www.postgresql.org/download/)、
-[RabbitMQ 下载指南](https://www.rabbitmq.com/docs/download)和
+[Iggy 官网](https://iggy.apache.org)和
 [Redis 安装指南](https://redis.io/docs/latest/operate/oss_and_stack/install/)安装这三个服务。创建一个
-`guru` 角色以及一个归它所有的 `guru` 数据库，并让它监听 `5432` 端口的回环地址；为 RabbitMQ 配置
-`.env` 中的用户和密码、默认 vhost、持久化存储以及监听 `5672` 端口的回环地址；Redis 只需要一个监听 `6379` 端口的回环
+`guru` 角色以及一个归它所有的 `guru` 数据库，并让它监听 `5432` 端口的回环地址；用 `.env` 中的用户和密码作为
+Iggy 的 root 用户（`IGGY_ROOT_USERNAME` / `IGGY_ROOT_PASSWORD`）、配置持久化存储并监听 `8090` 端口的回环地址；Redis 只需要一个监听 `6379` 端口的回环
 地址，并关掉它的持久化（`--save '' --appendonly no`）——控制平面不在其中存放任何状态。使用操作系统的
 服务管理器启动这三个服务，并将它们设为开机自启。
 
@@ -358,19 +358,29 @@ services:
       timeout: 3s
       retries: 20
 
-  rabbitmq:
-    image: rabbitmq:4-alpine
+  iggy:
+    image: apache/iggy:0.9.0
+    container_name: guru-iggy
     restart: unless-stopped
-    # The data directory is named after the node, rabbit@<hostname>: pin it, or
-    # every container recreation starts an empty broker.
-    hostname: rabbitmq
+    cap_add: [SYS_NICE]
+    security_opt: ["seccomp=unconfined"]
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+      IGGY_ROOT_USERNAME: ${IGGY_USER}
+      IGGY_ROOT_PASSWORD: ${IGGY_PASSWORD}
+      IGGY_TCP_ADDRESS: 0.0.0.0:8090
+      IGGY_NODE_ADVERTISED_ADDRESS: localhost
+      IGGY_QUIC_ENABLED: "false"
+      IGGY_WEBSOCKET_ENABLED: "false"
     volumes:
-      - rabbit-data:/var/lib/rabbitmq
+      - ./data/iggy:/app/local_data
+    ports:
+      - "127.0.0.1:${IGGY_PORT:-8090}:8090"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      test: ["CMD-SHELL", "iggy -u \"$$IGGY_ROOT_USERNAME\" -p \"$$IGGY_ROOT_PASSWORD\" stream list"]
       interval: 10s
       timeout: 10s
       retries: 12
@@ -383,12 +393,11 @@ services:
 
 volumes:
   postgres-data:
-  rabbit-data:
 ```
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d postgres rabbitmq redis
+sudo docker compose up -d postgres iggy redis
 ```
 
 各个 master 会在之后的镜像部署指南中加入同一个文件——数据存储必须先存在，因为 master 启动时
@@ -397,15 +406,14 @@ sudo docker compose up -d postgres rabbitmq redis
 </TabItem>
 </Tabs>
 
-Compose 示例有一个细节需要解释。RabbitMQ 会以节点名 `rabbit@<hostname>` 命名数据目录，
-这正是该服务固定 `hostname:` 的原因；否则每次重新创建容器都会得到一个空的消息代理。Redis
+Compose 示例有一个细节需要解释。Iggy 把数据存放在容器内的 `/app/local_data`，示例把它挂载到
+`./data/iggy`，因此重新创建容器不会丢失日志。Redis
 刻意没有卷：它的服务命令关掉了 RDB 与 AOF，因为经过它的一切都只是过路的实时事件。
 
-consumer 绑定的队列会自动为你创建：用于编辑事件的 `guru_orchestration_canvas_dirty`，
-以及对应六个周期任务的 `guru_orchestration_derive_stale_canvases`、
-`guru_orchestration_sweep_liveness`、`guru_orchestration_trim_health_history`、
-`guru_orchestration_renew_certificates`、`guru_orchestration_rotate_relay_certificates` 和
-`guru_orchestration_resolve_server_countries`。
+Iggy 的拓扑会自动为你创建：stream `guru`，以及各有 4 个分区的 topic `orchestration_canvas_dirty`、
+`orchestration_health_changed` 和 `notify_health_notice`；消费者启动时还会创建对应的 `retry_<topic>`
+（`consumer` 创建前两个，`notifier` 创建第三个）。六个周期任务不使用任何 topic：它们在 `cron` 进程内运行。
+手动检查健康状况：`docker exec guru-iggy iggy -u <user> -p <password> stream list`（原生安装则直接用 `iggy` CLI 加 `-u/-p`）。
 
 ## 5. 主机名与证书
 

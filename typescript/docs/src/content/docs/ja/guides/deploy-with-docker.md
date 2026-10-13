@@ -1,6 +1,6 @@
 ---
 title: Docker でデプロイ
-description: GHCR のイメージからコントロールプレーンを動かし、スキーマを適用し、PostgreSQL、RabbitMQ、Redis を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
+description: GHCR のイメージからコントロールプレーンを動かし、スキーマを適用し、PostgreSQL、Iggy、Redis を用意して、GitHub リリースから master と manage-tool、そしてワーカーのバイナリを取得する手順。
 ---
 
 このガイドは、何も入っていないマシンから動作するダッシュボードまで、シングルホストの本番デプロイを通しで
@@ -16,11 +16,11 @@ description: GHCR のイメージからコントロールプレーンを動か�
 
 | コンポーネント | 実行モード | 通信相手 |
 |---|---|---|
-| オペレーター API | `dashboard_grpc` | PostgreSQL、RabbitMQ、Redis |
-| ワーカー API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
-| 定期ジョブ + 導出フック | `consumer` | PostgreSQL、RabbitMQ、Redis |
-| スケジューラー | `cron` | RabbitMQ |
-| 通知の配信 | `notifier` | PostgreSQL、RabbitMQ（**インスタンスはちょうど 1 つ**） |
+| オペレーター API | `dashboard_grpc` | PostgreSQL、Iggy、Redis |
+| ワーカー API | `workers_grpc` | PostgreSQL、Iggy、Redis |
+| イベントハンドラー（導出 + 通知のファンアウト） | `consumer` | PostgreSQL、Iggy、Redis |
+| 定期ジョブ | `cron` | PostgreSQL、Iggy、Redis |
+| 通知の配信 | `notifier` | PostgreSQL、Iggy（**インスタンスはちょうど 1 つ**） |
 | ダッシュボード | — | オペレーター API（gRPC） |
 
 :::note
@@ -29,17 +29,17 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 :::
 
 永続的な状態が存在する場所はちょうど 2 か所です: **PostgreSQL**（キャンバス、サーバー、ポッドグラフ、
-アカウント、設定ビュー）と **RabbitMQ**（「このキャンバスが変更された」というヒント用の永続キュー 1 本と、
-定期ジョブごとに 1 本）。**Redis** は 3 つ目のデータストアであり、唯一何も保持しないものです。単一の pub/sub
+アカウント、設定ビュー）と **Iggy**（「このキャンバスが変更された」というヒント、ヘルスの事実、通知のログと、
+その retry トピック）。**Redis** は 3 つ目のデータストアであり、唯一何も保持しないものです。単一の pub/sub
 チャンネルで、オペレーター API のライブイベントを master のレプリカ間に運ぶだけで、永続化は一切設定しません。
 コンテナのファイルシステム上には何も保持しないため、すべてのコンテナは使い捨てできます。
 
-サイジングの前に理解しておくべき分割が、2 つのフックモードです。`cron` は時計です: 実行時刻を迎えたジョブごとに
-実行シグナルを 1 件発行するだけで、データベース接続は一切開きません。`consumer` は実際の処理 — 導出フック
-*および*すべての定期ジョブ — を実行するため、スイープ、生存確認、証明書更新は、キャンバス編集とまったく同じ
-ようにスケールし、フェイルオーバーします。
+サイジングの前に理解しておくべき分割が、2 つのバックグラウンドモードです。`consumer` は Iggy のイベント
+ハンドラー — `CanvasDirty` による導出と `HealthChanged` による通知のファンアウト — を実行します。`cron` は
+6 つの定期ジョブすべてをプロセス内で実行し、各実行を作業の前にデータベースで claim するため、複数動かしても
+各パスは設定された間隔につき 1 回だけ実行されます。
 
-`notifier` は 3 つ目のフックモードで、「自由にスケールさせてよい」という原則の唯一の例外です。`consumer` の
+`notifier` は 3 つ目のバックグラウンドモードで、「自由にスケールさせてよい」という原則の唯一の例外です。`consumer` の
 ファンアウトが publish したメールと Telegram メッセージを送るモードであり、2 つ目のインスタンスがあると、
 再起動が重なった分の通知をすべて二重に送ってしまいます。そのため PostgreSQL のアドバイザリロックを取得し、
 それを保持しているピアの隣では起動を拒否します。また、`GURU_MASTER_KEY` も `REDIS_URL` も必要としない
@@ -53,7 +53,7 @@ TCP リバースプロキシサーバーの性質上、ワーカーを Docker �
 | `50052` | `workers_grpc` | データプレーンのノードから到達可能にする（VPN、プライベートネットワーク、または TLS 終端する gRPC プロキシ）。 |
 | `3000` | ダッシュボード | HTTPS リバースプロキシの背後に置く。直接公開してはいけません。 |
 | `5432` | PostgreSQL | **プライベート。** ロール 1 つ、データベース 1 つ、パスワード 1 つ。 |
-| `5672` | RabbitMQ | **プライベート。** |
+| `8090` | Iggy | **プライベート。** |
 | `6379` | Redis | **プライベート。** 認証情報は一切ありません。アクセス制御はリスナーそのものです。 |
 
 :::caution[gRPC ポートは平文です]
@@ -68,7 +68,7 @@ master の両モードは平文の HTTP/2 で待ち受け、ダッシュボー�
 このガイドの前に **[前提条件](/ja/guides/prerequisites/)** を済ませてください。イメージデプロイの場合、
 そのページから必要なのは: Docker Engine と Compose プラグイン、オペレーターマシン上のこのリポジトリの
 チェックアウト（Compose ファイルのため）、
-`openssl`、TLS 証明書を持つ DNS 名 — そして PostgreSQL、RabbitMQ、Redis 自体で、これらは同ページが
+`openssl`、TLS 証明書を持つ DNS 名 — そして PostgreSQL、Iggy、Redis 自体で、これらは同ページが
 `/srv/guru/docker-compose.yml` から `/srv/guru/.env` の認証情報とともに起動します。
 
 `manage-tool` CLI もイメージには含まれていませんが、**ビルドは必須ではありません**: `master-v*` タグは
@@ -99,7 +99,7 @@ C ツールチェーン、`cmake` はどれも不要です。これらが要る�
 ## 4. シークレットを配置する
 
 [前提条件](/ja/guides/prerequisites/)で、Compose ファイルの隣に `/srv/guru/.env` をデータストアの認証情報
-（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`RABBIT_USER`、`RABBIT_PASSWORD`）
+（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`IGGY_USER`、`IGGY_PASSWORD`）
 とともに作成済みです。セクション 3 で固定したイメージタグを追記します:
 
 ```sh
@@ -113,29 +113,30 @@ FRONTEND_VERSION=v1.0.0
 
 :::caution[リポジトリの `.env` は別のファイルです]
 リポジトリのルートには*別の*環境の認証情報を含む `.env` が置かれている場合があり
-（`GURU_DATABASE_URL`、`AMQP_URI`）、そのディレクトリから起動したすべてのプロセスがそれを引き継ぎます。
+（`GURU_DATABASE_URL`、`IGGY_URL`）、そのディレクトリから起動したすべてのプロセスがそれを引き継ぎます。
 チェックアウトから `manage-tool` を実行するときは、`--database-url` を明示的に渡してください。
 フラグを 1 つ忘れただけで「ローカル向け」のコマンドが本番環境を書き換えてしまいます。
 :::
 
-## 5. PostgreSQL、RabbitMQ と Redis
+## 5. PostgreSQL、Iggy と Redis
 
 3 つのデータストア、それらの Compose サービス、および背後にある要件（PostgreSQL ≥ 16 で永続ストレージ、
-RabbitMQ はデフォルト vhost で末尾スラッシュ付きの URI、Redis は 7.x で
+Iggy はサーバー 0.9.x で `SYS_NICE`・`seccomp=unconfined`・無制限の `memlock`、Redis は 7.x で
 認証情報も永続化もなし）は
-**[前提条件 → PostgreSQL、RabbitMQ と Redis](/ja/guides/prerequisites/#4-postgresqlrabbitmq-と-redis)** に
+**[前提条件 → PostgreSQL、Iggy と Redis](/ja/guides/prerequisites/#4-postgresqliggy-と-redis)** に
 まとめられています。master を起動する前に、これらが立ち上がっている必要があります:
 
 ```sh
 cd /srv/guru
-docker compose ps          # postgres healthy, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, iggy healthy, redis up
 ```
 
-このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 3 つあります: ブローカーは
-**5 つすべて**の master モードで必須であり — 定期処理はメッセージなので、ブローカーの停止は導出、生存確認、
-証明書更新を止めてしまいます — master は `/srv/guru/.env` にあるロールでデータベースへ到達し、
-セクション 7 の `x-master` アンカーがそれを URL に組み立てます。そして Redis は提供と導出を行う
-3 つのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
+手動で確認するなら `docker exec <iggy container> iggy -u <user> -p <password> stream list` です。
+
+このデプロイの形を決める点なので、ここで繰り返しておく価値のある帰結が 3 つあります: Iggy は
+**5 つすべて**の master モードで必須であり — `IGGY_URL` がなければどのモードも起動しません — master は `/srv/guru/.env` にあるロールでデータベースへ到達し、
+セクション 7 の `x-master` アンカーがそれを URL に組み立てます。そして Redis は `notifier` 以外の
+すべてのモードで必須ですが、失われたときの代償はずっと小さく、停止しても止まるのは開いている `Watch*`
 ストリームへの配信だけで、それ以外は何も止まりません。編集は適用され、キャンバスは導出され、ワーカーは
 設定を受け取り続けます。subscriber は自力で再接続し、すべての watcher にデータベースの再読み込みを求めます。
 ダッシュボードはこれらのストリームを追従しているため、Redis が停止している間は開いているキャンバスページや
@@ -160,7 +161,7 @@ export GURU_DATABASE_URL
 ## 7. コントロールプレーンを動かす
 
 `guru-master` の*デプロイ*設定は環境変数から来ます: `GURU_WORKER_MODE` がモードを選び、
-`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL`、`GURU_MASTER_KEY` には
+`GURU_DATABASE_URL`、`IGGY_URL`、`REDIS_URL`、`GURU_MASTER_KEY` には
 **デフォルト値がありません**。
 オペレーターがインストールごとに調整するもの — ヘルスのしきい値と保持期間、デフォルトの ACME ディレクトリ、
 更新ウィンドウ、各定期ジョブの実行間隔 — は代わりにデータベースに置かれるため（手順 8）、レプリカ側で
@@ -168,7 +169,7 @@ export GURU_DATABASE_URL
 
 master キーは一度生成し、データベースの認証情報と一緒に保管してください — これはすべての DNS プロバイダー
 トークンと証明書の鍵を保存時に暗号化するもので、これがなければ復元する方法はありません。シークレットを読む
-3 つのモードではこれが必要です。`cron` と `notifier` は決して読みませんが、以下のアンカーは単純に同じ環境変数を
+4 つのモード（`notifier` 以外）ではこれが必要です。`notifier` は決して読みませんが、以下のアンカーは単純に同じ環境変数を
 5 つすべてに渡します。`manage-tool` は `master-v*` リリースからダウンロードするか、チェックアウトからビルドします
 （手順 8 と手順 10 を参照）。このサブコマンドはデータベースを必要としません:
 
@@ -176,11 +177,10 @@ master キーは一度生成し、データベースの認証情報と一緒に�
 ./target/release/manage-tool generate-master-key
 ```
 
-`REDIS_URL` のモードの範囲も似たようなものです。提供と導出を行う 3 つのモード
-（`dashboard_grpc`、`workers_grpc`、`consumer`）で必須で、`cron` と `notifier` は使いません。
+`REDIS_URL` のモードの範囲も似たようなものです。`notifier` 以外のすべてのモードで必須で、`notifier` は使いません。
 
 同じ `docker-compose.yml` を拡張します: `x-master` アンカーは `services:` の上に、5 つのサービスは
-その中の `postgres`、`rabbitmq`、`redis` の隣に置きます:
+その中の `postgres`、`iggy`、`redis` の隣に置きます:
 
 ```yaml
 x-master: &master
@@ -188,20 +188,20 @@ x-master: &master
   restart: unless-stopped
   environment: &master-env
     GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    IGGY_URL: iggy://${IGGY_USER}:${IGGY_PASSWORD}@iggy:8090
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
     postgres:
       condition: service_healthy
-    rabbitmq:
+    iggy:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... postgres, rabbitmq and redis from section 5 ...
+  # ... postgres, iggy and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -252,30 +252,28 @@ services:
   （`GURU_WATCH_POLL_MS`、デフォルト `1000`）。レプリケート可能ですが、各ワーカーセッションはその
   ストリームを保持しているインスタンスに固定されるため、前段には素の TCP/gRPC ロードバランサーを置き、
   HTTP/1 プロキシは決して置かないでください。
-- **`consumer`** — すべてのフック: `CanvasDirty` メッセージが届いたらキャンバスを再導出し（プリフェッチ 8）、
-  実行シグナルが届いたら 6 つの定期パスすべてを実行します — 古いキャンバスのスイープ、ヘルスの生存確認
-  スイープ、ヘルス保持期間の整理、ACME の発行/更新、リレーリーフのローテーション、新しいサーバーアドレスの
-  国判定。ACME ディレクトリ、DNS プロバイダー API、`country_lookup_url` への外向き HTTPS、および公開
-  リゾルバーへの DNS が必要になるのはこのモードです。スループットとフェイルオーバーのためにレプリケート
-  してください: 導出はキャンバスの世代カウンターで保護され、各定期パスは作業の前に `orchestration_job_run`
-  行 1 件で実行権を主張するので、シグナルが二重に届いても 2 つのレプリカに届いても実行は 1 回だけです。
-  2 つの ACME パスが同じ DNS-01 チャレンジを競合させることもありません — 証明書の取得試行は行ごとに
-  主張されます。
-- **`cron`** — 時計であり、時計だけです。5 秒ごとにスキャンし、実行時刻を迎えたジョブごとに実行シグナルを
-  1 件発行します: `derive_stale_canvases` と `sweep_liveness` は 30 秒ごと、`renew_certificates` と
-  `resolve_server_countries` は 60 秒ごと、`trim_health_history` は 5 分ごと、
-  `rotate_relay_certificates` は 1 時間ごと。データベース接続を開かず、`GURU_MASTER_KEY` も読まず、
-  ローカルの状態も持たないため、保持するシークレットは `AMQP_URI` 内のブローカー認証情報だけです —
-  そしてそれは、これなしでは動けない唯一のものでもあります。スケールさせるものは何もありません:
-  レプリカ 1 つで十分で、2 つ目があっても consumer 側の実行権主張が重複を破棄するので無害です。
+- **`consumer`** — Iggy のイベントハンドラー: `CanvasDirty` が届いたらキャンバスを再導出し、`HealthChanged` が
+  届いたら通知をファンアウトします。ACME の発行と DNS-01 のチャレンジは `cron` 側なので、外向きの通信は
+  主にデータベースと Iggy です。スループットとフェイルオーバーのためにレプリケートできますが、レプリカは
+  同じ consumer 名を共有するため、`GURU_IGGY_PARTITIONS` で互いに重ならないパーティション集合（0 始まり、
+  既定はすべての `0,1,2,3`）を与えてください。導出はキャンバスの世代カウンターで保護されます。失敗した
+  ハンドラーは、データベースが応答しなければその場で、その他のデータベースエラーと衝突は retry トピック
+  経由で（2、4、8、16 秒後）再試行され、それ以外はログに残して破棄されます。
+- **`cron`** — 6 つの定期パスすべてをプロセス内で実行します: `derive_stale_canvases` と `sweep_liveness` は
+  30 秒ごと、`renew_certificates` と `resolve_server_countries` は 60 秒ごと、`trim_health_history` は 5 分ごと、
+  `rotate_relay_certificates` は 1 時間ごと。最初の実行は起動時です。ACME ディレクトリ、DNS プロバイダー API、
+  `country_lookup_url` への外向き HTTPS、および公開リゾルバーへの DNS が必要になるのはこのモードです。
+  各実行は作業の前に `orchestration_job_run` 行 1 件で実行権を主張する（compare-and-set）ので、2 つ目の
+  レプリカは重複ではなくスタンバイになります。2 つの ACME パスが同じ DNS-01 チャレンジを競合させることも
+  ありません — 証明書の取得試行は行ごとに主張されます。停止時は実行中のジョブを最大 20 秒待ってから中断します。
   ジョブが実際に実行されうる間隔はフラグではなく保存された設定です — 手順 8 を参照してください。
 - **`notifier`** — 通知の配信であり、**ちょうど 1 つだけ**動かすべき唯一のモードです: `consumer` の
-  ファンアウトが publish する 2 本の通知キューを consume し、各通知を SMTP と Telegram Bot API で送ります。
+  ファンアウトが publish する通知のトピックを consume し、各通知を SMTP と Telegram Bot API で送ります。
   その前にセッションスコープの PostgreSQL アドバイザリロックを取得するため、2 つ目のレプリカは
   `another notifier already holds the advisory lock; run exactly one` を出力して非ゼロで終了します —
   これにより `deploy: replicas: 1` は慣習ではなく確実な保証になります。`GURU_MASTER_KEY` も `REDIS_URL` も
   必要とせず、必要なのは外向きの SMTP と `telegram_api_base` への HTTPS だけです。停止している間、通知は
-  それぞれのキューで待ちます。
+  Iggy のトピックで待ちます。
 
 TLS または QUIC 上のリレーリンクは、その Pod が導出される前に内部 CA を必要とします。master が使うものと
 同じ `GURU_MASTER_KEY` を使い、オペレーターマシンから一度だけ実行してください:
@@ -290,13 +288,11 @@ CA 証明書を出力し、TLS/QUIC リレーを持つすべてのキャンバ�
 
 コードから導かれる運用上の注意が 3 つあります:
 
-- `consumer`、`notifier`、`cron` モードは、**AMQP 接続が切れると非ゼロで終了します**（クライアントは再接続せず、
-  黙って死んだ consumer や、どこにも発行しない時計は、再起動より悪いからです）:
-  `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`。
-  これを自己修復にしているのが `restart: unless-stopped` です — 取り除かないでください。
+- どのモードも起動時に Iggy に接続し、ストリームとトピックを冪等に作成します。Iggy に到達できなければ起動は
+  失敗し、`restart: unless-stopped` が再試行します — 取り除かないでください。
 - イメージは distroless です: シェルも `curl` もありません。シェルを呼び出す Compose の `healthcheck` は
   動きません。代わりに外部から監視してください（`50051`/`50052` への TCP 接続、あるいはログの収集）。
-- Redis は逆の振る舞いをします: subscriber は自力で再接続し（500 ms から倍々で 10 s まで）、そのたびに
+- Redis の subscriber は自力で再接続し（500 ms から倍々で 10 s まで）、そのたびに
   `live bus connected` をログし、再接続のあとは開いているすべての `Watch*` ストリームにデータベースを
   読み直させるため、古い状態が残りません。その間にチャンネルが運んでいたものは失われますが、それで
   構いません — このチャンネルが運ぶのは進行中のイベントであって、状態ではありません。このデプロイで
@@ -309,31 +305,20 @@ docker compose up -d
 docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
-正常な起動はこのように見えます。consumer はバインドしたキューごとに 1 行、スケジューラーは発行する各周期を
+正常な起動はこのように見えます。consumer と notifier は consume を始めると 1 行、`cron` は 6 つの周期を
 列挙した 1 行を出力します:
 
 ```text
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_canvas_dirty" key="canvas_dirty"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_derive_stale_canvases" key="derive_stale_canvases"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rotate_relay_certificates" key="rotate_relay_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
-master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-consumer-1   | INFO guru_master: consuming
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
+master-notifier-1   | INFO guru_master: consuming
 ```
 
-スケジューラーはその後は静かです: 各発行は `DEBUG`
-（`published an execution signal job="sweep_liveness"`）でログされ、失敗した発行は `ERROR` になりますが
-プロセスは終了しません。つまり、時計が動いていることを確認する方法は cron コンテナへの
-`GURU_LOG_LEVEL=debug` であり、`ERROR ... publishing an execution signal failed` は接続が失われたと
-宣言される前にブローカーの問題が現れる形です。
+`cron` の各ジョブは `cron_job{job=…}` スパンの中で動き、失敗した実行は `cron job failed` としてログされますが
+プロセスは終了しません。
 
 ## 8. 最初の管理者を作る
 
@@ -381,10 +366,9 @@ cargo build --release -p manage-tool
 
 定期ジョブの周期は同じキーに含まれます: `sweep_interval_secs`（30）、
 `liveness_interval_secs`（30）、`health_retention_interval_secs`（300）、`acme_interval_secs`（60）、
-`country_lookup_interval_secs`（60）、`relay_rotation_interval_secs`（3600）。スケジューラーは設定を
-読まないため固定周期で発行します。各 consumer は*設定された*間隔につき最大 1 回だけ実行権を主張するので、
-シグナルの周期以下の値は「シグナルごとに実行」を意味し、それより大きい値はフリート全体でそのジョブを
-遅くします:
+`country_lookup_interval_secs`（60）、`relay_rotation_interval_secs`（3600）。`cron` の各ジョブは
+固定周期で起動し、*設定された*間隔につき最大 1 回だけ実行権を主張するので、ジョブの周期以下の値は
+「起動ごとに実行」を意味し、それより大きい値はフリート全体でそのジョブを遅くします:
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -638,14 +622,14 @@ chmod +x guru-worker
 
 ```sh
 # 1. データストア
-docker compose ps                     # postgres + rabbitmq が healthy、redis は up
+docker compose ps                     # postgres + iggy が healthy、redis は up
 
 # 2. スキーマ
 ./manage-tool db migrate              # セクション 6 のもの
 #   → schema is up to date
 
 # 3. コントロールプレーン: モードごとにバナーが 1 行、再起動ループがないこと
-docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron
+docker compose logs --tail=20 master-dashboard master-workers master-consumer master-cron master-notifier
 
 # 4. Worker API through nginx: HTTP/2 200 with a grpc-status header means the
 #    master answered (13 = "Missing request message", which an empty probe earns)
@@ -684,10 +668,10 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   > guru-$(date +%F).sql
 ```
 
-素早いリストア経路が欲しければ `postgres-data` ボリュームのスナップショットも取ってください。RabbitMQ は
-バックアップ不要です: そのキューが保持しているのは編集ヒントと実行シグナルで、どちらもスケジューラーが
-再発行し、世代カウンターが冪等にしてくれます — ただしブローカーは*稼働している*必要があります。止まっている
-あいだは定期ジョブが一切走らないからです。Redis にはバックアップするものが何もありません: ボリュームも、
+素早いリストア経路が欲しければ `postgres-data` ボリュームのスナップショットも取ってください。Iggy のログ
+（`iggy-data` ボリューム）が保持しているのは編集ヒント、ヘルスの事実、未配信の通知です。編集ヒントを失っても
+`cron` の `derive_stale_canvases` がデータベースから拾い直しますが、未配信の通知は失われます。Iggy は 5 つの
+モードすべての起動に必要なので、*稼働している*必要があります。Redis にはバックアップするものが何もありません: ボリュームも、
 AOF も RDB もなく、運んでいるのは進行中のライブイベントだけです。新しい空の Redis で起動し直しても、
 subscriber が再接続した時点で元どおりに動きます。
 
@@ -701,19 +685,18 @@ subscriber が再接続した時点で元どおりに動きます。
 |---|---|
 | ダッシュボードのログインが `Forbidden` / `Cross-site remote requests are forbidden` を返す | 再構成されたオリジンがブラウザーの `Origin` と一致していません。HTTPS で配信するか、`PROTOCOL_HEADER`/`HOST_HEADER` を設定して `X-Forwarded-Proto` と `X-Forwarded-Host`（ポート付き）を転送してください。`ORIGIN` は効きません。 |
 | ログインは成功するが、次のリクエストで `/auth` に戻される | `Secure` なセッション Cookie が破棄されました — ブラウザーが平文 HTTP でダッシュボードに到達しています。 |
-| master が `this mode opens the database: set GURU_DATABASE_URL` で終了する | URL が未設定か空です。デフォルト値はありません。これを必要としない唯一のモードが `cron` です。 |
-| master が `master key: GURU_MASTER_KEY is not set`（あるいは `must be 32 bytes`）で終了する | `dashboard_grpc`、`workers_grpc`、`consumer` はこのキーを必要とします（`cron` は読みません）。`manage-tool generate-master-key` で生成してください。環境変数からのみ読み込まれます。 |
+| master が `every mode opens the database: set GURU_DATABASE_URL (or pass --database-url)` で終了する | URL が未設定か空です。デフォルト値はなく、`cron` を含むすべてのモードが必要とします。 |
+| master が `master key: GURU_MASTER_KEY is not set`（あるいは `must be 32 bytes`）で終了する | `dashboard_grpc`、`workers_grpc`、`consumer`、`cron` はこのキーを必要とします（`notifier` は読みません）。`manage-tool generate-master-key` で生成してください。環境変数からのみ読み込まれます。 |
 | master が `stored config for key ... does not match its type` で終了する | 保存されているドキュメントが壊れているか、フィールド名の変更より古いものです。`manage-tool config get <key>` で確認し、`config set` で書き直してください。 |
-| TLS クライアントポッドが `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `consumer` 内で `renew_certificates` シグナルにより動きます: `consumer` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、consumer が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
+| TLS クライアントポッドが `certificate for … is pending` / `failed: …` のまま `invalid_pods` に留まる | ACME パスがまだ発行していないか、直前の試行が失敗しています（`ListCertificates` に `last_error` が出ます）。これは `cron` 内の `renew_certificates` ジョブで動きます: `cron` が起動していること、DNS プロバイダーのトークンと `domain_id`（Cloudflare の zone id / Vercel の domain）が正しいこと、`cron` が ACME ディレクトリに到達できることを確認してください。`RetryCertificate` で再試行を強制できます。 |
 | リレーの Pod が `internal CA not initialised` のまま `invalid_pods` に留まる | `manage-tool orchestration init-ca` を一度実行してください。 |
-| master が AMQP エラーで即座に終了する | `AMQP_URI` が未設定か到達不能です。5 つのモードすべてがブローカーを必要とします。URI 末尾の `/` を確認してください。 |
-| master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`dashboard_grpc`、`workers_grpc`、`consumer` はいずれもこれを必要とします（`cron` と `notifier` は不要です）。 |
-| `consumer`、`notifier`、`cron` のいずれかが定期的に再起動する | ブローカー喪失時には想定される挙動です: クライアントは再接続しないのでプロセスが終了し、再起動ポリシーが立て直します。master ではなくブローカーを調べてください。 |
+| master が `Iggy is required: set IGGY_URL (or pass --iggy-url), …` で即座に終了する | `IGGY_URL` が未設定です。5 つのモードすべてが Iggy を必要とします。設定されていて起動に失敗する場合は、Iggy に到達できるか、URL の認証情報が `IGGY_USER`/`IGGY_PASSWORD` と一致しているかを確認してください。 |
+| master が Redis エラーで即座に終了する | `REDIS_URL` が未設定か、サーバーに到達できません。`notifier` 以外のすべてのモードがこれを必要とします。 |
 | 2 つ目の `notifier` が `another notifier already holds the advisory lock; run exactly one` で終了する | 想定される挙動です: 配信は単一インスタンスです。レプリカ数を 1 にするか、ロックを保持しているピアを停止してください。 |
 | クリーンインストール直後に `relation "…" does not exist` が出る | マイグレーションが実行されていません。`GURU_DATABASE_URL` のロールにそのデータベースへの `CREATE` 権限がない可能性があります。`manage-tool db migrate` を実行し、そのエラーを読んでください。 |
 | `manage-tool` が間違ったデータベースに書き込んだ | 作業ディレクトリの `.env` が `GURU_DATABASE_URL` を与えていました。常に `--database-url` を渡してください。 |
-| キャンバスの編集がワーカーに届かない | `consumer` が停止しています: 編集フックと古いキャンバスのスイープの両方を実行するため、これなしでは何も導出されません。`consumer` が起動している場合は `cron` を確認してください — 時計がなければスイープは発火せず、`CanvasDirty` が生きている編集だけが導出されます。 |
-| 定期ジョブが動かなくなる（`Offline` にならない、更新も走らない） | RabbitMQ が停止しているか、`cron` が停止しています。両方必要です: 時計がシグナルを発行し、consumer がそれを実行します。 |
+| キャンバスの編集がワーカーに届かない | `consumer` が停止しています: `CanvasDirty` の導出ハンドラーを実行するため、これなしでは編集はすぐには導出されません。`cron` の `derive_stale_canvases` が最大 30 秒ほどで拾うはずなので、それも起きない場合は `cron` を確認してください。 |
+| 定期ジョブが動かなくなる（`Offline` にならない、更新も走らない） | `cron` が停止しています。ログの `cron job failed` も確認してください。 |
 | 開いているキャンバスページやヘルスページの更新が止まる（再読み込みすると変更が見える）、または `Watch*` ストリームがスナップショットを配信しなくなる | Redis が停止しているか、そのストリームを提供している `dashboard_grpc` レプリカから到達できません。そのレプリカのログで `live bus connected` を探してください。編集自体は適用され、導出も走ります。止まっているのはライブ配信だけで、再接続すれば再開します。 |
 
 すべてのフラグと変数については[設定](/ja/reference/configuration/)を、「導出」が実際に何をするのかについては

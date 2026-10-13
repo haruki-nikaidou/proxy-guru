@@ -53,10 +53,10 @@ src/
 ├── utils/        # small, dependency-light helpers
 ├── entities/     # persistence layer
 │   ├── db/       # PostgreSQL row types + sqlx queries
-│   └── redis/    # Redis key/value types (rkyv-encoded)
+│   └── redis/    # Redis key/value types
 ├── services/     # business logic (stateful Processors)
-├── events/       # AMQP payloads + routing
-├── hooks/        # background reactors (consumers, cron, loggers)
+├── events/       # Iggy event payloads + topics
+├── hooks/        # background reactors (event handlers, cron jobs, loggers)
 └── rpc/          # gRPC service implementations (transport edge)
 ```
 
@@ -84,13 +84,36 @@ src/
   documents are typed too (`canvas: CanvasId`, never `String`). An enum stored
   as text gets its one spelling from `text_enum!`; a document whose shape varies
   per row is `jsonb` (serde on the type).
-- Implement `Processor<Input>` for `base::db::Db`, one impl per query/command,
-  with `Error = base::db::Error`. A multi-statement write is one
-  `self.db().begin()` transaction with the statements in Rust order; a fence
-  that loses returns `Error::Conflict(<token>)` and rolls the transaction back,
-  while a refused conditional write (`UPDATE … WHERE <fence> RETURNING …` that
-  matches nothing) is an empty result, never an error. Transactions that write
-  the same rows lock them in one order, or two of them deadlock: in
+- Each table gets an uninhabited marker (`pub enum X {}`) in `entities/db/tables.rs`, named after
+  the table in PascalCase (`orchestration_canvas` → `tables::OrchestrationCanvas`,
+  `impl wakuwaku::entity::Entity`). A crate declares markers only for the tables
+  it owns; a read of another module's table names that module's marker.
+- One input struct per query/command, implementing wakuwaku-entity's `Query`
+  (what it touches: `type Effect = Read<tables::X>` / `Write<tables::X>`, a
+  tuple for several tables — `Write` for every table the SQL inserts into,
+  updates or deletes from, `Read` for every other table it names) and
+  `Execute<PgSource>` (how it runs: `async fn execute(self, conn: &mut
+  PgConnection) -> Result<Output, base::db::Error>`). `base::db::Db` — the
+  capability handle `wakuwaku::entity::Db<PgSource, ReadWrite>` — runs any of
+  them as a `Processor`.
+- A statement shared by several operations is a helper query (a `Query` +
+  `Execute` struct named after what it does, e.g. `fence::TouchChecked`,
+  `tree::RootOf`), never a free function taking a connection; a query that
+  needs it calls `Helper { .. }.execute(&mut *conn).await?`.
+- A multi-statement write is one transaction with the statements in Rust order,
+  and every one is a `TxFlow`: a private `enum XFlow { Start(X), End(TxEnd<XFlow>) }`
+  whose `Effect` is the union of the queries it runs, with `Commit = <output>`,
+  `Abort = Result<<output>, base::db::Error>` and `Report = ()`. `step` runs
+  each statement with `tx.run(query)` and ends with `base::db::commit(tx, v)`,
+  `base::db::rollback(tx, Error::Conflict(<token>))` when a fence loses, or
+  `base::db::refuse(tx, v)` for a refused conditional write
+  (`UPDATE … WHERE <fence> RETURNING …` that matches nothing: nothing written,
+  never an error). The public input keeps `impl Processor<X> for Db` calling
+  `base::db::transact(self, XFlow::Start(input))`, so callers write
+  `db.process(X { .. })`. A snapshot read is a flow whose `Effect` holds only
+  `Read`s (it begins `READ ONLY`) with
+  `const ISOLATION = Some(IsolationLevel::RepeatableRead)`. Transactions that
+  write the same rows lock them in one order, or two of them deadlock: in
   `orchestration`, a write to a canvas tree takes the tree's root row first
   (`entities::db::fence`).
 - **Every statement goes through the `query!` family**, so the SQL is checked
@@ -104,7 +127,7 @@ src/
     `spec AS "spec: Json<NodeSpec>"` — which needs a raw string literal for the
     quotes. Nullability comes from the schema; `AS "x!: T"` / `AS "x?: T"`
     override it where the query itself guarantees otherwise.
-  - A parameter of such a type is passed with a wildcard cast, `input.id as _`,
+  - A parameter of such a type is passed with a wildcard cast, `self.id as _`,
     which is what tells the macro the value encodes itself.
   - `query_as!` does not use `FromRow`, so a `jsonb` column read into a domain
     type goes through a private row struct with `Json<T>` fields plus one
@@ -114,8 +137,8 @@ src/
     called with `query_file!` / `query_file_as!` / `query_file_scalar!` (the
     path is relative to the crate root). The file is named after the operation
     it performs: the input struct in snake case where there is one
-    (`commit_canvas_derivation.sql`), the free function for a helper
-    (`ancestors_of.sql`), and one file per branch where a `Processor` runs
+    (`commit_canvas_derivation.sql`), the helper query in snake case
+    (`ancestors_of.sql`), and one file per branch where a query runs
     several (`ack_server_config_error.sql`, `ack_server_config_applied.sql`).
     Nothing formats SQL at runtime.
   - The offline query data is committed in `.sqlx/`; regenerate it with
@@ -146,18 +169,19 @@ src/
 
 ### `entities/redis`
 
-- One submodule per key kind.
-- Define a value type and a key type; derive the `rkyv` traits.
-- Implement `KeyValue` + `KeyValueRead` + `KeyValueWrite` from
-  `wakuwaku::redis`.
+- One submodule per key kind. There are none yet: the workspace uses the raw
+  `redis` crate for pub/sub only.
+- The first one enables `wakuwaku`'s `redis` feature and follows the same shape
+  as `entities/db`: an `Entity` marker per key kind and a `Query` + `Execute`
+  pair per operation on `wakuwaku::entity::redis`.
 
 ### `services`
 
-- The database dependency is `base::db::Db`, the pool handle every entity query
-  is implemented on. Statements are bounded by the server (`statement_timeout`,
-  set by `base::db::connect`), so nothing here needs a timer of its own.
-- A service is a `Clone` struct owning its dependencies (database, Redis, AMQP,
-  loaded config, other services).
+- The database dependency is `base::db::Db`, the handle every entity query runs
+  through. Statements are bounded by the server (`statement_timeout`, set by
+  `base::db::connect`), so nothing here needs a timer of its own.
+- A service is a `Clone` struct owning its dependencies (database, Redis, the
+  event publisher, loaded config, other services).
 - One `Processor` impl per operation; return domain types, not protobuf types.
 - Receive the loaded config at construction time (`guru-master` reads it once
   from the store during startup); never re-read it per call and never cache it
@@ -166,18 +190,31 @@ src/
 
 ### `events`
 
-- Define the payload, derive the `rkyv` traits, and implement `AmqpRouting`
-  (`EXCHANGE`, `EXCHANGE_TYPE`, `ROUTING_KEY`) + `AmqpMessageSend`.
+- Define the payload, derive the `rkyv` traits with `RkyvMessageSer` /
+  `RkyvMessageDe`, and implement `wakuwaku::iggy::EventBody` + `Event`
+  (`TYPE_TAG`, unique within its topic; `Key`, a `PartitionKey` whose
+  `SUPER_PARTITION_NAME` is the topic; `Algebra`; `atomic_ordering`).
 - Document each event's contract in a doc comment: **who publishes, who
-  consumes, and the routing key.**
+  consumes, and the topic and type tag.**
+- List the module's topics in a `TOPICS` constant; `guru-master` creates them
+  in the one stream `base::events::STREAM` at startup
+  (`base::events::ensure_topology`).
 - Events are the *only* sanctioned way for modules to communicate
   asynchronously.
 
 ### `hooks`
 
-- AMQP consumers implement `AmqpMessageProcessor<E>` (with a durable `QUEUE`
-  name) plus `Processor<E>`.
-- Also the home for cron jobs and event loggers.
+- Event handlers implement `wakuwaku::iggy::EventHandler<E>` plus
+  `wakuwaku::ServiceCreation`, and map their errors to a `HandleError` class
+  with the module error's `into_handle_error` (transient: retried in place;
+  retryable: the key goes to the retry topic; unrecoverable: dropped and
+  logged).
+- Periodic work is a `wakuwaku::CronJob` (a `Processor<CronTick>` with a fixed
+  `INTERVAL`) plus `ServiceCreation`; it claims its run with
+  `orchestration::entities::db::job_run::ClaimJobRun::for_tick(<job>, <configured
+  interval>, OffsetDateTime::from(tick.fired_at))` before doing any work, so
+  several cron processes run a pass once per configured interval.
+- Also the home for event loggers.
 - Like services, hooks own their dependencies and carry no transport logic.
 
 ### `rpc`
@@ -186,7 +223,11 @@ src/
 - Handlers are thin adapters: decode request → call a service → encode reply.
 - **No business logic** — if a handler grows rules, move them into a service.
 - Re-export each concrete service type from `rpc/mod.rs` so `guru-master` can
-  mount it.
+  mount it with `ServiceBuilder::compose_grpc_service`.
+- Validate request input at this edge with `wakuwaku::proof`: build the
+  `Proven<_, _>` values the service inputs require (e.g. `auth::utils::validation`'s
+  `prove_email`, `NEW_PASSWORD`, `API_KEY_NAME`) and answer a denial with
+  `INVALID_ARGUMENT` before calling the service.
 
 ### `config`
 
@@ -206,29 +247,32 @@ src/
 
 ## Cross-cutting conventions
 
-- **Errors:** use `wakuwaku::Error` at the service/hook boundary. Inside
-  `entities/db` return `base::db::Error`; it converts into `wakuwaku::Error`
-  via `?` at the service layer. `base::db::is_unavailable` tells "the database
-  did not answer" (`UNAVAILABLE`) from a refusal, and `Error::Conflict` is a
-  transaction that definitely did not commit.
-  Define module-specific error enums with `thiserror` when a layer needs richer
-  variants.
+- **Errors:** there is no `wakuwaku::Error`; each module defines its own
+  `thiserror` enum at the service/hook boundary (`AuthError`,
+  `OrchestrationError`, `NotifyError`), with `From<base::db::Error>` and
+  `From<auth::services::identity::PermissionDenied>`, a
+  `From<_> for tonic::Status`, and, where hooks use it, an
+  `into_handle_error` for Iggy. Inside `entities/db` return `base::db::Error`
+  (from `Execute` and flows alike). `base::db::is_unavailable` tells "the
+  database did not answer" (`UNAVAILABLE`) from a refusal, and
+  `Error::Conflict` is a transaction that definitely did not commit.
 - **Lints:** keep the crate-level `#![deny(clippy::unwrap_used)]`,
   `expect_used`, and `panic` lints. No panics on the request path.
 - **Tracing:** instrument entities and services with
   `#[tracing::instrument(skip_all, err)]`, and **always give the span an
-  explicit `name`** — a bare attribute on `Processor::process` produces an
-  indistinguishable `process` span for every impl. Naming convention:
-  - `entities/db` queries → `name = "Query:<Input>"` (e.g.
-    `"Query:FindAccountByEmail"`); if the impl drives a transaction, use
-    `name = "Query-Transaction:<Input>"` instead.
+  explicit `name`** — a bare attribute on `execute`/`process` produces an
+  indistinguishable span for every impl. Naming convention:
+  - `entities/db` queries → `name = "Query:<Input>"` on `Execute::execute`
+    (e.g. `"Query:FindAccountByEmail"`); a transaction gets
+    `name = "Query-Transaction:<Input>"` on its `Processor<Input> for Db` impl.
+    Helper queries and a flow's private statements carry no span of their own.
   - `services` operations → `name = "Service:<Input>"` (e.g.
     `"Service:RegisterAccount"`).
   - gRPC handlers need no `name`: the trait-method name already labels the span.
 - **Dependency direction:** `rpc → services → entities/events/config`. A feature
   module may depend on `base` (and on shared modules), but `base` must not depend
   on a feature module, and modules must not depend on each other's internals —
-  communicate via gRPC or AMQP events.
+  communicate via gRPC or Iggy events.
 - **Protobuf:** `proto/` is the single source of truth for the API. Add `.proto`
   files there, register them in `rpguru_sdk`'s `build.rs` (Rust side), and
   regenerate the TypeScript side with `bun run generate:proto`. Never hand-edit

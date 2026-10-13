@@ -25,9 +25,9 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 <CardGrid>
   <Card title="Control plane" icon="pen">
-    `guru-master` serves the operator API, the worker API, the AMQP hooks that
-    derive configs and run every periodic job, and the clock that schedules them
-    — one binary, four modes.
+    `guru-master` serves the operator API, the worker API, the Iggy event
+    handlers that derive configs, notification delivery and the in-process
+    periodic jobs — one binary, five modes.
   </Card>
   <Card title="Data plane" icon="server">
     `guru-worker` terminates listeners and forwards traffic, either from a local

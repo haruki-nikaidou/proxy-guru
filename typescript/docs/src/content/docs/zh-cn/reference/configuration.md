@@ -12,31 +12,35 @@ description: guru-master、guru-worker、manage-tool 和控制台的全部参数
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--database-url` | `GURU_DATABASE_URL` | *除 `cron` 外所有模式均必填* |
+| `--database-url` | `GURU_DATABASE_URL` | *所有模式下均必填* |
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（必须 ≥ 1） |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（必须 ≥ 1） |
-| `--amqp-uri` | `AMQP_URI` | *所有模式下均必填* |
-| `--redis-url` | `REDIS_URL` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填* |
+| `--iggy-url` | `IGGY_URL` | *所有模式下均必填* |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | 空 = 全部分区（`0,1,2,3`）；仅 `consumer` |
+| `--redis-url` | `REDIS_URL` | *除 `notifier` 外所有模式均必填* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（必须 ≥ 1） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
-| — | `GURU_MASTER_KEY` | *在 `dashboard_grpc`、`workers_grpc` 和 `consumer` 模式下必填*（仅支持环境变量；32 字节随机数据的 base64 编码 —— `manage-tool generate-master-key`） |
+| — | `GURU_MASTER_KEY` | *在 `dashboard_grpc`、`workers_grpc`、`consumer` 和 `cron` 模式下必填*（仅支持环境变量；32 字节随机数据的 base64 编码 —— `manage-tool generate-master-key`） |
 | — | `GURU_SMTP_PASSWORD` | *可选，仅 `notifier`*（仅支持环境变量；未设置时以不认证的方式发送） |
 | — | `GURU_TELEGRAM_BOT_TOKEN` | *可选，仅 `notifier`*（仅支持环境变量；未设置时禁用 Telegram） |
 
 其余所有可由运维人员调整的项——健康阈值与保留期、默认 ACME 目录、续期窗口、各周期任务的运行频率——都存放在数据库中，而不是环境变量里。
 参见[模块配置](#模块配置)。
 
-`--mode` 接受 `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` 和 `cron`。消息代理 URI 形如
-`amqp://guru:guru@127.0.0.1:5672/`，末尾的 `/` 表示选用默认 vhost。**所有**模式都需要消息代理，
-`cron` 也不例外：周期性工作是以消息形式发布的，因此代理中断会让派生、存活检测和证书续期一直停滞，
-直到代理恢复。
+`--mode` 接受 `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` 和 `cron`。Iggy URL 形如
+`iggy://<user>:<password>@<host>:8090`（例如 `iggy://iggy:iggy@127.0.0.1:8090`）。**所有**模式都需要 Iggy；
+缺少它时启动会失败并报出 `Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`。
+每种模式都会在启动时幂等地创建 stream `guru` 及其 topic（每个 4 个分区），无需预先创建任何东西。
+
+`--iggy-partitions` 是逗号分隔、从 0 开始的分区 id 列表，指定这个 `consumer` 读取哪些分区；留空表示全部
+（`0,1,2,3`）。多个 `consumer` 副本必须使用互不相交的分区集合——它们共享消费者名称，否则会在 offset 上互相竞争。
 
 `notifier` 是[通知](/zh-cn/features/notifications/)的投递侧：恰好一个实例，由一把 PostgreSQL
-advisory lock 强制保证。它在启动时读取 `notify` 配置，并且只需要数据库和消息代理 —— 既不需要
+advisory lock 强制保证。它在启动时读取 `notify` 配置，并且只需要数据库和 Iggy —— 既不需要
 `GURU_MASTER_KEY`（它不解密任何东西），也不需要 `REDIS_URL`（它不发布任何实时事件）。它的两个渠道
 机密就是上面那两个环境变量。
 
-在提供服务与派生的那三种模式下 Redis 同样必填，理由也属于同一类：它是运维 API `Watch*` 流背后的
+除 `notifier` 外的所有模式下 Redis 都必填：它是运维 API `Watch*` 流背后的
 实时总线。URL 形如 `redis://127.0.0.1:6379/`。每一次变更都会在频道 `guru:orchestration:live` 上发布
 一个事件，而每个 `dashboard_grpc` 副本只订阅它一次，因此在某个副本上做出的编辑也会到达由其他副本
 提供的那些流。这里什么都不会被存下来：整个集群不需要该服务器提供任何持久化，既不需要 AOF，也不需要
@@ -49,40 +53,38 @@ server-sent-events 连接完成，由控制台把它桥接到 gRPC 流上。这�
 连接；而检查总线本身靠的是日志行 `live bus connected`。
 
 `GURU_MASTER_KEY` 用于加密所有静态存储的密钥材料——DNS 提供商 API 令牌、ACME 账户密钥、证书和 CA
-私钥——凡是需要读取密钥材料的三种模式都必须提供：`dashboard_grpc`、`workers_grpc` 和 `consumer`。
-`cron` 从不接触密钥材料，也不会读取该密钥，`notifier` 也不读取。它被有意设计成不提供命令行参数：
+私钥——凡是需要读取密钥材料的四种模式都必须提供：`dashboard_grpc`、`workers_grpc`、`consumer` 和 `cron`。
+只有 `notifier` 不读取该密钥。它被有意设计成不提供命令行参数：
 argv 在进程列表中是可见的。丢失该密钥意味着必须重新录入每个 DNS 提供商令牌并重新签发所有证书；
 也不支持原地更换。
 
-`GURU_DATABASE_URL` 只在会建立连接的那四种模式下必填。`cron` 会忽略它，甚至完全不需要数据库 URL
-即可启动：一个没有数据库 URL 就拒绝启动的时钟，等于背上了一个用不到的数据库依赖。在会打开连接的那些
-模式下，连接池最多持有 `GURU_DB_POOL_SIZE` 个连接，每条语句都由服务端按 `GURU_DB_STATEMENT_TIMEOUT_MS`
+`GURU_DATABASE_URL` 在所有模式下都必填，`cron` 也不例外——它的任务会派生画布、续期证书。
+连接池最多持有 `GURU_DB_POOL_SIZE` 个连接，每条语句都由服务端按 `GURU_DB_STATEMENT_TIMEOUT_MS`
 限时——超时的语句会被 PostgreSQL 取消，边界层会把它报成 `UNAVAILABLE`，而不是一次故障。此外，每个
 提供服务的 master 都会在启动时应用所有尚未应用的 migration，过程持有一把 advisory lock，因此一批同时
 启动的 master 只会把每个 migration 恰好应用一次。
 
 ### 调度与执行
 
-`cron` 只是一个时钟，别无其他。它每 5 秒扫描一次，为每个到期的任务发布一个执行信号，并且不打开任何
-数据库连接。`consumer` 为每种信号绑定一个持久队列并执行对应的任务，与 `CanvasDirty` 派生钩子并列
-——于是周期性工作在扩展、重试和故障转移上的表现与一次编辑完全一致，而某个卡住的任务也无法让时钟停摆。
+`cron` 在进程内运行全部六个周期任务（wakuwaku `CronJob`）。每个任务按自己固定的周期唤醒，每个任务的第一次
+运行都在启动时。`consumer` 不再运行任何周期任务，只负责 Iggy 事件处理器。
 
-| 路由键 | 队列 | 发布周期 | 最短实际执行周期 | 任务内容 |
-|---|---|---|---|---|
-| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 s | `sweep_interval_secs`（30） | 重新派生所有 `generation` 超前于 `derived_generation` 的画布 |
-| `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 s | `liveness_interval_secs`（30） | 当某台服务器在 `health_report_interval_secs × health_offline_after_intervals` 内没有上报时，将其标记为 `Offline` |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `pod_health_ttl_secs` 的 `server_health_record` / `pod_health_record` 记录 |
-| `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs`（60） | ACME 签发与续期：在到期前 `acme_renew_before_secs` 续期，失败后经过 `acme_retry_after_secs` 重试 |
-| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs`（3600） | 重新签发距到期不足 `relay_cert_renew_before_secs` 的中继叶证书，并重新派生其所属画布 |
-| `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 s | `country_lookup_interval_secs`（60） | 通过 `country_lookup_url` 查询还不知道国家的服务器 IPv4 地址：新地址或变化了的地址立即查询，查询失败的地址经过 `country_lookup_retry_after_secs` 后再查 |
+| 任务 | 唤醒周期 | 最短实际执行周期（配置键，默认值） | 任务内容 |
+|---|---|---|---|
+| `derive_stale_canvases` | 30 s | `sweep_interval_secs`（30） | 重新派生所有 `generation` 超前于 `derived_generation` 的画布 |
+| `sweep_liveness` | 30 s | `liveness_interval_secs`（30） | 当某台服务器在 `health_report_interval_secs × health_offline_after_intervals` 内没有上报时，将其标记为 `Offline` |
+| `trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `pod_health_ttl_secs` 的 `server_health_record` / `pod_health_record` 记录 |
+| `renew_certificates` | 60 s | `acme_interval_secs`（60） | ACME 签发与续期：在到期前 `acme_renew_before_secs` 续期，失败后经过 `acme_retry_after_secs` 重试 |
+| `rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs`（3600） | 重新签发距到期不足 `relay_cert_renew_before_secs` 的中继叶证书，并重新派生其所属画布 |
+| `resolve_server_countries` | 60 s | `country_lookup_interval_secs`（60） | 通过 `country_lookup_url` 查询还不知道国家的服务器 IPv4 地址：新地址或变化了的地址立即查询，查询失败的地址经过 `country_lookup_retry_after_secs` 后再查 |
 
-这是两层机制，而且两个数字并不相同。调度器按中间那一列的固定节奏发布信号，因为它不读取任何配置；
-消费者在真正动手之前会先声明这一次运行——每个任务一行 `orchestration_job_run`，通过 compare-and-set
-完成，在整个集群范围内每个配置间隔最多运行一次。间隔是按信号所携带的*调度时刻*计算的，而不是按消费者
-腾出手来处理它们的时刻，因此繁忙的消费者不会悄悄拉长节奏。于是，小于或等于信号发布节奏的间隔就等于
-“每个信号都执行”，更大的间隔会让该任务在整个集群范围内变慢，而重复投递或重放的消息会被拒绝而不是执行
-两次——因为已经运行过的时刻永远无法再次被声明。这些间隔是存储在 `orchestration` 键上的值，因此与该键
-上的其他所有设置一样，修改会在消费者重启后生效。
+这是两层机制，而且两个数字并不相同。任务按中间那一列的固定周期唤醒；每次运行在真正动手之前都会先声明
+这一次 tick——每个任务一行 `orchestration_job_run`，通过 compare-and-set 完成——因此即使运行着多个 `cron`
+进程，每个任务在整个集群范围内每个配置间隔也只执行一次：第二个 `cron` 进程是备用，而不是重复执行。
+小于或等于唤醒周期的间隔就等于“每次唤醒都执行”，更大的间隔会让该任务在整个集群范围内变慢。这些间隔是
+存储在 `orchestration` 键上的值，因此与该键上的其他所有设置一样，修改会在 `cron` 重启后生效。
+
+停机时，`cron` 会让正在进行的运行最多再执行 20 s，然后中止它们（在 systemd 的 `TimeoutStopSec=30s` 之内）。
 
 当一台服务器落后于其 `desired` 修订版本的时间超过 `degraded_grace_secs`，或最近一次确认的修订版本在
 任一 pod 上失败时，该服务器处于 `Degraded` 状态。上面提到的这些名称都是存储的 `orchestration` 配置的
@@ -366,6 +368,19 @@ master，由 master 在服务器上记录失败的 pod，并为每个失败的 p
 | `orchestration export-config --server <key>` | 打印为某台服务器派生出的 `guru-worker` TOML |
 | `orchestration init-ca` | 为中继 TLS/QUIC 链路创建内部 CA 并打印其证书；若已存在则拒绝替换（需要 `GURU_MASTER_KEY`） |
 
+### 账号与 API 密钥的输入规则
+
+`create-admin`，以及控制台中的创建账号、修改密码、修改邮箱和创建 API 密钥，都会先校验输入 —— 早于检查
+调用方的权限，因此格式错误的请求无论由谁发出都会得到 `InvalidArgument`：
+
+- **邮箱：** 先去掉首尾空白并转为小写（`' Admin@Example.com '` 存为 `admin@example.com`），然后须为
+  3–254 字节、恰好一个 `@`、本地部分与域名均非空、不含空白或控制字符（`not a valid email address`）。
+- **密码：** 至少 8 个字符，至多 1024 字节。
+- **API 密钥名称：** 去掉首尾空白后须非空、至多 128 个字符、不含控制字符。
+
+登录不按这些规则校验，只做规范化，因此在规则出现之前创建的账号仍可登录。`create-admin` 会把被拒绝的
+规则打印到 stderr 并以退出码 1 结束。
+
 ## 控制台
 
 | 环境变量 | 默认值 | 用途 |
@@ -416,9 +431,9 @@ manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_
 `manage-tool config set` 完全一致，因此形状错误的载荷会被拒绝，该行保留原有内容。从控制台保存同样不是
 热重载：新值要生效必须**重启 `guru-master`**。
 
-依赖数据库的那四种模式 —— `dashboard_grpc`、`workers_grpc`、`consumer` 和 `notifier` —— 只在启动期间
-读取它们各自需要的键一次，然后把取值交给各自的服务；不存在热重载。`cron` 不打开数据库连接，因此这些
-键一个都不读：它只发布执行信号，而收到信号的消费者会按存储的间隔执行。未执行过 seed 的安装运行的是
+全部五种模式 —— `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` 和 `cron` —— 只在启动期间
+读取它们各自需要的键一次，然后把取值交给各自的服务；不存在热重载。`cron` 读取 `orchestration` 键上
+存储的间隔，并按它们决定每个任务多久真正执行一次。未执行过 seed 的安装运行的是
 默认值。无法反序列化的数据行
 会导致启动失败并指出对应的键 —— 因为用默认值替代损坏的文档会悄悄换掉运维人员的整份配置，比如把 ACME
 从 staging 挪到生产目录。

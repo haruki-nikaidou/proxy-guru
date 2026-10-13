@@ -8,11 +8,11 @@ description: How an edit of the pod graph becomes a config revision applied by a
 An edit is one checked batch of graph changes (`ApplyGraph`, see [Canvas](/reference/canvas/)); it
 bumps the root canvas's generation and publishes `CanvasDirty`. A worker's ack, registration or
 changed address report bumps a counter on its own server's config view instead, so a fleet
-acknowledging at once never contends on the canvas row. The derivation hook re-derives the whole
-canvas tree; the periodic `derive_stale_canvases` signal, consumed by the same hook, catches anything a
-lost message missed by comparing both counters with what the last pass stamped. Both triggers are broker messages, so the backstop is not
-broker-independent: a canvas whose `CanvasDirty` was lost waits for delivery to resume, and a
-master with no broker reachable derives nothing at all.
+acknowledging at once never contends on the canvas row. The derivation hook (an Iggy event handler
+in `--mode consumer`) re-derives the whole canvas tree; the periodic `derive_stale_canvases` job in
+`--mode cron` catches anything a lost event missed by comparing both counters with what the last
+pass stamped. The backstop runs in-process and reads the database directly, so a canvas whose
+`CanvasDirty` never arrived is still derived on the next sweep as long as a `cron` process is up.
 
 Every server has **one config view** holding three snapshots — `desired`, `in_flight` and
 `applied`. A worker stream promotes `desired` → `in_flight`, and its `AckConfig` promotes
@@ -21,7 +21,7 @@ worker reporting the desired or in-flight revision has it recorded as `applied`,
 reporting revision `0` — a fresh install, a wiped state directory — has `applied` forgotten, so the
 stream hands the desired revision out again rather than treating the server as converged.
 
-![A graph edit publishes CanvasDirty and cron publishes derive_stale_canvases; both reach the derivation hook running in consumer mode, which writes the desired snapshot of a server's config view. A worker stream promotes desired to in_flight, and AckConfig promotes in_flight to applied, what the worker confirmed it runs](/img/rollout/edit-to-applied.svg)
+![A graph edit publishes CanvasDirty, handled by the derivation hook in consumer mode, and the derive_stale_canvases cron job sweeps stale canvases; both write the desired snapshot of a server's config view. A worker stream promotes desired to in_flight, and AckConfig promotes in_flight to applied, what the worker confirmed it runs](/img/rollout/edit-to-applied.svg)
 
 ## Convergence
 
@@ -53,10 +53,9 @@ worker that is gone altogether; a stream that merely closes is no verdict). Both
 trimmed by the `trim_health_history` pass;
 `ListServerHealthHistory` / `ListPodHealthHistory` read a time range.
 
-Both passes run in `--mode consumer`, on a signal the `cron` scheduler publishes when the job comes
-due. The scheduler holds no state beyond its own clock; the consumer claims each run in one
-`orchestration_job_run` row, so the pass runs once per configured interval however many consumers
-are up.
+Both passes run in-process in `--mode cron`, each on its own fixed interval. Every run claims its
+tick in one `orchestration_job_run` row before working, so the pass runs once per configured
+interval however many `cron` processes are up.
 
 In the dashboard, a canvas's **Health** page reads both histories over a selected window (1 h / 6 h
 / 24 h / 7 d): one card per server showing its status, the connection count *at its last report* in

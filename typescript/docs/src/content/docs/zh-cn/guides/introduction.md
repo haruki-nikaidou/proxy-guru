@@ -8,19 +8,19 @@ Proxy Guru 是一套托管式 TCP/TLS 代理网络。运维人员在**画布**�
 
 ## 两个平面
 
-**控制平面** —— `bin/guru-master`。一个二进制文件，通过 `--mode`（`GURU_WORKER_MODE`）在四种
+**控制平面** —— `bin/guru-master`。一个二进制文件，通过 `--mode`（`GURU_WORKER_MODE`）在五种
 模式之间选择：
 
 | 模式 | 职责 |
 |---|---|
 | `dashboard_grpc` | 供前端调用的运维 API |
 | `workers_grpc` | Worker API，以及配置视图轮询器 |
-| `consumer` | 所有 AMQP 钩子：配置推导钩子，以及全部六个周期任务 |
-| `cron` | 时钟：为每个到期的周期任务发布一次执行信号 |
+| `consumer` | Iggy 事件处理器：脏画布的派生（`CanvasDirty`）与通知扇出（`HealthChanged`） |
+| `notifier` | 通知投递，恰好一个实例 |
+| `cron` | 在进程内运行全部六个周期任务 |
 
-后两者是有意被拆成两半的同一项工作。`cron` 不读取任何配置，也不打开数据库连接；收到信号的
-`consumer` 会认领这次运行并完成实际工作，因此一次清扫、一次存活检查或一次证书续期的扩展与
-故障转移方式，和一次画布编辑完全相同。四种模式都需要消息代理（broker）。
+`cron` 的每次运行都会先在 `orchestration_job_run` 中认领这一次 tick（compare-and-set），因此多个
+`cron` 进程在整个集群内每个配置间隔只执行一次，第二个进程只是备用。五种模式都需要 Iggy 和 PostgreSQL。
 
 **数据平面** —— `bin/guru-worker`。负责终结监听器并转发流量。它既可以基于 TOML 文件独立运行
 （收到 `SIGHUP` 时重新加载），也可以运行在 agent 模式下，从 master 流式获取配置。
@@ -68,9 +68,9 @@ Pod 默认绑定主机的所有地址；也可以限制为仅 IPv4，或固定�
 ## 技术栈
 
 基于 Tokio 的 Rust 2024、[`wakuwaku`](https://crates.io/crates/wakuwaku) +
-[`kanau`](https://crates.io/crates/kanau)（一切皆 `Processor`）、通过 Tonic 提供的 gRPC、用于
+[`kanau`](https://crates.io/crates/kanau)、通过 Tonic 提供的 gRPC、用于
 存储的 PostgreSQL（sqlx；migration 位于 `migrations/`）、承载运维 API 实时 `Watch*` 流的
-Redis pub/sub、用于模块间事件的 AMQP、用于链路追踪的 OpenTelemetry，以及 `typescript/` 下共享
+Redis pub/sub、用于模块间事件的 Apache Iggy、用于日志与追踪的 `tracing`，以及 `typescript/` 下共享
 同一份生成的 API 客户端的 Bun 工作区。
 
 ## 下一步

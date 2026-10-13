@@ -9,7 +9,7 @@ import { FileTree } from '@astrojs/starlight/components';
 
 | Crate | 职责 |
 |---|---|
-| `bin/guru-master` | 控制平面。单个二进制，四种模式（`--mode`）：`dashboard_grpc`（运维 API）、`workers_grpc`（Worker API + 配置视图轮询器）、`consumer`（AMQP 钩子 —— 配置派生钩子以及所有周期任务）、`cron`（时钟：为每个到期的周期任务发布一条执行信号）。 |
+| `bin/guru-master` | 控制平面。单个二进制，五种模式（`--mode`）：`dashboard_grpc`（运维 API）、`workers_grpc`（Worker API + 配置视图轮询器）、`consumer`（Iggy 事件处理器 —— `CanvasDirty` 配置派生与 `HealthChanged` 通知扇出）、`notifier`（通知投递，恰好一个实例）、`cron`（在进程内运行全部六个周期任务）。各模式通过 wakuwaku 的 `ServiceBuilder` 装配：`grpc_service`（gRPC 服务端）、`iggy_consumer`（事件处理器）、`cron_job`（周期任务）。 |
 | `bin/guru-worker` | 数据平面。终结监听器并转发流量。既可以基于 TOML 文件独立运行（收到 `SIGHUP` 时重新加载），也可以以 agent 模式运行，从 master 流式获取配置。 |
 | `bin/manage-tool` | 管理 CLI：`create-admin` 初始化引导、`orchestration export-config`。 |
 | `lib/guru_topology` | 以 Pod 为点的转发拓扑图：检查图，并把它编译成每台服务器的转发配置。纯计算，无 I/O。 |
@@ -30,8 +30,9 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 ```
 
 `Processor` 是一个可 `Clone` 的结构体，它持有自己的依赖，并为每个操作实现一次
-`Processor<Input>`。每一条数据库查询、每一个业务操作、每一个队列消费者都被建模为「一个输入结构体
-加一个 `Processor` 实现」—— 不存在第二套需要额外学习的抽象。
+`Processor<Input>`。业务操作和周期任务（`Processor<CronTick>`）都被建模为「一个输入结构体
+加一个 `Processor` 实现」；数据库查询采用同样的「输入结构体」形态，但实现的是 wakuwaku-entity 的
+`Query` 与 `Execute<PgSource>`（见下方分层规则）。
 
 ## 模块结构
 
@@ -47,8 +48,8 @@ Processor = State + async fn(Input) -> Result<Output, Error>
     - db/ PostgreSQL 行类型 + sqlx 查询
     - redis/ Redis 键值类型（rkyv 编码）
   - services/ 业务逻辑（有状态的 Processor）
-  - events/ AMQP 消息载荷 + 路由
-  - hooks/ 后台反应器（事件消费者、周期信号消费者、日志记录器）
+  - events/ Iggy 事件载荷 + topic
+  - hooks/ 后台反应器（Iggy 事件处理器、周期任务、日志记录器）
   - rpc/ gRPC 服务实现（传输边界）
 
 </FileTree>
@@ -67,32 +68,33 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 ## 分层规则
 
 - **依赖方向：** `rpc → services → entities/events/config`。功能模块可以依赖 `base`，但 `base`
-  不得依赖任何功能模块；模块之间也不得直接触碰彼此的内部实现 —— 它们通过 gRPC 或 AMQP 事件通信。
+  不得依赖任何功能模块；模块之间也不得直接触碰彼此的内部实现 —— 它们通过 gRPC 或 Iggy 事件通信。
 - **`entities/db`：** 每个表或聚合对应一个子模块；定义行结构体；id 由
-  `table_record!(NameId, "table")` 包装，以文本存储的枚举由 `text_enum!` 统一写一次。每条查询在
-  `base::db::Db` 上实现一次 `Processor`，`Error = base::db::Error`；包含多条语句的写入要放进一个
-  `begin()` 事务。所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在编译期就会按真实 schema 校验；行为
+  `table_record!(NameId, "table")` 包装，以文本存储的枚举由 `text_enum!` 统一写一次。每条查询是一个输入结构体，
+  实现 wakuwaku-entity 的 `Query`（其 `Effect` 为 `Read<tables::X>` / `Write<tables::X>`，作用于各 crate 在
+  `entities/db/tables.rs` 中定义的表标记）与 `Execute<PgSource>`；由 `base::db::Db`（即
+  `wakuwaku::entity::Db<PgSource, ReadWrite>`）执行；`Execute` 返回 `base::db::Error`。每个多语句事务都是一个
+  `TxFlow` 状态机，其步骤按顺序以 `tx.run` 执行普通查询或辅助查询，由 `base::db::transact` 运行，并以
+  `base::db::commit`、`rollback`（栅栏失败：`Error::Conflict`）或 `refuse`（条件写入被拒：什么都不写，也不算错误）
+  结束；快照读取是 `RepeatableRead` 隔离级别的只读事务流。所有语句都走 sqlx 的 `query!` 宏族，因此 SQL 在编译期就会按真实 schema 校验；行为
   仍然由针对真实数据库的集成测试覆盖（`#[sqlx::test]`）。
 - **`services`：** 持有自身依赖的 `Clone` 结构体，每个操作一个 `Processor` 实现，返回领域类型 ——
   绝不返回 protobuf 类型。
-- **`events`：** 消息载荷加上 `AmqpRouting`（`EXCHANGE`、`EXCHANGE_TYPE`、`ROUTING_KEY`）与
-  `AmqpMessageSend`。这是模块之间唯一被认可的异步通道 —— 周期性工作也走这条通道：一个到期的任务是
-  一条形如 `sweep_liveness` 的执行信号，而不是一次调用。
-- **`hooks`：** AMQP 消费者实现 `AmqpMessageProcessor<E>`，并带有一个持久化的 `QUEUE` 名称。周期任务
-  就是其中之一：`cron` 在任务到期时发布信号，钩子在开始工作前先抢占这次运行（写入一行
-  `orchestration_job_run`，采用 compare-and-set），因此投递可以重复、消费者可以多副本部署，而同一轮
-  处理不会被执行两次。每个 tick 都会带上该任务自身的周期作为逐消息 TTL 发布，因此即便消费者机队停机
-  期间时钟照常运行，每个队列里留下的也大约只有一个 tick，而不是一整天的 tick。调度器不打开任何数据库
-  连接，也不读取任何配置；决定*做什么*的逻辑全部位于消费者
-  一侧。由此带来的结果是：broker 在全部四种模式下都是必需的 —— RabbitMQ 停机期间，配置派生扫描、存活
-  扫描和证书续期都不会发生，直到它恢复为止。
+- **`events`：** Iggy 事件载荷。一个事件派生 rkyv 与 `RkyvMessageSer/De`，实现 `EventBody` 和 `Event`
+  （`TYPE_TAG`、`Key: PartitionKey`——其 `SUPER_PARTITION_NAME` 就是 topic、`Algebra`、`atomic_ordering`）。
+  契约文档写明发布方、消费方、topic 和 tag。共享的 stream 与拓扑（`STREAM`、`PARTITIONS`、`ensure_topology`）
+  位于 `base::events`。这是模块之间唯一被认可的异步通道。
+- **`hooks`：** 对事件的响应是 Iggy `EventHandler<E>` 实现（外加 `ServiceCreation`）；周期性工作是 `CronJob`
+  实现——一个带固定 `INTERVAL` 的 `Processor<CronTick>`，在开始工作前用 `ClaimJobRun` 抢占这次运行（写入一行
+  `orchestration_job_run`，采用 compare-and-set），因此多个 `cron` 进程同时运行时，同一轮处理也不会被执行两次。
+  处理失败时：数据库不可用 → 原地重试；其他数据库错误或冲突 → 该键进入 `retry_<topic>`（间隔 2、4、8、16 s 重试）；
+  其余错误被丢弃并记录日志。offset 在处理之后才提交（至少一次）。
 - **`rpc`：** 只做薄适配 —— 解码请求、调用服务、编码回复。不含业务逻辑。
-- **错误：** 在 service/hook 边界使用 `wakuwaku::Error`；`entities/db` 内部使用
-  `base::db::Error`，并在服务层通过 `?` 转换。它把"数据库没有应答"（`UNAVAILABLE`）与"数据库拒绝了
-  请求"区分开来，并把 `Error::Conflict` 与这两者都区分开：那是一个确定没有提交的事务。
+- **错误：** 不再有 `wakuwaku::Error`；每个模块有自己的错误枚举（`AuthError`、`OrchestrationError`、
+  `NotifyError`），可转换为 `tonic::Status`，也可转换为事件处理器所用的 Iggy `HandleError` 类别。
 - **Lint：** crate 级别 `deny(clippy::unwrap_used)`、`expect_used` 与 `panic`。请求路径上不允许
   panic。
-- **Tracing：** 使用 `#[tracing::instrument(skip_all, err)]` 并显式指定 span `name` —— entities 用
+- **Tracing：** 只使用 `tracing` + `tracing-subscriber`（没有 OpenTelemetry）。使用 `#[tracing::instrument(skip_all, err)]` 并显式指定 span `name` —— entities 用
   `Query:<Input>`（或 `Query-Transaction:<Input>`），services 用 `Service:<Input>`，hook processor 用
   `Hook:<Input>`。gRPC handler 不需要指定；trait 方法名本身就标识了 span。
 

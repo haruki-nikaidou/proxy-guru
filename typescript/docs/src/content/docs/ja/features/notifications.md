@@ -92,16 +92,16 @@ fact は自分のラベル — サーバーやポッドの名前、キャンバ�
 ```sh
 guru-master --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guru:guru@127.0.0.1:5672/'
+  --iggy-url 'iggy://guru:guru@127.0.0.1:8090'
 ```
 
-- **インスタンスはちょうど 1 つ。** キューをバインドする前に、セッションスコープの PostgreSQL アドバイザリ
+- **インスタンスはちょうど 1 つ。** consumer を起動する前に、セッションスコープの PostgreSQL アドバイザリ
   ロックを取得します。2 つ目のインスタンスは `another notifier already holds the advisory lock; run
   exactly one` を出力して非ゼロで終了します。ロックは接続が切れることで解放されるため、kill された
   notifier が後続を塞ぐことはなく、前任と重なった再起動はメッセージを二重に送る代わりに即座に失敗します。
 - **master キーも Redis も不要。** 何も復号せず、何も publish しないため、`GURU_MASTER_KEY` も `REDIS_URL` も
   受け取りません。必要なのはデータベース（上記のロックと、起動時に読む `notify` 設定のため）と
-  ブローカーだけです。
+  Iggy だけです。
 - 最終的にどのチャンネルが使えるようになったかをログするため、シークレットが届いたかどうかを最も手早く
   確認できます:
 
@@ -110,8 +110,8 @@ INFO guru_master: notification channel channel="email: configured"
 INFO guru_master: notification channel channel="telegram: disabled (no GURU_TELEGRAM_BOT_TOKEN)"
 ```
 
-notifier が停止していても通知は失われません。復帰するまで `guru_notify_health_notify_group` と
-`guru_notify_health_notify_personal` のキューで待ちます。
+notifier が停止していても通知は失われません。復帰するまで Iggy のトピック `notify_health_notice` で待ち、
+consumer 名 `guru_notify_health_notice` のオフセットから再開します。
 
 ## チャンネルとそのシークレット
 

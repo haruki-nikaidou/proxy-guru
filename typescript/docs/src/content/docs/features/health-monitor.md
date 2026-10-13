@@ -106,18 +106,17 @@ where the TOML is byte-identical but the material on disk is new.
 
 ## Periodic passes
 
-Both run in `--mode consumer`; `--mode cron` only publishes their signals on a fixed cadence and
-opens no database.
+Both run in-process in `--mode cron`, as wakuwaku cron jobs that wake on a fixed interval.
 
-| Pass | Signal cadence | Config key (default) | What it does |
+| Pass | Job interval | Config key (default) | What it does |
 |---|---|---|---|
 | `sweep_liveness` | 30 s | `liveness_interval_secs` (30) | Marks silent servers `Offline`, and revokes the session of an already-offline server whose registration never reported. |
 | `trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes records older than `server_health_ttl_secs` / `pod_health_ttl_secs` (7 days each). |
 
-Each consumer claims the tick in one `orchestration_job_run` row before working, so the pass runs
-once per configured interval however many consumers are up. The claim compares scheduling ticks, not
-wall clock: an interval at or below the signal's cadence means "run on every signal", a larger one
-slows the pass down fleet-wide.
+Each run claims its tick in one `orchestration_job_run` row before working, so the pass runs once
+per configured interval however many `cron` processes are up. The claim compares scheduling ticks,
+not the moment the work started: an interval at or below the job's own interval means "run on every
+tick", a larger one slows the pass down fleet-wide.
 
 ## Reading it back
 

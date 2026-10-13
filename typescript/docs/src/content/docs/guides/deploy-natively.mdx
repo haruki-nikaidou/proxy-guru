@@ -1,6 +1,6 @@
 ---
 title: Deploy Natively
-description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to PostgreSQL, RabbitMQ and Redis, apply the schema, and terminate TLS for workers with nginx.
+description: Install the prerequisites on one Linux host, run the control plane and the dashboard from a checkout under systemd, connect to PostgreSQL, Apache Iggy and Redis, apply the schema, and terminate TLS for workers with nginx.
 ---
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -8,7 +8,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 The [Deploy with Docker](/guides/deploy-with-docker/) guide runs the application from images. This
 guide is the other common shape: **one machine that is both the build box and the control plane**.
 The Rust binaries run from `target/release/` under systemd, and the dashboard runs from its build
-output. PostgreSQL, RabbitMQ and Redis may be native services, managed services or containers; Docker
+output. PostgreSQL, Iggy and Redis may be native services, managed services or containers; Docker
 is not required. A code change is `cargo build` plus a unit restart, with no application image in
 between.
 
@@ -24,7 +24,7 @@ checkout. Nothing else is host-specific.
 | Piece | Runs as | Listens on |
 |---|---|---|
 | PostgreSQL 16+ | Native service, managed service, or container | `127.0.0.1:5432` by default |
-| RabbitMQ 4 | Native service, managed service, or container | `127.0.0.1:5672` by default |
+| Iggy server 0.9.x | Native service or container | `127.0.0.1:8090` by default |
 | Redis 7 | Native service, managed service, or container | `127.0.0.1:6379` by default |
 | `guru-master` ×5 | systemd template `guru-master@<mode>` | `127.0.0.1:50051`, `127.0.0.1:50052` |
 | dashboard | systemd `guru-frontend` | `127.0.0.1:3100` |
@@ -37,7 +37,7 @@ the dashboard on `/` and forwards gRPC on `/guru.orchestration.agent.WorkerAgent
 
 Work through **[Prerequisites](/guides/prerequisites/)** first: the host packages (C toolchain,
 `cmake`, `perl`, `protoc`, `openssl`, nginx), rustup, Bun, the checkout, reachable
-PostgreSQL, RabbitMQ and Redis services, and a hostname with a certificate. The native build compiles
+PostgreSQL, Iggy and Redis services, and a hostname with a certificate. The native build compiles
 vendored OpenSSL and aws-lc and runs the dashboard from Bun. Docker is optional and only needed if
 you choose to run one of the datastores in a container.
 
@@ -77,7 +77,7 @@ continuing.
 ### The secrets file
 
 [Prerequisites](/guides/prerequisites/) already created `/path/to/proxy-guru/.env` with the
-datastore credentials — `GURU_DATABASE_URL`, `RABBIT_USER`, `RABBIT_PASSWORD`, `AMQP_URI`, and
+datastore credentials — `GURU_DATABASE_URL`, `IGGY_USER`, `IGGY_PASSWORD`, `IGGY_URL`, and
 `REDIS_URL=redis://127.0.0.1:6379/`, which needs no credentials at all. The masters read the same
 file through `EnvironmentFile=`, so append what they add:
 
@@ -188,13 +188,12 @@ sudo systemctl enable --now guru-master@dashboard_grpc guru-master@workers_grpc 
 journalctl -u 'guru-master@*' -n 20
 ```
 
-`consumer`, `notifier` and `cron` exit non-zero when the broker connection drops; `Restart=always`
-is what heals them, so keep it. Have PostgreSQL, RabbitMQ and Redis running (or enabled at boot)
-before you enable these units: `dashboard_grpc`, `workers_grpc` and `consumer` refuse to start
-without a reachable `REDIS_URL` — `cron` needs neither it nor the database, and `notifier` needs the
-database but no Redis — and `Restart=always` is what carries them over a datastore that comes up
-later. Once a master is up, a Redis that dies is reconnected in place; only delivery on open
-`Watch*` streams pauses meanwhile.
+Have PostgreSQL, Iggy and Redis running (or enabled at boot) before you enable these units: every
+mode refuses to start without a reachable database and Iggy server, and every mode but `notifier`
+without a reachable `REDIS_URL` — and `Restart=always` is what carries them over a datastore that
+comes up later, so keep it. `cron` runs the periodic jobs in-process and, on stop, lets runs in
+progress finish for up to 20 s, inside `TimeoutStopSec=30s`. Once a master is up, a Redis that dies
+is reconnected in place; only delivery on open `Watch*` streams pauses meanwhile.
 
 `guru-master@notifier` is the one instance that must stay single: it takes a PostgreSQL advisory
 lock at startup, so a second host running it exits with `another notifier already holds the advisory
@@ -429,7 +428,7 @@ fresh operator shell. Checks for the service account are wrapped in `sudo -iu gu
 ```sh
 # 1. Local datastore examples only; use provider health checks for remote services
 pg_isready -h 127.0.0.1 -p 5432
-rabbitmq-diagnostics -q ping
+iggy -u <user> -p <password> stream list       # the Iggy CLI; lists `guru` once a master ran
 redis-cli -u redis://127.0.0.1:6379/ ping      # PONG
 
 # 2. Schema
