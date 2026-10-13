@@ -12,11 +12,12 @@
 use crate::config::OrchestrationConfig;
 use crate::entities::db::agent_release::{AgentReleaseEntity, FindAgentRelease};
 use crate::entities::db::canvas::{CanvasId, CanvasUiPosition, FindCanvasById};
-use crate::entities::db::graph::LoadCanvasGraph;
+use crate::entities::db::graph::{LoadCanvasGraph, LoadCanvasGraphFlow};
 use crate::entities::db::server::{
-    CreateServer as CreateServerRow, DeleteServerRow, FindServerById, MoveServerPosition,
-    ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic, SetAgentUpdateRequested,
-    SetServerAgentKey, UpdateServerSettings,
+    CreateServer as CreateServerRow, CreateServerFlow, DeleteServerRow, DeleteServerRowFlow,
+    FindServerById, MoveServerPosition, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel,
+    ServerQuic, SetAgentUpdateRequested, SetServerAgentKey, UpdateServerSettings,
+    UpdateServerSettingsFlow,
 };
 use crate::events::live::CanvasChangeKind;
 use crate::services::notify::Notifier;
@@ -28,6 +29,7 @@ use base::db::Db;
 use kanau::processor::Processor;
 use std::net::IpAddr;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 #[derive(Clone)]
 pub struct ServerService {
@@ -124,21 +126,22 @@ impl Processor<CreateServer> for ServerService {
             .ok_or(OrchestrationError::NotFound)?;
         // The row and its config view are created in one transaction, so there is
         // nothing to re-read and nothing to stamp here.
-        let server = self
-            .db
-            .process(CreateServerRow {
-                canvas: input.canvas.clone(),
-                name: input.name,
-                icon: input.icon,
-                comment: input.comment,
-                position: input.position,
-                ipv6_resolve: input.ipv6_resolve,
-                log_level: input.log_level,
-                override_v4: input.addresses.override_v4,
-                override_v6: input.addresses.override_v6,
-                extra_addresses: input.addresses.extra_addresses,
-            })
-            .await?;
+        let flow = CreateServerFlow::new(CreateServerRow {
+            canvas: input.canvas.clone(),
+            name: input.name,
+            icon: input.icon,
+            comment: input.comment,
+            position: input.position,
+            ipv6_resolve: input.ipv6_resolve,
+            log_level: input.log_level,
+            override_v4: input.addresses.override_v4,
+            override_v6: input.addresses.override_v6,
+            extra_addresses: input.addresses.extra_addresses,
+        });
+        let server = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(server) => server,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         self.notifier.notify(&input.canvas).await;
         self.notifier
             .canvas_changed(
@@ -175,24 +178,25 @@ impl Processor<UpdateServer> for ServerService {
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
         // A server's settings change what its pods and their dialers compile to
         // (addresses, QUIC rates, log level), never whether the graph checks.
-        let server = self
-            .db
-            .process(UpdateServerSettings {
-                id: input.server,
-                canvas: canvas.clone(),
-                name: input.name,
-                icon: input.icon,
-                comment: input.comment,
-                ipv6_resolve: input.ipv6_resolve,
-                log_level: input.log_level,
-                quic: input.quic,
-                override_v4: input.addresses.override_v4,
-                override_v6: input.addresses.override_v6,
-                extra_addresses: input.addresses.extra_addresses,
-                agent_unit: input.agent_unit,
-                fence: None,
-            })
-            .await?;
+        let flow = UpdateServerSettingsFlow::new(UpdateServerSettings {
+            id: input.server,
+            canvas: canvas.clone(),
+            name: input.name,
+            icon: input.icon,
+            comment: input.comment,
+            ipv6_resolve: input.ipv6_resolve,
+            log_level: input.log_level,
+            quic: input.quic,
+            override_v4: input.addresses.override_v4,
+            override_v6: input.addresses.override_v6,
+            extra_addresses: input.addresses.extra_addresses,
+            agent_unit: input.agent_unit,
+            fence: None,
+        });
+        let server = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(server) => server,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         self.notifier.notify(&canvas).await;
         self.notifier
             .canvas_changed(
@@ -524,12 +528,13 @@ impl Processor<DeleteServer> for ServerService {
     async fn process(&self, input: DeleteServer) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
         let canvas = rollout::canvas_of_server(&self.db, &input.server).await?;
-        let graph = self
-            .db
-            .process(LoadCanvasGraph {
-                canvas: canvas.clone(),
-            })
-            .await?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: canvas.clone(),
+        });
+        let graph = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(graph) => graph,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         let pods = graph
             .pods
             .iter()
@@ -541,13 +546,14 @@ impl Processor<DeleteServer> for ServerService {
             )));
         }
 
-        self.db
-            .process(DeleteServerRow {
-                id: input.server.clone(),
-                canvas: canvas.clone(),
-                fence: Some(graph.fence().ok_or(OrchestrationError::NotFound)?),
-            })
-            .await?;
+        let flow = DeleteServerRowFlow::new(DeleteServerRow {
+            id: input.server.clone(),
+            canvas: canvas.clone(),
+            fence: Some(graph.fence().ok_or(OrchestrationError::NotFound)?),
+        });
+        if let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await? {
+            return Err(error.into());
+        }
         self.notifier.notify(&canvas).await;
         self.notifier
             .canvas_changed(

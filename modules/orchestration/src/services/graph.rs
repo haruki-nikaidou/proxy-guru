@@ -11,13 +11,16 @@
 
 use crate::config::OrchestrationConfig;
 use crate::entities::db::ca::RelayCertificateEntity;
-use crate::entities::db::canvas::{CanvasId, CanvasTree, CanvasUiPosition, LoadCanvasTree};
+use crate::entities::db::canvas::{
+    CanvasId, CanvasTree, CanvasUiPosition, LoadCanvasTree, LoadCanvasTreeFlow,
+};
 use crate::entities::db::certificate::{CertificateEntity, ListCertificatesBySnis};
 use crate::entities::db::dns::FindDnsProviderById;
 use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeTarget};
 use crate::entities::db::exit::{ExitEntity, ExitId};
 use crate::entities::db::graph::{
-    ApplyGraphBatch, FindTakenIds, GraphRows, LoadCanvasGraph, MoveGraphItems, TakenIds,
+    ApplyGraphBatch, ApplyGraphBatchFlow, FindTakenIds, GraphRows, LoadCanvasGraph,
+    LoadCanvasGraphFlow, MoveGraphItems, MoveGraphItemsFlow, TakenIds,
 };
 use crate::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use crate::entities::db::pod::{PodEntity, PodId, PodIngress};
@@ -37,6 +40,7 @@ use kanau::processor::Processor;
 use rand::Rng;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::RangeInclusive;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 /// Where pods put with port `0` get their port from: high enough to stay clear
 /// of anything an operator types by hand.
@@ -300,12 +304,13 @@ impl Processor<GetGraph> for GraphService {
     #[tracing::instrument(name = "Service:GetGraph", skip_all, err)]
     async fn process(&self, input: GetGraph) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ViewWorkspace)?;
-        let rows = self
-            .db
-            .process(LoadCanvasGraph {
-                canvas: input.canvas,
-            })
-            .await?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: input.canvas,
+        });
+        let rows = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(rows) => rows,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         if rows.canvases.is_empty() {
             return Err(OrchestrationError::NotFound);
         }
@@ -377,12 +382,13 @@ impl Processor<ApplyGraph> for GraphService {
     )]
     async fn process(&self, input: ApplyGraph) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        let rows = self
-            .db
-            .process(LoadCanvasGraph {
-                canvas: input.canvas.clone(),
-            })
-            .await?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: input.canvas.clone(),
+        });
+        let rows = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(rows) => rows,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         if rows.canvases.is_empty() {
             return Err(OrchestrationError::NotFound);
         }
@@ -515,7 +521,11 @@ impl Processor<ApplyGraph> for GraphService {
                 batch.insert_groups.push(group);
             }
         }
-        let generation = self.db.process(batch).await?;
+        let flow = ApplyGraphBatchFlow::new(batch)?;
+        let generation = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(generation) => generation,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         if derives {
             self.notifier.notify(&rows.root).await;
         }
@@ -947,23 +957,24 @@ impl Processor<MoveItems> for GraphService {
     #[tracing::instrument(name = "Service:MoveItems", skip_all, err)]
     async fn process(&self, input: MoveItems) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::EditWorkspace)?;
-        let tree = self
-            .db
-            .process(LoadCanvasTree {
-                canvas: input.canvas.clone(),
-            })
-            .await?
-            .ok_or(OrchestrationError::NotFound)?;
+        let flow = LoadCanvasTreeFlow::new(LoadCanvasTree {
+            canvas: input.canvas.clone(),
+        });
+        let tree = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(tree) => tree.ok_or(OrchestrationError::NotFound)?,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         let mut ids = Vec::new();
         collect_tree(&tree, &mut ids);
-        self.db
-            .process(MoveGraphItems {
-                tree: ids,
-                servers: input.servers,
-                exits: input.exits,
-                canvases: input.canvases,
-            })
-            .await?;
+        let flow = MoveGraphItemsFlow::new(MoveGraphItems {
+            tree: ids,
+            servers: input.servers,
+            exits: input.exits,
+            canvases: input.canvases,
+        });
+        if let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await? {
+            return Err(error.into());
+        }
         self.notifier
             .canvas_changed(&input.canvas, CanvasChangeKind::ServerMoved, Vec::new())
             .await;

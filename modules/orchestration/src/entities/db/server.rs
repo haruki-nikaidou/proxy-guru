@@ -5,9 +5,8 @@ use crate::entities::db::tables::{
     OrchestrationCanvas, OrchestrationPod, OrchestrationServer, OrchestrationServerConfigView,
 };
 use crate::entities::db::view::ConfigSnapshot;
-use base::db::{Db, Error};
+use base::db::Error;
 use db_types::{table_record, text_enum};
-use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
@@ -469,12 +468,21 @@ impl Execute<PgSource> for InsertConfigViewRow<'_> {
     }
 }
 
-// The terminal state carries the committed row; the flow value lives for one
-// transaction, so boxing it would only add an allocation.
+/// Creates a server and its (empty) config view as one transaction. Run it
+/// with `db.process(Transaction(CreateServerFlow::new(input)))`.
+// The end carries the committed server row (`ServerEntity`, ~728 B) and the
+// start only the input. One value per transaction, never stored; boxing
+// would add a heap allocation to save no memory. Same for the flows below.
 #[allow(clippy::large_enum_variant)]
-enum CreateServerFlow {
+pub enum CreateServerFlow {
     Start(CreateServer),
     End(TxEnd<CreateServerFlow>),
+}
+
+impl CreateServerFlow {
+    pub fn new(input: CreateServer) -> Self {
+        CreateServerFlow::Start(input)
+    }
 }
 
 impl Query for CreateServerFlow {
@@ -494,9 +502,10 @@ impl From<TxEnd<CreateServerFlow>> for CreateServerFlow {
 impl TxFlow for CreateServerFlow {
     type Database = Postgres;
     type Commit = ServerEntity;
-    type Abort = Result<ServerEntity, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:CreateServer", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let CreateServerFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -529,15 +538,6 @@ impl TxFlow for CreateServerFlow {
             CreateServerFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<CreateServer> for Db {
-    type Output = ServerEntity;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CreateServer", skip_all, err, fields(canvas = %input.canvas))]
-    async fn process(&self, input: CreateServer) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, CreateServerFlow::Start(input)).await
     }
 }
 
@@ -704,11 +704,17 @@ impl Execute<PgSource> for UpdateServerRow<'_> {
     }
 }
 
-// See `CreateServerFlow`.
-#[allow(clippy::large_enum_variant)]
-enum UpdateServerSettingsFlow {
+/// Run it with `db.process(Transaction(UpdateServerSettingsFlow::new(input)))`.
+#[allow(clippy::large_enum_variant)] // See `CreateServerFlow`.
+pub enum UpdateServerSettingsFlow {
     Start(UpdateServerSettings),
     End(TxEnd<UpdateServerSettingsFlow>),
+}
+
+impl UpdateServerSettingsFlow {
+    pub fn new(input: UpdateServerSettings) -> Self {
+        UpdateServerSettingsFlow::Start(input)
+    }
 }
 
 impl Query for UpdateServerSettingsFlow {
@@ -724,9 +730,10 @@ impl From<TxEnd<UpdateServerSettingsFlow>> for UpdateServerSettingsFlow {
 impl TxFlow for UpdateServerSettingsFlow {
     type Database = Postgres;
     type Commit = ServerEntity;
-    type Abort = Result<ServerEntity, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:UpdateServerSettings", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let UpdateServerSettingsFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -754,15 +761,6 @@ impl TxFlow for UpdateServerSettingsFlow {
             UpdateServerSettingsFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<UpdateServerSettings> for Db {
-    type Output = ServerEntity;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:UpdateServerSettings", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: UpdateServerSettings) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, UpdateServerSettingsFlow::Start(input)).await
     }
 }
 
@@ -980,9 +978,16 @@ impl Execute<PgSource> for DeleteServer<'_> {
     }
 }
 
-enum DeleteServerRowFlow {
+/// Run it with `db.process(Transaction(DeleteServerRowFlow::new(input)))`.
+pub enum DeleteServerRowFlow {
     Start(DeleteServerRow),
     End(TxEnd<DeleteServerRowFlow>),
+}
+
+impl DeleteServerRowFlow {
+    pub fn new(input: DeleteServerRow) -> Self {
+        DeleteServerRowFlow::Start(input)
+    }
 }
 
 impl Query for DeleteServerRowFlow {
@@ -1002,9 +1007,10 @@ impl From<TxEnd<DeleteServerRowFlow>> for DeleteServerRowFlow {
 impl TxFlow for DeleteServerRowFlow {
     type Database = Postgres;
     type Commit = ();
-    type Abort = Result<(), Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:DeleteServerRow", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let DeleteServerRowFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -1038,15 +1044,6 @@ impl TxFlow for DeleteServerRowFlow {
             DeleteServerRowFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<DeleteServerRow> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:DeleteServerRow", skip_all, err)]
-    async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, DeleteServerRowFlow::Start(input)).await
     }
 }
 
@@ -1290,11 +1287,17 @@ impl Execute<PgSource> for ClearInFlightAndBump<'_> {
     }
 }
 
-// See `CreateServerFlow`.
-#[allow(clippy::large_enum_variant)]
-enum RegisterWorkerSessionFlow {
+/// Run it with `db.process(Transaction(RegisterWorkerSessionFlow::new(input)))`.
+#[allow(clippy::large_enum_variant)] // See `CreateServerFlow`.
+pub enum RegisterWorkerSessionFlow {
     Start(RegisterWorkerSession),
     End(TxEnd<RegisterWorkerSessionFlow>),
+}
+
+impl RegisterWorkerSessionFlow {
+    pub fn new(input: RegisterWorkerSession) -> Self {
+        RegisterWorkerSessionFlow::Start(input)
+    }
 }
 
 impl Query for RegisterWorkerSessionFlow {
@@ -1314,9 +1317,10 @@ impl TxFlow for RegisterWorkerSessionFlow {
     type Database = Postgres;
     /// The rotated row, or `None` when a live session still holds the server.
     type Commit = Option<ServerEntity>;
-    type Abort = Result<Option<ServerEntity>, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:RegisterWorkerSession", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let RegisterWorkerSessionFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -1324,7 +1328,7 @@ impl TxFlow for RegisterWorkerSessionFlow {
         let (tx, r) = tx.run(RotateWorkerSession { input: &input }).await;
         let server = match r {
             Ok(Some(server)) => server,
-            Ok(None) => return base::db::refuse(tx, None).await,
+            Ok(None) => return base::db::commit(tx, None).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
         let (tx, r) = tx
@@ -1376,16 +1380,6 @@ impl TxFlow for RegisterWorkerSessionFlow {
             RegisterWorkerSessionFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<RegisterWorkerSession> for Db {
-    /// The rotated row, or `None` when a live session still holds the server.
-    type Output = Option<ServerEntity>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:RegisterWorkerSession", skip_all, err, fields(server = %input.server))]
-    async fn process(&self, input: RegisterWorkerSession) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, RegisterWorkerSessionFlow::Start(input)).await
     }
 }
 
@@ -1480,9 +1474,16 @@ impl Execute<PgSource> for BumpViewSeq<'_> {
     }
 }
 
-enum UpdateReportedAddressesFlow {
+/// Run it with `db.process(Transaction(UpdateReportedAddressesFlow::new(input)))`.
+pub enum UpdateReportedAddressesFlow {
     Start(UpdateReportedAddresses),
     End(TxEnd<UpdateReportedAddressesFlow>),
+}
+
+impl UpdateReportedAddressesFlow {
+    pub fn new(input: UpdateReportedAddresses) -> Self {
+        UpdateReportedAddressesFlow::Start(input)
+    }
 }
 
 impl Query for UpdateReportedAddressesFlow {
@@ -1502,9 +1503,10 @@ impl TxFlow for UpdateReportedAddressesFlow {
     type Database = Postgres;
     /// `true` when the stored set changed (and the view's `seq` moved).
     type Commit = bool;
-    type Abort = Result<bool, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:UpdateReportedAddresses", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let UpdateReportedAddressesFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -1516,17 +1518,17 @@ impl TxFlow for UpdateReportedAddressesFlow {
             .await;
         let current = match r {
             Ok(Some(current)) => current,
-            Ok(None) => return base::db::refuse(tx, false).await,
+            Ok(None) => return base::db::commit(tx, false).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
         if current.refresh_key_generation != input.generation {
-            return base::db::refuse(tx, false).await;
+            return base::db::commit(tx, false).await;
         }
         if current
             .reported_addresses
             .is_some_and(|stored| stored.0.same_addresses(&input.reported))
         {
-            return base::db::refuse(tx, false).await;
+            return base::db::commit(tx, false).await;
         }
         let (tx, r) = tx
             .run(StoreReportedAddresses {
@@ -1553,16 +1555,6 @@ impl TxFlow for UpdateReportedAddressesFlow {
             UpdateReportedAddressesFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<UpdateReportedAddresses> for Db {
-    /// `true` when the stored set changed (and the view's `seq` moved).
-    type Output = bool;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:UpdateReportedAddresses", skip_all, err, fields(server = %input.server))]
-    async fn process(&self, input: UpdateReportedAddresses) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, UpdateReportedAddressesFlow::Start(input)).await
     }
 }
 
@@ -1639,11 +1631,17 @@ impl Execute<PgSource> for ClearInFlight<'_> {
     }
 }
 
-// See `CreateServerFlow`.
-#[allow(clippy::large_enum_variant)]
-enum ClaimServerWatchSessionFlow {
+/// Run it with `db.process(Transaction(ClaimServerWatchSessionFlow::new(input)))`.
+#[allow(clippy::large_enum_variant)] // See `CreateServerFlow`.
+pub enum ClaimServerWatchSessionFlow {
     Start(ClaimServerWatchSession),
     End(TxEnd<ClaimServerWatchSessionFlow>),
+}
+
+impl ClaimServerWatchSessionFlow {
+    pub fn new(input: ClaimServerWatchSession) -> Self {
+        ClaimServerWatchSessionFlow::Start(input)
+    }
 }
 
 impl Query for ClaimServerWatchSessionFlow {
@@ -1663,9 +1661,10 @@ impl TxFlow for ClaimServerWatchSessionFlow {
     type Database = Postgres;
     /// The claimed row, or `None` when the generation is no longer current.
     type Commit = Option<ServerEntity>;
-    type Abort = Result<Option<ServerEntity>, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:ClaimServerWatchSession", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let ClaimServerWatchSessionFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -1694,16 +1693,6 @@ impl TxFlow for ClaimServerWatchSessionFlow {
             ClaimServerWatchSessionFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<ClaimServerWatchSession> for Db {
-    /// The claimed row, or `None` when the generation is no longer current.
-    type Output = Option<ServerEntity>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:ClaimServerWatchSession", skip_all, err)]
-    async fn process(&self, input: ClaimServerWatchSession) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, ClaimServerWatchSessionFlow::Start(input)).await
     }
 }
 

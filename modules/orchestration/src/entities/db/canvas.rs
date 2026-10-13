@@ -3,9 +3,8 @@ use crate::entities::db::tables::{OrchestrationCanvas, OrchestrationEdge, Orches
 use crate::entities::db::tree::{
     AncestorsOf, MAX_DEPTH, NESTING_TOO_DEEP, RootOf, TreeOf, WholeTreeOf,
 };
-use base::db::{Db, Error};
+use base::db::Error;
 use db_types::table_record;
-use kanau::processor::Processor;
 use sqlx::{PgConnection, Postgres};
 use std::collections::HashMap;
 use wakuwaku::entity::sqlx::backend::PgSource;
@@ -179,9 +178,17 @@ impl Execute<PgSource> for InsertCanvasRow<'_> {
     }
 }
 
-enum CreateCanvasFlow {
+/// Creates a canvas (a root, or a subcanvas under a locked parent) as one
+/// transaction. Run it with `db.process(Transaction(CreateCanvasFlow::new(input)))`.
+pub enum CreateCanvasFlow {
     Start(CreateCanvas),
     End(TxEnd<CreateCanvasFlow>),
+}
+
+impl CreateCanvasFlow {
+    pub fn new(input: CreateCanvas) -> Self {
+        CreateCanvasFlow::Start(input)
+    }
 }
 
 impl Query for CreateCanvasFlow {
@@ -197,9 +204,10 @@ impl From<TxEnd<CreateCanvasFlow>> for CreateCanvasFlow {
 impl TxFlow for CreateCanvasFlow {
     type Database = Postgres;
     type Commit = CanvasEntity;
-    type Abort = Result<CanvasEntity, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:CreateCanvas", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let CreateCanvasFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -237,15 +245,6 @@ impl TxFlow for CreateCanvasFlow {
             CreateCanvasFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<CreateCanvas> for Db {
-    type Output = CanvasEntity;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CreateCanvas", skip_all, err)]
-    async fn process(&self, input: CreateCanvas) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, CreateCanvasFlow::Start(input)).await
     }
 }
 
@@ -332,9 +331,17 @@ pub struct LoadCanvasTree {
     pub canvas: CanvasId,
 }
 
-enum LoadCanvasTreeFlow {
+/// Reads the tree of [`LoadCanvasTree`] in one snapshot. Run it with
+/// `db.process(Transaction(LoadCanvasTreeFlow::new(input)))`.
+pub enum LoadCanvasTreeFlow {
     Start(LoadCanvasTree),
     End(TxEnd<LoadCanvasTreeFlow>),
+}
+
+impl LoadCanvasTreeFlow {
+    pub fn new(input: LoadCanvasTree) -> Self {
+        LoadCanvasTreeFlow::Start(input)
+    }
 }
 
 impl Query for LoadCanvasTreeFlow {
@@ -350,10 +357,11 @@ impl From<TxEnd<LoadCanvasTreeFlow>> for LoadCanvasTreeFlow {
 impl TxFlow for LoadCanvasTreeFlow {
     type Database = Postgres;
     type Commit = Option<CanvasTree>;
-    type Abort = Result<Option<CanvasTree>, Error>;
+    type Abort = Error;
     type Report = ();
     const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
 
+    #[tracing::instrument(name = "Transaction:LoadCanvasTree", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let LoadCanvasTreeFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -379,15 +387,6 @@ impl TxFlow for LoadCanvasTreeFlow {
             LoadCanvasTreeFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<LoadCanvasTree> for Db {
-    type Output = Option<CanvasTree>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:LoadCanvasTree", skip_all, err)]
-    async fn process(&self, input: LoadCanvasTree) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, LoadCanvasTreeFlow::Start(input)).await
     }
 }
 
@@ -566,9 +565,17 @@ impl Execute<PgSource> for DeleteCanvases<'_> {
     }
 }
 
-enum DeleteCanvasRowFlow {
+/// Deletes the subtree of [`DeleteCanvasRow`]; a missing canvas commits
+/// nothing. Run it with `db.process(Transaction(DeleteCanvasRowFlow::new(input)))`.
+pub enum DeleteCanvasRowFlow {
     Start(DeleteCanvasRow),
     End(TxEnd<DeleteCanvasRowFlow>),
+}
+
+impl DeleteCanvasRowFlow {
+    pub fn new(input: DeleteCanvasRow) -> Self {
+        DeleteCanvasRowFlow::Start(input)
+    }
 }
 
 impl Query for DeleteCanvasRowFlow {
@@ -588,9 +595,10 @@ impl From<TxEnd<DeleteCanvasRowFlow>> for DeleteCanvasRowFlow {
 impl TxFlow for DeleteCanvasRowFlow {
     type Database = Postgres;
     type Commit = ();
-    type Abort = Result<(), Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:DeleteCanvasRow", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let DeleteCanvasRowFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -598,7 +606,7 @@ impl TxFlow for DeleteCanvasRowFlow {
         let (tx, exists) = tx.run(CanvasExists { id: &input.id }).await;
         match exists {
             Ok(true) => {}
-            Ok(false) => return base::db::refuse(tx, ()).await,
+            Ok(false) => return base::db::commit(tx, ()).await,
             Err(e) => return base::db::rollback(tx, e).await,
         }
         // The tree's root before any of its rows (`fence`'s lock order): the
@@ -633,14 +641,5 @@ impl TxFlow for DeleteCanvasRowFlow {
             DeleteCanvasRowFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<DeleteCanvasRow> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:DeleteCanvasRow", skip_all, err, fields(canvas_id = %input.id))]
-    async fn process(&self, input: DeleteCanvasRow) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, DeleteCanvasRowFlow::Start(input)).await
     }
 }

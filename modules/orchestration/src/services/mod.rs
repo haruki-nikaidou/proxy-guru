@@ -61,12 +61,17 @@ pub enum OrchestrationError {
     /// A remote-shell call the worker refused or did not answer.
     #[error("shell: {0}")]
     Shell(#[from] ShellError),
+    /// A transaction's `COMMIT` was sent but its answer was lost: it may or may
+    /// not have committed, so it is neither a conflict nor safe to retry blind.
+    #[error("commit outcome unknown: {0}")]
+    CommitUnknown(sqlx::Error),
     /// A broken invariant: logged, answered as `INTERNAL`.
     #[error(transparent)]
     Internal(anyhow::Error),
 }
 
 use crate::entities::db::fence::STALE_GENERATION;
+use wakuwaku::entity::sqlx::transaction::TxError;
 
 impl From<base::db::Error> for OrchestrationError {
     fn from(error: base::db::Error) -> Self {
@@ -89,6 +94,25 @@ impl From<base::db::Error> for OrchestrationError {
 impl From<auth::services::identity::PermissionDenied> for OrchestrationError {
     fn from(_: auth::services::identity::PermissionDenied) -> Self {
         OrchestrationError::PermissionDenied
+    }
+}
+
+/// How a transaction flow failed to end as it planned. A flow's own rollback
+/// arrives as `TxOutput::RolledBack(base::db::Error)` and converts through
+/// `From<base::db::Error>`; this is the driver's side.
+impl From<TxError> for OrchestrationError {
+    fn from(error: TxError) -> Self {
+        match error {
+            // No connection or no `BEGIN`: the flow never ran. A rejected
+            // serializable `COMMIT` is a conflict; the transaction rolled back.
+            TxError::Begin(e) | TxError::CommitRejected(e) => base::db::Error::from(e).into(),
+            TxError::CommitUnknown(e) => OrchestrationError::CommitUnknown(e),
+            // A flow that committed after a failed statement, or whose
+            // `finished` disagrees with its end: a bug in the flow.
+            error @ (TxError::Aborted | TxError::EndMismatch) => {
+                OrchestrationError::Internal(anyhow::Error::new(error))
+            }
+        }
     }
 }
 
@@ -122,6 +146,10 @@ impl From<OrchestrationError> for tonic::Status {
                 tonic::Status::permission_denied("Permission denied")
             }
             OrchestrationError::Shell(e) => e.into(),
+            OrchestrationError::CommitUnknown(e) => {
+                tracing::error!(error = %e, "commit outcome unknown");
+                tonic::Status::unknown("Commit outcome unknown; check before retrying")
+            }
             OrchestrationError::Internal(e) => {
                 tracing::error!(error = %e, "internal error");
                 tonic::Status::internal("Internal server error")
@@ -136,7 +164,9 @@ impl OrchestrationError {
     /// - a database that did not answer is transient: the chunk is retried in
     ///   place until it answers;
     /// - any other database failure or a conflict is retryable: the key goes to
-    ///   the retry topic, and the next attempt may well succeed;
+    ///   the retry topic, and the next attempt may well succeed. So is a commit
+    ///   whose outcome was lost: every hook's work is idempotent (a derivation
+    ///   pass is fenced on the generation it read);
     /// - a missing row, a permission failure and every rule violation are
     ///   unrecoverable: the event is dropped and logged instead of looping
     ///   forever on work that cannot succeed.
@@ -144,7 +174,9 @@ impl OrchestrationError {
         use wakuwaku::iggy::error::{ErrorClass, HandleError};
         let class = match &self {
             OrchestrationError::Db(e) if base::db::is_unavailable(e) => ErrorClass::Transient,
-            OrchestrationError::Db(_) | OrchestrationError::Conflict(_) => ErrorClass::Retryable,
+            OrchestrationError::Db(_)
+            | OrchestrationError::Conflict(_)
+            | OrchestrationError::CommitUnknown(_) => ErrorClass::Retryable,
             _ => ErrorClass::Unrecoverable,
         };
         HandleError::new(class, self)

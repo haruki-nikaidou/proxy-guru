@@ -13,7 +13,7 @@ use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::PublishAgentRelease;
 use orchestration::entities::db::canvas::{CanvasEntity, CanvasId};
-use orchestration::entities::db::certificate::TouchCanvases;
+use orchestration::entities::db::certificate::{TouchCanvases, TouchCanvasesFlow};
 use orchestration::entities::db::exit::ExitEntity;
 use orchestration::entities::db::health::{
     InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus, ServerHealthStatus,
@@ -729,10 +729,10 @@ async fn graph_view_follows_a_bump_through_its_derivation(pool: sqlx::PgPool) ->
         .await?;
     let before = generation_of(&next_value(&mut handle).await);
 
-    w.db.process(TouchCanvases {
+    let touch = TouchCanvasesFlow::new(TouchCanvases {
         canvases: vec![canvas.id.clone()],
-    })
-    .await?;
+    });
+    committed(&w.db, touch.expect("one canvas to touch")).await?;
     w.derive(&canvas.id).await?;
     graph_reaches(&mut handle, before + 1).await;
     Ok(())
@@ -754,10 +754,10 @@ async fn joining_a_loaded_view_rereads_it(pool: sqlx::PgPool) -> TestResult {
 
     let mut first = watch().await?;
     let before = generation_of(&next_value(&mut first).await);
-    w.db.process(TouchCanvases {
+    let touch = TouchCanvasesFlow::new(TouchCanvases {
         canvases: vec![canvas.id.clone()],
-    })
-    .await?;
+    });
+    committed(&w.db, touch.expect("one canvas to touch")).await?;
     assert!(
         tokio::time::timeout(Duration::from_millis(300), first.rx.changed())
             .await

@@ -10,7 +10,7 @@
 
 mod common;
 
-use base::events::{STREAM, all_partitions};
+use base::events::STREAM;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -85,7 +85,7 @@ async fn an_edit_reaches_the_deriver_through_iggy(db_pool: sqlx::PgPool) -> Test
         .iggy_consumer::<CanvasDirtyHandler, CanvasDirty, _>()
         .start(
             iggy_client.clone(),
-            ConsumerConfig::new(STREAM, "guru_orchestration_canvas_dirty", all_partitions()),
+            ConsumerConfig::new(STREAM, "guru_orchestration_canvas_dirty", vec![0]),
         )
         .await?;
 

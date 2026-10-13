@@ -8,22 +8,40 @@ use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::{FindAgentRelease, PublishAgentRelease};
 use orchestration::entities::db::canvas::{
-    DeleteCanvasRow, FindCanvasById, ListCanvases, LoadCanvasTree, UpdateCanvasMeta,
+    DeleteCanvasRow, DeleteCanvasRowFlow, FindCanvasById, ListCanvases, LoadCanvasTree,
+    LoadCanvasTreeFlow, UpdateCanvasMeta,
 };
 use orchestration::entities::db::edge::IpFamily;
-use orchestration::entities::db::graph::{ApplyGraphBatch, LoadCanvasGraph};
+use orchestration::entities::db::graph::{
+    ApplyGraphBatch, ApplyGraphBatchFlow, LoadCanvasGraph, LoadCanvasGraphFlow,
+};
 use orchestration::entities::db::group::{GroupEntity, GroupId, GroupMember};
 use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion, TlsConfig};
 use orchestration::entities::db::server::{
-    ClaimServerWatchSession, DeleteServerRow, FindCanvasOfServer, FindServerById,
-    FindServerByRefreshKeyDigest, ListServersByCanvas, MoveServerPosition, QuicCongestion,
-    RegisterWorkerSession, ReleaseServerWatchSession, RenewServerWatchSession, ServerIpv6Resolve,
-    ServerLogLevel, ServerQuic, UpdateServerSettings,
+    ClaimServerWatchSession, ClaimServerWatchSessionFlow, DeleteServerRow, DeleteServerRowFlow,
+    FindCanvasOfServer, FindServerById, FindServerByRefreshKeyDigest, ListServersByCanvas,
+    MoveServerPosition, QuicCongestion, RegisterWorkerSession, RegisterWorkerSessionFlow,
+    ReleaseServerWatchSession, RenewServerWatchSession, ServerIpv6Resolve, ServerLogLevel,
+    ServerQuic, UpdateServerSettings, UpdateServerSettingsFlow,
 };
 use orchestration::entities::db::view::{
     AckServerConfig, FindServerConfigView, ListServerWatchState, TakeInFlight,
 };
-use orchestration::services::OrchestrationError;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
+
+/// The graph of the tree `canvas` belongs to, read in one snapshot.
+async fn load_graph(
+    sp: &base::db::Db,
+    canvas: &orchestration::entities::db::canvas::CanvasId,
+) -> Result<orchestration::entities::db::graph::GraphRows, Box<dyn std::error::Error>> {
+    committed(
+        sp,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: canvas.clone(),
+        }),
+    )
+    .await
+}
 
 /// A batch that inserts the given pods, exits and edges into `canvas`'s tree.
 fn inserting(
@@ -73,7 +91,11 @@ async fn canvas_crud_round_trip(pool: sqlx::PgPool) -> TestResult {
     );
 
     let s = server(&sp, &c, "tokyo").await?;
-    sp.process(DeleteCanvasRow { id: c.id.clone() }).await?;
+    committed(
+        &sp,
+        DeleteCanvasRowFlow::new(DeleteCanvasRow { id: c.id.clone() }),
+    )
+    .await?;
     assert!(sp.process(FindCanvasById { id: c.id }).await?.is_none());
     assert!(
         sp.process(FindServerConfigView {
@@ -107,8 +129,9 @@ async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> 
     assert!(view.failed_revision.is_none());
     assert!(view.waiting_for.is_empty());
 
-    let updated = sp
-        .process(UpdateServerSettings {
+    let updated = committed(
+        &sp,
+        UpdateServerSettingsFlow::new(UpdateServerSettings {
             id: s.id.clone(),
             canvas: c.id.clone(),
             name: "tokyo-1".to_string(),
@@ -128,8 +151,9 @@ async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> 
             extra_addresses: Vec::new(),
             agent_unit: None,
             fence: None,
-        })
-        .await?;
+        }),
+    )
+    .await?;
     assert_eq!(updated.ipv6_resolve, ServerIpv6Resolve::Preferred);
     assert_eq!(updated.log_level, ServerLogLevel::Debug);
     assert_eq!(updated.quic.congestion, QuicCongestion::Brutal);
@@ -176,21 +200,22 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
 
     let start = time::OffsetDateTime::now_utc();
     let lease = time::Duration::seconds(30);
-    let register = |digest: &str, now: time::OffsetDateTime| RegisterWorkerSession {
-        server: s.id.clone(),
-        digest: digest.to_string(),
-        now,
-        lease_until: now + lease,
-        running_revision: 0,
-        observed: None,
-        reported: None,
-        agent_version: None,
-        agent_arch: None,
-        capabilities: Vec::new(),
+    let register = |digest: &str, now: time::OffsetDateTime| {
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: s.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now + lease,
+            running_revision: 0,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+            capabilities: Vec::new(),
+        })
     };
 
-    let row = sp
-        .process(register("digest-1", start))
+    let row = committed(&sp, register("digest-1", start))
         .await?
         .expect("the first registration takes the free session");
     assert_eq!(row.refresh_key_generation, 1);
@@ -205,10 +230,10 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
 
     // A contender is refused while the session lease is still alive.
     assert!(
-        sp.process(register(
-            "digest-contender",
-            start + time::Duration::seconds(5)
-        ))
+        committed(
+            &sp,
+            register("digest-contender", start + time::Duration::seconds(5))
+        )
         .await?
         .is_none(),
         "a live session must not be stolen by another registration"
@@ -246,10 +271,12 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
     );
 
     // Once the lease lapses the server can be taken over.
-    let row = sp
-        .process(register("digest-2", start + time::Duration::seconds(41)))
-        .await?
-        .expect("a lapsed lease releases the server");
+    let row = committed(
+        &sp,
+        register("digest-2", start + time::Duration::seconds(41)),
+    )
+    .await?
+    .expect("a lapsed lease releases the server");
     assert_eq!(row.refresh_key_generation, 2);
     assert!(
         sp.process(FindServerByRefreshKeyDigest {
@@ -261,23 +288,28 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
     );
 
     // Claiming a stream fences the previous one and releasing frees the server.
-    let claimed = sp
-        .process(ClaimServerWatchSession {
+    let claimed = committed(
+        &sp,
+        ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 2,
             now: start + time::Duration::seconds(42),
             lease_until: start + time::Duration::seconds(72),
-        })
-        .await?
-        .expect("the current generation may claim the stream");
+        }),
+    )
+    .await?
+    .expect("the current generation may claim the stream");
     assert_eq!(claimed.watch_epoch, 1);
     assert!(
-        sp.process(ClaimServerWatchSession {
-            server: s.id.clone(),
-            generation: 1,
-            now: start + time::Duration::seconds(42),
-            lease_until: start + time::Duration::seconds(72),
-        })
+        committed(
+            &sp,
+            ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
+                server: s.id.clone(),
+                generation: 1,
+                now: start + time::Duration::seconds(42),
+                lease_until: start + time::Duration::seconds(72),
+            }),
+        )
         .await?
         .is_none(),
         "a superseded generation must not claim a stream"
@@ -288,10 +320,12 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
         epoch: 1,
     })
     .await?;
-    let row = sp
-        .process(register("digest-3", start + time::Duration::seconds(43)))
-        .await?
-        .expect("a released session lets the next worker register at once");
+    let row = committed(
+        &sp,
+        register("digest-3", start + time::Duration::seconds(43)),
+    )
+    .await?
+    .expect("a released session lets the next worker register at once");
     assert_eq!(row.refresh_key_generation, 3);
 
     let watch = sp
@@ -458,15 +492,17 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
     seed_desired(&pool, &s.id, 1).await?;
 
     // The first stream is handed the snapshot and then dies without acking.
-    let claimed = sp
-        .process(ClaimServerWatchSession {
+    let claimed = committed(
+        &sp,
+        ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 0,
             now: time::OffsetDateTime::now_utc(),
             lease_until: time::OffsetDateTime::now_utc() + time::Duration::seconds(30),
-        })
-        .await?
-        .unwrap();
+        }),
+    )
+    .await?
+    .unwrap();
     let taken = sp
         .process(TakeInFlight {
             server: s.id.clone(),
@@ -478,15 +514,17 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
     assert_eq!(taken.revision, 1);
 
     // Its replacement must not be left waiting for an ack that can never come.
-    let claimed = sp
-        .process(ClaimServerWatchSession {
+    let claimed = committed(
+        &sp,
+        ClaimServerWatchSessionFlow::new(ClaimServerWatchSession {
             server: s.id.clone(),
             generation: 0,
             now: time::OffsetDateTime::now_utc(),
             lease_until: time::OffsetDateTime::now_utc() + time::Duration::seconds(30),
-        })
-        .await?
-        .unwrap();
+        }),
+    )
+    .await?
+    .unwrap();
     let taken = sp
         .process(TakeInFlight {
             server: s.id.clone(),
@@ -514,18 +552,21 @@ async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> Te
     .expect("the snapshot is in flight when the worker restarts");
 
     let now = time::OffsetDateTime::now_utc();
-    sp.process(RegisterWorkerSession {
-        server: s.id.clone(),
-        digest: "digest-1".to_string(),
-        now,
-        lease_until: now + time::Duration::seconds(30),
-        running_revision: 3,
-        observed: None,
-        reported: None,
-        agent_version: None,
-        agent_arch: None,
-        capabilities: Vec::new(),
-    })
+    committed(
+        &sp,
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: s.id.clone(),
+            digest: "digest-1".to_string(),
+            now,
+            lease_until: now + time::Duration::seconds(30),
+            running_revision: 3,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+            capabilities: Vec::new(),
+        }),
+    )
     .await?
     .expect("the free session is taken");
 
@@ -570,18 +611,21 @@ async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> 
     seed_desired(&pool, &s.id, 2).await?;
 
     let now = time::OffsetDateTime::now_utc();
-    sp.process(RegisterWorkerSession {
-        server: s.id.clone(),
-        digest: "digest-1".to_string(),
-        now,
-        lease_until: now + time::Duration::seconds(30),
-        running_revision: 1,
-        observed: None,
-        reported: None,
-        agent_version: None,
-        agent_arch: None,
-        capabilities: Vec::new(),
-    })
+    committed(
+        &sp,
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: s.id.clone(),
+            digest: "digest-1".to_string(),
+            now,
+            lease_until: now + time::Duration::seconds(30),
+            running_revision: 1,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+            capabilities: Vec::new(),
+        }),
+    )
     .await?
     .expect("the free session is taken");
 
@@ -621,18 +665,21 @@ async fn register_rejects_an_unknown_running_revision(pool: sqlx::PgPool) -> Tes
     seed_desired(&pool, &s.id, 3).await?;
 
     let now = time::OffsetDateTime::now_utc();
-    sp.process(RegisterWorkerSession {
-        server: s.id.clone(),
-        digest: "digest-1".to_string(),
-        now,
-        lease_until: now + time::Duration::seconds(30),
-        running_revision: 7,
-        observed: None,
-        reported: None,
-        agent_version: None,
-        agent_arch: None,
-        capabilities: Vec::new(),
-    })
+    committed(
+        &sp,
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: s.id.clone(),
+            digest: "digest-1".to_string(),
+            now,
+            lease_until: now + time::Duration::seconds(30),
+            running_revision: 7,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+            capabilities: Vec::new(),
+        }),
+    )
     .await?
     .expect("the free session is taken");
 
@@ -668,16 +715,23 @@ async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> Tes
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     let pod = client(&c, &s, "pod", 443, None);
-    sp.process(inserting(&c, vec![pod.clone()], Vec::new(), Vec::new()))
-        .await?;
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(inserting(&c, vec![pod.clone()], Vec::new(), Vec::new()))?,
+    )
+    .await?;
 
-    sp.process(DeleteServerRow {
-        id: s.id.clone(),
-        canvas: c.id.clone(),
-        fence: None,
-    })
-    .await
-    .expect_err("the server still has a live pod");
+    let refused = sp
+        .process(Transaction(DeleteServerRowFlow::new(DeleteServerRow {
+            id: s.id.clone(),
+            canvas: c.id.clone(),
+            fence: None,
+        })))
+        .await?;
+    assert!(
+        matches!(refused, TxOutput::RolledBack(base::db::Error::Conflict(_))),
+        "the server still has a live pod"
+    );
     assert!(
         sp.process(FindServerById { id: s.id.clone() })
             .await?
@@ -686,18 +740,24 @@ async fn deleting_a_server_with_a_live_pod_is_refused(pool: sqlx::PgPool) -> Tes
     );
 
     // Once the pod is gone the delete succeeds.
-    sp.process(ApplyGraphBatch {
-        canvas: Some(c.id.clone()),
-        derives: true,
-        delete_pods: vec![pod.id.clone()],
-        ..ApplyGraphBatch::default()
-    })
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(c.id.clone()),
+            derives: true,
+            delete_pods: vec![pod.id.clone()],
+            ..ApplyGraphBatch::default()
+        })?,
+    )
     .await?;
-    sp.process(DeleteServerRow {
-        id: s.id.clone(),
-        canvas: c.id.clone(),
-        fence: None,
-    })
+    committed(
+        &sp,
+        DeleteServerRowFlow::new(DeleteServerRow {
+            id: s.id.clone(),
+            canvas: c.id.clone(),
+            fence: None,
+        }),
+    )
     .await?;
     assert!(sp.process(FindServerById { id: s.id }).await?.is_none());
     Ok(())
@@ -710,25 +770,33 @@ async fn a_pod_cannot_reference_a_server_that_does_not_exist(pool: sqlx::PgPool)
     let sp = setup(pool);
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    sp.process(inserting(
-        &c,
-        vec![client(&c, &s, "pod", 443, None)],
-        Vec::new(),
-        Vec::new(),
-    ))
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(inserting(
+            &c,
+            vec![client(&c, &s, "pod", 443, None)],
+            Vec::new(),
+            Vec::new(),
+        ))?,
+    )
     .await?;
 
     let mut ghost = client(&c, &s, "ghost pod", 443, None);
     ghost.server = orchestration::utils::ids::server_id("ghost");
     let sound = client(&c, &s, "sound pod", 444, None);
-    sp.process(inserting(&c, vec![sound, ghost], Vec::new(), Vec::new()))
-        .await
-        .expect_err("a dangling server link must not be storable");
-    let graph = sp
-        .process(LoadCanvasGraph {
-            canvas: c.id.clone(),
-        })
+    let rejected = sp
+        .process(Transaction(ApplyGraphBatchFlow::new(inserting(
+            &c,
+            vec![sound, ghost],
+            Vec::new(),
+            Vec::new(),
+        ))?))
         .await?;
+    assert!(
+        matches!(rejected, TxOutput::RolledBack(_)),
+        "a dangling server link must not be storable"
+    );
+    let graph = load_graph(&sp, &c.id).await?;
     let names: Vec<&str> = graph.pods.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         names,
@@ -806,13 +874,9 @@ async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult 
         vec![near.clone(), far.clone(), out.clone()],
     );
     batch.insert_groups = vec![group.clone()];
-    sp.process(batch).await?;
+    committed(&sp, ApplyGraphBatchFlow::new(batch)?).await?;
 
-    let graph = sp
-        .process(LoadCanvasGraph {
-            canvas: c.id.clone(),
-        })
-        .await?;
+    let graph = load_graph(&sp, &c.id).await?;
     assert_eq!(graph.root, c.id);
     assert_eq!(graph.servers.len(), 2);
     let mut pods = graph.pods.clone();
@@ -842,14 +906,16 @@ async fn a_graph_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestRe
     let origin = exit(&c, "exit", "10.0.0.5:8080");
     let out = edge_to_exit("out", &entry, &origin);
     let entry = routed(entry, via(&out));
-    let generation = sp
-        .process(inserting(
+    let generation = committed(
+        &sp,
+        ApplyGraphBatchFlow::new(inserting(
             &c,
             vec![entry.clone()],
             vec![origin],
             vec![out.clone()],
-        ))
-        .await?;
+        ))?,
+    )
+    .await?;
     assert_eq!(generation, before + 1);
     let after = sp
         .process(FindCanvasById { id: c.id.clone() })
@@ -863,13 +929,16 @@ async fn a_graph_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestRe
 
     let mut unrouted = entry.clone();
     unrouted.route = None;
-    sp.process(ApplyGraphBatch {
-        canvas: Some(c.id.clone()),
-        derives: true,
-        delete_edges: vec![out.id.clone()],
-        update_pods: vec![unrouted],
-        ..ApplyGraphBatch::default()
-    })
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(c.id.clone()),
+            derives: true,
+            delete_edges: vec![out.id.clone()],
+            update_pods: vec![unrouted],
+            ..ApplyGraphBatch::default()
+        })?,
+    )
     .await?;
     assert_eq!(
         sp.process(FindCanvasById { id: c.id.clone() })
@@ -880,19 +949,22 @@ async fn a_graph_write_bumps_the_canvas_generation(pool: sqlx::PgPool) -> TestRe
     );
 
     // A batch of groups alone is drawing, not topology: no bump.
-    sp.process(ApplyGraphBatch {
-        canvas: Some(c.id.clone()),
-        derives: false,
-        insert_groups: vec![GroupEntity {
-            id: GroupId::from_key(key("rule")),
-            canvas: c.id.clone(),
-            kind: "rule".to_string(),
-            name: String::new(),
-            props: serde_json::json!({}),
-            members: vec![GroupMember::Pod(entry.id.clone())],
-        }],
-        ..ApplyGraphBatch::default()
-    })
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(ApplyGraphBatch {
+            canvas: Some(c.id.clone()),
+            derives: false,
+            insert_groups: vec![GroupEntity {
+                id: GroupId::from_key(key("rule")),
+                canvas: c.id.clone(),
+                kind: "rule".to_string(),
+                name: String::new(),
+                props: serde_json::json!({}),
+                members: vec![GroupMember::Pod(entry.id.clone())],
+            }],
+            ..ApplyGraphBatch::default()
+        })?,
+    )
     .await?;
     assert_eq!(
         sp.process(FindCanvasById { id: c.id })
@@ -919,10 +991,7 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
     let s = server(&sp, &c, "tokyo").await?;
 
     // The generation two concurrent editors would both check against.
-    let fence = sp
-        .process(LoadCanvasGraph {
-            canvas: c.id.clone(),
-        })
+    let fence = load_graph(&sp, &c.id)
         .await?
         .fence()
         .expect("a loaded canvas has a root");
@@ -934,7 +1003,7 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         Vec::new(),
     );
     first.fence = Some(fence.clone());
-    let bumped = sp.process(first).await?;
+    let bumped = committed(&sp, ApplyGraphBatchFlow::new(first)?).await?;
     assert_eq!(bumped, fence.generation + 1);
 
     let mut second = inserting(
@@ -944,25 +1013,23 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         Vec::new(),
     );
     second.fence = Some(fence);
-    let err = sp.process(second).await.expect_err("the loser is rejected");
+    let outcome = sp
+        .process(Transaction(ApplyGraphBatchFlow::new(second)?))
+        .await?;
+    let TxOutput::RolledBack(err) = outcome else {
+        panic!("the loser is rejected");
+    };
     assert!(
         err.to_string().contains("orchestration_stale_generation"),
         "the fence names its sentinel: {err}"
     );
     assert!(
-        matches!(
-            OrchestrationError::from(err),
-            OrchestrationError::Conflict(_)
-        ),
+        matches!(err, base::db::Error::Conflict(_)),
         "a stale fence is a conflict, not an opaque database error"
     );
 
     // The loser left nothing behind: no second pod, no extra bump.
-    let after = sp
-        .process(LoadCanvasGraph {
-            canvas: c.id.clone(),
-        })
-        .await?;
+    let after = load_graph(&sp, &c.id).await?;
     assert_eq!(after.pods.len(), 1, "only the winning pod persists");
     assert_eq!(after.generation(), bumped);
     Ok(())
@@ -993,12 +1060,14 @@ async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
         .len(),
         3
     );
-    let tree = sp
-        .process(LoadCanvasTree {
+    let tree = committed(
+        &sp,
+        LoadCanvasTreeFlow::new(LoadCanvasTree {
             canvas: subsub.id.clone(),
-        })
-        .await?
-        .unwrap();
+        }),
+    )
+    .await?
+    .unwrap();
     assert_eq!(tree.canvas.id, root.id);
     assert_eq!(tree.children[0].canvas.id, sub.id);
     assert_eq!(tree.children[0].children[0].canvas.id, subsub.id);
@@ -1010,19 +1079,13 @@ async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
     let origin = exit(&root, "origin", "10.0.0.5:8080");
     let out = edge_to_exit("out", &deep, &origin);
     let deep = routed(deep, via(&out));
-    let before = sp
-        .process(LoadCanvasGraph {
-            canvas: root.id.clone(),
-        })
-        .await?
-        .generation();
-    sp.process(inserting(&subsub, vec![deep], vec![origin], vec![out]))
-        .await?;
-    let graph = sp
-        .process(LoadCanvasGraph {
-            canvas: sub.id.clone(),
-        })
-        .await?;
+    let before = load_graph(&sp, &root.id).await?.generation();
+    committed(
+        &sp,
+        ApplyGraphBatchFlow::new(inserting(&subsub, vec![deep], vec![origin], vec![out]))?,
+    )
+    .await?;
+    let graph = load_graph(&sp, &sub.id).await?;
     assert_eq!(
         graph.root, root.id,
         "any canvas of the tree reads the whole tree"
@@ -1038,12 +1101,12 @@ async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
         "the root is what an edit bumps"
     );
 
-    sp.process(DeleteCanvasRow { id: sub.id.clone() }).await?;
-    let graph = sp
-        .process(LoadCanvasGraph {
-            canvas: root.id.clone(),
-        })
-        .await?;
+    committed(
+        &sp,
+        DeleteCanvasRowFlow::new(DeleteCanvasRow { id: sub.id.clone() }),
+    )
+    .await?;
+    let graph = load_graph(&sp, &root.id).await?;
     assert_eq!(graph.canvases.len(), 1);
     assert!(graph.pods.is_empty() && graph.edges.is_empty());
     assert_eq!(graph.exits.len(), 1, "the root's exit stays");
@@ -1063,23 +1126,25 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
     seed_desired(&pool, &s.id, 3).await?;
-    let register = |digest: &str, now: time::OffsetDateTime, running: i64| RegisterWorkerSession {
-        server: s.id.clone(),
-        digest: digest.to_string(),
-        now,
-        lease_until: now,
-        running_revision: running,
-        observed: None,
-        reported: None,
-        agent_version: None,
-        agent_arch: None,
-        capabilities: Vec::new(),
+    let register = |digest: &str, now: time::OffsetDateTime, running: i64| {
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: s.id.clone(),
+            digest: digest.to_string(),
+            now,
+            lease_until: now,
+            running_revision: running,
+            observed: None,
+            reported: None,
+            agent_version: None,
+            agent_arch: None,
+            capabilities: Vec::new(),
+        })
     };
 
     // The first worker ran revision 3: registering as such records it as applied,
     // and there is nothing left to hand a stream.
     let now = time::OffsetDateTime::now_utc();
-    sp.process(register("digest-1", now, 3))
+    committed(&sp, register("digest-1", now, 3))
         .await?
         .expect("the free session is taken");
     let view = sp
@@ -1103,8 +1168,7 @@ async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
     // The host was reinstalled: the new worker runs nothing. Treating the server
     // as still converged would leave it running nothing forever.
     let later = now + time::Duration::seconds(1);
-    let row = sp
-        .process(register("digest-2", later, 0))
+    let row = committed(&sp, register("digest-2", later, 0))
         .await?
         .expect("the lapsed lease is taken over");
     let view = sp
@@ -1141,8 +1205,8 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
     assert_eq!(s.agent_version, None);
 
     let now = time::OffsetDateTime::now_utc();
-    let register =
-        |digest: &str, now: time::OffsetDateTime, build: Option<&str>| RegisterWorkerSession {
+    let register = |digest: &str, now: time::OffsetDateTime, build: Option<&str>| {
+        RegisterWorkerSessionFlow::new(RegisterWorkerSession {
             server: s.id.clone(),
             digest: digest.to_string(),
             now,
@@ -1153,11 +1217,11 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
             agent_version: build.map(str::to_owned),
             agent_arch: build.map(|_| "x86_64".to_string()),
             capabilities: Vec::new(),
-        };
+        })
+    };
 
     // A worker that reports its build has it recorded.
-    let row = sp
-        .process(register("digest-1", now, Some("0.2.0-beta")))
+    let row = committed(&sp, register("digest-1", now, Some("0.2.0-beta")))
         .await?
         .expect("the free session is taken");
     assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
@@ -1166,22 +1230,23 @@ async fn registration_records_the_worker_build_and_keeps_it_when_unreported(
     // An older worker that reports nothing (empty on the wire, `None` here)
     // must not blank what is known.
     let later = now + time::Duration::seconds(1);
-    let row = sp
-        .process(register("digest-2", later, None))
+    let row = committed(&sp, register("digest-2", later, None))
         .await?
         .expect("the lapsed lease is taken over");
     assert_eq!(row.agent_version.as_deref(), Some("0.2.0-beta"));
     assert_eq!(row.agent_arch.as_deref(), Some("x86_64"));
 
     // A newer build replaces it.
-    let row = sp
-        .process(register(
+    let row = committed(
+        &sp,
+        register(
             "digest-3",
             later + time::Duration::seconds(1),
             Some("0.3.0"),
-        ))
-        .await?
-        .expect("the lapsed lease is taken over");
+        ),
+    )
+    .await?
+    .expect("the lapsed lease is taken over");
     assert_eq!(row.agent_version.as_deref(), Some("0.3.0"));
     Ok(())
 }

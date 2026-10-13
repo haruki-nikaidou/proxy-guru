@@ -11,10 +11,9 @@ use common::*;
 use guru_topology::{Route, Sticky, Weighted};
 use guru_worker_config::table::{Policy, Target};
 use guru_worker_config::{Config, ForwardingTo, LoadBalanceStrategy, To};
-use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
 use orchestration::entities::db::edge::IpFamily;
-use orchestration::entities::db::graph::{GraphRows, LoadCanvasGraph};
+use orchestration::entities::db::graph::{GraphRows, LoadCanvasGraph, LoadCanvasGraphFlow};
 use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{QuicCongestion, ServerId, ServerQuic};
 use orchestration::hooks::derive::DeriveStaleCanvasesJob;
@@ -134,11 +133,13 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
         ..GraphChange::default()
     };
     w.apply(&c, change).await?;
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     Ok(Fabric {
         graph,
         mobile: mobile.id,
@@ -354,11 +355,13 @@ async fn an_edge_dials_the_address_family_it_asks_for(pool: sqlx::PgPool) -> Tes
         outcome.diagnostics
     );
 
-    let graph =
-        w.db.process(LoadCanvasGraph {
+    let graph = committed(
+        &w.db,
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
             canvas: c.id.clone(),
-        })
-        .await?;
+        }),
+    )
+    .await?;
     let configs = derived(&graph, &issued());
     let tokyo = &configs[&tokyo.id];
     let toml = tokyo.config.to_toml_string().unwrap();
@@ -418,11 +421,13 @@ async fn an_auto_edge_names_the_other_family_to_a_worker_that_dials_it(
         },
     )
     .await?;
-    let load = || LoadCanvasGraph {
-        canvas: c.id.clone(),
+    let load = || {
+        LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: c.id.clone(),
+        })
     };
 
-    let configs = derived(&w.db.process(load()).await?, &issued());
+    let configs = derived(&committed(&w.db, load()).await?, &issued());
     let toml = configs[&tokyo.id].config.to_toml_string().unwrap();
     assert!(
         toml.contains(r#"destination = "198.51.100.10:9443""#),
@@ -441,7 +446,7 @@ async fn an_auto_edge_names_the_other_family_to_a_worker_that_dials_it(
     )
     .execute(&w.pool)
     .await?;
-    let configs = derived(&w.db.process(load()).await?, &issued());
+    let configs = derived(&committed(&w.db, load()).await?, &issued());
     let toml = configs[&tokyo.id].config.to_toml_string().unwrap();
     assert!(!toml.contains("alternates"), "{toml}");
     Ok(())

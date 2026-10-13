@@ -20,7 +20,7 @@
 
 use crate::config::OrchestrationConfig;
 use crate::entities::db::canvas::CanvasId;
-use crate::entities::db::graph::LoadCanvasGraph;
+use crate::entities::db::graph::{LoadCanvasGraph, LoadCanvasGraphFlow};
 use crate::entities::db::health::{
     ListPodHealthSince, ListServerHealthHistory as ListServerHealthHistoryRows,
     PodHealthRecordEntity, ServerHealthRecordEntity,
@@ -44,6 +44,7 @@ use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 use tokio::sync::{Notify, broadcast, watch};
 use tokio::task::AbortHandle;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 /// How long a view waits before retrying a failed load. The watcher is already
 /// connected and has nothing to show, so this is a visible stall — short enough
@@ -344,11 +345,13 @@ impl LiveView for RolloutsView {
     }
 
     async fn load(&self, db: &Db) -> Result<Option<RolloutsLive>, OrchestrationError> {
-        let graph = db
-            .process(LoadCanvasGraph {
-                canvas: self.canvas.clone(),
-            })
-            .await?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: self.canvas.clone(),
+        });
+        let graph = match db.process(Transaction(flow)).await? {
+            TxOutput::Committed(graph) => graph,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         // An empty graph is how the query reports a canvas that is not there.
         let Some(root) = graph.canvases.first() else {
             return Ok(None);
@@ -424,11 +427,13 @@ impl LiveView for GraphLiveView {
     }
 
     async fn load(&self, db: &Db) -> Result<Option<GraphLive>, OrchestrationError> {
-        let rows = db
-            .process(LoadCanvasGraph {
-                canvas: self.canvas.clone(),
-            })
-            .await?;
+        let flow = LoadCanvasGraphFlow::new(LoadCanvasGraph {
+            canvas: self.canvas.clone(),
+        });
+        let rows = match db.process(Transaction(flow)).await? {
+            TxOutput::Committed(rows) => rows,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         // An empty graph is how the query reports a canvas that is not there.
         if rows.canvases.is_empty() {
             return Ok(None);

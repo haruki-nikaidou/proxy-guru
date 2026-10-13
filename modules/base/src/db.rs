@@ -1,5 +1,5 @@
 //! The database handle every service holds, the error every query returns,
-//! and the helpers every transaction is written with.
+//! and the two ends every transaction flow uses.
 //!
 //! [`Db`] is wakuwaku-entity's capability handle over a [`PgSource`]: entity
 //! queries are `Query` + `Execute<PgSource>` pairs whose error is [`Error`],
@@ -8,11 +8,12 @@
 //! advisory lock, raw SQL in tests) keeps the [`sqlx::PgPool`] that [`connect`]
 //! returned next to it.
 //!
-//! A multi-statement transaction is a `TxFlow` whose `Abort` is
-//! `Result<Commit, Error>`: its step ends with [`commit`], [`rollback`] (a
-//! conflict or a failed statement) or [`refuse`] (a conditional write that
-//! matched nothing — nothing written, not an error), and [`transact`] runs it
-//! and folds the driver's outcome back into [`Error`].
+//! A multi-statement transaction is a `TxFlow`, not a query: the caller runs it
+//! as `db.process(Transaction(flow))` and handles the `TxOutput` / `TxError` it
+//! gets back. Every flow here rolls back with an [`Error`] (`Abort = Error`): a
+//! lost fence ([`Error::Conflict`]) or the statement that failed. Its step ends
+//! with [`commit`] or [`rollback`]. A conditional write that matched nothing
+//! wrote nothing, so it commits its empty result rather than rolling back.
 //!
 //! There is no second layer: bounding a query is the server's job
 //! (`statement_timeout`, set on every connection by [`connect`]) and cancels
@@ -24,16 +25,13 @@
 //! named as such: [`Error::Conflict`] means the transaction definitely did not
 //! commit.
 
-use kanau::processor::Processor;
 use sqlx::Postgres;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
 use wakuwaku::entity::sqlx::backend::{PgSource, SqlxSource};
 use wakuwaku::entity::sqlx::transaction::flow::AsSqlxError;
-use wakuwaku::entity::sqlx::transaction::{
-    Transaction, Tx, TxEnd, TxError, TxFlow, TxOutput, TxState,
-};
+use wakuwaku::entity::sqlx::transaction::{Tx, TxEnd, TxFlow, TxState};
 
 /// The handle services hold: every entity query and transaction runs through it.
 pub type Db = wakuwaku::entity::Db<PgSource, wakuwaku::entity::ReadWrite>;
@@ -170,34 +168,10 @@ impl Error {
     }
 }
 
-/// Runs the transaction `flow` and folds the driver's outcome into [`Error`].
-///
-/// The flow ends with [`commit`], [`rollback`] or [`refuse`]. A serializable
-/// `COMMIT` the server rejected is a conflict (the transaction is rolled
-/// back); a `COMMIT` whose outcome is unknown never is: it may have committed.
-pub async fn transact<F>(db: &Db, flow: F) -> Result<F::Commit, Error>
-where
-    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
-    Db: Processor<Transaction<F>, Output = TxOutput<F::Commit, F::Abort>, Error = TxError>,
-{
-    match db.process(Transaction(flow)).await {
-        Ok(TxOutput::Committed(value)) => Ok(value),
-        Ok(TxOutput::RolledBack(result)) => result,
-        Err(TxError::Begin(e) | TxError::CommitRejected(e)) => Err(Error::from(e)),
-        Err(TxError::CommitUnknown(e)) => Err(Error::Query(e)),
-        // A flow that committed after a failed statement, or whose `finished`
-        // disagrees with its end: a bug in the flow, never a state of the
-        // database, so not a class a caller would retry on.
-        Err(error @ (TxError::Aborted | TxError::EndMismatch)) => Err(Error::Query(
-            sqlx::Error::InvalidArgument(error.to_string()),
-        )),
-    }
-}
-
 /// Ends the flow by committing `value`.
 pub async fn commit<F>(tx: Tx<'_, F>, value: F::Commit) -> TxState<'_, F>
 where
-    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+    F: TxFlow<Database = Postgres, Report = (), Abort = Error>,
 {
     tx.end(
         TxEnd::Commit {
@@ -213,27 +187,11 @@ where
 /// statement that aborted the transaction.
 pub async fn rollback<F>(tx: Tx<'_, F>, error: Error) -> TxState<'_, F>
 where
-    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+    F: TxFlow<Database = Postgres, Report = (), Abort = Error>,
 {
     tx.end(
         TxEnd::Rollback {
-            output: Err(error),
-            report: (),
-        }
-        .into(),
-    )
-    .await
-}
-
-/// Ends the flow by rolling back and answering `value`: a refused conditional
-/// write, which wrote nothing and is not an error.
-pub async fn refuse<F>(tx: Tx<'_, F>, value: F::Commit) -> TxState<'_, F>
-where
-    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
-{
-    tx.end(
-        TxEnd::Rollback {
-            output: Ok(value),
+            output: error,
             report: (),
         }
         .into(),

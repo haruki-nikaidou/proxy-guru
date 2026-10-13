@@ -8,15 +8,16 @@
 
 use crate::config::OrchestrationConfig;
 use crate::entities::db::health::{
-    DeleteHealthRecordsBefore, HealthWrite, InsertServerHealthRecord,
+    DeleteHealthRecordsBefore, HealthWrite, InsertServerHealthRecord, InsertServerHealthRecordFlow,
     ListPodHealthHistory as ListPodHealthHistoryRows,
     ListServerHealthHistory as ListServerHealthHistoryRows, ListServersForLivenessSweep,
     NewPodHealthRecord, PodHealthRecordEntity, PodHealthStatus, ServerHealthRecordEntity,
-    ServerHealthStatus, SetServerHealthStatus,
+    ServerHealthStatus, SetServerHealthStatus, SetServerHealthStatusFlow,
 };
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::{
-    FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId, UpdateReportedAddresses,
+    FindServerById, ReportedAddresses, RevokeSilentWatchSessions, ServerId,
+    UpdateReportedAddresses, UpdateReportedAddressesFlow,
 };
 use crate::entities::db::view::{
     ConfigSnapshot, FindServerConfigView, ForwardingDeps, ServerConfigViewEntity,
@@ -34,6 +35,7 @@ use kanau::processor::Processor;
 use std::collections::HashMap;
 use std::time::Duration;
 use time::{OffsetDateTime, PrimitiveDateTime};
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 /// Pod records returned by `ListPodHealthHistory` when the caller sets no limit.
 pub const DEFAULT_POD_HISTORY_LIMIT: i64 = 500;
@@ -157,25 +159,26 @@ impl Processor<RecordHealthReport> for HealthService {
         let server_id = input.agent.server.clone();
         // The generation is checked inside the write itself, so a report from a
         // session that was superseded between two statements lands nowhere.
-        let write = self
-            .db
-            .process(InsertServerHealthRecord {
-                server: input.agent.server,
-                generation: input.agent.generation,
-                status: server_status(
-                    &view,
-                    report.running_revision,
-                    now,
-                    self.config.degraded_grace(),
-                ),
-                report_time: now,
-                upload_bytes: report.upload_bytes,
-                download_bytes: report.download_bytes,
-                current_connections: report.current_connections,
-                max_connections: report.max_connections,
-                pods: pod_records(&view, &report.pods, now),
-            })
-            .await?;
+        let flow = InsertServerHealthRecordFlow::new(InsertServerHealthRecord {
+            server: input.agent.server,
+            generation: input.agent.generation,
+            status: server_status(
+                &view,
+                report.running_revision,
+                now,
+                self.config.degraded_grace(),
+            ),
+            report_time: now,
+            upload_bytes: report.upload_bytes,
+            download_bytes: report.download_bytes,
+            current_connections: report.current_connections,
+            max_connections: report.max_connections,
+            pods: pod_records(&view, &report.pods, now),
+        });
+        let write = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(write) => write,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         let Some(write) = write else {
             return Err(OrchestrationError::PermissionDenied);
         };
@@ -197,13 +200,14 @@ impl Processor<RecordHealthReport> for HealthService {
                 .as_ref()
                 .is_some_and(|stored| stored.same_addresses(&reported));
             if !unchanged {
-                self.db
-                    .process(UpdateReportedAddresses {
-                        server: server_id.clone(),
-                        generation: input.agent.generation,
-                        reported,
-                    })
-                    .await?;
+                let flow = UpdateReportedAddressesFlow::new(UpdateReportedAddresses {
+                    server: server_id.clone(),
+                    generation: input.agent.generation,
+                    reported,
+                });
+                if let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await? {
+                    return Err(error.into());
+                }
                 self.notifier
                     .canvas_changed(
                         &server.canvas,
@@ -362,15 +366,16 @@ impl Processor<MarkServerOffline> for HealthService {
     type Error = OrchestrationError;
     #[tracing::instrument(name = "Service:MarkServerOffline", skip_all, err)]
     async fn process(&self, input: MarkServerOffline) -> Result<Self::Output, Self::Error> {
-        let write = self
-            .db
-            .process(SetServerHealthStatus {
-                server: input.server.clone(),
-                generation: input.generation,
-                status: ServerHealthStatus::Offline,
-                now: OffsetDateTime::now_utc(),
-            })
-            .await?;
+        let flow = SetServerHealthStatusFlow::new(SetServerHealthStatus {
+            server: input.server.clone(),
+            generation: input.generation,
+            status: ServerHealthStatus::Offline,
+            now: OffsetDateTime::now_utc(),
+        });
+        let write = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(write) => write,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         if let Some(write) = &write {
             self.publish(&input.server, write).await;
         }
@@ -416,15 +421,16 @@ impl Processor<SweepLiveness> for HealthService {
             if !silent {
                 continue;
             }
-            let write = self
-                .db
-                .process(SetServerHealthStatus {
-                    server: server.id.clone(),
-                    generation: None,
-                    status: ServerHealthStatus::Offline,
-                    now: input.now,
-                })
-                .await?;
+            let flow = SetServerHealthStatusFlow::new(SetServerHealthStatus {
+                server: server.id.clone(),
+                generation: None,
+                status: ServerHealthStatus::Offline,
+                now: input.now,
+            });
+            let write = match self.db.process(Transaction(flow)).await? {
+                TxOutput::Committed(write) => write,
+                TxOutput::RolledBack(error) => return Err(error.into()),
+            };
             // `None` means the write changed nothing — the server went offline
             // between the list and the update, or lost its session. Either way it
             // is not this sweep's flip, and the caller's contract is the flips.

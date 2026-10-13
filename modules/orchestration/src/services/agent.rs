@@ -8,11 +8,12 @@ use crate::config::OrchestrationConfig;
 use crate::entities::db::agent_release::FindAgentRelease;
 use crate::entities::db::health::{
     InsertPodHealthRecords, NewPodHealthRecord, PodHealthStatus, ServerHealthStatus,
-    SetServerHealthStatus,
+    SetServerHealthStatus, SetServerHealthStatusFlow,
 };
 use crate::entities::db::server::{
     FindServerByAgentKeyDigest, FindServerById, FindServerByRefreshKeyDigest,
-    RegisterWorkerSession, ReportedAddresses, ServerEntity, ServerId, SettleAgentUpdate,
+    RegisterWorkerSession, RegisterWorkerSessionFlow, ReportedAddresses, ServerEntity, ServerId,
+    SettleAgentUpdate,
 };
 use crate::entities::db::view::{
     AckServerConfig, ConfigSnapshot, FindServerConfigView, ForwardingDeps, PodFailure,
@@ -30,6 +31,7 @@ use base::db::Db;
 use kanau::processor::Processor;
 use std::collections::HashSet;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 /// An authenticated worker: which server, and which refresh-key generation it holds.
 #[derive(Clone, Debug)]
@@ -89,26 +91,25 @@ impl Processor<RegisterWorker> for AgentService {
         // clear whatever was in flight — the worker is not running it. Refused
         // while another session still heartbeats, so a second worker pointed at
         // the same server cannot take it over just by reconnecting.
-        let rotated = self
-            .db
-            .process(RegisterWorkerSession {
-                server: server.id.clone(),
-                digest: sha256_hex(&secret),
-                now,
-                lease_until: self.lease.until(now),
-                running_revision: input.running_revision,
-                observed: input.observed.map(|a| a.to_string()),
-                reported: input.reported,
-                agent_version: input.agent_version.clone(),
-                agent_arch: input.agent_arch,
-                capabilities: known_capabilities(input.capabilities),
-            })
-            .await?
-            .ok_or_else(|| {
-                OrchestrationError::Conflict(
-                    "another worker session is live for this server".into(),
-                )
-            })?;
+        let flow = RegisterWorkerSessionFlow::new(RegisterWorkerSession {
+            server: server.id.clone(),
+            digest: sha256_hex(&secret),
+            now,
+            lease_until: self.lease.until(now),
+            running_revision: input.running_revision,
+            observed: input.observed.map(|a| a.to_string()),
+            reported: input.reported,
+            agent_version: input.agent_version.clone(),
+            agent_arch: input.agent_arch,
+            capabilities: known_capabilities(input.capabilities),
+        });
+        let rotated = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(rotated) => rotated,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        }
+        .ok_or_else(|| {
+            OrchestrationError::Conflict("another worker session is live for this server".into())
+        })?;
 
         // What the worker registered as decides a pending update: the requested
         // version means it landed, a guard rollback means it did not.
@@ -425,19 +426,20 @@ impl Processor<AckConfig> for AgentService {
             .db
             .process(InsertPodHealthRecords { records: pods })
             .await?;
-        let health = self
-            .db
-            .process(SetServerHealthStatus {
-                server: server.id.clone(),
-                generation: Some(input.agent.generation),
-                status: if degraded {
-                    ServerHealthStatus::Degraded
-                } else {
-                    ServerHealthStatus::Online
-                },
-                now,
-            })
-            .await?;
+        let flow = SetServerHealthStatusFlow::new(SetServerHealthStatus {
+            server: server.id.clone(),
+            generation: Some(input.agent.generation),
+            status: if degraded {
+                ServerHealthStatus::Degraded
+            } else {
+                ServerHealthStatus::Online
+            },
+            now,
+        });
+        let health = match self.db.process(Transaction(flow)).await? {
+            TxOutput::Committed(health) => health,
+            TxOutput::RolledBack(error) => return Err(error.into()),
+        };
         self.notifier.notify(&server.canvas).await;
         let server_key = server.id.to_string();
         self.notifier

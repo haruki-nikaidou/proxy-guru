@@ -26,9 +26,8 @@ use crate::entities::db::tables::{
     OrchestrationGroupMember, OrchestrationPod, OrchestrationServer,
 };
 use crate::entities::db::tree::{RootOf, WholeTreeOf};
-use base::db::{Db, Error};
+use base::db::Error;
 use guru_topology::Route;
-use kanau::processor::Processor;
 use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
 use wakuwaku::entity::sqlx::backend::PgSource;
@@ -163,9 +162,17 @@ pub struct LoadCanvasGraph {
     pub canvas: CanvasId,
 }
 
-enum LoadCanvasGraphFlow {
+/// Reads the graph of [`LoadCanvasGraph`] in one snapshot. Run it with
+/// `db.process(Transaction(LoadCanvasGraphFlow::new(input)))`.
+pub enum LoadCanvasGraphFlow {
     Start(LoadCanvasGraph),
     End(TxEnd<LoadCanvasGraphFlow>),
+}
+
+impl LoadCanvasGraphFlow {
+    pub fn new(input: LoadCanvasGraph) -> Self {
+        LoadCanvasGraphFlow::Start(input)
+    }
 }
 
 impl Query for LoadCanvasGraphFlow {
@@ -181,10 +188,11 @@ impl From<TxEnd<LoadCanvasGraphFlow>> for LoadCanvasGraphFlow {
 impl TxFlow for LoadCanvasGraphFlow {
     type Database = Postgres;
     type Commit = GraphRows;
-    type Abort = Result<GraphRows, Error>;
+    type Abort = Error;
     type Report = ();
     const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
 
+    #[tracing::instrument(name = "Transaction:LoadCanvasGraph", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let LoadCanvasGraphFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -205,15 +213,6 @@ impl TxFlow for LoadCanvasGraphFlow {
             LoadCanvasGraphFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<LoadCanvasGraph> for Db {
-    type Output = GraphRows;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:LoadCanvasGraph", skip_all, err)]
-    async fn process(&self, input: LoadCanvasGraph) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, LoadCanvasGraphFlow::Start(input)).await
     }
 }
 
@@ -425,13 +424,28 @@ impl Execute<PgSource> for RootGeneration<'_> {
     }
 }
 
-// The input carries the whole batch; the flow value lives for one transaction,
-// so boxing it would only add an allocation.
+/// Writes an [`ApplyGraphBatch`] under the tree's fence; commits the root
+/// generation after the write. Run it with
+/// `db.process(Transaction(ApplyGraphBatchFlow::new(input)?))`.
+// One state plus its end: `Start` carries the whole batch (~376 B) and the
+// end only the generation. The value is moved a handful of times per
+// transaction; boxing would add a heap allocation to save no memory.
 #[allow(clippy::large_enum_variant)]
-enum ApplyGraphBatchFlow {
+pub enum ApplyGraphBatchFlow {
     /// The batch, and the canvas it names (checked before `BEGIN`).
     Start(CanvasId, ApplyGraphBatch),
     End(TxEnd<ApplyGraphBatchFlow>),
+}
+
+impl ApplyGraphBatchFlow {
+    /// Fails with [`BATCH_WITHOUT_CANVAS`] when the batch names no canvas
+    /// (before `BEGIN`).
+    pub fn new(mut input: ApplyGraphBatch) -> Result<Self, Error> {
+        let Some(canvas) = input.canvas.take() else {
+            return Err(Error::Conflict(BATCH_WITHOUT_CANVAS));
+        };
+        Ok(ApplyGraphBatchFlow::Start(canvas, input))
+    }
 }
 
 impl Query for ApplyGraphBatchFlow {
@@ -454,9 +468,10 @@ impl From<TxEnd<ApplyGraphBatchFlow>> for ApplyGraphBatchFlow {
 impl TxFlow for ApplyGraphBatchFlow {
     type Database = Postgres;
     type Commit = i64;
-    type Abort = Result<i64, Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:ApplyGraphBatch", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let ApplyGraphBatchFlow::Start(canvas, input) = state else {
             return tx.end(state).await;
@@ -582,30 +597,6 @@ impl TxFlow for ApplyGraphBatchFlow {
     }
 }
 
-impl Processor<ApplyGraphBatch> for Db {
-    /// The root generation after the write.
-    type Output = i64;
-    type Error = Error;
-    #[tracing::instrument(
-        name = "Query-Transaction:ApplyGraphBatch",
-        skip_all,
-        err,
-        fields(
-            delete_edges = input.delete_edges.len(),
-            delete_pods = input.delete_pods.len(),
-            insert_pods = input.insert_pods.len(),
-            update_pods = input.update_pods.len(),
-            insert_edges = input.insert_edges.len(),
-        )
-    )]
-    async fn process(&self, mut input: ApplyGraphBatch) -> Result<Self::Output, Self::Error> {
-        let Some(canvas) = input.canvas.take() else {
-            return Err(Error::Conflict(BATCH_WITHOUT_CANVAS));
-        };
-        base::db::transact(self, ApplyGraphBatchFlow::Start(canvas, input)).await
-    }
-}
-
 /// Positions only: nothing a worker reads, so no fence and no bump. Rows that
 /// are not on the given tree are left alone. The tree's root is still locked
 /// first (`fence`'s lock order): the server and subcanvas rows a move writes are
@@ -703,9 +694,17 @@ impl Execute<PgSource> for MoveCanvas<'_> {
     }
 }
 
-enum MoveGraphItemsFlow {
+/// Moves the items of [`MoveGraphItems`] under the tree's root lock. Run it
+/// with `db.process(Transaction(MoveGraphItemsFlow::new(input)))`.
+pub enum MoveGraphItemsFlow {
     Start(MoveGraphItems),
     End(TxEnd<MoveGraphItemsFlow>),
+}
+
+impl MoveGraphItemsFlow {
+    pub fn new(input: MoveGraphItems) -> Self {
+        MoveGraphItemsFlow::Start(input)
+    }
 }
 
 impl Query for MoveGraphItemsFlow {
@@ -725,9 +724,10 @@ impl From<TxEnd<MoveGraphItemsFlow>> for MoveGraphItemsFlow {
 impl TxFlow for MoveGraphItemsFlow {
     type Database = Postgres;
     type Commit = ();
-    type Abort = Result<(), Error>;
+    type Abort = Error;
     type Report = ();
 
+    #[tracing::instrument(name = "Transaction:MoveGraphItems", skip_all)]
     async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
         let MoveGraphItemsFlow::Start(input) = state else {
             return tx.end(state).await;
@@ -787,14 +787,5 @@ impl TxFlow for MoveGraphItemsFlow {
             MoveGraphItemsFlow::End(end) => Either::Right(end),
             state => Either::Left(state),
         }
-    }
-}
-
-impl Processor<MoveGraphItems> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:MoveGraphItems", skip_all, err)]
-    async fn process(&self, input: MoveGraphItems) -> Result<Self::Output, Self::Error> {
-        base::db::transact(self, MoveGraphItemsFlow::Start(input)).await
     }
 }

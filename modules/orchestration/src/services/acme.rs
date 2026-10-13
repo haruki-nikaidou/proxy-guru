@@ -20,7 +20,7 @@ use crate::entities::db::certificate::{
     CertificateEntity, CertificateId, CertificateStatus, DeleteCertificateRow, EnsureCertificate,
     FindCertificateById, ListCanvasesUsingSni, ListCertificates as ListCertificatesRow,
     ListTlsRequests, MarkCertificateAttemptFailed, RetryCertificateRow, StoreIssuedCertificate,
-    TouchCanvases,
+    TouchCanvases, TouchCanvasesFlow,
 };
 use crate::entities::db::dns::{DnsProvider, DnsProviderEntity, FindDnsProviderById};
 use crate::events::live::LiveMessage;
@@ -46,6 +46,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::transaction::{Transaction, TxOutput};
 
 pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 pub const VERCEL_API: &str = "https://api.vercel.com";
@@ -729,11 +730,12 @@ impl Processor<IssueCertificate> for AcmeService {
                 sni: stored.sni.clone(),
             })
             .await?;
-        self.db
-            .process(TouchCanvases {
-                canvases: canvases.clone(),
-            })
-            .await?;
+        if let Some(flow) = TouchCanvasesFlow::new(TouchCanvases {
+            canvases: canvases.clone(),
+        }) && let TxOutput::RolledBack(error) = self.db.process(Transaction(flow)).await?
+        {
+            return Err(error.into());
+        }
         for canvas in &canvases {
             self.notifier.notify(canvas).await;
         }
