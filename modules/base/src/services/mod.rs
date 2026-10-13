@@ -1,8 +1,8 @@
 //! Business logic layer.
 //!
 //! A service is a stateful `Processor`: a
-//! `Clone`-able struct that owns its dependencies (database, Redis, message
-//! queue, other services, loaded config) and implements one `Processor` per
+//! `Clone`-able struct that owns its dependencies (database, Redis, event
+//! publisher, other services, loaded config) and implements one `Processor` per
 //! operation it supports.
 //!
 //! Services orchestrate [`entities`](crate::entities), publish
@@ -15,11 +15,11 @@
 //!
 //! ```ignore
 //! use kanau::processor::Processor;
-//! use wakuwaku::sqlx::DatabaseProcessor;
+//! use crate::db::Db;
 //!
 //! #[derive(Clone)]
 //! pub struct ExampleService {
-//!     pub db: DatabaseProcessor,
+//!     pub db: Db,
 //! }
 //!
 //! pub struct DoSomething {
@@ -28,7 +28,8 @@
 //!
 //! impl Processor<DoSomething> for ExampleService {
 //!     type Output = ();
-//!     type Error = wakuwaku::Error;
+//!     type Error = ExampleError; // a `thiserror` enum with `Database(#[from] crate::db::Error)`
+//!     #[tracing::instrument(name = "Service:DoSomething", skip_all, err)]
 //!     async fn process(&self, input: DoSomething) -> Result<(), Self::Error> {
 //!         // load entities, apply business rules, persist, emit events...
 //!         Ok(())

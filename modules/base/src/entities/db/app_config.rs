@@ -6,10 +6,13 @@
 //! (de)serialization — whose failures are `serde_json::Error` — stays a service
 //! concern ([`crate::services::config`]).
 
-use crate::db::{Db, Error};
-use kanau::processor::Processor;
+use crate::db::Error;
+use crate::entities::db::tables::AppConfig;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use sqlx::PgConnection;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 /// A config struct bound to the key it is stored under.
 ///
@@ -28,14 +31,18 @@ pub struct FindRawConfig {
     pub key: &'static str,
 }
 
-impl Processor<FindRawConfig> for Db {
+impl Query for FindRawConfig {
+    type Effect = Read<AppConfig>;
+}
+
+impl Execute<PgSource> for FindRawConfig {
     type Output = Option<serde_json::Value>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindRawConfig", skip_all, err)]
-    async fn process(&self, input: FindRawConfig) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_scalar!("SELECT content FROM app_config WHERE key = $1", input.key)
-                .fetch_optional(self.db())
+            sqlx::query_scalar!("SELECT content FROM app_config WHERE key = $1", self.key)
+                .fetch_optional(&mut *conn)
                 .await?,
         )
     }
@@ -47,18 +54,22 @@ pub struct UpsertRawConfig {
     pub content: serde_json::Value,
 }
 
-impl Processor<UpsertRawConfig> for Db {
+impl Query for UpsertRawConfig {
+    type Effect = Write<AppConfig>;
+}
+
+impl Execute<PgSource> for UpsertRawConfig {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query:UpsertRawConfig", skip_all, err)]
-    async fn process(&self, input: UpsertRawConfig) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "INSERT INTO app_config (key, content) VALUES ($1, $2)
              ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content",
-            input.key,
-            input.content
+            self.key,
+            self.content
         )
-        .execute(self.db())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
@@ -74,20 +85,24 @@ pub struct InsertRawConfigIfAbsent {
     pub content: serde_json::Value,
 }
 
-impl Processor<InsertRawConfigIfAbsent> for Db {
+impl Query for InsertRawConfigIfAbsent {
+    type Effect = Write<AppConfig>;
+}
+
+impl Execute<PgSource> for InsertRawConfigIfAbsent {
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:InsertRawConfigIfAbsent", skip_all, err)]
-    async fn process(&self, input: InsertRawConfigIfAbsent) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         // `DO NOTHING` returns no row on conflict, so the key comes back exactly
         // when the row was created.
         let created: Option<String> = sqlx::query_scalar!(
             "INSERT INTO app_config (key, content) VALUES ($1, $2)
              ON CONFLICT (key) DO NOTHING RETURNING key",
-            input.key,
-            input.content
+            self.key,
+            self.content
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?;
         Ok(created.is_some())
     }
