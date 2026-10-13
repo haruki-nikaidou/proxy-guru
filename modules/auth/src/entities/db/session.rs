@@ -1,8 +1,10 @@
 use super::account::AccountId;
-use base::db::{Db, Error};
+use crate::entities::db::tables;
 use db_types::table_record;
-use kanau::processor::Processor;
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 // A session's id is the opaque session token itself.
 table_record!(SessionId, "auth_session");
@@ -20,20 +22,25 @@ pub struct FindSessionById {
     pub session_id: String,
 }
 
-impl Processor<FindSessionById> for Db {
+impl Query for FindSessionById {
+    type Effect = Read<tables::AuthSession>;
+}
+
+impl Execute<PgSource> for FindSessionById {
     type Output = Option<SessionEntity>;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:FindSessionById", skip_all, err)]
-    async fn process(&self, input: FindSessionById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_as!(
             SessionEntity,
             r#"SELECT id AS "id: SessionId", account_id AS "account_id: AccountId", user_agent,
                       created_at, last_active_at
                FROM auth_session WHERE id = $1"#,
-            input.session_id
+            self.session_id
         )
-        .fetch_optional(self.db())
-        .await?)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -46,25 +53,30 @@ pub struct CreateSession {
     pub last_active_at: OffsetDateTime,
 }
 
-impl Processor<CreateSession> for Db {
+impl Query for CreateSession {
+    type Effect = Write<tables::AuthSession>;
+}
+
+impl Execute<PgSource> for CreateSession {
     type Output = SessionEntity;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:CreateSession", skip_all, err)]
-    async fn process(&self, input: CreateSession) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_as!(
             SessionEntity,
             r#"INSERT INTO auth_session (id, account_id, user_agent, created_at, last_active_at)
                VALUES ($1, $2, $3, $4, $5)
                RETURNING id AS "id: SessionId", account_id AS "account_id: AccountId", user_agent,
                          created_at, last_active_at"#,
-            SessionId::from_key(input.token) as _,
-            input.account_id as _,
-            input.user_agent,
-            input.created_at,
-            input.last_active_at
+            SessionId::from_key(self.token) as _,
+            self.account_id as _,
+            self.user_agent,
+            self.created_at,
+            self.last_active_at
         )
-        .fetch_one(self.db())
-        .await?)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -72,13 +84,17 @@ pub struct DeleteSession {
     pub session_id: String,
 }
 
-impl Processor<DeleteSession> for Db {
+impl Query for DeleteSession {
+    type Effect = Write<tables::AuthSession>;
+}
+
+impl Execute<PgSource> for DeleteSession {
     type Output = ();
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:DeleteSession", skip_all, err)]
-    async fn process(&self, input: DeleteSession) -> Result<Self::Output, Self::Error> {
-        sqlx::query!("DELETE FROM auth_session WHERE id = $1", input.session_id)
-            .execute(self.db())
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!("DELETE FROM auth_session WHERE id = $1", self.session_id)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
@@ -89,36 +105,21 @@ pub struct UpdateSession {
     pub last_active_at: OffsetDateTime,
 }
 
-impl Processor<UpdateSession> for Db {
+impl Query for UpdateSession {
+    type Effect = Write<tables::AuthSession>;
+}
+
+impl Execute<PgSource> for UpdateSession {
     type Output = ();
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:UpdateSession", skip_all, err)]
-    async fn process(&self, input: UpdateSession) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "UPDATE auth_session SET last_active_at = $2 WHERE id = $1",
-            input.id,
-            input.last_active_at
+            self.id,
+            self.last_active_at
         )
-        .execute(self.db())
-        .await?;
-        Ok(())
-    }
-}
-
-pub struct DeleteSessionsByAccount {
-    pub account_id: AccountId,
-}
-
-impl Processor<DeleteSessionsByAccount> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query:DeleteSessionsByAccount", skip_all, err)]
-    async fn process(&self, input: DeleteSessionsByAccount) -> Result<Self::Output, Self::Error> {
-        sqlx::query!(
-            "DELETE FROM auth_session WHERE account_id = $1",
-            input.account_id as _
-        )
-        .execute(self.db())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }

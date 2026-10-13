@@ -10,23 +10,40 @@ use auth::entities::db::account::{
     AccountId, AccountRole, CreateAccount, FindAccountById, UpdateAccountEmail,
 };
 use auth::entities::db::session::FindSessionById;
+use auth::services::AuthError;
 use auth::services::account::{
     AccountService, ChangeEmailResult, ChangeOwnEmail, ChangeOwnPassword, ChangePasswordResult,
     DeleteAccount, RegisterAccount, RegisterResult, SetAccountRole,
 };
 use auth::services::api_key::{ApiKeyService, AuthenticateApiKey, CreateApiKey};
-use auth::services::identity::{Identity, IdentityKind};
+use auth::services::identity::{Identity, IdentityKind, PermissionDenied};
 use auth::services::session::{AuthenticateSession, Login, LoginResult, Logout, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use auth::utils::rbac::Permission;
+use auth::utils::validation::{
+    API_KEY_NAME, AcceptablePassword, ApiKeyName, CanonicalEmail, NEW_PASSWORD, prove_email,
+};
 use base::db::Db;
+use wakuwaku::proof::Proven;
 use kanau::processor::Processor;
+
+fn email(raw: &str) -> Proven<String, CanonicalEmail> {
+    prove_email(raw).unwrap()
+}
+
+fn password(raw: &str) -> Proven<String, AcceptablePassword> {
+    NEW_PASSWORD.prove(raw.to_owned()).unwrap()
+}
+
+fn key_name(raw: &str) -> Proven<String, ApiKeyName> {
+    API_KEY_NAME.prove(raw.to_owned()).unwrap()
+}
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Build the services over the test's database.
 fn setup(pool: sqlx::PgPool) -> (Db, AccountService, SessionService, ApiKeyService) {
-    let sp = Db::new(pool);
+    let sp = base::db::handle(pool);
     let hasher = Argon2PasswordAlgorithm::default();
     let accounts = AccountService {
         db: sp.clone(),
@@ -63,7 +80,7 @@ async fn create(
 ) -> Result<Identity, Box<dyn std::error::Error>> {
     let account = sp
         .process(CreateAccount {
-            email: email.to_string(),
+            email: prove_email(email).unwrap(),
             password_hash: Argon2PasswordAlgorithm::default().hash_password(password)?,
             role,
         })
@@ -80,7 +97,7 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     // 1. Bootstrap an admin directly via the entity layer.
     let admin = sp
         .process(CreateAccount {
-            email: "admin@example.com".to_string(),
+            email: email("admin@example.com"),
             password_hash: hasher.hash_password("admin-password")?,
             role: AccountRole::Admin,
         })
@@ -92,8 +109,8 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     let maintainer = match accounts
         .process(RegisterAccount {
             actor: admin_identity.clone(),
-            email: "maintainer@example.com".to_string(),
-            password: "maintainer-password".to_string(),
+            email: email("maintainer@example.com"),
+            password: password("maintainer-password"),
             role: AccountRole::Maintainer,
         })
         .await?
@@ -104,8 +121,8 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     let observer = match accounts
         .process(RegisterAccount {
             actor: admin_identity.clone(),
-            email: "observer@example.com".to_string(),
-            password: "observer-password".to_string(),
+            email: email("observer@example.com"),
+            password: password("observer-password"),
             role: AccountRole::Observer,
         })
         .await?
@@ -118,8 +135,8 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     let duplicate = accounts
         .process(RegisterAccount {
             actor: admin_identity.clone(),
-            email: "  Maintainer@Example.com ".to_string(),
-            password: "another-password".to_string(),
+            email: email("  Maintainer@Example.com "),
+            password: password("another-password"),
             role: AccountRole::Observer,
         })
         .await?;
@@ -175,21 +192,21 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
         accounts
             .process(RegisterAccount {
                 actor: maintainer_identity.clone(),
-                email: "sneaky@example.com".to_string(),
-                password: "pw".to_string(),
+                email: email("sneaky@example.com"),
+                password: password("maintainer-password-2"),
                 role: AccountRole::Observer,
             })
             .await,
-        Err(wakuwaku::Error::PermissionsDenied)
+        Err(AuthError::PermissionDenied)
     ));
     assert!(matches!(
         api_keys
             .process(CreateApiKey {
                 actor: observer_identity.clone(),
-                name: "observer-key".to_string(),
+                name: key_name("observer-key"),
             })
             .await,
-        Err(wakuwaku::Error::PermissionsDenied)
+        Err(AuthError::PermissionDenied)
     ));
 
     // 7. Maintainer creates an API key; it authenticates as a machine identity,
@@ -197,7 +214,7 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     let created_key = api_keys
         .process(CreateApiKey {
             actor: maintainer_identity.clone(),
-            name: "ci-key".to_string(),
+            name: key_name("ci-key"),
         })
         .await?;
     let api_identity = api_keys
@@ -210,7 +227,7 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
     assert_eq!(api_identity.role, AccountRole::Maintainer);
     assert!(matches!(
         api_identity.ensure(Permission::ManageApiKeys),
-        Err(wakuwaku::Error::PermissionsDenied)
+        Err(PermissionDenied)
     ));
 
     // 8. Downgrading the key owner to Observer revokes API-key authentication.
@@ -249,7 +266,7 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
             .process(ChangeOwnPassword {
                 actor: admin_identity.clone(),
                 current_password: "wrong-current".to_string(),
-                new_password: "brand-new-password".to_string(),
+                new_password: password("brand-new-password"),
             })
             .await?,
         ChangePasswordResult::WrongPassword
@@ -259,7 +276,7 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
             .process(ChangeOwnPassword {
                 actor: admin_identity.clone(),
                 current_password: "admin-password".to_string(),
-                new_password: "brand-new-password".to_string(),
+                new_password: password("brand-new-password"),
             })
             .await?,
         ChangePasswordResult::Changed
@@ -285,10 +302,10 @@ async fn full_auth_flow(pool: sqlx::PgPool) -> TestResult {
 async fn activity_is_recorded_once_per_slack_not_once_per_request(
     pool: sqlx::PgPool,
 ) -> TestResult {
-    let (sp, _accounts, sessions, _api_keys) = setup(pool);
+    let (sp, _accounts, sessions, _api_keys) = setup(pool.clone());
     let hasher = Argon2PasswordAlgorithm::default();
     sp.process(CreateAccount {
-        email: "op@example.com".to_string(),
+        email: email("op@example.com"),
         password_hash: hasher.hash_password("pw")?,
         role: AccountRole::Maintainer,
     })
@@ -334,7 +351,7 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request(
         token,
         backdated
     )
-    .execute(sp.db())
+    .execute(&pool)
     .await?;
     assert!(
         sessions
@@ -354,7 +371,7 @@ async fn activity_is_recorded_once_per_slack_not_once_per_request(
         token,
         expired
     )
-    .execute(sp.db())
+    .execute(&pool)
     .await?;
     assert!(
         sessions
@@ -396,7 +413,7 @@ async fn a_write_to_a_taken_address_is_refused_not_failed(pool: sqlx::PgPool) ->
 
     let second = sp
         .process(CreateAccount {
-            email: "alice@example.com".to_string(),
+            email: email("alice@example.com"),
             password_hash: "never-used".to_string(),
             role: AccountRole::Observer,
         })
@@ -405,7 +422,7 @@ async fn a_write_to_a_taken_address_is_refused_not_failed(pool: sqlx::PgPool) ->
     assert!(
         !sp.process(UpdateAccountEmail {
             id: bob.account_id.clone(),
-            new_email: "alice@example.com".to_string(),
+            email: email("alice@example.com"),
         })
         .await?,
         "moving onto another account's address"
@@ -413,7 +430,7 @@ async fn a_write_to_a_taken_address_is_refused_not_failed(pool: sqlx::PgPool) ->
     assert!(
         sp.process(UpdateAccountEmail {
             id: alice.account_id.clone(),
-            new_email: "alice@example.com".to_string(),
+            email: email("alice@example.com"),
         })
         .await?,
         "an account's own address is no conflict"
@@ -443,7 +460,7 @@ async fn changing_to_another_accounts_address_is_taken(pool: sqlx::PgPool) -> Te
     let change = |new_email: &str| {
         accounts.process(ChangeOwnEmail {
             actor: alice.clone(),
-            new_email: new_email.to_string(),
+            new_email: email(new_email),
             current_password: "alice-password".to_string(),
         })
     };
@@ -484,7 +501,7 @@ async fn changing_or_deleting_a_missing_account_is_not_found(pool: sqlx::PgPool)
                 role: AccountRole::Observer,
             })
             .await,
-        Err(wakuwaku::Error::NotFound)
+        Err(AuthError::NotFound)
     ));
     assert!(matches!(
         accounts
@@ -493,7 +510,7 @@ async fn changing_or_deleting_a_missing_account_is_not_found(pool: sqlx::PgPool)
                 target: missing,
             })
             .await,
-        Err(wakuwaku::Error::NotFound)
+        Err(AuthError::NotFound)
     ));
 
     let observer = create(

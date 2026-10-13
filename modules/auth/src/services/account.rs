@@ -1,6 +1,8 @@
 //! Account management and self-service operations.
 
 use base::db::Db;
+
+use crate::services::AuthError;
 use kanau::processor::Processor;
 
 use crate::entities::db::account::{
@@ -11,12 +13,8 @@ use crate::entities::db::account::{
 use crate::services::identity::Identity;
 use crate::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
 use crate::utils::rbac::Permission;
-
-/// Normalize an email for storage and lookup so the UNIQUE index and every
-/// query agree on a single canonical form.
-fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
-}
+use crate::utils::validation::{AcceptablePassword, CanonicalEmail};
+use wakuwaku::proof::Proven;
 
 /// Account lifecycle and self-service operations.
 #[derive(Clone)]
@@ -28,8 +26,8 @@ pub struct AccountService {
 /// Register a new account (admin-only).
 pub struct RegisterAccount {
     pub actor: Identity,
-    pub email: String,
-    pub password: String,
+    pub email: Proven<String, CanonicalEmail>,
+    pub password: Proven<String, AcceptablePassword>,
     pub role: AccountRole,
 }
 
@@ -41,21 +39,20 @@ pub enum RegisterResult {
 
 impl Processor<RegisterAccount> for AccountService {
     type Output = RegisterResult;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:RegisterAccount", skip_all, err)]
     async fn process(&self, input: RegisterAccount) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
-        let email = normalize_email(&input.email);
         let password_hash = self
             .hasher
-            .hash_password(&input.password)
-            .map_err(|e| wakuwaku::Error::BusinessPanic(anyhow::anyhow!(e)))?;
+            .hash_password(input.password.subject())
+            .map_err(|e| AuthError::Internal(anyhow::anyhow!(e)))?;
         // The insert itself finds out whether the address is taken: two
         // registrations for one address can both pass a lookup made first.
         let created = self
             .db
             .process(CreateAccount {
-                email,
+                email: input.email,
                 password_hash,
                 role: input.role,
             })
@@ -74,7 +71,7 @@ pub struct ListAccounts {
 
 impl Processor<ListAccounts> for AccountService {
     type Output = Vec<AccountEntity>;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:ListAccounts", skip_all, err)]
     async fn process(&self, input: ListAccounts) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
@@ -92,7 +89,7 @@ pub struct SetAccountRole {
 
 impl Processor<SetAccountRole> for AccountService {
     type Output = ();
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:SetAccountRole", skip_all, err)]
     async fn process(&self, input: SetAccountRole) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
@@ -104,7 +101,7 @@ impl Processor<SetAccountRole> for AccountService {
             })
             .await?;
         if !updated {
-            return Err(wakuwaku::Error::NotFound);
+            return Err(AuthError::NotFound);
         }
         Ok(())
     }
@@ -118,7 +115,7 @@ pub struct DeleteAccount {
 
 impl Processor<DeleteAccount> for AccountService {
     type Output = ();
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:DeleteAccount", skip_all, err)]
     async fn process(&self, input: DeleteAccount) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageAccounts)?;
@@ -127,7 +124,7 @@ impl Processor<DeleteAccount> for AccountService {
             .process(DeleteAccountEntity { id: input.target })
             .await?;
         if !deleted {
-            return Err(wakuwaku::Error::NotFound);
+            return Err(AuthError::NotFound);
         }
         Ok(())
     }
@@ -137,7 +134,7 @@ impl Processor<DeleteAccount> for AccountService {
 pub struct ChangeOwnPassword {
     pub actor: Identity,
     pub current_password: String,
-    pub new_password: String,
+    pub new_password: Proven<String, AcceptablePassword>,
 }
 
 /// Outcome of [`ChangeOwnPassword`].
@@ -148,7 +145,7 @@ pub enum ChangePasswordResult {
 
 impl Processor<ChangeOwnPassword> for AccountService {
     type Output = ChangePasswordResult;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:ChangeOwnPassword", skip_all, err)]
     async fn process(&self, input: ChangeOwnPassword) -> Result<Self::Output, Self::Error> {
         input.actor.require_human()?;
@@ -158,7 +155,7 @@ impl Processor<ChangeOwnPassword> for AccountService {
                 id: input.actor.account_id.clone(),
             })
             .await?
-            .ok_or(wakuwaku::Error::NotFound)?;
+            .ok_or(AuthError::NotFound)?;
         if !self
             .hasher
             .verify_password(&input.current_password, &account.password_hash)
@@ -167,8 +164,8 @@ impl Processor<ChangeOwnPassword> for AccountService {
         }
         let password_hash = self
             .hasher
-            .hash_password(&input.new_password)
-            .map_err(|e| wakuwaku::Error::BusinessPanic(anyhow::anyhow!(e)))?;
+            .hash_password(input.new_password.subject())
+            .map_err(|e| AuthError::Internal(anyhow::anyhow!(e)))?;
         self.db
             .process(UpdateAccountPassword {
                 id: account.id,
@@ -182,7 +179,7 @@ impl Processor<ChangeOwnPassword> for AccountService {
 /// Change the caller's own email address.
 pub struct ChangeOwnEmail {
     pub actor: Identity,
-    pub new_email: String,
+    pub new_email: Proven<String, CanonicalEmail>,
     pub current_password: String,
 }
 
@@ -195,7 +192,7 @@ pub enum ChangeEmailResult {
 
 impl Processor<ChangeOwnEmail> for AccountService {
     type Output = ChangeEmailResult;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:ChangeOwnEmail", skip_all, err)]
     async fn process(&self, input: ChangeOwnEmail) -> Result<Self::Output, Self::Error> {
         input.actor.require_human()?;
@@ -205,7 +202,7 @@ impl Processor<ChangeOwnEmail> for AccountService {
                 id: input.actor.account_id.clone(),
             })
             .await?
-            .ok_or(wakuwaku::Error::NotFound)?;
+            .ok_or(AuthError::NotFound)?;
         if !self
             .hasher
             .verify_password(&input.current_password, &account.password_hash)
@@ -219,7 +216,7 @@ impl Processor<ChangeOwnEmail> for AccountService {
             .db
             .process(UpdateAccountEmail {
                 id: account.id,
-                new_email: normalize_email(&input.new_email),
+                email: input.new_email,
             })
             .await?;
         Ok(if changed {

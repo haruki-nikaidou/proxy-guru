@@ -3,6 +3,11 @@
 use crate::entities::db::account::{AccountId, AccountRole};
 use crate::utils::rbac::Permission;
 
+/// Refusal of [`Identity::ensure`] and [`Identity::require_human`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("permission denied")]
+pub struct PermissionDenied;
+
 /// An authenticated caller: which account, its current role, and how it proved
 /// its identity (a human session or a machine API key).
 #[derive(Clone, Debug)]
@@ -29,28 +34,28 @@ impl Identity {
     /// other permission is human-session-only, so a server credential can never
     /// drive account/key management or edit the workspace. The role's capability
     /// matrix then decides.
-    pub fn ensure(&self, permission: Permission) -> Result<(), wakuwaku::Error> {
+    pub fn ensure(&self, permission: Permission) -> Result<(), PermissionDenied> {
         let kind_ok = match permission {
             Permission::ServerCall => self.kind == IdentityKind::ApiKey,
             _ => self.kind == IdentityKind::Session,
         };
         if !kind_ok {
-            return Err(wakuwaku::Error::PermissionsDenied);
+            return Err(PermissionDenied);
         }
         if self.role.can(permission) {
             Ok(())
         } else {
-            Err(wakuwaku::Error::PermissionsDenied)
+            Err(PermissionDenied)
         }
     }
 
     /// Require that this identity is a human session (used for self-service
     /// operations like changing one's own password or email).
-    pub fn require_human(&self) -> Result<(), wakuwaku::Error> {
+    pub fn require_human(&self) -> Result<(), PermissionDenied> {
         if self.kind == IdentityKind::Session {
             Ok(())
         } else {
-            Err(wakuwaku::Error::PermissionsDenied)
+            Err(PermissionDenied)
         }
     }
 }
@@ -85,7 +90,7 @@ mod tests {
             assert!(
                 matches!(
                     identity(role, kind).ensure(Permission::RemoteShell),
-                    Err(wakuwaku::Error::PermissionsDenied)
+                    Err(PermissionDenied)
                 ),
                 "{role:?} over {kind:?} must be refused"
             );

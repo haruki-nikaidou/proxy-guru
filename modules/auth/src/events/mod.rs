@@ -1,22 +1,35 @@
-//! AMQP event definitions.
+//! Event definitions.
 //!
-//! Put the message payloads this module publishes or consumes here. Events are
+//! Put the event payloads this module publishes or consumes here. Events are
 //! how modules communicate asynchronously without depending on each other's
-//! internals: one module publishes, others react from their [`hooks`](crate::hooks).
+//! internals: one module publishes through Iggy, others react from their
+//! [`hooks`](crate::hooks). The stream and topology every module shares are in
+//! `base::events`.
 //!
 //! Document each event's contract in a doc comment — who publishes it, who
-//! consumes it, and its routing key. Derive the `rkyv` traits for the payload
-//! and implement `AmqpRouting` + `AmqpMessageSend` from `wakuwaku::amqp`.
+//! consumes it, its topic and type tag. Derive the `rkyv` traits for the
+//! payload and implement `EventBody` + `Event` from `wakuwaku::iggy`.
 //!
 //! ```ignore
 //! use kanau::{RkyvMessageDe, RkyvMessageSer};
-//! use wakuwaku::amqp::{AmqpExchangeType, AmqpMessageSend, AmqpRouting};
+//! use wakuwaku::iggy::{
+//!     Event, EventAtomicOrdering, EventBody, EventTypeTag, IggySuperPartitionName,
+//!     NonAssociative, PartitionKey,
+//! };
+//!
+//! #[derive(Hash)]
+//! pub struct ExampleKey(pub uuid::Uuid);
+//!
+//! impl PartitionKey for ExampleKey {
+//!     type PartitionMerge = std::hash::DefaultHasher;
+//!     const SUPER_PARTITION_NAME: IggySuperPartitionName = IggySuperPartitionName("auth_example");
+//! }
 //!
 //! /// **Public event**
 //! ///
-//! /// Published by: base module
+//! /// Published by: auth module
 //! /// Consumed by: (your consumers)
-//! /// Route: exchange `base`, key `example_happened`
+//! /// Topic: `auth_example`, tag 1
 //! #[derive(
 //!     Debug, Clone,
 //!     rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
@@ -26,11 +39,13 @@
 //!     pub id: uuid::Uuid,
 //! }
 //!
-//! impl AmqpRouting for ExampleHappened {
-//!     const EXCHANGE: &'static str = "base";
-//!     const EXCHANGE_TYPE: AmqpExchangeType = AmqpExchangeType::Direct;
-//!     const ROUTING_KEY: &'static str = "example_happened";
-//! }
+//! impl EventBody for ExampleHappened {}
 //!
-//! impl AmqpMessageSend for ExampleHappened {}
+//! impl Event for ExampleHappened {
+//!     const TYPE_TAG: EventTypeTag = EventTypeTag::new(1);
+//!     type Key = ExampleKey;
+//!     type Algebra = NonAssociative;
+//!     fn key(&self) -> ExampleKey { ExampleKey(self.id) }
+//!     fn atomic_ordering(&self) -> EventAtomicOrdering { EventAtomicOrdering::Relaxed }
+//! }
 //! ```

@@ -1,6 +1,8 @@
 //! API-key lifecycle and machine authentication.
 
 use base::db::Db;
+
+use crate::services::AuthError;
 use kanau::processor::Processor;
 use time::OffsetDateTime;
 
@@ -11,6 +13,8 @@ use crate::entities::db::api_key::{
 };
 use crate::services::identity::{Identity, IdentityKind};
 use crate::utils::rbac::Permission;
+use crate::utils::validation::ApiKeyName;
+use wakuwaku::proof::Proven;
 use crate::utils::token::{generate_api_key_secret, sha256_hex};
 
 /// API-key operations.
@@ -22,7 +26,7 @@ pub struct ApiKeyService {
 /// Create a new API key owned by the caller.
 pub struct CreateApiKey {
     pub actor: Identity,
-    pub name: String,
+    pub name: Proven<String, ApiKeyName>,
 }
 
 /// A freshly created API key. `secret` is the plaintext credential, returned
@@ -34,7 +38,7 @@ pub struct CreatedApiKey {
 
 impl Processor<CreateApiKey> for ApiKeyService {
     type Output = CreatedApiKey;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:CreateApiKey", skip_all, err)]
     async fn process(&self, input: CreateApiKey) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageApiKeys)?;
@@ -60,7 +64,7 @@ pub struct ListApiKeys {
 
 impl Processor<ListApiKeys> for ApiKeyService {
     type Output = Vec<ApiKeyOmitSecret>;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:ListApiKeys", skip_all, err)]
     async fn process(&self, input: ListApiKeys) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageApiKeys)?;
@@ -82,7 +86,7 @@ pub struct RevokeApiKey {
 
 impl Processor<RevokeApiKey> for ApiKeyService {
     type Output = ();
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:RevokeApiKey", skip_all, err)]
     async fn process(&self, input: RevokeApiKey) -> Result<Self::Output, Self::Error> {
         input.actor.ensure(Permission::ManageApiKeys)?;
@@ -92,10 +96,10 @@ impl Processor<RevokeApiKey> for ApiKeyService {
                 id: input.id.clone(),
             })
             .await?
-            .ok_or(wakuwaku::Error::NotFound)?;
+            .ok_or(AuthError::NotFound)?;
         let owns = key.owner == input.actor.account_id;
         if !owns && input.actor.role != AccountRole::Admin {
-            return Err(wakuwaku::Error::PermissionsDenied);
+            return Err(AuthError::PermissionDenied);
         }
         self.db.process(DeleteApiKey { id: input.id }).await?;
         Ok(())
@@ -109,7 +113,7 @@ pub struct AuthenticateApiKey {
 
 impl Processor<AuthenticateApiKey> for ApiKeyService {
     type Output = Option<Identity>;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:AuthenticateApiKey", skip_all, err)]
     async fn process(&self, input: AuthenticateApiKey) -> Result<Self::Output, Self::Error> {
         let digest = sha256_hex(&input.secret);

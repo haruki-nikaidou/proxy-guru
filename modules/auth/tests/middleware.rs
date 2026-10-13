@@ -13,6 +13,7 @@ use auth::rpc::middleware::{AuthLayer, SESSION_ID_METADATA, from_request};
 use auth::services::api_key::ApiKeyService;
 use auth::services::session::{Login, LoginResult, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use auth::utils::validation::prove_email;
 use base::db::Db;
 use kanau::processor::Processor;
 use std::convert::Infallible;
@@ -59,7 +60,7 @@ async fn verdict(db: &Db, session_id: &str) -> Result<(), tonic::Status> {
 async fn login(db: &Db) -> Result<String, Box<dyn std::error::Error>> {
     let hasher = Argon2PasswordAlgorithm::default();
     db.process(CreateAccount {
-        email: "ops@example.com".to_string(),
+        email: prove_email("ops@example.com").unwrap(),
         password_hash: hasher.hash_password("hunter2hunter2")?,
         role: AccountRole::Maintainer,
     })
@@ -80,7 +81,7 @@ async fn login(db: &Db) -> Result<String, Box<dyn std::error::Error>> {
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_valid_session_resolves(pool: sqlx::PgPool) -> TestResult {
-    let db = Db::new(pool);
+    let db = base::db::handle(pool);
     let session_id = login(&db).await?;
     verdict(&db, &session_id)
         .await
@@ -91,7 +92,7 @@ async fn a_valid_session_resolves(pool: sqlx::PgPool) -> TestResult {
 /// The one case that may log somebody out: the credential was judged, and rejected.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn an_unknown_session_is_unauthenticated(pool: sqlx::PgPool) -> TestResult {
-    let db = Db::new(pool);
+    let db = base::db::handle(pool);
     login(&db).await?;
     let status = verdict(&db, "nosuchsession")
         .await
@@ -108,17 +109,16 @@ async fn an_unknown_session_is_unauthenticated(pool: sqlx::PgPool) -> TestResult
 /// the cancellation is classified as unavailable is proven in `base`'s own tests.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_database_that_fails_the_lookup_keeps_the_session(pool: sqlx::PgPool) -> TestResult {
-    let db = Db::new(pool);
+    let db = base::db::handle(pool.clone());
     let session_id = login(&db).await?;
 
     let unreachable = sqlx::postgres::PgPoolOptions::new().connect_lazy_with(
-        db.db()
-            .connect_options()
+        pool.connect_options()
             .as_ref()
             .clone()
             .database("guru_no_such_database"),
     );
-    let status = verdict(&Db::new(unreachable), &session_id)
+    let status = verdict(&base::db::handle(unreachable), &session_id)
         .await
         .expect_err("the lookup cannot succeed");
     assert_eq!(
