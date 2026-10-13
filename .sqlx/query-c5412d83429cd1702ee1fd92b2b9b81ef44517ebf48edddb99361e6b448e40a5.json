@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id AS \"id: ExitId\", canvas AS \"canvas: CanvasId\", name, comment, destination,\n                  send_proxy_protocol AS \"send_proxy_protocol: ProxyProtocolVersion\",\n                  position_x, position_y\n           FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id",
+  "query": "SELECT id AS \"id: ExitId\", canvas AS \"canvas: CanvasId\", name, comment, destination,\n                      send_proxy_protocol AS \"send_proxy_protocol: ProxyProtocolVersion\",\n                      position_x, position_y\n               FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -108,5 +108,5 @@
       false
     ]
   },
-  "hash": "01a37809eacf87a676a82a09d80b49b8bcf1816aa2add274542769e1b05eaf59"
+  "hash": "c5412d83429cd1702ee1fd92b2b9b81ef44517ebf48edddb99361e6b448e40a5"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE orchestration_canvas SET generation = generation + 1\n           WHERE id = $1 AND generation = $2 RETURNING id AS \"id: CanvasId\"",
+  "query": "UPDATE orchestration_canvas SET generation = generation + 1\n               WHERE id = $1 AND generation = $2 RETURNING id AS \"id: CanvasId\"",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "551cf9a1bbb740428d204ddec2a42764d52778956ae21716923dd72e8bb089be"
+  "hash": "896c64a92df5dd7fac2d9c56d4899bd7ce671c9888f4b6887157931cf8bac3b8"
 }
