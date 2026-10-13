@@ -22,9 +22,6 @@ tokio = { workspace = true }
 # Persistence
 sqlx = { workspace = true }
 
-# Messaging
-amqprs = { workspace = true }
-
 # gRPC / transport
 tonic = { workspace = true }
 

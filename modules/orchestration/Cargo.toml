@@ -23,7 +23,6 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 
 # Messaging
-amqprs = { workspace = true }
 redis = { workspace = true }
 
 # gRPC / transport
@@ -63,7 +62,7 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
-testcontainers-modules = { version = "0.15.0", features = ["rabbitmq", "redis"] }
+testcontainers-modules = { version = "0.15.0", features = ["redis"] }
 x509-parser = { workspace = true, features = ["verify-aws"] }
 tokio = { workspace = true }
 parking_lot = "0.12"

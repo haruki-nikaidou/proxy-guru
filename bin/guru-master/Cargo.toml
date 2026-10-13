@@ -21,11 +21,10 @@ tokio = { workspace = true }
 wakuwaku = { workspace = true }
 kanau = { workspace = true }
 
-# Workers: gRPC / REST / AMQP
+# Workers: gRPC / REST / Iggy consumers / cron
 tonic = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
-amqprs = { workspace = true }
 # The live dashboard bus: pub/sub between master replicas.
 redis = { workspace = true }
 
