@@ -5,11 +5,14 @@
 //! service layer encrypts before calling [`CreateDnsProvider`] /
 //! [`UpdateDnsProvider`] and decrypts only inside the ACME pipeline.
 
-use base::db::{Db, Error};
+use crate::entities::db::tables::{DnsProvider as DnsProviderTable, OrchestrationPod};
+use base::db::Error;
 use db_types::{table_record, text_enum};
-use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(DnsProviderId, "dns_provider");
 
@@ -48,11 +51,15 @@ pub struct CreateDnsProvider {
     pub now: OffsetDateTime,
 }
 
-impl Processor<CreateDnsProvider> for Db {
+impl Query for CreateDnsProvider {
+    type Effect = Write<DnsProviderTable>;
+}
+
+impl Execute<PgSource> for CreateDnsProvider {
     type Output = DnsProviderEntity;
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateDnsProvider", skip_all, err)]
-    async fn process(&self, input: CreateDnsProvider) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             DnsProviderEntity,
             r#"INSERT INTO dns_provider (id, name, provider, account_id, api_secret, created_at)
@@ -60,13 +67,13 @@ impl Processor<CreateDnsProvider> for Db {
                RETURNING id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
                          account_id, api_secret, created_at"#,
             DnsProviderId::new() as _,
-            input.name,
-            input.provider as _,
-            input.account_id,
-            input.api_secret,
-            input.now
+            self.name,
+            self.provider as _,
+            self.account_id,
+            self.api_secret,
+            self.now
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?)
     }
 }
@@ -74,18 +81,22 @@ impl Processor<CreateDnsProvider> for Db {
 #[derive(Debug)]
 pub struct ListDnsProviders;
 
-impl Processor<ListDnsProviders> for Db {
+impl Query for ListDnsProviders {
+    type Effect = Read<DnsProviderTable>;
+}
+
+impl Execute<PgSource> for ListDnsProviders {
     type Output = Vec<DnsProviderEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListDnsProviders", skip_all, err)]
-    async fn process(&self, _: ListDnsProviders) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             DnsProviderEntity,
             r#"SELECT id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
                       account_id, api_secret, created_at
                FROM dns_provider ORDER BY created_at"#
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -95,19 +106,23 @@ pub struct FindDnsProviderById {
     pub id: DnsProviderId,
 }
 
-impl Processor<FindDnsProviderById> for Db {
+impl Query for FindDnsProviderById {
+    type Effect = Read<DnsProviderTable>;
+}
+
+impl Execute<PgSource> for FindDnsProviderById {
     type Output = Option<DnsProviderEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindDnsProviderById", skip_all, err)]
-    async fn process(&self, input: FindDnsProviderById) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             DnsProviderEntity,
             r#"SELECT id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
                       account_id, api_secret, created_at
                FROM dns_provider WHERE id = $1"#,
-            input.id as _
+            self.id as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }
@@ -121,12 +136,16 @@ pub struct UpdateDnsProvider {
     pub api_secret: Option<String>,
 }
 
-impl Processor<UpdateDnsProvider> for Db {
+impl Query for UpdateDnsProvider {
+    type Effect = Write<DnsProviderTable>;
+}
+
+impl Execute<PgSource> for UpdateDnsProvider {
     /// `None` when the provider does not exist.
     type Output = Option<DnsProviderEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:UpdateDnsProvider", skip_all, err)]
-    async fn process(&self, input: UpdateDnsProvider) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             DnsProviderEntity,
             r#"UPDATE dns_provider
@@ -134,12 +153,12 @@ impl Processor<UpdateDnsProvider> for Db {
                WHERE id = $1
                RETURNING id AS "id: DnsProviderId", name, provider AS "provider: DnsProvider",
                          account_id, api_secret, created_at"#,
-            input.id as _,
-            input.name,
-            input.account_id,
-            input.api_secret
+            self.id as _,
+            self.name,
+            self.account_id,
+            self.api_secret
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }
@@ -151,14 +170,18 @@ pub struct DeleteDnsProviderRow {
     pub id: DnsProviderId,
 }
 
-impl Processor<DeleteDnsProviderRow> for Db {
+impl Query for DeleteDnsProviderRow {
+    type Effect = Write<DnsProviderTable>;
+}
+
+impl Execute<PgSource> for DeleteDnsProviderRow {
     /// `false` when something still references the provider; nothing is written then.
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteDnsProviderRow", skip_all, err)]
-    async fn process(&self, input: DeleteDnsProviderRow) -> Result<Self::Output, Self::Error> {
-        match sqlx::query!("DELETE FROM dns_provider WHERE id = $1", input.id as _)
-            .execute(self.db())
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        match sqlx::query!("DELETE FROM dns_provider WHERE id = $1", self.id as _)
+            .execute(conn)
             .await
             .map_err(Error::from)
         {
@@ -175,16 +198,20 @@ pub struct CountPodsUsingDnsProvider {
     pub id: DnsProviderId,
 }
 
-impl Processor<CountPodsUsingDnsProvider> for Db {
+impl Query for CountPodsUsingDnsProvider {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for CountPodsUsingDnsProvider {
     type Output = i64;
     type Error = Error;
     #[tracing::instrument(name = "Query:CountPodsUsingDnsProvider", skip_all, err)]
-    async fn process(&self, input: CountPodsUsingDnsProvider) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM orchestration_pod WHERE tls_dns_provider = $1"#,
-            input.id as _
+            self.id as _
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?)
     }
 }

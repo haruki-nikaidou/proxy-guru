@@ -9,11 +9,17 @@
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
+use crate::entities::db::tables::{
+    OrchestrationCanvas, OrchestrationPod, OrchestrationServer, PodHealthRecord, ServerHealthRecord,
+};
 use base::db::{Db, Error};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(ServerHealthRecordId, "server_health_record");
 
@@ -62,19 +68,23 @@ pub struct ListServerHealthHistory {
     pub end: OffsetDateTime,
 }
 
-impl Processor<ListServerHealthHistory> for Db {
+impl Query for ListServerHealthHistory {
+    type Effect = Read<ServerHealthRecord>;
+}
+
+impl Execute<PgSource> for ListServerHealthHistory {
     type Output = Vec<ServerHealthRecordEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServerHealthHistory", skip_all, err)]
-    async fn process(&self, input: ListServerHealthHistory) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerHealthRecordEntity,
             "sql/list_server_health_history.sql",
-            input.server as _,
-            input.start,
-            input.end
+            self.server as _,
+            self.start,
+            self.end
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -108,47 +118,124 @@ struct ServerHealthBefore {
     refresh_key_generation: i64,
 }
 
-async fn lock_server_health(
-    conn: &mut PgConnection,
-    server: &ServerId,
-) -> Result<Option<ServerHealthBefore>, Error> {
-    Ok(sqlx::query_file_as!(
-        ServerHealthBefore,
-        "sql/lock_server_health.sql",
-        server as _
-    )
-    .fetch_optional(conn)
-    .await?)
+/// Locks the server row (`FOR UPDATE`, hence a write) and reads its health fields.
+struct LockServerHealth<'a> {
+    server: &'a ServerId,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn insert_server_record(
-    conn: &mut PgConnection,
-    server: &ServerId,
+impl Query for LockServerHealth<'_> {
+    type Effect = (Write<OrchestrationServer>, Read<OrchestrationCanvas>);
+}
+
+impl Execute<PgSource> for LockServerHealth<'_> {
+    type Output = Option<ServerHealthBefore>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_file_as!(
+            ServerHealthBefore,
+            "sql/lock_server_health.sql",
+            self.server as _
+        )
+        .fetch_optional(conn)
+        .await?)
+    }
+}
+
+/// Inserts one server record; `counters` are upload, download, current and
+/// max connections.
+struct InsertServerRecord<'a> {
+    server: &'a ServerId,
     status: ServerHealthStatus,
     report_time: OffsetDateTime,
     counters: [i64; 4],
-) -> Result<ServerHealthRecordEntity, Error> {
-    let [
-        upload_bytes,
-        download_bytes,
-        current_connections,
-        max_connections,
-    ] = counters;
-    Ok(sqlx::query_file_as!(
-        ServerHealthRecordEntity,
-        "sql/insert_server_record.sql",
-        ServerHealthRecordId::new() as _,
-        server as _,
-        status as _,
-        report_time,
-        upload_bytes,
-        download_bytes,
-        current_connections,
-        max_connections
-    )
-    .fetch_one(conn)
-    .await?)
+}
+
+impl Query for InsertServerRecord<'_> {
+    type Effect = Write<ServerHealthRecord>;
+}
+
+impl Execute<PgSource> for InsertServerRecord<'_> {
+    type Output = ServerHealthRecordEntity;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let [
+            upload_bytes,
+            download_bytes,
+            current_connections,
+            max_connections,
+        ] = self.counters;
+        Ok(sqlx::query_file_as!(
+            ServerHealthRecordEntity,
+            "sql/insert_server_record.sql",
+            ServerHealthRecordId::new() as _,
+            self.server as _,
+            self.status as _,
+            self.report_time,
+            upload_bytes,
+            download_bytes,
+            current_connections,
+            max_connections
+        )
+        .fetch_one(conn)
+        .await?)
+    }
+}
+
+/// Advances a reporting server's liveness and status.
+struct MarkServerReported<'a> {
+    server: &'a ServerId,
+    report_time: OffsetDateTime,
+    status: ServerHealthStatus,
+}
+
+impl Query for MarkServerReported<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for MarkServerReported<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server
+             SET last_health_report_at = $2, last_seen_at = $2, health_status = $3
+             WHERE id = $1",
+            self.server as _,
+            self.report_time,
+            self.status as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Writes a status that is not a report; going offline also hands the watch
+/// session back.
+struct WriteServerHealthStatus<'a> {
+    server: &'a ServerId,
+    status: ServerHealthStatus,
+    offline: bool,
+}
+
+impl Query for WriteServerHealthStatus<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for WriteServerHealthStatus<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query_file!(
+            "sql/set_server_health_status.sql",
+            self.server as _,
+            self.status as _,
+            self.offline
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
 }
 
 /// One accepted report, in one conditional transaction: the server's liveness
@@ -169,52 +256,112 @@ pub struct InsertServerHealthRecord {
     pub pods: Vec<NewPodHealthRecord>,
 }
 
-impl Processor<InsertServerHealthRecord> for Db {
-    /// `None` when the server no longer holds `generation`.
-    type Output = Option<HealthWrite>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:InsertServerHealthRecord", skip_all, err)]
-    async fn process(&self, input: InsertServerHealthRecord) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        let Some(before) = lock_server_health(&mut tx, &input.server).await? else {
-            return Ok(None);
+enum InsertServerHealthRecordFlow {
+    Start(InsertServerHealthRecord),
+    End(TxEnd<InsertServerHealthRecordFlow>),
+}
+
+impl Query for InsertServerHealthRecordFlow {
+    type Effect = (
+        Write<OrchestrationServer>,
+        Write<ServerHealthRecord>,
+        Write<PodHealthRecord>,
+        Read<OrchestrationCanvas>,
+        Read<OrchestrationPod>,
+    );
+}
+
+impl From<TxEnd<InsertServerHealthRecordFlow>> for InsertServerHealthRecordFlow {
+    fn from(end: TxEnd<InsertServerHealthRecordFlow>) -> Self {
+        InsertServerHealthRecordFlow::End(end)
+    }
+}
+
+impl TxFlow for InsertServerHealthRecordFlow {
+    type Database = Postgres;
+    type Commit = Option<HealthWrite>;
+    type Abort = Result<Option<HealthWrite>, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let InsertServerHealthRecordFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx
+            .run(LockServerHealth {
+                server: &input.server,
+            })
+            .await;
+        let before = match r {
+            Ok(Some(before)) => before,
+            Ok(None) => return base::db::refuse(tx, None).await,
+            Err(e) => return base::db::rollback(tx, e).await,
         };
         if before.refresh_key_generation != input.generation {
-            return Ok(None);
+            return base::db::refuse(tx, None).await;
         }
-        sqlx::query!(
-            "UPDATE orchestration_server
-             SET last_health_report_at = $2, last_seen_at = $2, health_status = $3
-             WHERE id = $1",
-            input.server as _,
-            input.report_time,
-            input.status as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        let record = insert_server_record(
-            &mut tx,
-            &input.server,
-            input.status,
-            input.report_time,
-            [
-                input.upload_bytes,
-                input.download_bytes,
-                input.current_connections,
-                input.max_connections,
-            ],
-        )
-        .await?;
-        let pods = insert_pod_records(&mut tx, &input.pods).await?;
-        tx.commit().await?;
-        Ok(Some(HealthWrite {
+        let (tx, r) = tx
+            .run(MarkServerReported {
+                server: &input.server,
+                report_time: input.report_time,
+                status: input.status,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx
+            .run(InsertServerRecord {
+                server: &input.server,
+                status: input.status,
+                report_time: input.report_time,
+                counters: [
+                    input.upload_bytes,
+                    input.download_bytes,
+                    input.current_connections,
+                    input.max_connections,
+                ],
+            })
+            .await;
+        let record = match r {
+            Ok(record) => record,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let (tx, r) = tx
+            .run(InsertPodRecords {
+                records: &input.pods,
+            })
+            .await;
+        let pods = match r {
+            Ok(pods) => pods,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let write = HealthWrite {
             record,
             canvas: before.canvas,
             server_name: before.name,
             canvas_name: before.canvas_name,
             previous_status: before.health_status,
             pods,
-        }))
+        };
+        base::db::commit(tx, Some(write)).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            InsertServerHealthRecordFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<InsertServerHealthRecord> for Db {
+    /// `None` when the server no longer holds `generation`.
+    type Output = Option<HealthWrite>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:InsertServerHealthRecord", skip_all, err)]
+    async fn process(&self, input: InsertServerHealthRecord) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, InsertServerHealthRecordFlow::Start(input)).await
     }
 }
 
@@ -238,45 +385,102 @@ pub struct SetServerHealthStatus {
     pub now: OffsetDateTime,
 }
 
-impl Processor<SetServerHealthStatus> for Db {
-    /// `None` when nothing changed.
-    type Output = Option<HealthWrite>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:SetServerHealthStatus", skip_all, err)]
-    async fn process(&self, input: SetServerHealthStatus) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        let Some(before) = lock_server_health(&mut tx, &input.server).await? else {
-            return Ok(None);
+enum SetServerHealthStatusFlow {
+    Start(SetServerHealthStatus),
+    End(TxEnd<SetServerHealthStatusFlow>),
+}
+
+impl Query for SetServerHealthStatusFlow {
+    type Effect = (
+        Write<OrchestrationServer>,
+        Write<ServerHealthRecord>,
+        Read<OrchestrationCanvas>,
+    );
+}
+
+impl From<TxEnd<SetServerHealthStatusFlow>> for SetServerHealthStatusFlow {
+    fn from(end: TxEnd<SetServerHealthStatusFlow>) -> Self {
+        SetServerHealthStatusFlow::End(end)
+    }
+}
+
+impl TxFlow for SetServerHealthStatusFlow {
+    type Database = Postgres;
+    type Commit = Option<HealthWrite>;
+    type Abort = Result<Option<HealthWrite>, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let SetServerHealthStatusFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx
+            .run(LockServerHealth {
+                server: &input.server,
+            })
+            .await;
+        let before = match r {
+            Ok(Some(before)) => before,
+            Ok(None) => return base::db::refuse(tx, None).await,
+            Err(e) => return base::db::rollback(tx, e).await,
         };
         if before.health_status == input.status {
-            return Ok(None);
+            return base::db::refuse(tx, None).await;
         }
         if input
             .generation
             .is_some_and(|generation| generation != before.refresh_key_generation)
         {
-            return Ok(None);
+            return base::db::refuse(tx, None).await;
         }
-        let offline = input.status == ServerHealthStatus::Offline;
-        sqlx::query_file!(
-            "sql/set_server_health_status.sql",
-            input.server as _,
-            input.status as _,
-            offline
-        )
-        .execute(&mut *tx)
-        .await?;
-        let record =
-            insert_server_record(&mut tx, &input.server, input.status, input.now, [0; 4]).await?;
-        tx.commit().await?;
-        Ok(Some(HealthWrite {
+        let (tx, r) = tx
+            .run(WriteServerHealthStatus {
+                server: &input.server,
+                status: input.status,
+                offline: input.status == ServerHealthStatus::Offline,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx
+            .run(InsertServerRecord {
+                server: &input.server,
+                status: input.status,
+                report_time: input.now,
+                counters: [0; 4],
+            })
+            .await;
+        let record = match r {
+            Ok(record) => record,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let write = HealthWrite {
             record,
             canvas: before.canvas,
             server_name: before.name,
             canvas_name: before.canvas_name,
             previous_status: before.health_status,
             pods: Vec::new(),
-        }))
+        };
+        base::db::commit(tx, Some(write)).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            SetServerHealthStatusFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<SetServerHealthStatus> for Db {
+    /// `None` when nothing changed.
+    type Output = Option<HealthWrite>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:SetServerHealthStatus", skip_all, err)]
+    async fn process(&self, input: SetServerHealthStatus) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, SetServerHealthStatusFlow::Start(input)).await
     }
 }
 
@@ -292,18 +496,22 @@ pub struct ServerLiveness {
 #[derive(Debug)]
 pub struct ListServersForLivenessSweep;
 
-impl Processor<ListServersForLivenessSweep> for Db {
+impl Query for ListServersForLivenessSweep {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for ListServersForLivenessSweep {
     type Output = Vec<ServerLiveness>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServersForLivenessSweep", skip_all, err)]
-    async fn process(&self, _: ListServersForLivenessSweep) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             ServerLiveness,
             r#"SELECT id AS "id: ServerId", last_health_report_at,
                       health_status AS "health_status: ServerHealthStatus"
                FROM orchestration_server WHERE health_status <> 'offline'"#
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -349,20 +557,24 @@ pub struct ListPodHealthHistory {
     pub limit: i64,
 }
 
-impl Processor<ListPodHealthHistory> for Db {
+impl Query for ListPodHealthHistory {
+    type Effect = Read<PodHealthRecord>;
+}
+
+impl Execute<PgSource> for ListPodHealthHistory {
     type Output = Vec<PodHealthRecordEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListPodHealthHistory", skip_all, err)]
-    async fn process(&self, input: ListPodHealthHistory) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             PodHealthRecordEntity,
             "sql/list_pod_health_history.sql",
-            input.pod as _,
-            input.start,
-            input.end,
-            input.limit
+            self.pod as _,
+            self.start,
+            self.end,
+            self.limit
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -393,21 +605,25 @@ pub struct ListPodHealthSince {
     pub limit: Option<i64>,
 }
 
-impl Processor<ListPodHealthSince> for Db {
+impl Query for ListPodHealthSince {
+    type Effect = Read<PodHealthRecord>;
+}
+
+impl Execute<PgSource> for ListPodHealthSince {
     type Output = Vec<PodHealthRecordEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListPodHealthSince", skip_all, err)]
-    async fn process(&self, input: ListPodHealthSince) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         // `LIMIT NULL` is no limit at all.
         Ok(sqlx::query_file_as!(
             PodHealthRecordEntity,
             "sql/list_pod_health_since.sql",
-            input.pod as _,
-            input.start,
-            input.end,
-            input.limit
+            self.pod as _,
+            self.start,
+            self.end,
+            self.limit
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -463,32 +679,47 @@ impl From<PodHealthWriteRow> for PodHealthWrite {
 }
 
 /// Inserts pod records in one statement and returns the rows written.
-async fn insert_pod_records(
-    conn: &mut PgConnection,
-    records: &[NewPodHealthRecord],
-) -> Result<Vec<PodHealthWrite>, Error> {
-    if records.is_empty() {
-        return Ok(Vec::new());
+struct InsertPodRecords<'a> {
+    records: &'a [NewPodHealthRecord],
+}
+
+impl Query for InsertPodRecords<'_> {
+    type Effect = (
+        Write<PodHealthRecord>,
+        Read<OrchestrationPod>,
+        Read<OrchestrationCanvas>,
+    );
+}
+
+impl Execute<PgSource> for InsertPodRecords<'_> {
+    type Output = Vec<PodHealthWrite>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let records = self.records;
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<PodHealthRecordId> =
+            records.iter().map(|_| PodHealthRecordId::new()).collect();
+        let pods: Vec<&PodId> = records.iter().map(|r| &r.pod).collect();
+        let statuses: Vec<PodHealthStatus> = records.iter().map(|r| r.status).collect();
+        let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
+        let times: Vec<OffsetDateTime> = records.iter().map(|r| r.report_time).collect();
+        Ok(sqlx::query_file_as!(
+            PodHealthWriteRow,
+            "sql/insert_pod_records.sql",
+            &ids as _,
+            &pods as _,
+            &statuses as _,
+            &messages as _,
+            &times as _
+        )
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect())
     }
-    let ids: Vec<PodHealthRecordId> = records.iter().map(|_| PodHealthRecordId::new()).collect();
-    let pods: Vec<&PodId> = records.iter().map(|r| &r.pod).collect();
-    let statuses: Vec<PodHealthStatus> = records.iter().map(|r| r.status).collect();
-    let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
-    let times: Vec<OffsetDateTime> = records.iter().map(|r| r.report_time).collect();
-    Ok(sqlx::query_file_as!(
-        PodHealthWriteRow,
-        "sql/insert_pod_records.sql",
-        &ids as _,
-        &pods as _,
-        &statuses as _,
-        &messages as _,
-        &times as _
-    )
-    .fetch_all(conn)
-    .await?
-    .into_iter()
-    .map(Into::into)
-    .collect())
 }
 
 /// Inserts a batch of pod records in one statement. The derivation hook's
@@ -499,15 +730,26 @@ pub struct InsertPodHealthRecords {
     pub records: Vec<NewPodHealthRecord>,
 }
 
-impl Processor<InsertPodHealthRecords> for Db {
+impl Query for InsertPodHealthRecords {
+    type Effect = (
+        Write<PodHealthRecord>,
+        Read<OrchestrationPod>,
+        Read<OrchestrationCanvas>,
+    );
+}
+
+impl Execute<PgSource> for InsertPodHealthRecords {
     /// The rows written, so the caller can put them on the live bus and
     /// announce them.
     type Output = Vec<PodHealthWrite>;
     type Error = Error;
     #[tracing::instrument(name = "Query:InsertPodHealthRecords", skip_all, err)]
-    async fn process(&self, input: InsertPodHealthRecords) -> Result<Self::Output, Self::Error> {
-        let mut conn = self.db().acquire().await?;
-        insert_pod_records(&mut conn, &input.records).await
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        InsertPodRecords {
+            records: &self.records,
+        }
+        .execute(conn)
+        .await
     }
 }
 
@@ -518,22 +760,26 @@ pub struct DeleteHealthRecordsBefore {
     pub pod_records_before: OffsetDateTime,
 }
 
-impl Processor<DeleteHealthRecordsBefore> for Db {
+impl Query for DeleteHealthRecordsBefore {
+    type Effect = (Write<ServerHealthRecord>, Write<PodHealthRecord>);
+}
+
+impl Execute<PgSource> for DeleteHealthRecordsBefore {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query:DeleteHealthRecordsBefore", skip_all, err)]
-    async fn process(&self, input: DeleteHealthRecordsBefore) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "DELETE FROM server_health_record WHERE report_time < $1",
-            input.server_records_before
+            self.server_records_before
         )
-        .execute(self.db())
+        .execute(&mut *conn)
         .await?;
         sqlx::query!(
             "DELETE FROM pod_health_record WHERE report_time < $1",
-            input.pod_records_before
+            self.pod_records_before
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }

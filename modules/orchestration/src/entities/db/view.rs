@@ -6,18 +6,25 @@
 //! and points at — so convergence never has to re-derive a config from rows that
 //! have since been edited in place.
 
-use crate::entities::db::canvas::{CanvasId, SNAPSHOT_READ};
-use crate::entities::db::fence;
-use crate::entities::db::graph::{GraphRows, load_graph};
+use crate::entities::db::canvas::CanvasId;
+use crate::entities::db::fence::Touch;
+use crate::entities::db::graph::{GraphEffect, GraphRows, LoadGraph};
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
-use crate::entities::db::tree;
+use crate::entities::db::tables::{
+    OrchestrationCanvas, OrchestrationServer, OrchestrationServerConfigView,
+};
+use crate::entities::db::tree::TreeOf;
 use base::db::{Db, Error};
 use db_types::table_record;
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
+use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(ServerConfigViewId, "orchestration_server_config_view");
 
@@ -234,17 +241,21 @@ pub struct FindServerConfigView {
     pub server: ServerId,
 }
 
-impl Processor<FindServerConfigView> for Db {
+impl Query for FindServerConfigView {
+    type Effect = Read<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for FindServerConfigView {
     type Output = Option<ServerConfigViewEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindServerConfigView", skip_all, err)]
-    async fn process(&self, input: FindServerConfigView) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerConfigViewRow,
             "sql/find_server_config_view.sql",
-            input.server as _
+            self.server as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?
         .map(Into::into))
     }
@@ -256,31 +267,51 @@ pub struct ListServerConfigViewsByCanvases {
     pub canvases: Vec<CanvasId>,
 }
 
-impl Processor<ListServerConfigViewsByCanvases> for Db {
+impl Query for ListServerConfigViewsByCanvases {
+    type Effect = (
+        Read<OrchestrationServerConfigView>,
+        Read<OrchestrationServer>,
+    );
+}
+
+impl Execute<PgSource> for ListServerConfigViewsByCanvases {
     type Output = Vec<ServerConfigViewEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServerConfigViewsByCanvases", skip_all, err)]
-    async fn process(
-        &self,
-        input: ListServerConfigViewsByCanvases,
-    ) -> Result<Self::Output, Self::Error> {
-        let mut conn = self.db().acquire().await?;
-        views_of_canvases(&mut conn, &input.canvases).await
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        ViewsOfCanvases {
+            canvases: &self.canvases,
+        }
+        .execute(conn)
+        .await
     }
 }
 
-async fn views_of_canvases(
-    conn: &mut sqlx::PgConnection,
-    canvases: &[CanvasId],
-) -> Result<Vec<ServerConfigViewEntity>, Error> {
-    let rows = sqlx::query_file_as!(
-        ServerConfigViewRow,
-        "sql/views_of_canvases.sql",
-        canvases as _
-    )
-    .fetch_all(conn)
-    .await?;
-    Ok(rows.into_iter().map(Into::into).collect())
+/// The config views of every server on the given canvases, by server.
+struct ViewsOfCanvases<'a> {
+    canvases: &'a [CanvasId],
+}
+
+impl Query for ViewsOfCanvases<'_> {
+    type Effect = (
+        Read<OrchestrationServerConfigView>,
+        Read<OrchestrationServer>,
+    );
+}
+
+impl Execute<PgSource> for ViewsOfCanvases<'_> {
+    type Output = Vec<ServerConfigViewEntity>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let rows = sqlx::query_file_as!(
+            ServerConfigViewRow,
+            "sql/views_of_canvases.sql",
+            self.canvases as _
+        )
+        .fetch_all(conn)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
 }
 
 /// Hands `desired` to the calling stream by promoting it to `in_flight`.
@@ -295,19 +326,26 @@ pub struct TakeInFlight {
     pub epoch: i64,
 }
 
-impl Processor<TakeInFlight> for Db {
+impl Query for TakeInFlight {
+    type Effect = (
+        Write<OrchestrationServerConfigView>,
+        Read<OrchestrationServer>,
+    );
+}
+
+impl Execute<PgSource> for TakeInFlight {
     /// The snapshot to send, or `None` when there is nothing to hand out.
     type Output = Option<ConfigSnapshot>;
     type Error = Error;
     #[tracing::instrument(name = "Query:TakeInFlight", skip_all, err)]
-    async fn process(&self, input: TakeInFlight) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let taken: Option<Json<ConfigSnapshot>> = sqlx::query_file_scalar!(
             "sql/take_in_flight.sql",
-            input.server as _,
-            input.generation,
-            input.epoch
+            self.server as _,
+            self.generation,
+            self.epoch
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?;
         Ok(taken.map(|json| json.0))
     }
@@ -335,43 +373,47 @@ pub struct AckServerConfig {
     pub failed_pods: Vec<PodFailure>,
 }
 
-impl Processor<AckServerConfig> for Db {
+impl Query for AckServerConfig {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for AckServerConfig {
     /// `false` when the acknowledged revision is not the one in flight.
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:AckServerConfig", skip_all, err)]
-    async fn process(&self, input: AckServerConfig) -> Result<Self::Output, Self::Error> {
-        let failed_revision = (!input.failed_pods.is_empty()).then_some(input.revision);
-        let acked: Option<ServerConfigViewId> = if let Some(error) = &input.error {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let failed_revision = (!self.failed_pods.is_empty()).then_some(self.revision);
+        let acked: Option<ServerConfigViewId> = if let Some(error) = &self.error {
             sqlx::query_file_scalar!(
                 "sql/ack_server_config_error.sql",
-                &input.server as _,
-                input.revision,
+                &self.server as _,
+                self.revision,
                 error.as_str()
             )
-            .fetch_optional(self.db())
+            .fetch_optional(conn)
             .await?
-        } else if let Some(applied) = &input.applied {
+        } else if let Some(applied) = &self.applied {
             // Some pods failed: `applied` is the mix the worker runs (the revision
             // for the pods that took it, each failed pod's previous shape),
             // synthesised by the service.
             sqlx::query_file_scalar!(
                 "sql/ack_server_config_partial.sql",
-                &input.server as _,
-                input.revision,
+                &self.server as _,
+                self.revision,
                 Json(applied) as _,
                 failed_revision,
-                Json(&input.failed_pods) as _
+                Json(&self.failed_pods) as _
             )
-            .fetch_optional(self.db())
+            .fetch_optional(conn)
             .await?
         } else {
             sqlx::query_file_scalar!(
                 "sql/ack_server_config_applied.sql",
-                &input.server as _,
-                input.revision
+                &self.server as _,
+                self.revision
             )
-            .fetch_optional(self.db())
+            .fetch_optional(conn)
             .await?
         };
         Ok(acked.is_some())
@@ -385,26 +427,94 @@ pub struct ForgetServerAppliedRow {
     pub canvas: CanvasId,
 }
 
-impl Processor<ForgetServerAppliedRow> for Db {
+struct ClearAppliedState<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for ClearAppliedState<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for ClearAppliedState<'_> {
     type Output = ();
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:ForgetServerAppliedRow", skip_all, err)]
-    async fn process(&self, input: ForgetServerAppliedRow) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        // The root before the view row (`fence`'s lock order), the order a
-        // derivation commit takes them in.
-        fence::touch(&mut tx, &input.canvas).await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
         sqlx::query!(
             "UPDATE orchestration_server_config_view
              SET applied = NULL, in_flight = NULL, apply_error = NULL, failed_revision = NULL,
                  failed_pods = '[]'
              WHERE server = $1",
-            &input.server as _
+            self.server as _
         )
-        .execute(&mut *tx)
+        .execute(conn)
         .await?;
-        tx.commit().await?;
         Ok(())
+    }
+}
+
+enum ForgetServerAppliedRowFlow {
+    Start(ForgetServerAppliedRow),
+    End(TxEnd<ForgetServerAppliedRowFlow>),
+}
+
+impl Query for ForgetServerAppliedRowFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<ForgetServerAppliedRowFlow>> for ForgetServerAppliedRowFlow {
+    fn from(end: TxEnd<ForgetServerAppliedRowFlow>) -> Self {
+        ForgetServerAppliedRowFlow::End(end)
+    }
+}
+
+impl TxFlow for ForgetServerAppliedRowFlow {
+    type Database = Postgres;
+    type Commit = ();
+    type Abort = Result<(), Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let ForgetServerAppliedRowFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        // The root before the view row (`fence`'s lock order), the order a
+        // derivation commit takes them in.
+        let (tx, touched) = tx
+            .run(Touch {
+                canvas: &input.canvas,
+            })
+            .await;
+        if let Err(e) = touched {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, cleared) = tx
+            .run(ClearAppliedState {
+                server: &input.server,
+            })
+            .await;
+        match cleared {
+            Ok(()) => base::db::commit(tx, ()).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            ForgetServerAppliedRowFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<ForgetServerAppliedRow> for Db {
+    type Output = ();
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:ForgetServerAppliedRow", skip_all, err)]
+    async fn process(&self, input: ForgetServerAppliedRow) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, ForgetServerAppliedRowFlow::Start(input)).await
     }
 }
 
@@ -424,17 +534,24 @@ pub struct ListServerWatchState {
     pub servers: Vec<ServerId>,
 }
 
-impl Processor<ListServerWatchState> for Db {
+impl Query for ListServerWatchState {
+    type Effect = (
+        Read<OrchestrationServerConfigView>,
+        Read<OrchestrationServer>,
+    );
+}
+
+impl Execute<PgSource> for ListServerWatchState {
     type Output = Vec<ServerWatchState>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServerWatchState", skip_all, err)]
-    async fn process(&self, input: ListServerWatchState) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerWatchState,
             "sql/list_server_watch_state.sql",
-            &input.servers as _
+            &self.servers as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -454,9 +571,113 @@ pub struct DerivationInput {
     pub views: Vec<ServerConfigViewEntity>,
 }
 
-/// Loads the derivation input of the tree containing `canvas`.
+/// Loads the derivation input of the tree containing `canvas`, in one
+/// read-only `REPEATABLE READ` snapshot.
 pub struct LoadCanvasDerivationInput {
     pub canvas: CanvasId,
+}
+
+struct DerivedViewSeq<'a> {
+    root: &'a CanvasId,
+}
+
+impl Query for DerivedViewSeq<'_> {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for DerivedViewSeq<'_> {
+    type Output = i64;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<i64, Error> {
+        Ok(sqlx::query_scalar!(
+            "SELECT derived_view_seq FROM orchestration_canvas WHERE id = $1",
+            self.root as _
+        )
+        .fetch_one(conn)
+        .await?)
+    }
+}
+
+// The terminal state carries the whole derivation input; the flow value lives
+// for one transaction, so boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
+enum LoadCanvasDerivationInputFlow {
+    Start(LoadCanvasDerivationInput),
+    End(TxEnd<LoadCanvasDerivationInputFlow>),
+}
+
+impl Query for LoadCanvasDerivationInputFlow {
+    type Effect = (GraphEffect, Read<OrchestrationServerConfigView>);
+}
+
+impl From<TxEnd<LoadCanvasDerivationInputFlow>> for LoadCanvasDerivationInputFlow {
+    fn from(end: TxEnd<LoadCanvasDerivationInputFlow>) -> Self {
+        LoadCanvasDerivationInputFlow::End(end)
+    }
+}
+
+impl TxFlow for LoadCanvasDerivationInputFlow {
+    type Database = Postgres;
+    type Commit = Option<DerivationInput>;
+    type Abort = Result<Option<DerivationInput>, Error>;
+    type Report = ();
+    const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let LoadCanvasDerivationInputFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, rows) = tx
+            .run(LoadGraph {
+                canvas: &input.canvas,
+            })
+            .await;
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let Some((generation, derived_generation)) = rows
+            .canvases
+            .iter()
+            .find(|c| c.id == rows.root)
+            .map(|root| (root.generation, root.derived_generation))
+        else {
+            return base::db::refuse(tx, None).await;
+        };
+        let (tx, derived_view_seq) = tx.run(DerivedViewSeq { root: &rows.root }).await;
+        let derived_view_seq = match derived_view_seq {
+            Ok(seq) => seq,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let canvas_ids = rows.canvas_ids();
+        let (tx, views) = tx
+            .run(ViewsOfCanvases {
+                canvases: &canvas_ids,
+            })
+            .await;
+        let views = match views {
+            Ok(views) => views,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let view_seq = views.iter().map(|view| view.seq).sum();
+        let input = DerivationInput {
+            root: rows.root.clone(),
+            generation,
+            derived_generation,
+            derived_view_seq,
+            view_seq,
+            graph: rows,
+            views,
+        };
+        base::db::commit(tx, Some(input)).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            LoadCanvasDerivationInputFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
 }
 
 impl Processor<LoadCanvasDerivationInput> for Db {
@@ -465,30 +686,7 @@ impl Processor<LoadCanvasDerivationInput> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:LoadCanvasDerivationInput", skip_all, err)]
     async fn process(&self, input: LoadCanvasDerivationInput) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin_with(SNAPSHOT_READ).await?;
-        let rows = load_graph(&mut tx, &input.canvas).await?;
-        let Some(root) = rows.canvases.iter().find(|c| c.id == rows.root) else {
-            return Ok(None);
-        };
-        let derived_view_seq: i64 = sqlx::query_scalar!(
-            "SELECT derived_view_seq FROM orchestration_canvas WHERE id = $1",
-            &rows.root as _
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let canvas_ids: Vec<CanvasId> = rows.canvases.iter().map(|c| c.id.clone()).collect();
-        let views = views_of_canvases(&mut tx, &canvas_ids).await?;
-        tx.commit().await?;
-        let view_seq = views.iter().map(|view| view.seq).sum();
-        Ok(Some(DerivationInput {
-            root: rows.root.clone(),
-            generation: root.generation,
-            derived_generation: root.derived_generation,
-            derived_view_seq,
-            view_seq,
-            graph: rows,
-            views,
-        }))
+        base::db::transact(self, LoadCanvasDerivationInputFlow::Start(input)).await
     }
 }
 
@@ -519,31 +717,136 @@ pub struct CommitCanvasDerivation {
     pub updates: Vec<ViewUpdate>,
 }
 
-impl Processor<CommitCanvasDerivation> for Db {
-    /// `false` when the canvas moved on and the pass has to be redone.
+/// The derivation fence on the root row; `false` when it did not match.
+struct FenceDerivation<'a> {
+    canvas: &'a CanvasId,
+    generation: i64,
+    view_seq: i64,
+}
+
+impl Query for FenceDerivation<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for FenceDerivation<'_> {
     type Output = bool;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CommitCanvasDerivation", skip_all, err)]
-    async fn process(&self, input: CommitCanvasDerivation) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<bool, Error> {
+        let fenced: Option<CanvasId> = sqlx::query_file_scalar!(
+            "sql/commit_canvas_derivation.sql",
+            self.canvas as _,
+            self.generation,
+            self.view_seq
+        )
+        .fetch_optional(conn)
+        .await?;
+        Ok(fenced.is_some())
+    }
+}
+
+struct WriteViewUpdate<'a> {
+    update: &'a ViewUpdate,
+}
+
+impl Query for WriteViewUpdate<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for WriteViewUpdate<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let update = self.update;
+        sqlx::query_file!(
+            "sql/commit_canvas_derivation_view.sql",
+            &update.server as _,
+            update.desired.as_ref().map(Json) as _,
+            update.derive_error.as_deref(),
+            Json(&update.invalid_pods) as _,
+            &update.waiting_for as _,
+            update.clear_failure
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Levels the subcanvas rows of a tree with its root's derivation stamp.
+struct LevelSubcanvases<'a> {
+    members: &'a [CanvasId],
+    root: &'a CanvasId,
+    view_seq: i64,
+}
+
+impl Query for LevelSubcanvases<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for LevelSubcanvases<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "UPDATE orchestration_canvas
+             SET derived_generation = generation, derived_view_seq = $2
+             WHERE id = ANY($1) AND id <> $3",
+            self.members as _,
+            self.view_seq,
+            self.root as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+enum CommitCanvasDerivationFlow {
+    Start(CommitCanvasDerivation),
+    End(TxEnd<CommitCanvasDerivationFlow>),
+}
+
+impl Query for CommitCanvasDerivationFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<CommitCanvasDerivationFlow>> for CommitCanvasDerivationFlow {
+    fn from(end: TxEnd<CommitCanvasDerivationFlow>) -> Self {
+        CommitCanvasDerivationFlow::End(end)
+    }
+}
+
+impl TxFlow for CommitCanvasDerivationFlow {
+    type Database = Postgres;
+    type Commit = bool;
+    type Abort = Result<bool, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let CommitCanvasDerivationFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
         // `generation` fences against edits made since the pass read the canvas.
         // `derived_generation < $2 OR derived_view_seq < $3` fences against a
         // second pass that read the same state, so only the first one to arrive
         // publishes its revisions. `view_seq` is the sum of the tree's view `seq`
         // counters as the pass read them: a worker write that lands after the
         // read leaves the sum above the stamp, so the canvas reads as stale again.
-        let fenced: Option<CanvasId> = sqlx::query_file_scalar!(
-            "sql/commit_canvas_derivation.sql",
-            &input.canvas as _,
-            input.generation,
-            input.view_seq
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        if fenced.is_none() {
-            tx.rollback().await?;
-            return Ok(false);
-        }
+        let (tx, fenced) = tx
+            .run(FenceDerivation {
+                canvas: &input.canvas,
+                generation: input.generation,
+                view_seq: input.view_seq,
+            })
+            .await;
+        let mut tx = match fenced {
+            Ok(true) => tx,
+            Ok(false) => return base::db::refuse(tx, false).await,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
         for update in &input.updates {
             // One statement per view row. PostgreSQL re-checks a row's foreign
             // key when the transaction updates that row a second time, and the
@@ -552,33 +855,51 @@ impl Processor<CommitCanvasDerivation> for Db {
             // `desired` is left alone when the pass has no new revision;
             // `invalid_pods` is written either way: a pod breaking or being fixed
             // must be visible even when the served config is byte-identical.
-            sqlx::query_file!(
-                "sql/commit_canvas_derivation_view.sql",
-                &update.server as _,
-                update.desired.as_ref().map(Json) as _,
-                update.derive_error.as_deref(),
-                Json(&update.invalid_pods) as _,
-                &update.waiting_for as _,
-                update.clear_failure
-            )
-            .execute(&mut *tx)
-            .await?;
+            let (next, r) = tx.run(WriteViewUpdate { update }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
         }
         // Subcanvas rows carry no generation of their own; keep them level so a
         // canvas that was imported mid-edit can never look stale on its own.
-        let members = tree::tree_of(&mut tx, &input.canvas).await?;
-        sqlx::query!(
-            "UPDATE orchestration_canvas
-             SET derived_generation = generation, derived_view_seq = $2
-             WHERE id = ANY($1) AND id <> $3",
-            &members as _,
-            input.view_seq,
-            &input.canvas as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(true)
+        let (tx, members) = tx
+            .run(TreeOf {
+                canvas: &input.canvas,
+            })
+            .await;
+        let members = match members {
+            Ok(members) => members,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let (tx, levelled) = tx
+            .run(LevelSubcanvases {
+                members: &members,
+                root: &input.canvas,
+                view_seq: input.view_seq,
+            })
+            .await;
+        match levelled {
+            Ok(()) => base::db::commit(tx, true).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            CommitCanvasDerivationFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<CommitCanvasDerivation> for Db {
+    /// `false` when the canvas moved on and the pass has to be redone.
+    type Output = bool;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:CommitCanvasDerivation", skip_all, err)]
+    async fn process(&self, input: CommitCanvasDerivation) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, CommitCanvasDerivationFlow::Start(input)).await
     }
 }
 
@@ -591,13 +912,21 @@ impl Processor<CommitCanvasDerivation> for Db {
 /// subtree sums to no more, so only a root reads as stale on its own.
 pub struct ListStaleCanvases;
 
-impl Processor<ListStaleCanvases> for Db {
+impl Query for ListStaleCanvases {
+    type Effect = (
+        Read<OrchestrationCanvas>,
+        Read<OrchestrationServer>,
+        Read<OrchestrationServerConfigView>,
+    );
+}
+
+impl Execute<PgSource> for ListStaleCanvases {
     type Output = Vec<CanvasId>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListStaleCanvases", skip_all, err)]
-    async fn process(&self, _input: ListStaleCanvases) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_scalar!("sql/list_stale_canvases.sql")
-            .fetch_all(self.db())
+            .fetch_all(conn)
             .await?)
     }
 }

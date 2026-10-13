@@ -11,10 +11,15 @@ use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::fence;
 use crate::entities::db::pod::TlsConfig;
+use crate::entities::db::tables::{Certificate, OrchestrationCanvas, OrchestrationPod};
 use base::db::{Db, Error};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
+use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(CertificateId, "certificate");
 
@@ -78,11 +83,15 @@ pub struct EnsureCertificate {
     pub now: OffsetDateTime,
 }
 
-impl Processor<EnsureCertificate> for Db {
+impl Query for EnsureCertificate {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for EnsureCertificate {
     type Output = CertificateEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:EnsureCertificate", skip_all, err, fields(sni = %input.sni))]
-    async fn process(&self, input: EnsureCertificate) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:EnsureCertificate", skip_all, err, fields(sni = %self.sni))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         // `DO NOTHING` returns no row when the pair exists; a second statement
         // then reads the one that won, whether it was ours or a concurrent
         // pod's.
@@ -90,13 +99,13 @@ impl Processor<EnsureCertificate> for Db {
             CertificateEntity,
             "sql/ensure_certificate_insert.sql",
             CertificateId::new() as _,
-            input.sni,
-            input.dns_provider as _,
-            input.domain_id,
-            input.acme_directory,
-            input.now
+            self.sni,
+            self.dns_provider as _,
+            self.domain_id,
+            self.acme_directory,
+            self.now
         )
-        .fetch_optional(self.db())
+        .fetch_optional(&mut *conn)
         .await?;
         if let Some(row) = created {
             return Ok(row);
@@ -104,10 +113,10 @@ impl Processor<EnsureCertificate> for Db {
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/ensure_certificate_find.sql",
-            input.sni,
-            input.acme_directory
+            self.sni,
+            self.acme_directory
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?)
     }
 }
@@ -115,14 +124,18 @@ impl Processor<EnsureCertificate> for Db {
 #[derive(Debug)]
 pub struct ListCertificates;
 
-impl Processor<ListCertificates> for Db {
+impl Query for ListCertificates {
+    type Effect = Read<Certificate>;
+}
+
+impl Execute<PgSource> for ListCertificates {
     type Output = Vec<CertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCertificates", skip_all, err)]
-    async fn process(&self, _: ListCertificates) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(
             sqlx::query_file_as!(CertificateEntity, "sql/list_certificates.sql")
-                .fetch_all(self.db())
+                .fetch_all(conn)
                 .await?,
         )
     }
@@ -133,17 +146,21 @@ pub struct FindCertificateById {
     pub id: CertificateId,
 }
 
-impl Processor<FindCertificateById> for Db {
+impl Query for FindCertificateById {
+    type Effect = Read<Certificate>;
+}
+
+impl Execute<PgSource> for FindCertificateById {
     type Output = Option<CertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCertificateById", skip_all, err)]
-    async fn process(&self, input: FindCertificateById) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/find_certificate_by_id.sql",
-            input.id as _
+            self.id as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }
@@ -155,20 +172,24 @@ pub struct ListCertificatesBySnis {
     pub snis: Vec<String>,
 }
 
-impl Processor<ListCertificatesBySnis> for Db {
+impl Query for ListCertificatesBySnis {
+    type Effect = Read<Certificate>;
+}
+
+impl Execute<PgSource> for ListCertificatesBySnis {
     type Output = Vec<CertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCertificatesBySnis", skip_all, err)]
-    async fn process(&self, input: ListCertificatesBySnis) -> Result<Self::Output, Self::Error> {
-        if input.snis.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.snis.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/list_certificates_by_snis.sql",
-            &input.snis
+            &self.snis
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -180,20 +201,24 @@ pub struct ListCertificatesByIds {
     pub ids: Vec<CertificateId>,
 }
 
-impl Processor<ListCertificatesByIds> for Db {
+impl Query for ListCertificatesByIds {
+    type Effect = Read<Certificate>;
+}
+
+impl Execute<PgSource> for ListCertificatesByIds {
     type Output = Vec<CertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCertificatesByIds", skip_all, err)]
-    async fn process(&self, input: ListCertificatesByIds) -> Result<Self::Output, Self::Error> {
-        if input.ids.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.ids.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/list_certificates_by_ids.sql",
-            &input.ids as _
+            &self.ids as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -217,18 +242,22 @@ pub struct ListCertificatesDue {
     pub retry_before: OffsetDateTime,
 }
 
-impl Processor<ListCertificatesDue> for Db {
+impl Query for ListCertificatesDue {
+    type Effect = Read<Certificate>;
+}
+
+impl Execute<PgSource> for ListCertificatesDue {
     type Output = Vec<CertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCertificatesDue", skip_all, err)]
-    async fn process(&self, input: ListCertificatesDue) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/list_certificates_due.sql",
-            input.renew_before,
-            input.retry_before
+            self.renew_before,
+            self.retry_before
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -253,20 +282,24 @@ pub struct ClaimCertificateAttempt {
     pub seen_attempt_at: Option<OffsetDateTime>,
 }
 
-impl Processor<ClaimCertificateAttempt> for Db {
+impl Query for ClaimCertificateAttempt {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for ClaimCertificateAttempt {
     type Output = bool;
     type Error = Error;
-    #[tracing::instrument(name = "Query:ClaimCertificateAttempt", skip_all, err, fields(certificate = %input.id))]
-    async fn process(&self, input: ClaimCertificateAttempt) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:ClaimCertificateAttempt", skip_all, err, fields(certificate = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let claimed = sqlx::query_scalar!(
             r#"UPDATE certificate SET last_attempt_at = $2
                WHERE id = $1 AND last_attempt_at IS NOT DISTINCT FROM $3
                RETURNING id AS "id: CertificateId""#,
-            input.id as _,
-            input.now,
-            input.seen_attempt_at
+            self.id as _,
+            self.now,
+            self.seen_attempt_at
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?;
         Ok(claimed.is_some())
     }
@@ -286,23 +319,27 @@ pub struct StoreIssuedCertificate {
     pub now: OffsetDateTime,
 }
 
-impl Processor<StoreIssuedCertificate> for Db {
+impl Query for StoreIssuedCertificate {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for StoreIssuedCertificate {
     type Output = CertificateEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:StoreIssuedCertificate", skip_all, err, fields(certificate = %input.id))]
-    async fn process(&self, input: StoreIssuedCertificate) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:StoreIssuedCertificate", skip_all, err, fields(certificate = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/store_issued_certificate.sql",
-            input.id as _,
-            input.acme_account_key,
-            input.private_key_pem,
-            input.full_chain_pem,
-            input.not_before,
-            input.not_after,
-            input.now
+            self.id as _,
+            self.acme_account_key,
+            self.private_key_pem,
+            self.full_chain_pem,
+            self.not_before,
+            self.not_after,
+            self.now
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?)
     }
 }
@@ -317,24 +354,25 @@ pub struct MarkCertificateAttemptFailed {
     pub now: OffsetDateTime,
 }
 
-impl Processor<MarkCertificateAttemptFailed> for Db {
+impl Query for MarkCertificateAttemptFailed {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for MarkCertificateAttemptFailed {
     type Output = ();
     type Error = Error;
-    #[tracing::instrument(name = "Query:MarkCertificateAttemptFailed", skip_all, err, fields(certificate = %input.id))]
-    async fn process(
-        &self,
-        input: MarkCertificateAttemptFailed,
-    ) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:MarkCertificateAttemptFailed", skip_all, err, fields(certificate = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "UPDATE certificate SET
                  status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'failed' END,
                  last_error = $2, last_attempt_at = $3
              WHERE id = $1",
-            input.id as _,
-            input.error,
-            input.now
+            self.id as _,
+            self.error,
+            self.now
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -348,18 +386,22 @@ pub struct RetryCertificateRow {
     pub id: CertificateId,
 }
 
-impl Processor<RetryCertificateRow> for Db {
+impl Query for RetryCertificateRow {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for RetryCertificateRow {
     /// `None` when the certificate does not exist.
     type Output = Option<CertificateEntity>;
     type Error = Error;
-    #[tracing::instrument(name = "Query:RetryCertificateRow", skip_all, err, fields(certificate = %input.id))]
-    async fn process(&self, input: RetryCertificateRow) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:RetryCertificateRow", skip_all, err, fields(certificate = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             CertificateEntity,
             "sql/retry_certificate_row.sql",
-            input.id as _
+            self.id as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }
@@ -369,13 +411,17 @@ pub struct DeleteCertificateRow {
     pub id: CertificateId,
 }
 
-impl Processor<DeleteCertificateRow> for Db {
+impl Query for DeleteCertificateRow {
+    type Effect = Write<Certificate>;
+}
+
+impl Execute<PgSource> for DeleteCertificateRow {
     type Output = ();
     type Error = Error;
-    #[tracing::instrument(name = "Query:DeleteCertificateRow", skip_all, err, fields(certificate = %input.id))]
-    async fn process(&self, input: DeleteCertificateRow) -> Result<Self::Output, Self::Error> {
-        sqlx::query!("DELETE FROM certificate WHERE id = $1", input.id as _)
-            .execute(self.db())
+    #[tracing::instrument(name = "Query:DeleteCertificateRow", skip_all, err, fields(certificate = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!("DELETE FROM certificate WHERE id = $1", self.id as _)
+            .execute(conn)
             .await?;
         Ok(())
     }
@@ -401,13 +447,17 @@ struct TlsRequestRow {
     tls_acme_directory: String,
 }
 
-impl Processor<ListTlsRequests> for Db {
+impl Query for ListTlsRequests {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for ListTlsRequests {
     type Output = Vec<TlsRequest>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListTlsRequests", skip_all, err)]
-    async fn process(&self, _: ListTlsRequests) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let rows = sqlx::query_file_as!(TlsRequestRow, "sql/list_tls_requests.sql")
-            .fetch_all(self.db())
+            .fetch_all(conn)
             .await?;
         Ok(rows
             .into_iter()
@@ -431,29 +481,77 @@ pub struct ListCanvasesUsingSni {
     pub sni: String,
 }
 
-impl Processor<ListCanvasesUsingSni> for Db {
+impl Query for ListCanvasesUsingSni {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for ListCanvasesUsingSni {
     type Output = Vec<CanvasId>;
     type Error = Error;
-    #[tracing::instrument(name = "Query:ListCanvasesUsingSni", skip_all, err, fields(sni = %input.sni))]
-    async fn process(&self, input: ListCanvasesUsingSni) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:ListCanvasesUsingSni", skip_all, err, fields(sni = %self.sni))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar!(
             r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
                WHERE ingress = 'client_tls' AND lower(tls_sni) = $1
                ORDER BY canvas"#,
-            input.sni
+            self.sni
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
 
 /// Bumps the generation of the tree each canvas belongs to
-/// ([`fence::touch`]), so the derivation hook re-derives its servers.
+/// ([`fence::Touch`]), so the derivation hook re-derives its servers.
 /// Certificate issuance and relay leaf rotation use it: the config did not
 /// change, the material it pins did.
 #[derive(Debug)]
 pub struct TouchCanvases {
     pub canvases: Vec<CanvasId>,
+}
+
+enum TouchCanvasesFlow {
+    Start(TouchCanvases),
+    End(TxEnd<TouchCanvasesFlow>),
+}
+
+impl Query for TouchCanvasesFlow {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl From<TxEnd<TouchCanvasesFlow>> for TouchCanvasesFlow {
+    fn from(end: TxEnd<TouchCanvasesFlow>) -> Self {
+        TouchCanvasesFlow::End(end)
+    }
+}
+
+impl TxFlow for TouchCanvasesFlow {
+    type Database = Postgres;
+    type Commit = ();
+    type Abort = Result<(), Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let TouchCanvasesFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let mut tx = tx;
+        for canvas in &input.canvases {
+            let (next, r) = tx.run(fence::Touch { canvas }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        base::db::commit(tx, ()).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            TouchCanvasesFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
 }
 
 impl Processor<TouchCanvases> for Db {
@@ -464,11 +562,6 @@ impl Processor<TouchCanvases> for Db {
         if input.canvases.is_empty() {
             return Ok(());
         }
-        let mut tx = self.db().begin().await?;
-        for canvas in &input.canvases {
-            fence::touch(&mut tx, canvas).await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        base::db::transact(self, TouchCanvasesFlow::Start(input)).await
     }
 }

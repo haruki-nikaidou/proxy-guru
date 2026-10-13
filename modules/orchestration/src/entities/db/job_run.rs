@@ -26,11 +26,14 @@
 //! equals the publication cadence. `last_run_at` is recorded for operators, not
 //! for the fence.
 
-use base::db::{Db, Error};
+use crate::entities::db::tables::OrchestrationJobRun;
+use base::db::Error;
 use db_types::table_record;
-use kanau::processor::Processor;
+use sqlx::PgConnection;
 use std::time::Duration;
 use time::{OffsetDateTime, PrimitiveDateTime};
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Write};
 
 table_record!(JobRunId, "orchestration_job_run");
 
@@ -81,33 +84,37 @@ impl ClaimJobRun {
     }
 }
 
-impl Processor<ClaimJobRun> for Db {
+impl Query for ClaimJobRun {
+    type Effect = Write<OrchestrationJobRun>;
+}
+
+impl Execute<PgSource> for ClaimJobRun {
     /// `true` when this caller owns the run.
     type Output = bool;
     type Error = Error;
-    #[tracing::instrument(name = "Query:ClaimJobRun", skip_all, err, fields(job = %input.job))]
-    async fn process(&self, input: ClaimJobRun) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:ClaimJobRun", skip_all, err, fields(job = %self.job))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         // One statement: the row is created on the first claim, and afterwards
         // updated only through the fence in the `WHERE`. A duplicate delivery
         // blocks on the row lock, re-evaluates the fence and gets nothing back.
         let claimed: Option<JobRunId> = sqlx::query_file_scalar!(
             "sql/claim_job_run.sql",
-            JobRunId::from_key(input.job) as _,
-            input.now,
-            input.tick,
-            input.tick_not_before
+            JobRunId::from_key(self.job) as _,
+            self.now,
+            self.tick,
+            self.tick_not_before
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?;
         let claimed = claimed.is_some();
         if !claimed {
             // The one place a skipped pass becomes visible, and the age is what
             // tells an operator whether it was a duplicate or a backlog.
             tracing::debug!(
-                job = input.job,
+                job = self.job,
                 tick_age_secs = OffsetDateTime::now_utc()
                     .unix_timestamp()
-                    .saturating_sub(input.tick.unix_timestamp()),
+                    .saturating_sub(self.tick.unix_timestamp()),
                 "skipping a periodic signal: the job already ran for this tick or interval"
             );
         }

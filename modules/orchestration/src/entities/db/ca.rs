@@ -7,10 +7,13 @@
 //! Private keys are stored encrypted with the master key.
 
 use crate::entities::db::pod::PodId;
-use base::db::{Db, Error};
+use crate::entities::db::tables::{InternalCa, RelayCertificate};
+use base::db::Error;
 use db_types::table_record;
-use kanau::processor::Processor;
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(InternalCaId, "internal_ca");
 
@@ -49,23 +52,27 @@ pub struct CreateInternalCa {
     pub now: OffsetDateTime,
 }
 
-impl Processor<CreateInternalCa> for Db {
+impl Query for CreateInternalCa {
+    type Effect = Write<InternalCa>;
+}
+
+impl Execute<PgSource> for CreateInternalCa {
     /// `false` when a CA already exists; nothing is written then.
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:CreateInternalCa", skip_all, err)]
-    async fn process(&self, input: CreateInternalCa) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let created = sqlx::query_scalar!(
             r#"INSERT INTO internal_ca (id, certificate_pem, private_key_pem, not_after, created_at)
                VALUES ($1, $2, $3, $4, $5)
                ON CONFLICT (id) DO NOTHING RETURNING id AS "id: InternalCaId""#,
             internal_ca_id() as _,
-            input.certificate_pem,
-            input.private_key_pem,
-            input.not_after,
-            input.now
+            self.certificate_pem,
+            self.private_key_pem,
+            self.not_after,
+            self.now
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?;
         Ok(created.is_some())
     }
@@ -74,11 +81,15 @@ impl Processor<CreateInternalCa> for Db {
 #[derive(Debug)]
 pub struct FindInternalCa;
 
-impl Processor<FindInternalCa> for Db {
+impl Query for FindInternalCa {
+    type Effect = Read<InternalCa>;
+}
+
+impl Execute<PgSource> for FindInternalCa {
     type Output = Option<InternalCaEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindInternalCa", skip_all, err)]
-    async fn process(&self, _: FindInternalCa) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             InternalCaEntity,
             r#"SELECT id AS "id: InternalCaId", certificate_pem, private_key_pem,
@@ -86,7 +97,7 @@ impl Processor<FindInternalCa> for Db {
                FROM internal_ca WHERE id = $1"#,
             internal_ca_id() as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }
@@ -128,26 +139,30 @@ pub struct StoreRelayCertificate {
     pub expected_version: Option<i64>,
 }
 
-impl Processor<StoreRelayCertificate> for Db {
+impl Query for StoreRelayCertificate {
+    type Effect = Write<RelayCertificate>;
+}
+
+impl Execute<PgSource> for StoreRelayCertificate {
     /// `None` when the compare-and-set lost.
     type Output = Option<RelayCertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:StoreRelayCertificate", skip_all, err)]
-    async fn process(&self, input: StoreRelayCertificate) -> Result<Self::Output, Self::Error> {
-        let row = match input.expected_version {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let row = match self.expected_version {
             Some(expected) => {
                 sqlx::query_file_as!(
                     RelayCertificateEntity,
                     "sql/store_relay_certificate_update.sql",
-                    input.pod as _,
-                    input.sni,
-                    input.private_key_pem,
-                    input.certificate_pem,
-                    input.not_before,
-                    input.not_after,
+                    self.pod as _,
+                    self.sni,
+                    self.private_key_pem,
+                    self.certificate_pem,
+                    self.not_before,
+                    self.not_after,
                     expected
                 )
-                .fetch_optional(self.db())
+                .fetch_optional(&mut *conn)
                 .await?
             }
             None => {
@@ -155,14 +170,14 @@ impl Processor<StoreRelayCertificate> for Db {
                     RelayCertificateEntity,
                     "sql/store_relay_certificate_insert.sql",
                     RelayCertificateId::new() as _,
-                    input.pod as _,
-                    input.sni,
-                    input.private_key_pem,
-                    input.certificate_pem,
-                    input.not_before,
-                    input.not_after
+                    self.pod as _,
+                    self.sni,
+                    self.private_key_pem,
+                    self.certificate_pem,
+                    self.not_before,
+                    self.not_after
                 )
-                .fetch_optional(self.db())
+                .fetch_optional(conn)
                 .await?
             }
         };
@@ -175,15 +190,16 @@ pub struct ListRelayCertificatesByPods {
     pub pods: Vec<PodId>,
 }
 
-impl Processor<ListRelayCertificatesByPods> for Db {
+impl Query for ListRelayCertificatesByPods {
+    type Effect = Read<RelayCertificate>;
+}
+
+impl Execute<PgSource> for ListRelayCertificatesByPods {
     type Output = Vec<RelayCertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListRelayCertificatesByPods", skip_all, err)]
-    async fn process(
-        &self,
-        input: ListRelayCertificatesByPods,
-    ) -> Result<Self::Output, Self::Error> {
-        if input.pods.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.pods.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_as!(
@@ -191,9 +207,9 @@ impl Processor<ListRelayCertificatesByPods> for Db {
             r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
                       private_key_pem, certificate_pem, not_before, not_after, version
                FROM relay_certificate WHERE pod = ANY($1)"#,
-            &input.pods as _
+            &self.pods as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -203,15 +219,16 @@ pub struct ListRelayCertificatesByIds {
     pub ids: Vec<RelayCertificateId>,
 }
 
-impl Processor<ListRelayCertificatesByIds> for Db {
+impl Query for ListRelayCertificatesByIds {
+    type Effect = Read<RelayCertificate>;
+}
+
+impl Execute<PgSource> for ListRelayCertificatesByIds {
     type Output = Vec<RelayCertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListRelayCertificatesByIds", skip_all, err)]
-    async fn process(
-        &self,
-        input: ListRelayCertificatesByIds,
-    ) -> Result<Self::Output, Self::Error> {
-        if input.ids.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.ids.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_as!(
@@ -219,9 +236,9 @@ impl Processor<ListRelayCertificatesByIds> for Db {
             r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
                       private_key_pem, certificate_pem, not_before, not_after, version
                FROM relay_certificate WHERE id = ANY($1)"#,
-            &input.ids as _
+            &self.ids as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -232,22 +249,23 @@ pub struct ListRelayCertificatesExpiringBefore {
     pub before: OffsetDateTime,
 }
 
-impl Processor<ListRelayCertificatesExpiringBefore> for Db {
+impl Query for ListRelayCertificatesExpiringBefore {
+    type Effect = Read<RelayCertificate>;
+}
+
+impl Execute<PgSource> for ListRelayCertificatesExpiringBefore {
     type Output = Vec<RelayCertificateEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListRelayCertificatesExpiringBefore", skip_all, err)]
-    async fn process(
-        &self,
-        input: ListRelayCertificatesExpiringBefore,
-    ) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             RelayCertificateEntity,
             r#"SELECT id AS "id: RelayCertificateId", pod AS "pod: PodId", sni,
                       private_key_pem, certificate_pem, not_before, not_after, version
                FROM relay_certificate WHERE not_after < $1"#,
-            input.before
+            self.before
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }

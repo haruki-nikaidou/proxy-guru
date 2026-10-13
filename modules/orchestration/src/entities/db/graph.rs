@@ -4,29 +4,36 @@
 //! batch is checked against, and the unit derivation compiles.
 
 use crate::entities::db::canvas::{
-    CanvasEntity, CanvasFence, CanvasId, CanvasRow, CanvasUiPosition, SNAPSHOT_READ,
+    CanvasEntity, CanvasFence, CanvasId, CanvasUiPosition, CanvasesByIds,
 };
 use crate::entities::db::dns::DnsProviderId;
-use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeRow, IpFamily, insert_edge, update_edge};
-use crate::entities::db::exit::{ExitEntity, ExitId, ExitRow, insert_exit, update_exit};
-use crate::entities::db::fence;
+use crate::entities::db::edge::{EdgeEntity, EdgeId, EdgeRow, InsertEdge, IpFamily, UpdateEdge};
+use crate::entities::db::exit::{ExitEntity, ExitId, ExitRow, InsertExit, UpdateExit};
+use crate::entities::db::fence::{LockRoot, TouchChecked};
 use crate::entities::db::group::{
-    GroupEntity, GroupId, groups_of_canvases, insert_group, update_group,
+    GroupEntity, GroupId, GroupsOfCanvases, InsertGroup, UpdateGroup,
 };
 use crate::entities::db::health::ServerHealthStatus;
 use crate::entities::db::pod::{
-    IngressKind, PodEntity, PodId, PodRow, ProxyProtocolVersion, insert_pod, update_pod,
+    IngressKind, InsertPod, PodEntity, PodId, PodRow, ProxyProtocolVersion, UpdatePod,
 };
 use crate::entities::db::server::{
     ReportedAddresses, ServerEntity, ServerId, ServerIpv6Resolve, ServerLogLevel, ServerQuic,
     ServerRow,
 };
-use crate::entities::db::tree;
+use crate::entities::db::tables::{
+    OrchestrationCanvas, OrchestrationEdge, OrchestrationExit, OrchestrationGroup,
+    OrchestrationGroupMember, OrchestrationPod, OrchestrationServer,
+};
+use crate::entities::db::tree::{RootOf, WholeTreeOf};
 use base::db::{Db, Error};
 use guru_topology::Route;
 use kanau::processor::Processor;
-use sqlx::PgConnection;
 use sqlx::types::Json;
+use sqlx::{PgConnection, Postgres};
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 /// Everything the graph of one canvas tree is made of.
 #[derive(Debug, Clone)]
@@ -70,75 +77,135 @@ impl GraphRows {
     }
 }
 
+/// The tables [`LoadGraph`] reads.
+pub(crate) type GraphEffect = (
+    Read<OrchestrationCanvas>,
+    Read<OrchestrationServer>,
+    Read<OrchestrationPod>,
+    Read<OrchestrationExit>,
+    Read<OrchestrationEdge>,
+    Read<OrchestrationGroup>,
+    Read<OrchestrationGroupMember>,
+);
+
 /// Reads the graph of the tree containing `canvas` inside the caller's
 /// transaction. A canvas that does not exist yields an empty graph whose root
 /// is the given id.
-pub(crate) async fn load_graph(
-    conn: &mut PgConnection,
-    canvas: &CanvasId,
-) -> Result<GraphRows, Error> {
-    let (root, tree) = tree::whole_tree_of(&mut *conn, canvas).await?;
-    let mut canvases: Vec<CanvasEntity> = sqlx::query_as!(
-        CanvasRow,
-        r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
-                  position_x, position_y, generation, derived_generation
-           FROM orchestration_canvas WHERE id = ANY($1)"#,
-        &tree as _
-    )
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(CanvasEntity::from)
-    .collect();
-    canvases.sort_by_key(|c| tree.iter().position(|id| *id == c.id));
-    let servers: Vec<ServerEntity> =
-        sqlx::query_file_as!(ServerRow, "sql/load_graph_servers.sql", &tree as _)
-            .fetch_all(&mut *conn)
-            .await?
-            .into_iter()
-            .map(ServerEntity::from)
-            .collect();
-    let pods: Vec<PodEntity> = sqlx::query_file_as!(PodRow, "sql/load_graph_pods.sql", &tree as _)
+pub(crate) struct LoadGraph<'a> {
+    pub(crate) canvas: &'a CanvasId,
+}
+
+impl Query for LoadGraph<'_> {
+    type Effect = GraphEffect;
+}
+
+impl Execute<PgSource> for LoadGraph<'_> {
+    type Output = GraphRows;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let (root, tree) = WholeTreeOf {
+            canvas: self.canvas,
+        }
+        .execute(&mut *conn)
+        .await?;
+        let mut canvases = CanvasesByIds { ids: &tree }.execute(&mut *conn).await?;
+        canvases.sort_by_key(|c| tree.iter().position(|id| *id == c.id));
+        let servers: Vec<ServerEntity> =
+            sqlx::query_file_as!(ServerRow, "sql/load_graph_servers.sql", &tree as _)
+                .fetch_all(&mut *conn)
+                .await?
+                .into_iter()
+                .map(ServerEntity::from)
+                .collect();
+        let pods: Vec<PodEntity> =
+            sqlx::query_file_as!(PodRow, "sql/load_graph_pods.sql", &tree as _)
+                .fetch_all(&mut *conn)
+                .await?
+                .into_iter()
+                .map(PodEntity::try_from)
+                .collect::<Result<_, sqlx::Error>>()?;
+        let exits: Vec<ExitEntity> = sqlx::query_as!(
+            ExitRow,
+            r#"SELECT id AS "id: ExitId", canvas AS "canvas: CanvasId", name, comment, destination,
+                      send_proxy_protocol AS "send_proxy_protocol: ProxyProtocolVersion",
+                      position_x, position_y
+               FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id"#,
+            &tree as _
+        )
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(PodEntity::try_from)
-        .collect::<Result<_, sqlx::Error>>()?;
-    let exits: Vec<ExitEntity> = sqlx::query_as!(
-        ExitRow,
-        r#"SELECT id AS "id: ExitId", canvas AS "canvas: CanvasId", name, comment, destination,
-                  send_proxy_protocol AS "send_proxy_protocol: ProxyProtocolVersion",
-                  position_x, position_y
-           FROM orchestration_exit WHERE canvas = ANY($1) ORDER BY id"#,
-        &tree as _
-    )
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(ExitEntity::from)
-    .collect();
-    let edges: Vec<EdgeEntity> =
-        sqlx::query_file_as!(EdgeRow, "sql/load_graph_edges.sql", &tree as _)
-            .fetch_all(&mut *conn)
-            .await?
-            .into_iter()
-            .map(EdgeEntity::try_from)
-            .collect::<Result<_, sqlx::Error>>()?;
-    let groups = groups_of_canvases(conn, &tree).await?;
-    Ok(GraphRows {
-        root,
-        canvases,
-        servers,
-        pods,
-        exits,
-        edges,
-        groups,
-    })
+        .map(ExitEntity::from)
+        .collect();
+        let edges: Vec<EdgeEntity> =
+            sqlx::query_file_as!(EdgeRow, "sql/load_graph_edges.sql", &tree as _)
+                .fetch_all(&mut *conn)
+                .await?
+                .into_iter()
+                .map(EdgeEntity::try_from)
+                .collect::<Result<_, sqlx::Error>>()?;
+        let groups = GroupsOfCanvases { canvases: &tree }.execute(conn).await?;
+        Ok(GraphRows {
+            root,
+            canvases,
+            servers,
+            pods,
+            exits,
+            edges,
+            groups,
+        })
+    }
 }
 
-/// The graph of the tree containing `canvas`, in one snapshot.
+/// The graph of the tree containing `canvas`, in one snapshot: a read-only
+/// `REPEATABLE READ` transaction.
 pub struct LoadCanvasGraph {
     pub canvas: CanvasId,
+}
+
+enum LoadCanvasGraphFlow {
+    Start(LoadCanvasGraph),
+    End(TxEnd<LoadCanvasGraphFlow>),
+}
+
+impl Query for LoadCanvasGraphFlow {
+    type Effect = GraphEffect;
+}
+
+impl From<TxEnd<LoadCanvasGraphFlow>> for LoadCanvasGraphFlow {
+    fn from(end: TxEnd<LoadCanvasGraphFlow>) -> Self {
+        LoadCanvasGraphFlow::End(end)
+    }
+}
+
+impl TxFlow for LoadCanvasGraphFlow {
+    type Database = Postgres;
+    type Commit = GraphRows;
+    type Abort = Result<GraphRows, Error>;
+    type Report = ();
+    const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let LoadCanvasGraphFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, rows) = tx
+            .run(LoadGraph {
+                canvas: &input.canvas,
+            })
+            .await;
+        match rows {
+            Ok(rows) => base::db::commit(tx, rows).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            LoadCanvasGraphFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
 }
 
 impl Processor<LoadCanvasGraph> for Db {
@@ -146,10 +213,7 @@ impl Processor<LoadCanvasGraph> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:LoadCanvasGraph", skip_all, err)]
     async fn process(&self, input: LoadCanvasGraph) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin_with(SNAPSHOT_READ).await?;
-        let rows = load_graph(&mut tx, &input.canvas).await?;
-        tx.commit().await?;
-        Ok(rows)
+        base::db::transact(self, LoadCanvasGraphFlow::Start(input)).await
     }
 }
 
@@ -171,34 +235,42 @@ pub struct FindTakenIds {
     pub groups: Vec<GroupId>,
 }
 
-impl Processor<FindTakenIds> for Db {
+impl Query for FindTakenIds {
+    type Effect = (
+        Read<OrchestrationPod>,
+        Read<OrchestrationExit>,
+        Read<OrchestrationEdge>,
+        Read<OrchestrationGroup>,
+    );
+}
+
+impl Execute<PgSource> for FindTakenIds {
     type Output = TakenIds;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindTakenIds", skip_all, err)]
-    async fn process(&self, input: FindTakenIds) -> Result<Self::Output, Self::Error> {
-        let mut conn = self.db().acquire().await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(TakenIds {
             pods: sqlx::query_scalar!(
                 r#"SELECT id AS "id: PodId" FROM orchestration_pod WHERE id = ANY($1)"#,
-                &input.pods as _
+                &self.pods as _
             )
             .fetch_all(&mut *conn)
             .await?,
             exits: sqlx::query_scalar!(
                 r#"SELECT id AS "id: ExitId" FROM orchestration_exit WHERE id = ANY($1)"#,
-                &input.exits as _
+                &self.exits as _
             )
             .fetch_all(&mut *conn)
             .await?,
             edges: sqlx::query_scalar!(
                 r#"SELECT id AS "id: EdgeId" FROM orchestration_edge WHERE id = ANY($1)"#,
-                &input.edges as _
+                &self.edges as _
             )
             .fetch_all(&mut *conn)
             .await?,
             groups: sqlx::query_scalar!(
                 r#"SELECT id AS "id: GroupId" FROM orchestration_group WHERE id = ANY($1)"#,
-                &input.groups as _
+                &self.groups as _
             )
             .fetch_all(&mut *conn)
             .await?,
@@ -237,6 +309,279 @@ pub struct ApplyGraphBatch {
 /// A batch whose tree is not named: a caller bug.
 pub const BATCH_WITHOUT_CANVAS: &str = "graph batch without a canvas";
 
+struct DeleteGroups<'a> {
+    ids: &'a [GroupId],
+}
+
+impl Query for DeleteGroups<'_> {
+    type Effect = Write<OrchestrationGroup>;
+}
+
+impl Execute<PgSource> for DeleteGroups<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_group WHERE id = ANY($1)",
+            self.ids as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+struct DeleteEdges<'a> {
+    ids: &'a [EdgeId],
+}
+
+impl Query for DeleteEdges<'_> {
+    type Effect = Write<OrchestrationEdge>;
+}
+
+impl Execute<PgSource> for DeleteEdges<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_edge WHERE id = ANY($1)",
+            self.ids as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Health history and relay leaves cascade from the pod.
+struct DeletePods<'a> {
+    ids: &'a [PodId],
+}
+
+impl Query for DeletePods<'_> {
+    type Effect = Write<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for DeletePods<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_pod WHERE id = ANY($1)",
+            self.ids as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+struct DeleteExits<'a> {
+    ids: &'a [ExitId],
+}
+
+impl Query for DeleteExits<'_> {
+    type Effect = Write<OrchestrationExit>;
+}
+
+impl Execute<PgSource> for DeleteExits<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_exit WHERE id = ANY($1)",
+            self.ids as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// The root generation of the tree containing `canvas`.
+struct RootGeneration<'a> {
+    canvas: &'a CanvasId,
+}
+
+impl Query for RootGeneration<'_> {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for RootGeneration<'_> {
+    type Output = i64;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<i64, Error> {
+        let root = RootOf {
+            canvas: self.canvas,
+        }
+        .execute(&mut *conn)
+        .await?;
+        Ok(sqlx::query_scalar!(
+            "SELECT generation FROM orchestration_canvas WHERE id = $1",
+            root as _
+        )
+        .fetch_one(conn)
+        .await?)
+    }
+}
+
+// The input carries the whole batch; the flow value lives for one transaction,
+// so boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
+enum ApplyGraphBatchFlow {
+    /// The batch, and the canvas it names (checked before `BEGIN`).
+    Start(CanvasId, ApplyGraphBatch),
+    End(TxEnd<ApplyGraphBatchFlow>),
+}
+
+impl Query for ApplyGraphBatchFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationGroup>,
+        Write<OrchestrationGroupMember>,
+        Write<OrchestrationEdge>,
+        Write<OrchestrationPod>,
+        Write<OrchestrationExit>,
+    );
+}
+
+impl From<TxEnd<ApplyGraphBatchFlow>> for ApplyGraphBatchFlow {
+    fn from(end: TxEnd<ApplyGraphBatchFlow>) -> Self {
+        ApplyGraphBatchFlow::End(end)
+    }
+}
+
+impl TxFlow for ApplyGraphBatchFlow {
+    type Database = Postgres;
+    type Commit = i64;
+    type Abort = Result<i64, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let ApplyGraphBatchFlow::Start(canvas, input) = state else {
+            return tx.end(state).await;
+        };
+        let canvas = &canvas;
+        // The fence first: a batch that lost the race writes nothing at all. A
+        // batch of groups alone changes nothing a worker runs and takes no fence:
+        // the dashboard's drawing is last-write-wins. It still takes the root
+        // before its first row (`fence`'s lock order), since its membership rows
+        // reference servers a delete may be holding.
+        let (tx, fenced) = if input.derives {
+            tx.run(TouchChecked {
+                canvas,
+                fence: input.fence.as_ref(),
+            })
+            .await
+        } else {
+            tx.run(LockRoot { canvas }).await
+        };
+        if let Err(e) = fenced {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx
+            .run(DeleteGroups {
+                ids: &input.delete_groups,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx
+            .run(DeleteEdges {
+                ids: &input.delete_edges,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx
+            .run(DeletePods {
+                ids: &input.delete_pods,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (mut tx, r) = tx
+            .run(DeleteExits {
+                ids: &input.delete_exits,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        for pod in &input.insert_pods {
+            let (next, r) = tx.run(InsertPod { pod }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for pod in &input.update_pods {
+            let (next, r) = tx.run(UpdatePod { pod }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for exit in &input.insert_exits {
+            let (next, r) = tx.run(InsertExit { exit }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for exit in &input.update_exits {
+            let (next, r) = tx.run(UpdateExit { exit }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for edge in &input.insert_edges {
+            let (next, r) = tx.run(InsertEdge { edge }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for edge in &input.update_edges {
+            let (next, r) = tx.run(UpdateEdge { edge }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for group in &input.insert_groups {
+            let (next, r) = tx.run(InsertGroup { group }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for group in &input.update_groups {
+            let (next, r) = tx.run(UpdateGroup { group }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        let (tx, generation) = tx.run(RootGeneration { canvas }).await;
+        match generation {
+            Ok(generation) => base::db::commit(tx, generation).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            ApplyGraphBatchFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
 impl Processor<ApplyGraphBatch> for Db {
     /// The root generation after the write.
     type Output = i64;
@@ -253,102 +598,11 @@ impl Processor<ApplyGraphBatch> for Db {
             insert_edges = input.insert_edges.len(),
         )
     )]
-    async fn process(&self, input: ApplyGraphBatch) -> Result<Self::Output, Self::Error> {
-        let canvas = input.canvas.ok_or(Error::Conflict(BATCH_WITHOUT_CANVAS))?;
-        let mut tx = self.db().begin().await?;
-        // The fence first: a batch that lost the race writes nothing at all. A
-        // batch of groups alone changes nothing a worker runs and takes no fence:
-        // the dashboard's drawing is last-write-wins. It still takes the root
-        // before its first row (`fence`'s lock order), since its membership rows
-        // reference servers a delete may be holding.
-        if input.derives {
-            fence::touch_checked(&mut tx, &canvas, input.fence.as_ref()).await?;
-        } else {
-            fence::lock_root(&mut tx, &canvas).await?;
-        }
-        sqlx::query!(
-            "DELETE FROM orchestration_group WHERE id = ANY($1)",
-            &input.delete_groups as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "DELETE FROM orchestration_edge WHERE id = ANY($1)",
-            &input.delete_edges as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        // Health history and relay leaves cascade from the pod.
-        sqlx::query!(
-            "DELETE FROM orchestration_pod WHERE id = ANY($1)",
-            &input.delete_pods as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "DELETE FROM orchestration_exit WHERE id = ANY($1)",
-            &input.delete_exits as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        for pod in &input.insert_pods {
-            insert_pod(&mut tx, pod).await?;
-        }
-        for pod in &input.update_pods {
-            update_pod(&mut tx, pod).await?;
-        }
-        for exit in &input.insert_exits {
-            insert_exit(&mut tx, exit).await?;
-        }
-        for exit in &input.update_exits {
-            update_exit(&mut tx, exit).await?;
-        }
-        for edge in &input.insert_edges {
-            insert_edge(&mut tx, edge).await?;
-        }
-        for edge in &input.update_edges {
-            update_edge(&mut tx, edge).await?;
-        }
-        for group in &input.insert_groups {
-            insert_group(&mut tx, group).await?;
-        }
-        for group in &input.update_groups {
-            update_group(&mut tx, group).await?;
-        }
-        let root = tree::root_of(&mut tx, &canvas).await?;
-        let generation: i64 = sqlx::query_scalar!(
-            "SELECT generation FROM orchestration_canvas WHERE id = $1",
-            root as _
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(generation)
-    }
-}
-
-/// That the node model was converted into the pod graph, and what the
-/// conversion found.
-#[derive(Debug, Clone)]
-pub struct GraphStateEntity {
-    pub converted_at: time::OffsetDateTime,
-    pub report: serde_json::Value,
-}
-
-#[derive(Debug)]
-pub struct FindGraphState;
-
-impl Processor<FindGraphState> for Db {
-    type Output = Option<GraphStateEntity>;
-    type Error = Error;
-    #[tracing::instrument(name = "Query:FindGraphState", skip_all, err)]
-    async fn process(&self, _: FindGraphState) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
-            GraphStateEntity,
-            "SELECT converted_at, report FROM orchestration_graph_state WHERE id = 'current'"
-        )
-        .fetch_optional(self.db())
-        .await?)
+    async fn process(&self, mut input: ApplyGraphBatch) -> Result<Self::Output, Self::Error> {
+        let Some(canvas) = input.canvas.take() else {
+            return Err(Error::Conflict(BATCH_WITHOUT_CANVAS));
+        };
+        base::db::transact(self, ApplyGraphBatchFlow::Start(canvas, input)).await
     }
 }
 
@@ -360,9 +614,180 @@ impl Processor<FindGraphState> for Db {
 pub struct MoveGraphItems {
     /// The canvases of the tree the items must belong to.
     pub tree: Vec<CanvasId>,
-    pub servers: Vec<(crate::entities::db::server::ServerId, CanvasUiPosition)>,
+    pub servers: Vec<(ServerId, CanvasUiPosition)>,
     pub exits: Vec<(ExitId, CanvasUiPosition)>,
     pub canvases: Vec<(CanvasId, CanvasUiPosition)>,
+}
+
+struct MoveServer<'a> {
+    server: &'a ServerId,
+    position: CanvasUiPosition,
+    tree: &'a [CanvasId],
+}
+
+impl Query for MoveServer<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for MoveServer<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server SET position_x = $2, position_y = $3
+             WHERE id = $1 AND canvas = ANY($4)",
+            self.server as _,
+            self.position.x,
+            self.position.y,
+            self.tree as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+struct MoveExit<'a> {
+    exit: &'a ExitId,
+    position: CanvasUiPosition,
+    tree: &'a [CanvasId],
+}
+
+impl Query for MoveExit<'_> {
+    type Effect = Write<OrchestrationExit>;
+}
+
+impl Execute<PgSource> for MoveExit<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "UPDATE orchestration_exit SET position_x = $2, position_y = $3
+             WHERE id = $1 AND canvas = ANY($4)",
+            self.exit as _,
+            self.position.x,
+            self.position.y,
+            self.tree as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+struct MoveCanvas<'a> {
+    canvas: &'a CanvasId,
+    position: CanvasUiPosition,
+    tree: &'a [CanvasId],
+}
+
+impl Query for MoveCanvas<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for MoveCanvas<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        sqlx::query!(
+            "UPDATE orchestration_canvas SET position_x = $2, position_y = $3
+             WHERE id = $1 AND id = ANY($4)",
+            self.canvas as _,
+            self.position.x,
+            self.position.y,
+            self.tree as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+enum MoveGraphItemsFlow {
+    Start(MoveGraphItems),
+    End(TxEnd<MoveGraphItemsFlow>),
+}
+
+impl Query for MoveGraphItemsFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationServer>,
+        Write<OrchestrationExit>,
+    );
+}
+
+impl From<TxEnd<MoveGraphItemsFlow>> for MoveGraphItemsFlow {
+    fn from(end: TxEnd<MoveGraphItemsFlow>) -> Self {
+        MoveGraphItemsFlow::End(end)
+    }
+}
+
+impl TxFlow for MoveGraphItemsFlow {
+    type Database = Postgres;
+    type Commit = ();
+    type Abort = Result<(), Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let MoveGraphItemsFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let mut tx = tx;
+        if let Some(canvas) = input.tree.first() {
+            let (next, r) = tx.run(LockRoot { canvas }).await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for (server, position) in &input.servers {
+            let (next, r) = tx
+                .run(MoveServer {
+                    server,
+                    position: *position,
+                    tree: &input.tree,
+                })
+                .await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for (exit, position) in &input.exits {
+            let (next, r) = tx
+                .run(MoveExit {
+                    exit,
+                    position: *position,
+                    tree: &input.tree,
+                })
+                .await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        for (canvas, position) in &input.canvases {
+            let (next, r) = tx
+                .run(MoveCanvas {
+                    canvas,
+                    position: *position,
+                    tree: &input.tree,
+                })
+                .await;
+            tx = next;
+            if let Err(e) = r {
+                return base::db::rollback(tx, e).await;
+            }
+        }
+        base::db::commit(tx, ()).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            MoveGraphItemsFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
 }
 
 impl Processor<MoveGraphItems> for Db {
@@ -370,47 +795,6 @@ impl Processor<MoveGraphItems> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:MoveGraphItems", skip_all, err)]
     async fn process(&self, input: MoveGraphItems) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        if let Some(canvas) = input.tree.first() {
-            fence::lock_root(&mut tx, canvas).await?;
-        }
-        for (server, position) in &input.servers {
-            sqlx::query!(
-                "UPDATE orchestration_server SET position_x = $2, position_y = $3
-                 WHERE id = $1 AND canvas = ANY($4)",
-                server as _,
-                position.x,
-                position.y,
-                &input.tree as _
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        for (exit, position) in &input.exits {
-            sqlx::query!(
-                "UPDATE orchestration_exit SET position_x = $2, position_y = $3
-                 WHERE id = $1 AND canvas = ANY($4)",
-                exit as _,
-                position.x,
-                position.y,
-                &input.tree as _
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        for (canvas, position) in &input.canvases {
-            sqlx::query!(
-                "UPDATE orchestration_canvas SET position_x = $2, position_y = $3
-                 WHERE id = $1 AND id = ANY($4)",
-                canvas as _,
-                position.x,
-                position.y,
-                &input.tree as _
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        base::db::transact(self, MoveGraphItemsFlow::Start(input)).await
     }
 }
