@@ -29,6 +29,7 @@ use orchestration::entities::db::view::{
     CommitCanvasDerivation, ConfigSnapshot, FindServerConfigView, ViewUpdate,
 };
 use orchestration::hooks::derive::DeriveCanvas;
+use orchestration::services::OrchestrationError;
 use orchestration::services::graph::{ApplyGraph, GraphChange};
 use orchestration::services::rollout::ForgetServerApplied;
 use orchestration::services::server::DeleteServer;
@@ -287,7 +288,7 @@ where
 fn deriving(
     w: &World,
     canvas: &CanvasEntity,
-) -> impl Future<Output = Result<(), wakuwaku::Error>> + Send + 'static {
+) -> impl Future<Output = Result<(), OrchestrationError>> + Send + 'static {
     let deriver = w.deriver.clone();
     let canvas = canvas.id.clone();
     async move { deriver.process(DeriveCanvas { canvas }).await }

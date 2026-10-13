@@ -78,13 +78,13 @@ async fn row(db: &Db, id: &ServerId) -> ServerEntity {
         .unwrap()
 }
 
-async fn pin_v4(db: &Db, id: &ServerId, address: &str) {
+async fn pin_v4(pool: &sqlx::PgPool, id: &ServerId, address: &str) {
     sqlx::query!(
         "UPDATE orchestration_server SET override_v4 = $2 WHERE id = $1",
         id as _,
         address
     )
-    .execute(db.db())
+    .execute(pool)
     .await
     .unwrap();
 }
@@ -149,7 +149,7 @@ async fn each_public_address_is_looked_up_once(pool: sqlx::PgPool) -> TestResult
 async fn a_moved_address_hides_the_old_answer_until_it_is_looked_up(
     pool: sqlx::PgPool,
 ) -> TestResult {
-    let db = setup(pool);
+    let db = setup(pool.clone());
     let c = canvas(&db, "prod").await?;
     let server = server_at(&db, &c, "edge", "185.14.47.132").await?;
     let (template, asked) = lookup_service(vec![
@@ -162,7 +162,7 @@ async fn a_moved_address_hides_the_old_answer_until_it_is_looked_up(
     pass(&service, now).await;
     assert_eq!(row(&db, &server.id).await.country_of_v4(), Some("HK"));
 
-    pin_v4(&db, &server.id, "120.199.9.67").await;
+    pin_v4(&pool, &server.id, "120.199.9.67").await;
     // The stored answer is for the old address: never shown for the new one.
     let moved = row(&db, &server.id).await;
     assert_eq!(moved.country.as_deref(), Some("HK"));
@@ -177,7 +177,7 @@ async fn a_moved_address_hides_the_old_answer_until_it_is_looked_up(
     );
 
     // A private address has no country: the stored lookup is dropped.
-    pin_v4(&db, &server.id, "10.0.0.5").await;
+    pin_v4(&pool, &server.id, "10.0.0.5").await;
     let third = pass(&service, now).await;
     assert_eq!(
         third,

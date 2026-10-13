@@ -17,6 +17,7 @@ use auth::entities::db::account::{
 use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::{Login, LoginResult};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use auth::utils::validation::prove_email;
 use base::services::config::ConfigStore;
 use common::*;
 use kanau::processor::Processor;
@@ -610,7 +611,7 @@ impl Harness {
         self.w
             .db
             .process(CreateAccount {
-                email: "admin@example.com".to_string(),
+                email: prove_email("admin@example.com").expect("a valid address"),
                 password_hash: hasher.hash_password("admin-password")?,
                 role: AccountRole::Admin,
             })

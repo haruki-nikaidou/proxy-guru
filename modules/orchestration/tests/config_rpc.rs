@@ -8,7 +8,6 @@
 
 use auth::entities::db::account::{AccountId, AccountRole};
 use auth::services::identity::{Identity, IdentityKind};
-use base::db::Db;
 use base::services::config::ConfigStore;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -21,7 +20,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn setup(pool: sqlx::PgPool) -> OrchestrationConfigService {
     OrchestrationConfigService {
-        configs: ConfigStore { db: Db::new(pool) },
+        configs: ConfigStore {
+            db: base::db::handle(pool),
+        },
     }
 }
 

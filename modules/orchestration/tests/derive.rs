@@ -17,8 +17,10 @@ use orchestration::entities::db::edge::IpFamily;
 use orchestration::entities::db::graph::{GraphRows, LoadCanvasGraph};
 use orchestration::entities::db::pod::{PodIngress, ProxyProtocolVersion};
 use orchestration::entities::db::server::{QuicCongestion, ServerId, ServerQuic};
+use orchestration::hooks::derive::DeriveStaleCanvasesJob;
 use orchestration::services::derive::{DerivationCertificates, DerivedConfig, derive_tree};
 use orchestration::services::graph::GraphChange;
+use wakuwaku::ServiceBuilder;
 
 fn regenerating() -> bool {
     matches!(
@@ -69,7 +71,7 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
             &server.id as _,
             &capabilities as _
         )
-        .execute(w.db.db())
+        .execute(&w.pool)
         .await?;
     }
     for (server, up_mbps, down_mbps) in [(&mobile, 100, 500), (&gcore, 1000, 50)] {
@@ -84,7 +86,7 @@ async fn fabric(w: &World) -> Result<Fabric, Box<dyn std::error::Error>> {
                 conn_receive_window: 0,
             }) as _
         )
-        .execute(w.db.db())
+        .execute(&w.pool)
         .await?;
     }
 
@@ -398,7 +400,7 @@ async fn an_auto_edge_names_the_other_family_to_a_worker_that_dials_it(
             &server.id as _,
             &capable(true) as _
         )
-        .execute(w.db.db())
+        .execute(&w.pool)
         .await?;
     }
     let entry = client(&c, &tokyo, "entry", 443, None);
@@ -437,7 +439,7 @@ async fn an_auto_edge_names_the_other_family_to_a_worker_that_dials_it(
         &tokyo.id as _,
         &capable(false) as _
     )
-    .execute(w.db.db())
+    .execute(&w.pool)
     .await?;
     let configs = derived(&w.db.process(load()).await?, &issued());
     let toml = configs[&tokyo.id].config.to_toml_string().unwrap();
@@ -474,5 +476,55 @@ async fn a_graph_that_does_not_check_derives_nothing(pool: sqlx::PgPool) -> Test
         "{:?}",
         view.derive_error
     );
+    Ok(())
+}
+
+/// The backstop for a lost `CanvasDirty`, through the real cron runtime: a
+/// canvas edited without any hint published stays underived until the
+/// `derive_stale_canvases` job's first run, which happens at start.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_stale_canvas_is_derived_by_the_cron_job(pool: sqlx::PgPool) -> TestResult {
+    // The world's notifier publishes no events, so nothing announces the edit:
+    // the canvas is left stale, as after a lost hint or an Iggy outage.
+    let w = world(pool).await?;
+    let c = canvas(&w.db, "prod").await?;
+    let tokyo = server_at(&w.db, &c, "tokyo", "203.0.113.20").await?;
+    let entry = client(&c, &tokyo, "edge", 443, None);
+    let origin = exit(&c, "exit", "10.0.0.6:8080");
+    let out = edge_to_exit("out", &entry, &origin);
+    insert_rows(
+        &w.db,
+        &c,
+        vec![routed(entry, via(&out))],
+        vec![origin],
+        vec![out],
+    )
+    .await?;
+    let view = w.view(&tokyo.id).await?;
+    assert!(
+        view.desired.is_none(),
+        "the canvas is stale until the job runs: {:?}",
+        view.desired.map(|s| s.revision)
+    );
+
+    let (_, cron) = ServiceBuilder::new(w.deriver.clone())
+        .cron_job::<DeriveStaleCanvasesJob, _>()
+        .start();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let view = w.view(&tokyo.id).await?;
+        match view.desired {
+            Some(desired) if desired.toml.contains("[::]:443") => break,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "the cron job never derived the canvas: desired={:?} error={:?}",
+                other.map(|s| s.revision),
+                view.derive_error
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    cron.shutdown().await;
     Ok(())
 }

@@ -510,7 +510,10 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
         })
         .await
         .expect_err("api keys may not edit the workspace");
-    assert!(matches!(err, OrchestrationError::Core(_)), "{err:?}");
+    assert!(
+        matches!(err, OrchestrationError::PermissionDenied),
+        "{err:?}"
+    );
 
     // ...and a human session may not register a worker.
     let canvas = w
@@ -556,7 +559,10 @@ async fn a_worker_credential_cannot_edit_the_workspace(pool: sqlx::PgPool) -> Te
         })
         .await
         .expect_err("human sessions may not register workers");
-    assert!(matches!(err, OrchestrationError::Core(_)), "{err:?}");
+    assert!(
+        matches!(err, OrchestrationError::PermissionDenied),
+        "{err:?}"
+    );
     Ok(())
 }
 

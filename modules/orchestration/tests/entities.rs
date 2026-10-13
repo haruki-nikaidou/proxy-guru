@@ -4,7 +4,6 @@
 
 mod common;
 
-use base::db::Db;
 use common::*;
 use kanau::processor::Processor;
 use orchestration::entities::db::agent_release::{FindAgentRelease, PublishAgentRelease};
@@ -171,7 +170,7 @@ async fn creating_a_server_creates_its_empty_config_view(pool: sqlx::PgPool) -> 
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
 
@@ -309,7 +308,7 @@ async fn a_worker_session_is_owned_by_one_registration_at_a_time(pool: sqlx::PgP
 
 /// Seeds a `desired` snapshot the way a derivation pass would.
 async fn seed_desired(
-    sp: &Db,
+    pool: &sqlx::PgPool,
     server: &orchestration::entities::db::server::ServerId,
     revision: i64,
 ) -> Result<(), base::db::Error> {
@@ -325,17 +324,17 @@ async fn seed_desired(
         server as _,
         sqlx::types::Json(&snapshot) as _
     )
-    .execute(sp.db())
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn take_in_flight_and_ack_move_the_slots(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 1).await?;
+    seed_desired(&pool, &s.id, 1).await?;
 
     let taken = sp
         .process(TakeInFlight {
@@ -387,7 +386,7 @@ async fn take_in_flight_and_ack_move_the_slots(pool: sqlx::PgPool) -> TestResult
     assert!(view.in_flight.is_none());
 
     // A failed apply blocks the revision instead of being retried forever.
-    seed_desired(&sp, &s.id, 2).await?;
+    seed_desired(&pool, &s.id, 2).await?;
     let taken = sp
         .process(TakeInFlight {
             server: s.id.clone(),
@@ -453,10 +452,10 @@ async fn take_in_flight_and_ack_move_the_slots(pool: sqlx::PgPool) -> TestResult
 async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
     pool: sqlx::PgPool,
 ) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 1).await?;
+    seed_desired(&pool, &s.id, 1).await?;
 
     // The first stream is handed the snapshot and then dies without acking.
     let claimed = sp
@@ -502,10 +501,10 @@ async fn a_new_stream_is_offered_what_the_previous_one_never_acked(
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 3).await?;
+    seed_desired(&pool, &s.id, 3).await?;
     sp.process(TakeInFlight {
         server: s.id.clone(),
         generation: 0,
@@ -555,10 +554,10 @@ async fn register_promotes_a_reported_desired_revision(pool: sqlx::PgPool) -> Te
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 1).await?;
+    seed_desired(&pool, &s.id, 1).await?;
     sp.process(TakeInFlight {
         server: s.id.clone(),
         generation: 0,
@@ -568,7 +567,7 @@ async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> 
     .expect("the snapshot is in flight when the worker restarts");
     // A derivation pass moves on while the worker is away, so what it reports on
     // its way back is the in-flight revision and no longer the desired one.
-    seed_desired(&sp, &s.id, 2).await?;
+    seed_desired(&pool, &s.id, 2).await?;
 
     let now = time::OffsetDateTime::now_utc();
     sp.process(RegisterWorkerSession {
@@ -616,10 +615,10 @@ async fn register_promotes_a_reported_in_flight_revision(pool: sqlx::PgPool) -> 
 
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn register_rejects_an_unknown_running_revision(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 3).await?;
+    seed_desired(&pool, &s.id, 3).await?;
 
     let now = time::OffsetDateTime::now_utc();
     sp.process(RegisterWorkerSession {
@@ -744,7 +743,7 @@ async fn a_pod_cannot_reference_a_server_that_does_not_exist(pool: sqlx::PgPool)
 /// a group whose members keep their order.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
 async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let tokyo = server(&sp, &c, "tokyo").await?;
     let osaka = server_at(&sp, &c, "osaka", "198.51.100.10").await?;
@@ -754,7 +753,7 @@ async fn a_graph_round_trips_through_its_rows(pool: sqlx::PgPool) -> TestResult 
          VALUES ($1, 'cf', 'cloudflare', '', 'enc1:secret', now())",
         &provider as _
     )
-    .execute(sp.db())
+    .execute(&pool)
     .await?;
 
     let mut entry = pod(
@@ -945,7 +944,10 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         Vec::new(),
     );
     second.fence = Some(fence);
-    let err = sp.process(second).await.expect_err("the loser is rejected");
+    let err = sp
+        .process(second)
+        .await
+        .expect_err("the loser is rejected");
     assert!(
         err.to_string().contains("orchestration_stale_generation"),
         "the fence names its sentinel: {err}"
@@ -1060,10 +1062,10 @@ async fn subcanvases_form_a_tree_by_parent(pool: sqlx::PgPool) -> TestResult {
 async fn register_of_a_worker_running_nothing_forgets_the_applied_revision(
     pool: sqlx::PgPool,
 ) -> TestResult {
-    let sp = setup(pool);
+    let sp = setup(pool.clone());
     let c = canvas(&sp, "prod").await?;
     let s = server(&sp, &c, "tokyo").await?;
-    seed_desired(&sp, &s.id, 3).await?;
+    seed_desired(&pool, &s.id, 3).await?;
     let register = |digest: &str, now: time::OffsetDateTime, running: i64| RegisterWorkerSession {
         server: s.id.clone(),
         digest: digest.to_string(),
