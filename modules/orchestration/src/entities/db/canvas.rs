@@ -1,8 +1,16 @@
-use crate::entities::db::tree;
+use crate::entities::db::fence::Touch;
+use crate::entities::db::tables::{OrchestrationCanvas, OrchestrationEdge, OrchestrationPod};
+use crate::entities::db::tree::{
+    AncestorsOf, MAX_DEPTH, NESTING_TOO_DEEP, RootOf, TreeOf, WholeTreeOf,
+};
 use base::db::{Db, Error};
 use db_types::table_record;
 use kanau::processor::Processor;
+use sqlx::{PgConnection, Postgres};
 use std::collections::HashMap;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(CanvasId, "orchestration_canvas");
 
@@ -11,7 +19,7 @@ table_record!(CanvasId, "orchestration_canvas");
 pub const PARENT_MISSING: &str = "the parent canvas does not exist";
 
 /// The root identity and generation a validated write fences against: the tree
-/// as the snapshot read it. Passed to [`crate::entities::db::fence::touch_checked`]
+/// as the snapshot read it. Passed to [`crate::entities::db::fence::TouchChecked`]
 /// so a concurrent edit that advanced the generation makes the write roll back
 /// instead of committing against stale validation.
 #[derive(Debug, Clone)]
@@ -80,6 +88,34 @@ pub struct CanvasTree {
     pub children: Vec<CanvasTree>,
 }
 
+/// The canvas rows with the given ids, in no particular order.
+pub(crate) struct CanvasesByIds<'a> {
+    pub(crate) ids: &'a [CanvasId],
+}
+
+impl Query for CanvasesByIds<'_> {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for CanvasesByIds<'_> {
+    type Output = Vec<CanvasEntity>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_as!(
+            CanvasRow,
+            r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
+                      position_x, position_y, generation, derived_generation
+               FROM orchestration_canvas WHERE id = ANY($1)"#,
+            self.ids as _
+        )
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(CanvasEntity::from)
+        .collect())
+    }
+}
+
 #[derive(Debug)]
 pub struct CreateCanvas {
     pub name: String,
@@ -89,31 +125,42 @@ pub struct CreateCanvas {
     pub position: CanvasUiPosition,
 }
 
-impl Processor<CreateCanvas> for Db {
+/// Locks the parent a subcanvas is created under; `None` when it does not exist.
+struct LockParentCanvas<'a> {
+    parent: &'a CanvasId,
+}
+
+impl Query for LockParentCanvas<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for LockParentCanvas<'_> {
+    type Output = Option<CanvasId>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_scalar!(
+            r#"SELECT id AS "id: CanvasId" FROM orchestration_canvas WHERE id = $1 FOR UPDATE"#,
+            self.parent as _
+        )
+        .fetch_optional(conn)
+        .await?)
+    }
+}
+
+struct InsertCanvasRow<'a> {
+    canvas: &'a CreateCanvas,
+}
+
+impl Query for InsertCanvasRow<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for InsertCanvasRow<'_> {
     type Output = CanvasEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CreateCanvas", skip_all, err)]
-    async fn process(&self, input: CreateCanvas) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        if let Some(parent) = &input.parent {
-            // The parent's tree gets a new member; its depth is checked by the
-            // walk, and the root is bumped so the tree's readers notice.
-            let exists: Option<CanvasId> = sqlx::query_scalar!(
-                r#"SELECT id AS "id: CanvasId" FROM orchestration_canvas WHERE id = $1 FOR UPDATE"#,
-                parent as _
-            )
-            .fetch_optional(&mut *tx)
-            .await?;
-            if exists.is_none() {
-                return Err(Error::Conflict(PARENT_MISSING));
-            }
-            if tree::ancestors_of(&mut tx, parent).await?.len()
-                >= usize::try_from(tree::MAX_DEPTH - 1).unwrap_or(0)
-            {
-                return Err(Error::Conflict(tree::NESTING_TOO_DEEP));
-            }
-        }
-        let canvas: CanvasEntity = sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let input = self.canvas;
+        Ok(sqlx::query_as!(
             CanvasRow,
             r#"INSERT INTO orchestration_canvas (id, name, description, parent, position_x, position_y)
                VALUES ($1, $2, $3, $4, $5, $6)
@@ -126,11 +173,79 @@ impl Processor<CreateCanvas> for Db {
             input.position.x,
             input.position.y
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(conn)
         .await?
-        .into();
-        tx.commit().await?;
-        Ok(canvas)
+        .into())
+    }
+}
+
+enum CreateCanvasFlow {
+    Start(CreateCanvas),
+    End(TxEnd<CreateCanvasFlow>),
+}
+
+impl Query for CreateCanvasFlow {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl From<TxEnd<CreateCanvasFlow>> for CreateCanvasFlow {
+    fn from(end: TxEnd<CreateCanvasFlow>) -> Self {
+        CreateCanvasFlow::End(end)
+    }
+}
+
+impl TxFlow for CreateCanvasFlow {
+    type Database = Postgres;
+    type Commit = CanvasEntity;
+    type Abort = Result<CanvasEntity, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let CreateCanvasFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let mut tx = tx;
+        if let Some(parent) = &input.parent {
+            // The parent's tree gets a new member; its depth is checked by the
+            // walk, and the root is bumped so the tree's readers notice.
+            let (next, exists) = tx.run(LockParentCanvas { parent }).await;
+            tx = next;
+            match exists {
+                Ok(Some(_)) => {}
+                Ok(None) => return base::db::rollback(tx, Error::Conflict(PARENT_MISSING)).await,
+                Err(e) => return base::db::rollback(tx, e).await,
+            }
+            let (next, ancestors) = tx.run(AncestorsOf { canvas: parent }).await;
+            tx = next;
+            let ancestors = match ancestors {
+                Ok(ancestors) => ancestors,
+                Err(e) => return base::db::rollback(tx, e).await,
+            };
+            if ancestors.len() >= usize::try_from(MAX_DEPTH - 1).unwrap_or(0) {
+                return base::db::rollback(tx, Error::Conflict(NESTING_TOO_DEEP)).await;
+            }
+        }
+        let (tx, canvas) = tx.run(InsertCanvasRow { canvas: &input }).await;
+        match canvas {
+            Ok(canvas) => base::db::commit(tx, canvas).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            CreateCanvasFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<CreateCanvas> for Db {
+    type Output = CanvasEntity;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:CreateCanvas", skip_all, err)]
+    async fn process(&self, input: CreateCanvas) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, CreateCanvasFlow::Start(input)).await
     }
 }
 
@@ -140,19 +255,23 @@ pub struct ListCanvases {
     pub include_subcanvases: bool,
 }
 
-impl Processor<ListCanvases> for Db {
+impl Query for ListCanvases {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for ListCanvases {
     type Output = Vec<CanvasEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCanvases", skip_all, err, fields(result_count))]
-    async fn process(&self, input: ListCanvases) -> Result<Self::Output, Self::Error> {
-        let rows = if input.include_subcanvases {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let rows = if self.include_subcanvases {
             sqlx::query_as!(
                 CanvasRow,
                 r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
                           position_x, position_y, generation, derived_generation
                    FROM orchestration_canvas ORDER BY id"#
             )
-            .fetch_all(self.db())
+            .fetch_all(conn)
             .await?
         } else {
             sqlx::query_as!(
@@ -161,7 +280,7 @@ impl Processor<ListCanvases> for Db {
                           position_x, position_y, generation, derived_generation
                    FROM orchestration_canvas WHERE parent IS NULL ORDER BY id"#
             )
-            .fetch_all(self.db())
+            .fetch_all(conn)
             .await?
         };
         let result: Vec<CanvasEntity> = rows.into_iter().map(CanvasEntity::from).collect();
@@ -176,13 +295,20 @@ pub struct FindRootCanvas {
     pub canvas: CanvasId,
 }
 
-impl Processor<FindRootCanvas> for Db {
+impl Query for FindRootCanvas {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for FindRootCanvas {
     type Output = Option<CanvasEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindRootCanvas", skip_all, err)]
-    async fn process(&self, input: FindRootCanvas) -> Result<Self::Output, Self::Error> {
-        let mut conn = self.db().acquire().await?;
-        let root = tree::root_of(&mut conn, &input.canvas).await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let root = RootOf {
+            canvas: &self.canvas,
+        }
+        .execute(&mut *conn)
+        .await?;
         Ok(sqlx::query_as!(
             CanvasRow,
             r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
@@ -190,7 +316,7 @@ impl Processor<FindRootCanvas> for Db {
                FROM orchestration_canvas WHERE id = $1"#,
             root as _
         )
-        .fetch_optional(&mut *conn)
+        .fetch_optional(conn)
         .await?
         .map(CanvasEntity::from))
     }
@@ -198,9 +324,62 @@ impl Processor<FindRootCanvas> for Db {
 
 /// The whole tree containing `canvas`, from its root. `None` when the canvas
 /// does not exist.
+///
+/// A read-only `REPEATABLE READ` transaction: one snapshot for every statement,
+/// so a tree read while an edit commits is either all before or all after it.
 #[derive(Debug)]
 pub struct LoadCanvasTree {
     pub canvas: CanvasId,
+}
+
+enum LoadCanvasTreeFlow {
+    Start(LoadCanvasTree),
+    End(TxEnd<LoadCanvasTreeFlow>),
+}
+
+impl Query for LoadCanvasTreeFlow {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl From<TxEnd<LoadCanvasTreeFlow>> for LoadCanvasTreeFlow {
+    fn from(end: TxEnd<LoadCanvasTreeFlow>) -> Self {
+        LoadCanvasTreeFlow::End(end)
+    }
+}
+
+impl TxFlow for LoadCanvasTreeFlow {
+    type Database = Postgres;
+    type Commit = Option<CanvasTree>;
+    type Abort = Result<Option<CanvasTree>, Error>;
+    type Report = ();
+    const ISOLATION: Option<IsolationLevel> = Some(IsolationLevel::RepeatableRead);
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let LoadCanvasTreeFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, tree) = tx
+            .run(WholeTreeOf {
+                canvas: &input.canvas,
+            })
+            .await;
+        let (root, ids) = match tree {
+            Ok(tree) => tree,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let (tx, canvases) = tx.run(CanvasesByIds { ids: &ids }).await;
+        match canvases {
+            Ok(canvases) => base::db::commit(tx, assemble_tree(&root, canvases)).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            LoadCanvasTreeFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
 }
 
 impl Processor<LoadCanvasTree> for Db {
@@ -208,29 +387,9 @@ impl Processor<LoadCanvasTree> for Db {
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:LoadCanvasTree", skip_all, err)]
     async fn process(&self, input: LoadCanvasTree) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin_with(SNAPSHOT_READ).await?;
-        let (root, ids) = tree::whole_tree_of(&mut tx, &input.canvas).await?;
-        let canvases: Vec<CanvasEntity> = sqlx::query_as!(
-            CanvasRow,
-            r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
-                      position_x, position_y, generation, derived_generation
-               FROM orchestration_canvas WHERE id = ANY($1)"#,
-            &ids as _
-        )
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(CanvasEntity::from)
-        .collect();
-        tx.commit().await?;
-        Ok(assemble_tree(&root, canvases))
+        base::db::transact(self, LoadCanvasTreeFlow::Start(input)).await
     }
 }
-
-/// `BEGIN` for the multi-statement reads: one snapshot for every statement in
-/// the transaction, so a tree read while an edit commits is either all before
-/// or all after it.
-pub(crate) const SNAPSHOT_READ: &str = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
 
 /// The tree below `root` out of a flat list of its canvases.
 pub fn assemble_tree(root: &CanvasId, canvases: Vec<CanvasEntity>) -> Option<CanvasTree> {
@@ -274,19 +433,23 @@ pub struct FindCanvasById {
     pub id: CanvasId,
 }
 
-impl Processor<FindCanvasById> for Db {
+impl Query for FindCanvasById {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for FindCanvasById {
     type Output = Option<CanvasEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCanvasById", skip_all, err)]
-    async fn process(&self, input: FindCanvasById) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             CanvasRow,
             r#"SELECT id AS "id: CanvasId", name, description, parent AS "parent: CanvasId",
                       position_x, position_y, generation, derived_generation
                FROM orchestration_canvas WHERE id = $1"#,
-            input.id as _
+            self.id as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?
         .map(CanvasEntity::from))
     }
@@ -302,21 +465,25 @@ pub struct UpdateCanvasMeta {
     pub position: Option<CanvasUiPosition>,
 }
 
-impl Processor<UpdateCanvasMeta> for Db {
+impl Query for UpdateCanvasMeta {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for UpdateCanvasMeta {
     type Output = CanvasEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:UpdateCanvasMeta", skip_all, err, fields(canvas_id = %input.id))]
-    async fn process(&self, input: UpdateCanvasMeta) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:UpdateCanvasMeta", skip_all, err, fields(canvas_id = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             CanvasRow,
             "sql/update_canvas_meta.sql",
-            input.id as _,
-            input.name,
-            input.description,
-            input.position.map(|p| p.x),
-            input.position.map(|p| p.y)
+            self.id as _,
+            self.name,
+            self.description,
+            self.position.map(|p| p.x),
+            self.position.map(|p| p.y)
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?
         .into())
     }
@@ -331,44 +498,149 @@ pub struct DeleteCanvasRow {
     pub id: CanvasId,
 }
 
-impl Processor<DeleteCanvasRow> for Db {
-    type Output = ();
+struct CanvasExists<'a> {
+    id: &'a CanvasId,
+}
+
+impl Query for CanvasExists<'_> {
+    type Effect = Read<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for CanvasExists<'_> {
+    type Output = bool;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:DeleteCanvasRow", skip_all, err, fields(canvas_id = %input.id))]
-    async fn process(&self, input: DeleteCanvasRow) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let exists: Option<CanvasId> = sqlx::query_scalar!(
             r#"SELECT id AS "id: CanvasId" FROM orchestration_canvas WHERE id = $1"#,
-            &input.id as _
+            self.id as _
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(conn)
         .await?;
-        if exists.is_none() {
-            return Ok(());
+        Ok(exists.is_some())
+    }
+}
+
+/// Deletes the edges leaving the pods of the given canvases.
+struct DeleteEdgesOfCanvases<'a> {
+    canvases: &'a [CanvasId],
+}
+
+impl Query for DeleteEdgesOfCanvases<'_> {
+    type Effect = (Write<OrchestrationEdge>, Read<OrchestrationPod>);
+}
+
+impl Execute<PgSource> for DeleteEdgesOfCanvases<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_edge e USING orchestration_pod p
+             WHERE p.id = e.source_pod AND p.canvas = ANY($1)",
+            self.canvases as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+struct DeleteCanvases<'a> {
+    ids: &'a [CanvasId],
+}
+
+impl Query for DeleteCanvases<'_> {
+    type Effect = Write<OrchestrationCanvas>;
+}
+
+impl Execute<PgSource> for DeleteCanvases<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_canvas WHERE id = ANY($1)",
+            self.ids as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+enum DeleteCanvasRowFlow {
+    Start(DeleteCanvasRow),
+    End(TxEnd<DeleteCanvasRowFlow>),
+}
+
+impl Query for DeleteCanvasRowFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationEdge>,
+        Read<OrchestrationPod>,
+    );
+}
+
+impl From<TxEnd<DeleteCanvasRowFlow>> for DeleteCanvasRowFlow {
+    fn from(end: TxEnd<DeleteCanvasRowFlow>) -> Self {
+        DeleteCanvasRowFlow::End(end)
+    }
+}
+
+impl TxFlow for DeleteCanvasRowFlow {
+    type Database = Postgres;
+    type Commit = ();
+    type Abort = Result<(), Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let DeleteCanvasRowFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, exists) = tx.run(CanvasExists { id: &input.id }).await;
+        match exists {
+            Ok(true) => {}
+            Ok(false) => return base::db::refuse(tx, ()).await,
+            Err(e) => return base::db::rollback(tx, e).await,
         }
         // The tree's root before any of its rows (`fence`'s lock order): the
         // subtree's view rows are what a derivation commit holding the root
         // rewrites. Deleting a subcanvas is an edit of the tree it leaves; a
         // deleted root takes its bump with it.
-        crate::entities::db::fence::touch(&mut tx, &input.id).await?;
-        let ids = tree::tree_of(&mut tx, &input.id).await?;
+        let (tx, touched) = tx.run(Touch { canvas: &input.id }).await;
+        if let Err(e) = touched {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, ids) = tx.run(TreeOf { canvas: &input.id }).await;
+        let ids = match ids {
+            Ok(ids) => ids,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
         // Edges do not cascade from their pods: a route names them, and a route
         // is only ever rewritten together with its edges. The subtree's own
         // routes go with it.
-        sqlx::query!(
-            "DELETE FROM orchestration_edge e USING orchestration_pod p
-             WHERE p.id = e.source_pod AND p.canvas = ANY($1)",
-            &ids as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "DELETE FROM orchestration_canvas WHERE id = ANY($1)",
-            &ids as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
+        let (tx, deleted) = tx.run(DeleteEdgesOfCanvases { canvases: &ids }).await;
+        if let Err(e) = deleted {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, deleted) = tx.run(DeleteCanvases { ids: &ids }).await;
+        match deleted {
+            Ok(()) => base::db::commit(tx, ()).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            DeleteCanvasRowFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<DeleteCanvasRow> for Db {
+    type Output = ();
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:DeleteCanvasRow", skip_all, err, fields(canvas_id = %input.id))]
+    async fn process(&self, input: DeleteCanvasRow) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, DeleteCanvasRowFlow::Start(input)).await
     }
 }

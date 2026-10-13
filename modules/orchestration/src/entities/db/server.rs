@@ -1,14 +1,21 @@
 use crate::entities::db::canvas::{CanvasFence, CanvasId, CanvasUiPosition};
-use crate::entities::db::fence;
+use crate::entities::db::fence::{Touch, TouchChecked};
 use crate::entities::db::health::ServerHealthStatus;
 use crate::entities::db::view::ConfigSnapshot;
+use crate::entities::db::tables::{
+    OrchestrationCanvas, OrchestrationPod, OrchestrationServer, OrchestrationServerConfigView,
+};
 use base::db::{Db, Error};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
+use sqlx::{PgConnection, Postgres};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(ServerId, "orchestration_server");
 
@@ -402,21 +409,25 @@ pub struct CreateServer {
     pub extra_addresses: Vec<String>,
 }
 
-impl Processor<CreateServer> for Db {
+/// Inserts the server row of a [`CreateServer`].
+struct InsertServerRow<'a> {
+    input: &'a CreateServer,
+}
+
+impl Query for InsertServerRow<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for InsertServerRow<'_> {
     type Output = ServerEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:CreateServer", skip_all, err, fields(canvas = %input.canvas))]
-    async fn process(&self, input: CreateServer) -> Result<Self::Output, Self::Error> {
-        // The server and its (empty) config view are one write: no code path may
-        // ever observe a server without the row its rollout is tracked in. The
-        // tree's root comes first (`fence`'s lock order).
-        let mut tx = self.db().begin().await?;
-        fence::touch(&mut tx, &input.canvas).await?;
-        let server: ServerEntity = sqlx::query_file_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let input = self.input;
+        Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/create_server.sql",
             ServerId::new() as _,
-            input.canvas as _,
+            &input.canvas as _,
             input.name,
             input.icon,
             input.comment,
@@ -428,18 +439,101 @@ impl Processor<CreateServer> for Db {
             input.override_v6,
             &input.extra_addresses
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(conn)
         .await?
-        .into();
+        .into())
+    }
+}
+
+/// Inserts the (empty) config view row of a new server.
+struct InsertConfigViewRow<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for InsertConfigViewRow<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for InsertConfigViewRow<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "INSERT INTO orchestration_server_config_view (id, server) VALUES ($1, $2)",
             crate::entities::db::view::ServerConfigViewId::new() as _,
-            &server.id as _
+            self.server as _
         )
-        .execute(&mut *tx)
+        .execute(conn)
         .await?;
-        tx.commit().await?;
-        Ok(server)
+        Ok(())
+    }
+}
+
+// The terminal state carries the committed row; the flow value lives for one
+// transaction, so boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
+enum CreateServerFlow {
+    Start(CreateServer),
+    End(TxEnd<CreateServerFlow>),
+}
+
+impl Query for CreateServerFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Write<OrchestrationServer>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<CreateServerFlow>> for CreateServerFlow {
+    fn from(end: TxEnd<CreateServerFlow>) -> Self {
+        CreateServerFlow::End(end)
+    }
+}
+
+impl TxFlow for CreateServerFlow {
+    type Database = Postgres;
+    type Commit = ServerEntity;
+    type Abort = Result<ServerEntity, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let CreateServerFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        // The server and its (empty) config view are one write: no code path may
+        // ever observe a server without the row its rollout is tracked in. The
+        // tree's root comes first (`fence`'s lock order).
+        let (tx, r) = tx.run(Touch { canvas: &input.canvas }).await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx.run(InsertServerRow { input: &input }).await;
+        let server = match r {
+            Ok(v) => v,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let (tx, r) = tx.run(InsertConfigViewRow { server: &server.id }).await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        base::db::commit(tx, server).await
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            CreateServerFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<CreateServer> for Db {
+    type Output = ServerEntity;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:CreateServer", skip_all, err, fields(canvas = %input.canvas))]
+    async fn process(&self, input: CreateServer) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, CreateServerFlow::Start(input)).await
     }
 }
 
@@ -448,14 +542,18 @@ pub struct FindServerById {
     pub id: ServerId,
 }
 
-impl Processor<FindServerById> for Db {
+impl Query for FindServerById {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for FindServerById {
     type Output = Option<ServerEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindServerById", skip_all, err)]
-    async fn process(&self, input: FindServerById) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_file_as!(ServerRow, "sql/find_server_by_id.sql", input.id as _)
-                .fetch_optional(self.db())
+            sqlx::query_file_as!(ServerRow, "sql/find_server_by_id.sql", self.id as _)
+                .fetch_optional(conn)
                 .await?
                 .map(ServerEntity::from),
         )
@@ -467,13 +565,17 @@ impl Processor<FindServerById> for Db {
 #[derive(Debug)]
 pub struct ListAllServers;
 
-impl Processor<ListAllServers> for Db {
+impl Query for ListAllServers {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for ListAllServers {
     type Output = Vec<ServerEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListAllServers", skip_all, err)]
-    async fn process(&self, _: ListAllServers) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(ServerRow, "sql/list_all_servers.sql")
-            .fetch_all(self.db())
+            .fetch_all(conn)
             .await?
             .into_iter()
             .map(ServerEntity::from)
@@ -494,21 +596,25 @@ pub struct SetServerCountry {
     pub checked_at: Option<OffsetDateTime>,
 }
 
-impl Processor<SetServerCountry> for Db {
+impl Query for SetServerCountry {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for SetServerCountry {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query:SetServerCountry", skip_all, err)]
-    async fn process(&self, input: SetServerCountry) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "UPDATE orchestration_server
                 SET country = $2, country_address = $3, country_checked_at = $4
               WHERE id = $1",
-            input.server as _,
-            input.country,
-            input.address,
-            input.checked_at
+            self.server as _,
+            self.country,
+            self.address,
+            self.checked_at
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -519,17 +625,21 @@ pub struct ListServersByCanvas {
     pub canvas: CanvasId,
 }
 
-impl Processor<ListServersByCanvas> for Db {
+impl Query for ListServersByCanvas {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for ListServersByCanvas {
     type Output = Vec<ServerEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListServersByCanvas", skip_all, err)]
-    async fn process(&self, input: ListServersByCanvas) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/list_servers_by_canvas.sql",
-            input.canvas as _
+            self.canvas as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?
         .into_iter()
         .map(ServerEntity::from)
@@ -555,19 +665,24 @@ pub struct UpdateServerSettings {
     pub fence: Option<CanvasFence>,
 }
 
-impl Processor<UpdateServerSettings> for Db {
+/// Writes the settings of an [`UpdateServerSettings`] to the server row.
+struct UpdateServerRow<'a> {
+    input: &'a UpdateServerSettings,
+}
+
+impl Query for UpdateServerRow<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for UpdateServerRow<'_> {
     type Output = ServerEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:UpdateServerSettings", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: UpdateServerSettings) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        // The root before the server row (`fence`'s lock order), the order a
-        // server delete takes them in.
-        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
-        let server: ServerEntity = sqlx::query_file_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let input = self.input;
+        Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/update_server_settings.sql",
-            input.id as _,
+            &input.id as _,
             input.name,
             input.icon,
             input.comment,
@@ -579,11 +694,71 @@ impl Processor<UpdateServerSettings> for Db {
             input.agent_unit,
             Json(input.quic) as _
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(conn)
         .await?
-        .into();
-        tx.commit().await?;
-        Ok(server)
+        .into())
+    }
+}
+
+// See `CreateServerFlow`.
+#[allow(clippy::large_enum_variant)]
+enum UpdateServerSettingsFlow {
+    Start(UpdateServerSettings),
+    End(TxEnd<UpdateServerSettingsFlow>),
+}
+
+impl Query for UpdateServerSettingsFlow {
+    type Effect = (Write<OrchestrationCanvas>, Write<OrchestrationServer>);
+}
+
+impl From<TxEnd<UpdateServerSettingsFlow>> for UpdateServerSettingsFlow {
+    fn from(end: TxEnd<UpdateServerSettingsFlow>) -> Self {
+        UpdateServerSettingsFlow::End(end)
+    }
+}
+
+impl TxFlow for UpdateServerSettingsFlow {
+    type Database = Postgres;
+    type Commit = ServerEntity;
+    type Abort = Result<ServerEntity, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let UpdateServerSettingsFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        // The root before the server row (`fence`'s lock order), the order a
+        // server delete takes them in.
+        let (tx, r) = tx
+            .run(TouchChecked {
+                canvas: &input.canvas,
+                fence: input.fence.as_ref(),
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx.run(UpdateServerRow { input: &input }).await;
+        match r {
+            Ok(server) => base::db::commit(tx, server).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            UpdateServerSettingsFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<UpdateServerSettings> for Db {
+    type Output = ServerEntity;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:UpdateServerSettings", skip_all, err, fields(id = %input.id))]
+    async fn process(&self, input: UpdateServerSettings) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, UpdateServerSettingsFlow::Start(input)).await
     }
 }
 
@@ -599,20 +774,24 @@ pub struct SetServerAgentKey {
     pub now: OffsetDateTime,
 }
 
-impl Processor<SetServerAgentKey> for Db {
+impl Query for SetServerAgentKey {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for SetServerAgentKey {
     type Output = ServerEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:SetServerAgentKey", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: SetServerAgentKey) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:SetServerAgentKey", skip_all, err, fields(id = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/set_server_agent_key.sql",
-            input.id as _,
-            input.digest,
-            input.now,
-            input.unit
+            self.id as _,
+            self.digest,
+            self.now,
+            self.unit
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?
         .into())
     }
@@ -625,18 +804,22 @@ pub struct SetAgentUpdateRequested {
     pub version: String,
 }
 
-impl Processor<SetAgentUpdateRequested> for Db {
+impl Query for SetAgentUpdateRequested {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for SetAgentUpdateRequested {
     type Output = ServerEntity;
     type Error = Error;
-    #[tracing::instrument(name = "Query:SetAgentUpdateRequested", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: SetAgentUpdateRequested) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:SetAgentUpdateRequested", skip_all, err, fields(id = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/set_agent_update_requested.sql",
-            input.id as _,
-            input.version
+            self.id as _,
+            self.version
         )
-        .fetch_one(self.db())
+        .fetch_one(conn)
         .await?
         .into())
     }
@@ -654,18 +837,22 @@ pub struct SettleAgentUpdate {
     pub error: Option<String>,
 }
 
-impl Processor<SettleAgentUpdate> for Db {
+impl Query for SettleAgentUpdate {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for SettleAgentUpdate {
     type Output = ();
     type Error = Error;
-    #[tracing::instrument(name = "Query:SettleAgentUpdate", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: SettleAgentUpdate) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:SettleAgentUpdate", skip_all, err, fields(id = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query_file!(
             "sql/settle_agent_update.sql",
-            input.id as _,
-            input.error,
-            input.reported_version
+            self.id as _,
+            self.error,
+            self.reported_version
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -677,20 +864,21 @@ pub struct FindServerByAgentKeyDigest {
     pub digest: String,
 }
 
-impl Processor<FindServerByAgentKeyDigest> for Db {
+impl Query for FindServerByAgentKeyDigest {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for FindServerByAgentKeyDigest {
     type Output = Option<ServerEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindServerByAgentKeyDigest", skip_all, err)]
-    async fn process(
-        &self,
-        input: FindServerByAgentKeyDigest,
-    ) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/find_server_by_agent_key_digest.sql",
-            input.digest
+            self.digest
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?
         .map(ServerEntity::from))
     }
@@ -701,18 +889,22 @@ pub struct MoveServerPosition {
     pub position: CanvasUiPosition,
 }
 
-impl Processor<MoveServerPosition> for Db {
+impl Query for MoveServerPosition {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for MoveServerPosition {
     type Output = ();
     type Error = Error;
-    #[tracing::instrument(name = "Query:MoveServerPosition", skip_all, err, fields(id = %input.id))]
-    async fn process(&self, input: MoveServerPosition) -> Result<Self::Output, Self::Error> {
+    #[tracing::instrument(name = "Query:MoveServerPosition", skip_all, err, fields(id = %self.id))]
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "UPDATE orchestration_server SET position_x = $2, position_y = $3 WHERE id = $1",
-            input.id as _,
-            input.position.x,
-            input.position.y
+            self.id as _,
+            self.position.x,
+            self.position.y
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -739,31 +931,118 @@ pub struct DeleteServerRow {
     pub fence: Option<CanvasFence>,
 }
 
+/// How many pods are placed on a server.
+struct CountPodsOnServer<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for CountPodsOnServer<'_> {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for CountPodsOnServer<'_> {
+    type Output = i64;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM orchestration_pod WHERE server = $1"#,
+            self.server as _
+        )
+        .fetch_one(conn)
+        .await?)
+    }
+}
+
+/// Deletes a server row; its view, health history and group memberships cascade.
+struct DeleteServer<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for DeleteServer<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for DeleteServer<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "DELETE FROM orchestration_server WHERE id = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+enum DeleteServerRowFlow {
+    Start(DeleteServerRow),
+    End(TxEnd<DeleteServerRowFlow>),
+}
+
+impl Query for DeleteServerRowFlow {
+    type Effect = (
+        Write<OrchestrationCanvas>,
+        Read<OrchestrationPod>,
+        Write<OrchestrationServer>,
+    );
+}
+
+impl From<TxEnd<DeleteServerRowFlow>> for DeleteServerRowFlow {
+    fn from(end: TxEnd<DeleteServerRowFlow>) -> Self {
+        DeleteServerRowFlow::End(end)
+    }
+}
+
+impl TxFlow for DeleteServerRowFlow {
+    type Database = Postgres;
+    type Commit = ();
+    type Abort = Result<(), Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let DeleteServerRowFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx
+            .run(TouchChecked {
+                canvas: &input.canvas,
+                fence: input.fence.as_ref(),
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx.run(CountPodsOnServer { server: &input.id }).await;
+        let pods = match r {
+            Ok(v) => v,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        if pods > 0 {
+            return base::db::rollback(tx, Error::Conflict(SERVER_HAS_PODS)).await;
+        }
+        let (tx, r) = tx.run(DeleteServer { server: &input.id }).await;
+        match r {
+            Ok(()) => base::db::commit(tx, ()).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            DeleteServerRowFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
 impl Processor<DeleteServerRow> for Db {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:DeleteServerRow", skip_all, err)]
     async fn process(&self, input: DeleteServerRow) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        fence::touch_checked(&mut tx, &input.canvas, input.fence.as_ref()).await?;
-        let pods: i64 = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM orchestration_pod WHERE server = $1"#,
-            &input.id as _
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if pods > 0 {
-            return Err(Error::Conflict(SERVER_HAS_PODS));
-        }
-        // Its view, health history and group memberships cascade.
-        sqlx::query!(
-            "DELETE FROM orchestration_server WHERE id = $1",
-            &input.id as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
+        base::db::transact(self, DeleteServerRowFlow::Start(input)).await
     }
 }
 
@@ -814,18 +1093,26 @@ struct ViewSlots {
     applied: Option<Json<ConfigSnapshot>>,
 }
 
-impl Processor<RegisterWorkerSession> for Db {
-    /// The rotated row, or `None` when a live session still holds the server.
+/// Rotates the server's session lease to the registering worker, unless a live
+/// session still holds it (`None`).
+struct RotateWorkerSession<'a> {
+    input: &'a RegisterWorkerSession,
+}
+
+impl Query for RotateWorkerSession<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for RotateWorkerSession<'_> {
     type Output = Option<ServerEntity>;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:RegisterWorkerSession", skip_all, err, fields(server = %input.server))]
-    async fn process(&self, input: RegisterWorkerSession) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let input = self.input;
         // `observed_address` is what the master saw this registration come from;
         // `reported_addresses` and the worker's build are replaced only when the
         // worker sent them (`COALESCE` keeps the previous value otherwise, so an
         // older worker cannot blank a known version).
-        let rotated: Option<ServerEntity> = sqlx::query_file_as!(
+        Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/register_worker_session.sql",
             &input.server as _,
@@ -838,55 +1125,225 @@ impl Processor<RegisterWorkerSession> for Db {
             input.agent_arch,
             &input.capabilities
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(conn)
         .await?
-        .map(ServerEntity::from);
-        let Some(server) = rotated else {
-            tx.rollback().await?;
-            return Ok(None);
-        };
-        let slots = sqlx::query_as!(
+        .map(ServerEntity::from))
+    }
+}
+
+/// Locks a server's view row and reads its three snapshot slots.
+struct LockViewSlots<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for LockViewSlots<'_> {
+    // `FOR UPDATE` is refused in a READ ONLY transaction.
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for LockViewSlots<'_> {
+    type Output = ViewSlots;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_as!(
             ViewSlots,
             r#"SELECT desired AS "desired: Json<ConfigSnapshot>",
                       in_flight AS "in_flight: Json<ConfigSnapshot>",
                       applied AS "applied: Json<ConfigSnapshot>"
                FROM orchestration_server_config_view
                WHERE server = $1 FOR UPDATE"#,
-            &input.server as _
+            self.server as _
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(conn)
+        .await?)
+    }
+}
+
+/// Promotes the view's `desired` snapshot to `applied`.
+struct PromoteDesired<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for PromoteDesired<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for PromoteDesired<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view
+             SET applied = desired, apply_error = NULL, failed_revision = NULL
+             WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
         .await?;
+        Ok(())
+    }
+}
+
+/// Promotes the view's `in_flight` snapshot to `applied`.
+struct PromoteInFlight<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for PromoteInFlight<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for PromoteInFlight<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view
+             SET applied = in_flight, apply_error = NULL, failed_revision = NULL
+             WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Records that the worker runs a revision the view does not know.
+struct MarkUnknownRevision<'a> {
+    server: &'a ServerId,
+    running: i64,
+}
+
+impl Query for MarkUnknownRevision<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for MarkUnknownRevision<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view
+             SET apply_error = 'running revision ' || $2::bigint::text || ' unknown'
+             WHERE server = $1",
+            self.server as _,
+            self.running
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Forgets what an earlier session applied.
+struct ForgetApplied<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for ForgetApplied<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for ForgetApplied<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view
+             SET applied = NULL, apply_error = NULL, failed_revision = NULL,
+                 failed_pods = '[]'
+             WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Clears the view's `in_flight` and moves its `seq`.
+struct ClearInFlightAndBump<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for ClearInFlightAndBump<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for ClearInFlightAndBump<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view SET in_flight = NULL, seq = seq + 1
+             WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+// See `CreateServerFlow`.
+#[allow(clippy::large_enum_variant)]
+enum RegisterWorkerSessionFlow {
+    Start(RegisterWorkerSession),
+    End(TxEnd<RegisterWorkerSessionFlow>),
+}
+
+impl Query for RegisterWorkerSessionFlow {
+    type Effect = (
+        Write<OrchestrationServer>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<RegisterWorkerSessionFlow>> for RegisterWorkerSessionFlow {
+    fn from(end: TxEnd<RegisterWorkerSessionFlow>) -> Self {
+        RegisterWorkerSessionFlow::End(end)
+    }
+}
+
+impl TxFlow for RegisterWorkerSessionFlow {
+    type Database = Postgres;
+    /// The rotated row, or `None` when a live session still holds the server.
+    type Commit = Option<ServerEntity>;
+    type Abort = Result<Option<ServerEntity>, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let RegisterWorkerSessionFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx.run(RotateWorkerSession { input: &input }).await;
+        let server = match r {
+            Ok(Some(server)) => server,
+            Ok(None) => return base::db::refuse(tx, None).await,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        let (tx, r) = tx.run(LockViewSlots { server: &input.server }).await;
+        let slots = match r {
+            Ok(v) => v,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
         let revision_of = |slot: &Option<Json<ConfigSnapshot>>| slot.as_ref().map(|s| s.revision);
         let running = input.running_revision;
-        if running > 0 {
+        let server_id = &input.server;
+        let (tx, r) = if running > 0 {
             if revision_of(&slots.desired) == Some(running) {
-                sqlx::query!(
-                    "UPDATE orchestration_server_config_view
-                     SET applied = desired, apply_error = NULL, failed_revision = NULL
-                     WHERE server = $1",
-                    &input.server as _
-                )
-                .execute(&mut *tx)
-                .await?;
+                tx.run(PromoteDesired { server: server_id }).await
             } else if revision_of(&slots.in_flight) == Some(running) {
-                sqlx::query!(
-                    "UPDATE orchestration_server_config_view
-                     SET applied = in_flight, apply_error = NULL, failed_revision = NULL
-                     WHERE server = $1",
-                    &input.server as _
-                )
-                .execute(&mut *tx)
-                .await?;
+                tx.run(PromoteInFlight { server: server_id }).await
             } else if revision_of(&slots.applied) != Some(running) {
-                sqlx::query!(
-                    "UPDATE orchestration_server_config_view
-                     SET apply_error = 'running revision ' || $2::bigint::text || ' unknown'
-                     WHERE server = $1",
-                    &input.server as _,
-                    running
-                )
-                .execute(&mut *tx)
-                .await?;
+                tx.run(MarkUnknownRevision {
+                    server: server_id,
+                    running,
+                })
+                .await
+            } else {
+                (tx, Ok(()))
             }
         } else {
             // A worker running nothing (a fresh install, a wiped state directory,
@@ -894,25 +1351,33 @@ impl Processor<RegisterWorkerSession> for Db {
             // applied: forget that, so the stream hands the desired revision out
             // again instead of treating the server as converged, and dependants
             // stop counting on listeners nobody serves.
-            sqlx::query!(
-                "UPDATE orchestration_server_config_view
-                 SET applied = NULL, apply_error = NULL, failed_revision = NULL,
-                     failed_pods = '[]'
-                 WHERE server = $1",
-                &input.server as _
-            )
-            .execute(&mut *tx)
-            .await?;
+            tx.run(ForgetApplied { server: server_id }).await
+        };
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
         }
-        sqlx::query!(
-            "UPDATE orchestration_server_config_view SET in_flight = NULL, seq = seq + 1
-             WHERE server = $1",
-            &input.server as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(Some(server))
+        let (tx, r) = tx.run(ClearInFlightAndBump { server: server_id }).await;
+        match r {
+            Ok(()) => base::db::commit(tx, Some(server)).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            RegisterWorkerSessionFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<RegisterWorkerSession> for Db {
+    /// The rotated row, or `None` when a live session still holds the server.
+    type Output = Option<ServerEntity>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:RegisterWorkerSession", skip_all, err, fields(server = %input.server))]
+    async fn process(&self, input: RegisterWorkerSession) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, RegisterWorkerSessionFlow::Start(input)).await
     }
 }
 
@@ -926,49 +1391,162 @@ pub struct UpdateReportedAddresses {
     pub reported: ReportedAddresses,
 }
 
+/// A server's refresh-key generation and reported address set.
+struct ServerAddressState {
+    refresh_key_generation: i64,
+    reported_addresses: Option<Json<ReportedAddresses>>,
+}
+
+/// Locks a server row and reads its address state; `None` when it is gone.
+struct LockServerAddresses<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for LockServerAddresses<'_> {
+    // `FOR UPDATE` is refused in a READ ONLY transaction.
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for LockServerAddresses<'_> {
+    type Output = Option<ServerAddressState>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        Ok(sqlx::query_as!(
+            ServerAddressState,
+            r#"SELECT refresh_key_generation,
+                      reported_addresses AS "reported_addresses: Json<ReportedAddresses>"
+               FROM orchestration_server
+               WHERE id = $1 FOR UPDATE"#,
+            self.server as _
+        )
+        .fetch_optional(conn)
+        .await?)
+    }
+}
+
+/// Stores a server's reported address set.
+struct StoreReportedAddresses<'a> {
+    server: &'a ServerId,
+    reported: &'a ReportedAddresses,
+}
+
+impl Query for StoreReportedAddresses<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for StoreReportedAddresses<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server SET reported_addresses = $2 WHERE id = $1",
+            self.server as _,
+            Json(self.reported) as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Moves a server's view `seq`, so derivation looks again.
+struct BumpViewSeq<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for BumpViewSeq<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for BumpViewSeq<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view SET seq = seq + 1 WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+enum UpdateReportedAddressesFlow {
+    Start(UpdateReportedAddresses),
+    End(TxEnd<UpdateReportedAddressesFlow>),
+}
+
+impl Query for UpdateReportedAddressesFlow {
+    type Effect = (
+        Write<OrchestrationServer>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<UpdateReportedAddressesFlow>> for UpdateReportedAddressesFlow {
+    fn from(end: TxEnd<UpdateReportedAddressesFlow>) -> Self {
+        UpdateReportedAddressesFlow::End(end)
+    }
+}
+
+impl TxFlow for UpdateReportedAddressesFlow {
+    type Database = Postgres;
+    /// `true` when the stored set changed (and the view's `seq` moved).
+    type Commit = bool;
+    type Abort = Result<bool, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let UpdateReportedAddressesFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx.run(LockServerAddresses { server: &input.server }).await;
+        let current = match r {
+            Ok(Some(current)) => current,
+            Ok(None) => return base::db::refuse(tx, false).await,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        if current.refresh_key_generation != input.generation {
+            return base::db::refuse(tx, false).await;
+        }
+        if current
+            .reported_addresses
+            .is_some_and(|stored| stored.0.same_addresses(&input.reported))
+        {
+            return base::db::refuse(tx, false).await;
+        }
+        let (tx, r) = tx
+            .run(StoreReportedAddresses {
+                server: &input.server,
+                reported: &input.reported,
+            })
+            .await;
+        if let Err(e) = r {
+            return base::db::rollback(tx, e).await;
+        }
+        let (tx, r) = tx.run(BumpViewSeq { server: &input.server }).await;
+        match r {
+            Ok(()) => base::db::commit(tx, true).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            UpdateReportedAddressesFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
 impl Processor<UpdateReportedAddresses> for Db {
     /// `true` when the stored set changed (and the view's `seq` moved).
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query-Transaction:UpdateReportedAddresses", skip_all, err, fields(server = %input.server))]
     async fn process(&self, input: UpdateReportedAddresses) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        let current = sqlx::query!(
-            r#"SELECT refresh_key_generation,
-                      reported_addresses AS "reported_addresses: Json<ReportedAddresses>"
-               FROM orchestration_server
-               WHERE id = $1 FOR UPDATE"#,
-            &input.server as _
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(current) = current else {
-            return Ok(false);
-        };
-        if current.refresh_key_generation != input.generation {
-            return Ok(false);
-        }
-        if current
-            .reported_addresses
-            .is_some_and(|stored| stored.0.same_addresses(&input.reported))
-        {
-            return Ok(false);
-        }
-        sqlx::query!(
-            "UPDATE orchestration_server SET reported_addresses = $2 WHERE id = $1",
-            &input.server as _,
-            Json(&input.reported) as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "UPDATE orchestration_server_config_view SET seq = seq + 1 WHERE server = $1",
-            &input.server as _
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(true)
+        base::db::transact(self, UpdateReportedAddressesFlow::Start(input)).await
     }
 }
 
@@ -994,14 +1572,21 @@ pub struct ClaimServerWatchSession {
     pub lease_until: OffsetDateTime,
 }
 
-impl Processor<ClaimServerWatchSession> for Db {
-    /// The claimed row, or `None` when the generation is no longer current.
+/// Claims the watch session on the server row; `None` when the generation moved.
+struct ClaimWatchRow<'a> {
+    input: &'a ClaimServerWatchSession,
+}
+
+impl Query for ClaimWatchRow<'_> {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for ClaimWatchRow<'_> {
     type Output = Option<ServerEntity>;
     type Error = Error;
-    #[tracing::instrument(name = "Query-Transaction:ClaimServerWatchSession", skip_all, err)]
-    async fn process(&self, input: ClaimServerWatchSession) -> Result<Self::Output, Self::Error> {
-        let mut tx = self.db().begin().await?;
-        let claimed: Option<ServerEntity> = sqlx::query_file_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let input = self.input;
+        Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/claim_server_watch_session.sql",
             &input.server as _,
@@ -1009,19 +1594,96 @@ impl Processor<ClaimServerWatchSession> for Db {
             input.lease_until,
             input.now
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(conn)
         .await?
-        .map(ServerEntity::from);
-        if claimed.is_some() {
-            sqlx::query!(
-                "UPDATE orchestration_server_config_view SET in_flight = NULL WHERE server = $1",
-                &input.server as _
-            )
-            .execute(&mut *tx)
-            .await?;
+        .map(ServerEntity::from))
+    }
+}
+
+/// Clears the view's `in_flight` snapshot.
+struct ClearInFlight<'a> {
+    server: &'a ServerId,
+}
+
+impl Query for ClearInFlight<'_> {
+    type Effect = Write<OrchestrationServerConfigView>;
+}
+
+impl Execute<PgSource> for ClearInFlight<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!(
+            "UPDATE orchestration_server_config_view SET in_flight = NULL WHERE server = $1",
+            self.server as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+// See `CreateServerFlow`.
+#[allow(clippy::large_enum_variant)]
+enum ClaimServerWatchSessionFlow {
+    Start(ClaimServerWatchSession),
+    End(TxEnd<ClaimServerWatchSessionFlow>),
+}
+
+impl Query for ClaimServerWatchSessionFlow {
+    type Effect = (
+        Write<OrchestrationServer>,
+        Write<OrchestrationServerConfigView>,
+    );
+}
+
+impl From<TxEnd<ClaimServerWatchSessionFlow>> for ClaimServerWatchSessionFlow {
+    fn from(end: TxEnd<ClaimServerWatchSessionFlow>) -> Self {
+        ClaimServerWatchSessionFlow::End(end)
+    }
+}
+
+impl TxFlow for ClaimServerWatchSessionFlow {
+    type Database = Postgres;
+    /// The claimed row, or `None` when the generation is no longer current.
+    type Commit = Option<ServerEntity>;
+    type Abort = Result<Option<ServerEntity>, Error>;
+    type Report = ();
+
+    async fn step(tx: Tx<'_, Self>, state: Self) -> TxState<'_, Self> {
+        let ClaimServerWatchSessionFlow::Start(input) = state else {
+            return tx.end(state).await;
+        };
+        let (tx, r) = tx.run(ClaimWatchRow { input: &input }).await;
+        let claimed = match r {
+            Ok(v) => v,
+            Err(e) => return base::db::rollback(tx, e).await,
+        };
+        if claimed.is_none() {
+            return base::db::commit(tx, None).await;
         }
-        tx.commit().await?;
-        Ok(claimed)
+        let (tx, r) = tx.run(ClearInFlight { server: &input.server }).await;
+        match r {
+            Ok(()) => base::db::commit(tx, claimed).await,
+            Err(e) => base::db::rollback(tx, e).await,
+        }
+    }
+
+    fn finished(self) -> Either<Self, TxEnd<Self>> {
+        match self {
+            ClaimServerWatchSessionFlow::End(end) => Either::Right(end),
+            state => Either::Left(state),
+        }
+    }
+}
+
+impl Processor<ClaimServerWatchSession> for Db {
+    /// The claimed row, or `None` when the generation is no longer current.
+    type Output = Option<ServerEntity>;
+    type Error = Error;
+    #[tracing::instrument(name = "Query-Transaction:ClaimServerWatchSession", skip_all, err)]
+    async fn process(&self, input: ClaimServerWatchSession) -> Result<Self::Output, Self::Error> {
+        base::db::transact(self, ClaimServerWatchSessionFlow::Start(input)).await
     }
 }
 
@@ -1035,23 +1697,27 @@ pub struct RenewServerWatchSession {
     pub lease_until: OffsetDateTime,
 }
 
-impl Processor<RenewServerWatchSession> for Db {
+impl Query for RenewServerWatchSession {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for RenewServerWatchSession {
     /// `false` once the session has been fenced out; the stream must then end.
     type Output = bool;
     type Error = Error;
     #[tracing::instrument(name = "Query:RenewServerWatchSession", skip_all, err)]
-    async fn process(&self, input: RenewServerWatchSession) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let renewed: Option<ServerId> = sqlx::query_scalar!(
             r#"UPDATE orchestration_server SET session_lease_until = $4, last_seen_at = $5
                WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3
                RETURNING id AS "id: ServerId""#,
-            input.server as _,
-            input.generation,
-            input.epoch,
-            input.lease_until,
-            input.now
+            self.server as _,
+            self.generation,
+            self.epoch,
+            self.lease_until,
+            self.now
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?;
         Ok(renewed.is_some())
     }
@@ -1066,19 +1732,23 @@ pub struct ReleaseServerWatchSession {
     pub epoch: i64,
 }
 
-impl Processor<ReleaseServerWatchSession> for Db {
+impl Query for ReleaseServerWatchSession {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for ReleaseServerWatchSession {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query:ReleaseServerWatchSession", skip_all, err)]
-    async fn process(&self, input: ReleaseServerWatchSession) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "UPDATE orchestration_server SET session_lease_until = NULL
              WHERE id = $1 AND refresh_key_generation = $2 AND watch_epoch = $3",
-            input.server as _,
-            input.generation,
-            input.epoch
+            self.server as _,
+            self.generation,
+            self.epoch
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -1107,18 +1777,22 @@ pub struct RevokeSilentWatchSessions {
     pub registered_before: OffsetDateTime,
 }
 
-impl Processor<RevokeSilentWatchSessions> for Db {
+impl Query for RevokeSilentWatchSessions {
+    type Effect = Write<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for RevokeSilentWatchSessions {
     /// The servers whose session was revoked.
     type Output = Vec<ServerId>;
     type Error = Error;
     #[tracing::instrument(name = "Query:RevokeSilentWatchSessions", skip_all, err)]
-    async fn process(&self, input: RevokeSilentWatchSessions) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_scalar!(
             "sql/revoke_silent_watch_sessions.sql",
-            input.now,
-            input.registered_before
+            self.now,
+            self.registered_before
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -1127,20 +1801,21 @@ pub struct FindServerByRefreshKeyDigest {
     pub digest: String,
 }
 
-impl Processor<FindServerByRefreshKeyDigest> for Db {
+impl Query for FindServerByRefreshKeyDigest {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for FindServerByRefreshKeyDigest {
     type Output = Option<ServerEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindServerByRefreshKeyDigest", skip_all, err)]
-    async fn process(
-        &self,
-        input: FindServerByRefreshKeyDigest,
-    ) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_file_as!(
             ServerRow,
             "sql/find_server_by_refresh_key_digest.sql",
-            input.digest
+            self.digest
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?
         .map(ServerEntity::from))
     }
@@ -1150,16 +1825,20 @@ pub struct FindCanvasOfServer {
     pub server: ServerId,
 }
 
-impl Processor<FindCanvasOfServer> for Db {
+impl Query for FindCanvasOfServer {
+    type Effect = Read<OrchestrationServer>;
+}
+
+impl Execute<PgSource> for FindCanvasOfServer {
     type Output = Option<CanvasId>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindCanvasOfServer", skip_all, err)]
-    async fn process(&self, input: FindCanvasOfServer) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_scalar!(
             r#"SELECT canvas AS "canvas: CanvasId" FROM orchestration_server WHERE id = $1"#,
-            input.server as _
+            self.server as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }

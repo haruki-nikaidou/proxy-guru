@@ -2,9 +2,12 @@
 
 use crate::entities::db::canvas::{CanvasId, CanvasUiPosition};
 use crate::entities::db::pod::ProxyProtocolVersion;
+use crate::entities::db::tables::OrchestrationExit;
 use base::db::Error;
 use db_types::table_record;
 use sqlx::PgConnection;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Write};
 
 table_record!(ExitId, "orchestration_exit");
 
@@ -50,41 +53,68 @@ impl From<ExitRow> for ExitEntity {
     }
 }
 
-pub(crate) async fn insert_exit(conn: &mut PgConnection, exit: &ExitEntity) -> Result<(), Error> {
-    sqlx::query!(
-        "INSERT INTO orchestration_exit
+/// Inserts an exit row as it is.
+pub(crate) struct InsertExit<'a> {
+    pub(crate) exit: &'a ExitEntity,
+}
+
+impl Query for InsertExit<'_> {
+    type Effect = Write<OrchestrationExit>;
+}
+
+impl Execute<PgSource> for InsertExit<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let exit = self.exit;
+        sqlx::query!(
+            "INSERT INTO orchestration_exit
              (id, canvas, name, comment, destination, send_proxy_protocol, position_x, position_y)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        exit.id as _,
-        exit.canvas as _,
-        exit.name,
-        exit.comment,
-        exit.destination,
-        exit.send_proxy_protocol as _,
-        exit.position.x,
-        exit.position.y
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+            exit.id as _,
+            exit.canvas as _,
+            exit.name,
+            exit.comment,
+            exit.destination,
+            exit.send_proxy_protocol as _,
+            exit.position.x,
+            exit.position.y
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
 }
 
 /// Rewrites every column of an existing exit but its id and canvas.
-pub(crate) async fn update_exit(conn: &mut PgConnection, exit: &ExitEntity) -> Result<(), Error> {
-    sqlx::query!(
-        "UPDATE orchestration_exit
+pub(crate) struct UpdateExit<'a> {
+    pub(crate) exit: &'a ExitEntity,
+}
+
+impl Query for UpdateExit<'_> {
+    type Effect = Write<OrchestrationExit>;
+}
+
+impl Execute<PgSource> for UpdateExit<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let exit = self.exit;
+        sqlx::query!(
+            "UPDATE orchestration_exit
          SET name = $2, comment = $3, destination = $4, send_proxy_protocol = $5,
              position_x = $6, position_y = $7
          WHERE id = $1",
-        exit.id as _,
-        exit.name,
-        exit.comment,
-        exit.destination,
-        exit.send_proxy_protocol as _,
-        exit.position.x,
-        exit.position.y
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+            exit.id as _,
+            exit.name,
+            exit.comment,
+            exit.destination,
+            exit.send_proxy_protocol as _,
+            exit.position.x,
+            exit.position.y
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
 }

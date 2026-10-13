@@ -10,12 +10,15 @@ use crate::entities::db::edge::EdgeId;
 use crate::entities::db::exit::ExitId;
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
+use crate::entities::db::tables::{OrchestrationGroup, OrchestrationGroupMember};
 use base::db::Error;
 use db_types::table_record;
 use serde_json::Value;
 use sqlx::PgConnection;
 use sqlx::types::Json;
 use std::collections::HashMap;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(GroupId, "orchestration_group");
 
@@ -55,89 +58,120 @@ struct MemberRow {
 }
 
 /// The groups of the given canvases with their members, by id.
-pub(crate) async fn groups_of_canvases(
-    conn: &mut PgConnection,
-    canvases: &[CanvasId],
-) -> Result<Vec<GroupEntity>, Error> {
-    let rows = sqlx::query_as!(
-        GroupRow,
-        r#"SELECT id AS "id: GroupId", canvas AS "canvas: CanvasId", kind, name,
-                  props AS "props: Json<Value>"
-           FROM orchestration_group WHERE canvas = ANY($1) ORDER BY id"#,
-        canvases as _
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let members = sqlx::query_file_as!(
-        MemberRow,
-        "sql/groups_of_canvases_members.sql",
-        canvases as _
-    )
-    .fetch_all(conn)
-    .await?;
-    let mut by_group: HashMap<GroupId, Vec<GroupMember>> = HashMap::new();
-    for row in members {
-        let member = match (row.pod, row.edge, row.exit, row.server) {
-            (Some(pod), None, None, None) => GroupMember::Pod(pod),
-            (None, Some(edge), None, None) => GroupMember::Edge(edge),
-            (None, None, Some(exit), None) => GroupMember::Exit(exit),
-            (None, None, None, Some(server)) => GroupMember::Server(server),
-            _ => continue,
-        };
-        by_group.entry(row.group_id).or_default().push(member);
-    }
-    Ok(rows
-        .into_iter()
-        .map(|row| GroupEntity {
-            members: by_group.remove(&row.id).unwrap_or_default(),
-            id: row.id,
-            canvas: row.canvas,
-            kind: row.kind,
-            name: row.name,
-            props: row.props.0,
-        })
-        .collect())
+pub(crate) struct GroupsOfCanvases<'a> {
+    pub(crate) canvases: &'a [CanvasId],
 }
 
-pub(crate) async fn insert_group(
-    conn: &mut PgConnection,
-    group: &GroupEntity,
-) -> Result<(), Error> {
-    sqlx::query!(
-        "INSERT INTO orchestration_group (id, canvas, kind, name, props)
+impl Query for GroupsOfCanvases<'_> {
+    type Effect = (Read<OrchestrationGroup>, Read<OrchestrationGroupMember>);
+}
+
+impl Execute<PgSource> for GroupsOfCanvases<'_> {
+    type Output = Vec<GroupEntity>;
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        let canvases = self.canvases;
+        let rows = sqlx::query_as!(
+            GroupRow,
+            r#"SELECT id AS "id: GroupId", canvas AS "canvas: CanvasId", kind, name,
+                  props AS "props: Json<Value>"
+           FROM orchestration_group WHERE canvas = ANY($1) ORDER BY id"#,
+            canvases as _
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        let members = sqlx::query_file_as!(
+            MemberRow,
+            "sql/groups_of_canvases_members.sql",
+            canvases as _
+        )
+        .fetch_all(conn)
+        .await?;
+        let mut by_group: HashMap<GroupId, Vec<GroupMember>> = HashMap::new();
+        for row in members {
+            let member = match (row.pod, row.edge, row.exit, row.server) {
+                (Some(pod), None, None, None) => GroupMember::Pod(pod),
+                (None, Some(edge), None, None) => GroupMember::Edge(edge),
+                (None, None, Some(exit), None) => GroupMember::Exit(exit),
+                (None, None, None, Some(server)) => GroupMember::Server(server),
+                _ => continue,
+            };
+            by_group.entry(row.group_id).or_default().push(member);
+        }
+        Ok(rows
+            .into_iter()
+            .map(|row| GroupEntity {
+                members: by_group.remove(&row.id).unwrap_or_default(),
+                id: row.id,
+                canvas: row.canvas,
+                kind: row.kind,
+                name: row.name,
+                props: row.props.0,
+            })
+            .collect())
+    }
+}
+
+/// Inserts a group row with its members.
+pub(crate) struct InsertGroup<'a> {
+    pub(crate) group: &'a GroupEntity,
+}
+
+impl Query for InsertGroup<'_> {
+    type Effect = (Write<OrchestrationGroup>, Write<OrchestrationGroupMember>);
+}
+
+impl Execute<PgSource> for InsertGroup<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let group = self.group;
+        sqlx::query!(
+            "INSERT INTO orchestration_group (id, canvas, kind, name, props)
          VALUES ($1, $2, $3, $4, $5)",
-        group.id as _,
-        group.canvas as _,
-        group.kind,
-        group.name,
-        Json(&group.props) as _
-    )
-    .execute(&mut *conn)
-    .await?;
-    insert_members(conn, group).await
+            group.id as _,
+            group.canvas as _,
+            group.kind,
+            group.name,
+            Json(&group.props) as _
+        )
+        .execute(&mut *conn)
+        .await?;
+        insert_members(conn, group).await
+    }
 }
 
 /// Rewrites an existing group, members included.
-pub(crate) async fn update_group(
-    conn: &mut PgConnection,
-    group: &GroupEntity,
-) -> Result<(), Error> {
-    sqlx::query!(
-        "UPDATE orchestration_group SET kind = $2, name = $3, props = $4 WHERE id = $1",
-        group.id as _,
-        group.kind,
-        group.name,
-        Json(&group.props) as _
-    )
-    .execute(&mut *conn)
-    .await?;
-    sqlx::query!(
-        "DELETE FROM orchestration_group_member WHERE group_id = $1",
-        group.id as _
-    )
-    .execute(&mut *conn)
-    .await?;
-    insert_members(conn, group).await
+pub(crate) struct UpdateGroup<'a> {
+    pub(crate) group: &'a GroupEntity,
+}
+
+impl Query for UpdateGroup<'_> {
+    type Effect = (Write<OrchestrationGroup>, Write<OrchestrationGroupMember>);
+}
+
+impl Execute<PgSource> for UpdateGroup<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let group = self.group;
+        sqlx::query!(
+            "UPDATE orchestration_group SET kind = $2, name = $3, props = $4 WHERE id = $1",
+            group.id as _,
+            group.kind,
+            group.name,
+            Json(&group.props) as _
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query!(
+            "DELETE FROM orchestration_group_member WHERE group_id = $1",
+            group.id as _
+        )
+        .execute(&mut *conn)
+        .await?;
+        insert_members(conn, group).await
+    }
 }
 
 async fn insert_members(conn: &mut PgConnection, group: &GroupEntity) -> Result<(), Error> {

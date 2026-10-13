@@ -5,10 +5,13 @@
 //! One row, keyed `current`. It is state, not configuration: a publish replaces
 //! it and takes effect at once.
 
-use base::db::{Db, Error};
+use crate::entities::db::tables::OrchestrationAgentRelease;
+use base::db::Error;
 use db_types::table_record;
-use kanau::processor::Processor;
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(AgentReleaseId, "orchestration_agent_release");
 
@@ -41,11 +44,15 @@ pub struct PublishAgentRelease {
     pub now: OffsetDateTime,
 }
 
-impl Processor<PublishAgentRelease> for Db {
+impl Query for PublishAgentRelease {
+    type Effect = Write<OrchestrationAgentRelease>;
+}
+
+impl Execute<PgSource> for PublishAgentRelease {
     type Output = ();
     type Error = Error;
     #[tracing::instrument(name = "Query:PublishAgentRelease", skip_all, err)]
-    async fn process(&self, input: PublishAgentRelease) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         sqlx::query!(
             "INSERT INTO orchestration_agent_release (id, version, sha256, arch, published_at)
              VALUES ($1, $2, $3, $4, $5)
@@ -53,12 +60,12 @@ impl Processor<PublishAgentRelease> for Db {
                  SET version = EXCLUDED.version, sha256 = EXCLUDED.sha256,
                      arch = EXCLUDED.arch, published_at = EXCLUDED.published_at",
             agent_release_id() as _,
-            input.version,
-            input.sha256,
-            input.arch,
-            input.now
+            self.version,
+            self.sha256,
+            self.arch,
+            self.now
         )
-        .execute(self.db())
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -66,18 +73,22 @@ impl Processor<PublishAgentRelease> for Db {
 
 pub struct FindAgentRelease;
 
-impl Processor<FindAgentRelease> for Db {
+impl Query for FindAgentRelease {
+    type Effect = Read<OrchestrationAgentRelease>;
+}
+
+impl Execute<PgSource> for FindAgentRelease {
     type Output = Option<AgentReleaseEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindAgentRelease", skip_all, err)]
-    async fn process(&self, _: FindAgentRelease) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(sqlx::query_as!(
             AgentReleaseEntity,
             r#"SELECT id AS "id: AgentReleaseId", version, sha256, arch, published_at
                FROM orchestration_agent_release WHERE id = $1"#,
             agent_release_id() as _
         )
-        .fetch_optional(self.db())
+        .fetch_optional(conn)
         .await?)
     }
 }

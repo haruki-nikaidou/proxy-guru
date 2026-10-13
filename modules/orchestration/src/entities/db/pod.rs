@@ -8,14 +8,16 @@
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::dns::DnsProviderId;
 use crate::entities::db::server::ServerId;
-use crate::entities::db::tree;
-use base::db::{Db, Error};
+use crate::entities::db::tables::{OrchestrationCanvas, OrchestrationPod};
+use crate::entities::db::tree::RootOf;
+use base::db::Error;
 use db_types::{table_record, text_enum};
 use guru_topology::Route;
-use kanau::processor::Processor;
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use sqlx::types::Json;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
 
 table_record!(PodId, "orchestration_pod");
 
@@ -258,62 +260,88 @@ impl TryFrom<PodRow> for PodEntity {
 }
 
 /// Inserts a pod row as it is.
-pub(crate) async fn insert_pod(conn: &mut PgConnection, pod: &PodEntity) -> Result<(), Error> {
-    let tls = pod.ingress.tls();
-    sqlx::query!(
-        "INSERT INTO orchestration_pod
+pub(crate) struct InsertPod<'a> {
+    pub(crate) pod: &'a PodEntity,
+}
+
+impl Query for InsertPod<'_> {
+    type Effect = Write<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for InsertPod<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let pod = self.pod;
+        let tls = pod.ingress.tls();
+        sqlx::query!(
+            "INSERT INTO orchestration_pod
              (id, canvas, server, name, comment, port, bind_ip, advertise_ip, ingress,
               receive_proxy_protocol, tls_sni, tls_dns_provider, tls_domain_id,
               tls_acme_directory, route)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
-        pod.id as _,
-        pod.canvas as _,
-        pod.server as _,
-        pod.name,
-        pod.comment,
-        i32::from(pod.port),
-        pod.bind_ip,
-        pod.advertise_ip,
-        pod.ingress.kind() as _,
-        pod.ingress.receive_proxy_protocol() as _,
-        tls.map(|t| t.sni.as_str()),
-        tls.map(|t| &t.dns_provider) as _,
-        tls.map(|t| t.domain_id.as_str()),
-        tls.map(|t| t.acme_directory.as_str()),
-        pod.route.as_ref().map(Json) as _
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+            pod.id as _,
+            pod.canvas as _,
+            pod.server as _,
+            pod.name,
+            pod.comment,
+            i32::from(pod.port),
+            pod.bind_ip,
+            pod.advertise_ip,
+            pod.ingress.kind() as _,
+            pod.ingress.receive_proxy_protocol() as _,
+            tls.map(|t| t.sni.as_str()),
+            tls.map(|t| &t.dns_provider) as _,
+            tls.map(|t| t.domain_id.as_str()),
+            tls.map(|t| t.acme_directory.as_str()),
+            pod.route.as_ref().map(Json) as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
 }
 
 /// Rewrites every column of an existing pod but its id and canvas.
-pub(crate) async fn update_pod(conn: &mut PgConnection, pod: &PodEntity) -> Result<(), Error> {
-    let tls = pod.ingress.tls();
-    sqlx::query!(
-        "UPDATE orchestration_pod
+pub(crate) struct UpdatePod<'a> {
+    pub(crate) pod: &'a PodEntity,
+}
+
+impl Query for UpdatePod<'_> {
+    type Effect = Write<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for UpdatePod<'_> {
+    type Output = ();
+    type Error = Error;
+    async fn execute(self, conn: &mut PgConnection) -> Result<(), Error> {
+        let pod = self.pod;
+        let tls = pod.ingress.tls();
+        sqlx::query!(
+            "UPDATE orchestration_pod
          SET server = $2, name = $3, comment = $4, port = $5, bind_ip = $6, advertise_ip = $7,
              ingress = $8, receive_proxy_protocol = $9, tls_sni = $10, tls_dns_provider = $11,
              tls_domain_id = $12, tls_acme_directory = $13, route = $14
          WHERE id = $1",
-        pod.id as _,
-        pod.server as _,
-        pod.name,
-        pod.comment,
-        i32::from(pod.port),
-        pod.bind_ip,
-        pod.advertise_ip,
-        pod.ingress.kind() as _,
-        pod.ingress.receive_proxy_protocol() as _,
-        tls.map(|t| t.sni.as_str()),
-        tls.map(|t| &t.dns_provider) as _,
-        tls.map(|t| t.domain_id.as_str()),
-        tls.map(|t| t.acme_directory.as_str()),
-        pod.route.as_ref().map(Json) as _
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+            pod.id as _,
+            pod.server as _,
+            pod.name,
+            pod.comment,
+            i32::from(pod.port),
+            pod.bind_ip,
+            pod.advertise_ip,
+            pod.ingress.kind() as _,
+            pod.ingress.receive_proxy_protocol() as _,
+            tls.map(|t| t.sni.as_str()),
+            tls.map(|t| &t.dns_provider) as _,
+            tls.map(|t| t.domain_id.as_str()),
+            tls.map(|t| t.acme_directory.as_str()),
+            pod.route.as_ref().map(Json) as _
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
 }
 
 /// The distinct canvases the given pods are drawn on; the relay leaf rotation
@@ -323,20 +351,24 @@ pub struct ListCanvasesOfPods {
     pub pods: Vec<PodId>,
 }
 
-impl Processor<ListCanvasesOfPods> for Db {
+impl Query for ListCanvasesOfPods {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for ListCanvasesOfPods {
     type Output = Vec<CanvasId>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCanvasesOfPods", skip_all, err)]
-    async fn process(&self, input: ListCanvasesOfPods) -> Result<Self::Output, Self::Error> {
-        if input.pods.is_empty() {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        if self.pods.is_empty() {
             return Ok(Vec::new());
         }
         Ok(sqlx::query_scalar!(
             r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
                WHERE id = ANY($1) ORDER BY canvas"#,
-            &input.pods as _
+            &self.pods as _
         )
-        .fetch_all(self.db())
+        .fetch_all(conn)
         .await?)
     }
 }
@@ -347,14 +379,18 @@ pub struct FindPodById {
     pub id: PodId,
 }
 
-impl Processor<FindPodById> for Db {
+impl Query for FindPodById {
+    type Effect = Read<OrchestrationPod>;
+}
+
+impl Execute<PgSource> for FindPodById {
     type Output = Option<PodEntity>;
     type Error = Error;
     #[tracing::instrument(name = "Query:FindPodById", skip_all, err)]
-    async fn process(&self, input: FindPodById) -> Result<Self::Output, Self::Error> {
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         Ok(
-            sqlx::query_file_as!(PodRow, "sql/find_pod_by_id.sql", input.id as _)
-                .fetch_optional(self.db())
+            sqlx::query_file_as!(PodRow, "sql/find_pod_by_id.sql", self.id as _)
+                .fetch_optional(conn)
                 .await?
                 .map(PodEntity::try_from)
                 .transpose()?,
@@ -368,12 +404,15 @@ impl Processor<FindPodById> for Db {
 #[derive(Debug)]
 pub struct ListCanvasesWithRelayTls;
 
-impl Processor<ListCanvasesWithRelayTls> for Db {
+impl Query for ListCanvasesWithRelayTls {
+    type Effect = (Read<OrchestrationPod>, Read<OrchestrationCanvas>);
+}
+
+impl Execute<PgSource> for ListCanvasesWithRelayTls {
     type Output = Vec<CanvasId>;
     type Error = Error;
     #[tracing::instrument(name = "Query:ListCanvasesWithRelayTls", skip_all, err)]
-    async fn process(&self, _: ListCanvasesWithRelayTls) -> Result<Self::Output, Self::Error> {
-        let mut conn = self.db().acquire().await?;
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
         let canvases: Vec<CanvasId> = sqlx::query_scalar!(
             r#"SELECT DISTINCT canvas AS "canvas: CanvasId" FROM orchestration_pod
                WHERE ingress IN ('relay_tls', 'relay_quic')"#
@@ -382,7 +421,7 @@ impl Processor<ListCanvasesWithRelayTls> for Db {
         .await?;
         let mut roots = Vec::with_capacity(canvases.len());
         for canvas in &canvases {
-            roots.push(tree::root_of(&mut conn, canvas).await?);
+            roots.push(RootOf { canvas }.execute(&mut *conn).await?);
         }
         roots.sort();
         roots.dedup();
