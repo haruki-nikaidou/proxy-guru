@@ -13,9 +13,9 @@ use crate::entities::db::api_key::{
 };
 use crate::services::identity::{Identity, IdentityKind};
 use crate::utils::rbac::Permission;
+use crate::utils::token::{generate_api_key_secret, sha256_hex};
 use crate::utils::validation::ApiKeyName;
 use wakuwaku::proof::Proven;
-use crate::utils::token::{generate_api_key_secret, sha256_hex};
 
 /// API-key operations.
 #[derive(Clone)]

@@ -9,9 +9,8 @@ use rpguru_sdk::auth as pb;
 
 use crate::entities::db::account::{AccountEntity, AccountId, AccountRole, FindAccountById};
 use crate::entities::db::api_key::{ApiKeyId, ApiKeyOmitSecret};
-use crate::rpc::validation_status;
-use crate::utils::validation::{API_KEY_NAME, NEW_PASSWORD, prove_email};
 use crate::rpc::middleware::{SESSION_ID_METADATA, from_request};
+use crate::rpc::validation_status;
 use crate::services::api_key::ListApiKeys;
 use crate::services::config::{AuthConfigService, GetModuleConfig, SetModuleConfig};
 use crate::services::identity::IdentityKind;
@@ -21,6 +20,7 @@ use crate::services::{
     LoginResult, Logout, RegisterAccount, RegisterResult, RevokeApiKey, SessionService,
     SetAccountRole,
 };
+use crate::utils::validation::{API_KEY_NAME, NEW_PASSWORD, prove_email};
 
 /// The concrete gRPC `Auth` service, wiring the auth services together.
 #[derive(Clone)]
@@ -133,9 +133,7 @@ impl pb::auth_server::Auth for AuthGrpc {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned)
         {
-            self.sessions
-                .process(Logout { session_id })
-                .await?;
+            self.sessions.process(Logout { session_id }).await?;
         }
         Ok(Response::new(pb::LogoutReply {}))
     }
@@ -253,10 +251,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         request: Request<pb::ListAccountsRequest>,
     ) -> Result<Response<pb::ListAccountsReply>, Status> {
         let actor = from_request(&request)?;
-        let accounts = self
-            .accounts
-            .process(ListAccounts { actor })
-            .await?;
+        let accounts = self.accounts.process(ListAccounts { actor }).await?;
         Ok(Response::new(pb::ListAccountsReply {
             accounts: accounts.into_iter().map(account_to_proto).collect(),
         }))
@@ -328,10 +323,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         request: Request<pb::ListApiKeysRequest>,
     ) -> Result<Response<pb::ListApiKeysReply>, Status> {
         let actor = from_request(&request)?;
-        let keys = self
-            .api_keys
-            .process(ListApiKeys { actor })
-            .await?;
+        let keys = self.api_keys.process(ListApiKeys { actor }).await?;
         Ok(Response::new(pb::ListApiKeysReply {
             keys: keys.into_iter().map(api_key_to_proto).collect(),
         }))
@@ -344,9 +336,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         let actor = from_request(&request)?;
         let req = request.into_inner();
         let id = ApiKeyId::from_key(&req.id);
-        self.api_keys
-            .process(RevokeApiKey { actor, id })
-            .await?;
+        self.api_keys.process(RevokeApiKey { actor, id }).await?;
         Ok(Response::new(pb::RevokeApiKeyReply {}))
     }
 
