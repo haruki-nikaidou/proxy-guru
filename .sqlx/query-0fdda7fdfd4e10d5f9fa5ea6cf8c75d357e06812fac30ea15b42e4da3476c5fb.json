@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE orchestration_canvas SET position_x = $2, position_y = $3\n                 WHERE id = $1 AND id = ANY($4)",
+  "query": "UPDATE orchestration_server SET position_x = $2, position_y = $3\n             WHERE id = $1 AND canvas = ANY($4)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -13,5 +13,5 @@
     },
     "nullable": []
   },
-  "hash": "7431a4fca815c0a44d01093467f42329719b0428b53231c27e50715a9b6837bd"
+  "hash": "0fdda7fdfd4e10d5f9fa5ea6cf8c75d357e06812fac30ea15b42e4da3476c5fb"
 }

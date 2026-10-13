@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orchestration_server_config_view\n             SET applied = in_flight, apply_error = NULL, failed_revision = NULL\n             WHERE server = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1eeeefeed4b3bd7b531c219c9653e642575244a8ffca7ad12acb37b27241bded"
+}
