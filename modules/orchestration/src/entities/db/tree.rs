@@ -49,10 +49,14 @@ impl Execute<PgSource> for AncestorsOf<'_> {
     type Output = Vec<CanvasId>;
     type Error = Error;
     async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
-        let rows =
-            sqlx::query_file_as!(DepthRow, "sql/ancestors_of.sql", self.canvas as _, MAX_DEPTH)
-                .fetch_all(conn)
-                .await?;
+        let rows = sqlx::query_file_as!(
+            DepthRow,
+            "sql/ancestors_of.sql",
+            self.canvas as _,
+            MAX_DEPTH
+        )
+        .fetch_all(conn)
+        .await?;
         guard_depth(&rows)?;
         Ok(rows.into_iter().map(|row| row.canvas).collect())
     }

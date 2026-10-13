@@ -516,7 +516,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     services.provide::<SessionService, _>().clone(),
                     services.provide::<ApiKeyService, _>().clone(),
                 ))
-                .layer(AgentLayer::new(services.provide::<AgentService, _>().clone()))
+                .layer(AgentLayer::new(
+                    services.provide::<AgentService, _>().clone(),
+                ))
                 .add_routes(Routes::default());
             add_grpc(router)
                 .serve_with_shutdown(cli.workers_addr, shutdown())
@@ -620,8 +622,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sweep_liveness_secs = interval_secs(SweepLivenessJob::INTERVAL),
                 trim_health_history_secs = interval_secs(TrimHealthHistoryJob::INTERVAL),
                 renew_certificates_secs = interval_secs(RenewCertificatesJob::INTERVAL),
-                resolve_server_countries_secs =
-                    interval_secs(ResolveServerCountriesJob::INTERVAL),
+                resolve_server_countries_secs = interval_secs(ResolveServerCountriesJob::INTERVAL),
                 "running periodic jobs"
             );
             shutdown().await;

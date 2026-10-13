@@ -58,10 +58,7 @@ impl World {
             panic!("collecting() is a collecting publisher");
         };
         Ok(Self {
-            fanout: FanoutService {
-                db,
-                publisher,
-            },
+            fanout: FanoutService { db, publisher },
             published,
             pool,
         })

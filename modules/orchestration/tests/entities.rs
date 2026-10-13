@@ -944,10 +944,7 @@ async fn a_second_write_fenced_on_a_superseded_generation_is_rejected(
         Vec::new(),
     );
     second.fence = Some(fence);
-    let err = sp
-        .process(second)
-        .await
-        .expect_err("the loser is rejected");
+    let err = sp.process(second).await.expect_err("the loser is rejected");
     assert!(
         err.to_string().contains("orchestration_stale_generation"),
         "the fence names its sentinel: {err}"

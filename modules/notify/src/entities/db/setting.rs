@@ -10,10 +10,10 @@
 //! `events` is the set of kinds a row wants. It defaults to empty in the schema
 //! on purpose: installing this module notifies nobody until an operator opts in.
 
-use auth::entities::db::account::AccountId;
 use crate::entities::db::tables::{
     NotifyAccountDefault, NotifyAccountSetting, NotifyCanvasSetting,
 };
+use auth::entities::db::account::AccountId;
 use auth::entities::db::tables::AuthAccount;
 use base::db::Error;
 use db_types::text_enum;

@@ -45,7 +45,12 @@ pub const TOPICS: [&str; 2] = [
     Debug,
     Clone,
     PartialEq,
-    Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, RkyvMessageSer, RkyvMessageDe,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    RkyvMessageSer,
+    RkyvMessageDe,
 )]
 pub struct CanvasDirty {
     /// The canvas id, as text.

@@ -1,10 +1,10 @@
 use crate::entities::db::canvas::{CanvasFence, CanvasId, CanvasUiPosition};
 use crate::entities::db::fence::{Touch, TouchChecked};
 use crate::entities::db::health::ServerHealthStatus;
-use crate::entities::db::view::ConfigSnapshot;
 use crate::entities::db::tables::{
     OrchestrationCanvas, OrchestrationPod, OrchestrationServer, OrchestrationServerConfigView,
 };
+use crate::entities::db::view::ConfigSnapshot;
 use base::db::{Db, Error};
 use db_types::{table_record, text_enum};
 use kanau::processor::Processor;
@@ -504,7 +504,11 @@ impl TxFlow for CreateServerFlow {
         // The server and its (empty) config view are one write: no code path may
         // ever observe a server without the row its rollout is tracked in. The
         // tree's root comes first (`fence`'s lock order).
-        let (tx, r) = tx.run(Touch { canvas: &input.canvas }).await;
+        let (tx, r) = tx
+            .run(Touch {
+                canvas: &input.canvas,
+            })
+            .await;
         if let Err(e) = r {
             return base::db::rollback(tx, e).await;
         }
@@ -1323,7 +1327,11 @@ impl TxFlow for RegisterWorkerSessionFlow {
             Ok(None) => return base::db::refuse(tx, None).await,
             Err(e) => return base::db::rollback(tx, e).await,
         };
-        let (tx, r) = tx.run(LockViewSlots { server: &input.server }).await;
+        let (tx, r) = tx
+            .run(LockViewSlots {
+                server: &input.server,
+            })
+            .await;
         let slots = match r {
             Ok(v) => v,
             Err(e) => return base::db::rollback(tx, e).await,
@@ -1501,7 +1509,11 @@ impl TxFlow for UpdateReportedAddressesFlow {
         let UpdateReportedAddressesFlow::Start(input) = state else {
             return tx.end(state).await;
         };
-        let (tx, r) = tx.run(LockServerAddresses { server: &input.server }).await;
+        let (tx, r) = tx
+            .run(LockServerAddresses {
+                server: &input.server,
+            })
+            .await;
         let current = match r {
             Ok(Some(current)) => current,
             Ok(None) => return base::db::refuse(tx, false).await,
@@ -1525,7 +1537,11 @@ impl TxFlow for UpdateReportedAddressesFlow {
         if let Err(e) = r {
             return base::db::rollback(tx, e).await;
         }
-        let (tx, r) = tx.run(BumpViewSeq { server: &input.server }).await;
+        let (tx, r) = tx
+            .run(BumpViewSeq {
+                server: &input.server,
+            })
+            .await;
         match r {
             Ok(()) => base::db::commit(tx, true).await,
             Err(e) => base::db::rollback(tx, e).await,
@@ -1662,7 +1678,11 @@ impl TxFlow for ClaimServerWatchSessionFlow {
         if claimed.is_none() {
             return base::db::commit(tx, None).await;
         }
-        let (tx, r) = tx.run(ClearInFlight { server: &input.server }).await;
+        let (tx, r) = tx
+            .run(ClearInFlight {
+                server: &input.server,
+            })
+            .await;
         match r {
             Ok(()) => base::db::commit(tx, claimed).await,
             Err(e) => base::db::rollback(tx, e).await,
