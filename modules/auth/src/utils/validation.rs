@@ -34,9 +34,7 @@ fn check_email(subject: &String) -> Result<CanonicalEmail, ValidateError<Infalli
         return Err(ValidateError::Deny(EMAIL_NOT_CANONICAL));
     }
     let well_formed = (3..=254).contains(&subject.len())
-        && !subject
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control())
+        && !subject.chars().any(|c| c.is_whitespace() || c.is_control())
         && match subject.split_once('@') {
             Some((local, domain)) => {
                 !local.is_empty() && !domain.is_empty() && !domain.contains('@')
@@ -52,9 +50,7 @@ fn check_email(subject: &String) -> Result<CanonicalEmail, ValidateError<Infalli
 pub static EMAIL: PureVerifier<String, CanonicalEmail> = PureVerifier::new(check_email);
 
 /// Normalize `raw`, then prove it is a valid email address.
-pub fn prove_email(
-    raw: &str,
-) -> Result<Proven<String, CanonicalEmail>, ValidateError<Infallible>> {
+pub fn prove_email(raw: &str) -> Result<Proven<String, CanonicalEmail>, ValidateError<Infallible>> {
     EMAIL.prove(normalize_email(raw))
 }
 

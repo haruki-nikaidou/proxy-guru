@@ -24,8 +24,8 @@ use auth::utils::validation::{
     API_KEY_NAME, AcceptablePassword, ApiKeyName, CanonicalEmail, NEW_PASSWORD, prove_email,
 };
 use base::db::Db;
-use wakuwaku::proof::Proven;
 use kanau::processor::Processor;
+use wakuwaku::proof::Proven;
 
 fn email(raw: &str) -> Proven<String, CanonicalEmail> {
     prove_email(raw).unwrap()
