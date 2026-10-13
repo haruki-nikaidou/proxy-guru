@@ -44,7 +44,7 @@ TLS クライアントポッドは、[ポッドのパネル](/ja/reference/nodes
 
 ## 発行パス
 
-`renew_certificates` は 60 秒ごとに publish され、`--mode consumer` で消費されます。そこでティックが
+`renew_certificates` は `--mode cron` のプロセス内で 60 秒ごとに起動するジョブです。各実行のティックが
 `orchestration_job_run` で claim されるため、パスは `acme_interval_secs` につきフリート全体で 1 回だけ
 実行されます。1 回のパスは:
 
@@ -161,6 +161,6 @@ CN と SAN を `<pod-key>.relay.guru.internal` として発行します。`rotat
 | `relay_cert_renew_before_secs` | 864000（10 日） |
 | `relay_rotation_interval_secs` | 3600 |
 
-consumer には、ACME ディレクトリと DNS プロバイダーの API への外向き HTTPS、そして伝播を確認する
+`cron` には、ACME ディレクトリと DNS プロバイダーの API への外向き HTTPS、そして伝播を確認する
 パブリックリゾルバーへの DNS が必要です。ドキュメント全体については
 [設定](/ja/reference/configuration/)を参照してください。

@@ -12,14 +12,15 @@ Each binary takes the same value from a CLI flag or an environment variable; the
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--database-url` | `GURU_DATABASE_URL` | *required in every mode but `cron`* |
+| `--database-url` | `GURU_DATABASE_URL` | *required in every mode* |
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10` (must be ≥ 1) |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000` (must be ≥ 1) |
-| `--amqp-uri` | `AMQP_URI` | *required in every mode* |
-| `--redis-url` | `REDIS_URL` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* |
+| `--iggy-url` | `IGGY_URL` | *required in every mode* |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | empty = all partitions (`0,1,2,3`); `consumer` only |
+| `--redis-url` | `REDIS_URL` | *required in every mode but `notifier`* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000` (must be ≥ 1) |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
-| — | `GURU_MASTER_KEY` | *required in `dashboard_grpc`, `workers_grpc` and `consumer`* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
+| — | `GURU_MASTER_KEY` | *required in every mode but `notifier`* (environment only; 32 random bytes, base64 — `manage-tool generate-master-key`) |
 | — | `GURU_SMTP_PASSWORD` | *optional, `notifier` only* (environment only; unset sends unauthenticated) |
 | — | `GURU_TELEGRAM_BOT_TOKEN` | *optional, `notifier` only* (environment only; unset disables Telegram) |
 
@@ -27,17 +28,29 @@ Everything else an operator can tune — health thresholds and retention, the de
 the renewal window, how often each periodic job runs — lives in the database, not in the
 environment. See [Module configuration](#module-configuration).
 
-`--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer`, `notifier` and `cron`. A broker URI
-looks like `amqp://guru:guru@127.0.0.1:5672/`, where the trailing `/` selects the default vhost. The
-broker is required in **every** mode, `cron` included: periodic work is published as a message, so a
-broker outage stalls derivation, liveness and certificate renewal until the broker returns.
+`--mode` accepts `dashboard_grpc`, `workers_grpc`, `consumer`, `notifier` and `cron`. An Iggy URL
+looks like `iggy://<user>:<password>@<host>:8090`, for example `iggy://iggy:iggy@127.0.0.1:8090`.
+Iggy is required in **every** mode; without it startup fails with `Iggy is required: set IGGY_URL
+(or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`. Every mode creates the topology
+it needs at startup, idempotently, so nothing has to be pre-created: one stream `guru` with the
+topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, 4
+partitions each. The consumers add a `retry_<topic>` topic for each topic they read (`consumer` the
+first two, `notifier` the third).
+
+`--iggy-partitions` takes comma-separated, 0-based partition ids that a `consumer` reads; empty
+means all of them. Several `consumer` replicas need **disjoint** sets — they share consumer names
+(`guru_orchestration_canvas_dirty`, `guru_notify_health_changed`) and would otherwise race on the
+stored offsets. Offsets are stored after processing, so delivery is at least once. A handler that
+fails because the database is unavailable is retried in place; other database errors and conflicts
+send the key to the retry topic (retried after 2, 4, 8 and 16 s); anything else is dropped and
+logged.
 
 `notifier` is the delivery side of [Notifications](/features/notifications/): exactly one instance,
 enforced with a PostgreSQL advisory lock. It reads the `notify` config at startup and takes only the
-database and the broker — no `GURU_MASTER_KEY` (it decrypts nothing) and no `REDIS_URL` (it
+database and Iggy — no `GURU_MASTER_KEY` (it decrypts nothing) and no `REDIS_URL` (it
 publishes no live events). Its two channel secrets are the environment variables above.
 
-Redis is required in the three modes that serve or derive, and for the same kind of
+Redis is required in every mode except `notifier`, and for the same kind of
 reason: it is the live bus behind the operator API's `Watch*` streams. A URL looks like
 `redis://127.0.0.1:6379/`. Every mutation publishes one event on the channel
 `guru:orchestration:live`, and every `dashboard_grpc` replica subscribes to it once, so an edit made
@@ -52,47 +65,44 @@ streams. The *Live* badge on those pages shows that browser connection; the log 
 `live bus connected` is how you check the bus itself.
 
 `GURU_MASTER_KEY` encrypts every secret at rest — DNS provider API tokens, ACME account keys,
-certificate and CA private keys — and is required in the three modes that read one:
-`dashboard_grpc`, `workers_grpc` and `consumer`. `cron` never touches a secret and never reads the
-key, and neither does `notifier`. It is deliberately not a flag: argv is visible in process
+certificate and CA private keys — and is required in every mode that reads one, which is every mode
+except `notifier`: `cron` renews certificates and rotates relay leaves. It is deliberately not a
+flag: argv is visible in process
 listings. Losing the key means re-entering every DNS provider token and re-issuing every
 certificate; changing it is not supported in place.
 
-`GURU_DATABASE_URL` is required only in the four modes that open a connection. `cron` ignores it
-and starts without a database URL at all: a clock that refused to start without one would carry a
-database dependency, just an unused one. In the modes that do open it, the pool holds up to
+`GURU_DATABASE_URL` is required in every mode, `cron` included: its jobs read and write the
+database directly. The pool holds up to
 `GURU_DB_POOL_SIZE` connections and every statement is bounded by the server at
 `GURU_DB_STATEMENT_TIMEOUT_MS` — a statement past it is cancelled by PostgreSQL, which the edge
 reports as `UNAVAILABLE` rather than as a fault. Each serving master also applies whatever
 migrations are pending when it starts, under an advisory lock, so a fleet starting together applies
 each one exactly once.
 
-### Scheduling versus executing
+### Periodic jobs
 
-`cron` is a clock and nothing else. It scans every 5 s, publishes one execution signal per due job,
-and opens no database connection. `consumer` binds one durable queue per signal and runs the pass,
-next to the `CanvasDirty` derivation hook — so periodic work scales, retries and fails over exactly
-like an edit does, and a job that hangs cannot stop the clock.
+`cron` runs all six periodic jobs in-process, as wakuwaku cron jobs. Each job wakes on its own
+fixed interval, and its first run is at start. Before working, every run claims its tick — one
+`orchestration_job_run` row per job, compare-and-set — so several `cron` processes run each pass
+once per configured interval fleet-wide; a second `cron` is a standby, not a duplicate. On shutdown
+`cron` lets runs in progress finish for up to 20 s, then aborts them.
 
-| Routing key | Queue | Published every | Executed at most every | The pass |
-|---|---|---|---|---|
-| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 s | `sweep_interval_secs` (30) | Re-derives every canvas whose `generation` ran ahead of its `derived_generation` |
-| `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 s | `liveness_interval_secs` (30) | Marks a server `Offline` when it has not reported for `health_report_interval_secs × health_offline_after_intervals` |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes `server_health_record` / `pod_health_record` rows older than `server_health_ttl_secs` / `pod_health_ttl_secs` |
-| `renew_certificates` | `guru_orchestration_renew_certificates` | 60 s | `acme_interval_secs` (60) | ACME issuance and renewal: renews `acme_renew_before_secs` before expiry, retries a failed attempt after `acme_retry_after_secs` |
-| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs` (3600) | Re-issues relay leaves within `relay_cert_renew_before_secs` of expiry and re-derives their canvases |
-| `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 s | `country_lookup_interval_secs` (60) | Looks up the country of every server IPv4 address that has none through `country_lookup_url`: a new or changed address at once, a failed lookup again after `country_lookup_retry_after_secs` |
+| Job | Wakes every | Executed at most every | The pass |
+|---|---|---|---|
+| `derive_stale_canvases` | 30 s | `sweep_interval_secs` (30) | Re-derives every canvas whose `generation` ran ahead of its `derived_generation` |
+| `sweep_liveness` | 30 s | `liveness_interval_secs` (30) | Marks a server `Offline` when it has not reported for `health_report_interval_secs × health_offline_after_intervals` |
+| `trim_health_history` | 300 s | `health_retention_interval_secs` (300) | Deletes `server_health_record` / `pod_health_record` rows older than `server_health_ttl_secs` / `pod_health_ttl_secs` |
+| `renew_certificates` | 60 s | `acme_interval_secs` (60) | ACME issuance and renewal: renews `acme_renew_before_secs` before expiry, retries a failed attempt after `acme_retry_after_secs` |
+| `rotate_relay_certificates` | 3600 s | `relay_rotation_interval_secs` (3600) | Re-issues relay leaves within `relay_cert_renew_before_secs` of expiry and re-derives their canvases |
+| `resolve_server_countries` | 60 s | `country_lookup_interval_secs` (60) | Looks up the country of every server IPv4 address that has none through `country_lookup_url`: a new or changed address at once, a failed lookup again after `country_lookup_retry_after_secs` |
 
-Two layers, and they are not the same number. The scheduler publishes on the fixed cadence in the
-middle column because it reads no configuration; the consumer claims each run — one
-`orchestration_job_run` row per job, compare-and-set, at most once per configured interval
-fleet-wide — before doing anything. The interval is measured between the *scheduling ticks* the
-signals carry, not between the moments a consumer got round to them, so a busy consumer does not
-silently stretch a cadence. An interval at or below the signal's cadence therefore means "every
-signal", a larger one slows the job down across the whole fleet, and a duplicate or replayed
-delivery is refused rather than run twice, because a tick that already ran can never be claimed
-again. The intervals are values on the stored `orchestration` key, so a change takes effect when
-the consumers restart, like everything else on that key.
+Two layers, and they are not the same number. A job wakes on the fixed interval in the middle
+column; the claim lets it run at most once per configured interval fleet-wide. The interval is
+measured between *scheduling ticks*, not between the moments the work started, so a slow run does
+not silently stretch a cadence. An interval at or below the job's own therefore means "every tick",
+a larger one slows the job down across the whole fleet, and a tick that already ran can never be
+claimed again. The intervals are values on the stored `orchestration` key, so a change takes effect
+when the `cron` processes restart, like everything else on that key.
 
 A server is `Degraded` while it lags its desired revision for longer than `degraded_grace_secs` or
 while the last acknowledged revision failed for any pod. The named values are keys of the stored
@@ -434,6 +444,22 @@ One global flag: `--database-url` (`GURU_DATABASE_URL`), the same URL `guru-mast
 | `orchestration export-config --server <key>` | Print the derived `guru-worker` TOML for one server |
 | `orchestration init-ca` | Create the internal CA for relay TLS/QUIC links and print its certificate; refuses to replace an existing one (needs `GURU_MASTER_KEY`) |
 
+### Account and API key input rules
+
+`create-admin`, the dashboard's account creation, password change, email change and API key
+creation check their input before anything else — before the caller's permissions, so a malformed
+request is answered `InvalidArgument` whoever sends it:
+
+- **Email:** trimmed and lowercased first (`' Admin@Example.com '` is stored as
+  `admin@example.com`), then 3–254 bytes, exactly one `@` with a non-empty local part and domain, no
+  whitespace or control characters (`not a valid email address`).
+- **Password:** at least 8 characters, at most 1024 bytes.
+- **API key name:** surrounding whitespace is trimmed; it must then be non-empty, at most 128
+  characters, and free of control characters.
+
+Login is not checked against these rules — only normalized — so an account created before them can
+still sign in. `create-admin` prints the refused rule to stderr and exits 1.
+
 ## Dashboard
 
 | Environment | Default | Purpose |
@@ -476,9 +502,9 @@ manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 ```
 
 The six `*_interval_secs` fields are how often a periodic job may actually run
-([Scheduling versus executing](#scheduling-versus-executing)). They live here rather than in the
+([Periodic jobs](#periodic-jobs)). They live here rather than in the
 environment because the whole fleet has to agree on them: the claim that enforces an interval is
-one database row shared by every consumer.
+one database row shared by every `cron` process.
 
 ```sh
 manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_interval_secs":7200}'
@@ -491,11 +517,9 @@ payload seeding would write, and a form that replaces the whole document. It val
 previous contents. Saving from the dashboard is not a live reload either: **restart `guru-master`**
 for the new values to take effect.
 
-The four database-backed modes — `dashboard_grpc`, `workers_grpc`, `consumer` and `notifier` — read
-the keys they need once, during startup, and hand the values to their services; there is no live
-reload. `cron` opens no database connection and so reads none of them: it only publishes execution
-signals, and the consumer that receives one applies the stored interval. An unseeded installation
-runs the defaults.
+Every mode reads the keys it needs once, during startup, and hands the values to its services;
+there is no live reload. `cron` included: its jobs apply the stored intervals and thresholds read
+at start. An unseeded installation runs the defaults.
 A row that does not deserialize fails startup naming the key — substituting defaults for a corrupt
 document would silently swap an operator's whole config, for instance moving ACME from staging to
 the production directory.

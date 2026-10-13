@@ -1,12 +1,12 @@
 ---
 title: 本地开发
-description: 在同一台机器上启动 PostgreSQL、RabbitMQ、Redis、控制平面与控制台。
+description: 在同一台机器上启动 PostgreSQL、Iggy、Redis、控制平面与控制台。
 ---
 
-控制平面需要一个 PostgreSQL 数据库、一个 AMQP 消息代理和一个 Redis 服务端。其余部分全部从工作区直接运行。
+控制平面需要一个 PostgreSQL 数据库、一个 Apache Iggy 服务端和一个 Redis 服务端。其余部分全部从工作区直接运行。
 
 :::caution[仓库根目录的 `.env` 不是开发配置]
-根目录的 `.env` 可能保存着**生产环境**凭据（`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL`），
+根目录的 `.env` 可能保存着**生产环境**凭据（`GURU_DATABASE_URL`、`IGGY_URL`、`REDIS_URL`），
 而你启动的每个进程都会继承它。请显式传入 `--database-url`——或者覆盖这个变量——这样本地运行才不会
 意外连上远程数据库。
 :::
@@ -18,7 +18,12 @@ docker run -d --name guru-postgres -p 15432:5432 \
   -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
   postgres:18.6-alpine
 
-docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+docker run -d --name guru-iggy -p 8090:8090 \
+  --cap-add SYS_NICE --security-opt seccomp=unconfined --ulimit memlock=-1:-1 \
+  -e IGGY_ROOT_USERNAME=iggy -e IGGY_ROOT_PASSWORD=iggy \
+  -e IGGY_TCP_ADDRESS=0.0.0.0:8090 -e IGGY_NODE_ADVERTISED_ADDRESS=localhost \
+  -e IGGY_QUIC_ENABLED=false -e IGGY_WEBSOCKET_ENABLED=false \
+  apache/iggy:0.9.0
 
 docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
   redis-server --save '' --appendonly no
@@ -26,7 +31,8 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 请使用 **16 或更高版本**的 PostgreSQL。
 
-消息代理 URI 的写法很关键：默认 vhost 请使用 `amqp://guest:guest@127.0.0.1:5672/`。Redis 的 URL 是
+也可以直接用仓库 `docker-compose.yml` 中的 `iggy` 服务（`docker compose up iggy`）。Iggy 的 URL 形如
+`iggy://iggy:iggy@127.0.0.1:8090`；stream 和 topic 由每种模式在启动时自行创建，无需预先建立。Redis 的 URL 是
 `redis://127.0.0.1:6379/`；它只做 pub/sub——运维 API `Watch*` 流的实时事件都经由它，因此这里关掉了
 持久化，重启它也不会丢掉任何需要保留的东西。如果本机 `6379` 已被别的程序占用，在
 `docker compose up redis` 之前于 `.env` 中设置 `REDIS_PORT`（比如 `16379`）把宿主端口挪开，并在
@@ -62,7 +68,7 @@ cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
 
 ## 4. 控制平面
 
-所有会访问数据库的运行模式都使用 `GURU_MASTER_KEY` 解密机密数据，而它没有默认值：
+除 `notifier` 外的所有运行模式都使用 `GURU_MASTER_KEY` 解密机密数据，而它没有默认值：
 缺少它时进程会在启动阶段中止，并报出
 `Error: "master key: GURU_MASTER_KEY is not set"`。只需生成一次——该子命令不需要数据库——
 然后在启动 master 的那个 shell 中保留它：
@@ -80,29 +86,30 @@ export GURU_MASTER_KEY='<the printed value>'
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-在 `consumer` 运行之前不会有任何画布被推导，因此请在第二个 shell 中启动一个——它既是编辑钩子，
-也是所有周期任务的执行者（过期画布清扫、存活性清扫、健康数据保留、ACME 以及中继叶证书轮换）：
+在 `consumer` 运行之前不会有任何画布被推导，因此请在第二个 shell 中启动一个——它运行 Iggy 事件处理器：
+编辑触发的派生（`CanvasDirty`）以及通知扇出（`HealthChanged`）：
 
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-第三个 shell 用来跑时钟。`cron` 只为每个到期任务发布一个执行信号，除此之外什么都不做：
-它不会打开数据库连接，从不读取 `GURU_MASTER_KEY`，也不接受任何数据库参数，
-因此消息代理 URI 就是它的全部配置：
+第三个 shell 用来跑 `cron`。它在进程内运行全部六个周期任务（过期画布清扫、存活性清扫、健康数据保留、
+ACME、中继叶证书轮换以及服务器国家解析），因此和 `consumer` 一样需要数据库、`GURU_MASTER_KEY`、Redis 与 Iggy：
 
 ```sh
-env -u GURU_MASTER_KEY cargo run -p guru-master -- \
+cargo run -p guru-master -- \
   --mode cron \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --database-url "$GURU_DATABASE_URL" \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 通知由它自己的模式投递，而这种模式恰好只有一个实例。它既不需要 master key 也不需要 Redis，而且只有
@@ -112,7 +119,7 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
 env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
   --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090'
 ```
 
 第二个 `notifier` 会拒绝启动 —— `another notifier already holds the advisory lock; run exactly one`
@@ -122,17 +129,16 @@ env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
 再到 `http://127.0.0.1:8025` 查看收到了什么。
 
 `workers_grpc` 是第五种模式——即 Worker API 加上配置视图轮询器——它接受的参数与
-`dashboard_grpc` 完全一致。所有模式都依赖消息代理：RabbitMQ 停机时什么都启动不了；
-而 `cron` 或 `consumer` 停机时，任何周期任务都不会发生。`--redis-url`（或 `REDIS_URL`）是上面那三种
-提供服务与派生的模式所必需的，`cron` 和 `notifier` 都不使用它；缺失或服务端连不上时它们会在启动阶段
-中止。它是运维 API `Watch*` 流背后的实时总线，
+`dashboard_grpc` 完全一致。所有模式都依赖 Iggy：Iggy 停机时什么都启动不了；
+而 `cron` 停机时，任何周期任务都不会发生。`--redis-url`（或 `REDIS_URL`）是除 `notifier` 之外的所有模式所必需的；
+缺失或服务端连不上时它们会在启动阶段中止。它是运维 API `Watch*` 流背后的实时总线，
 控制台的画布编辑器和健康状况页面跟随的正是这些流：Redis 停机时，已打开的页面会停止更新（它的
 *实时* 徽章仍保持绿色——那个徽章表示的是浏览器自己的连接），而编辑与派生一切照旧；Redis 恢复后，
 页面会自行追上最新状态。
 
 如果想让某个周期任务立即执行而不必等待它的时间间隔，删除它的声明行即可——对应的表是
 `orchestration_job_run`，每个任务一行、以任务名作为键，所以执行
-`DELETE orchestration_job_run:sweep_liveness` 就能让下一个 `sweep_liveness` 信号真正跑起来。
+`DELETE orchestration_job_run:sweep_liveness` 就能让下一次 `sweep_liveness` 唤醒真正跑起来。
 
 ## 5. 控制台
 

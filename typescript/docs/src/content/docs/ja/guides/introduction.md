@@ -9,20 +9,21 @@ Proxy Guru はマネージド TCP/TLS プロキシファブリックです。オ
 
 ## 2つのプレーン
 
-**コントロールプレーン** — `bin/guru-master`。`--mode`（`GURU_WORKER_MODE`）で選択する4つのモードを
+**コントロールプレーン** — `bin/guru-master`。`--mode`（`GURU_WORKER_MODE`）で選択する5つのモードを
 備えた1つのバイナリです。
 
 | モード | 責務 |
 |---|---|
 | `dashboard_grpc` | フロントエンドが利用するオペレーター API |
 | `workers_grpc` | ワーカー API と config-view ポーラー |
-| `consumer` | すべての AMQP フック: 導出フックと6つの定期ジョブすべて |
-| `cron` | クロック: 実行時刻を迎えた定期ジョブごとに1つの実行シグナルを発行 |
+| `consumer` | Iggy のイベントハンドラー: 変更されたキャンバスの導出（`CanvasDirty`）と通知のファンアウト（`HealthChanged`） |
+| `notifier` | 通知の配信（インスタンスはちょうど1つ） |
+| `cron` | 6つの定期ジョブすべてをプロセス内で実行 |
 
-後者2つは、意図的に1つのジョブを半分に分けたものです。`cron` は設定を読み込まず、データベース接続も
-開きません。シグナルを受け取った `consumer` が実行権を獲得して処理を行うため、スイープ、生存確認、
-証明書更新は、キャンバスの編集とまったく同じようにスケールしフェイルオーバーします。4つのモードは
-いずれもブローカーを必要とします。
+`cron` の各ジョブは、作業を始める前に `orchestration_job_run` で自分のティックを claim
+（compare-and-set）します。そのため `cron` プロセスを複数動かしても、各パスは設定された間隔につき
+フリート全体で1回だけ実行され、2台目はスタンバイになります。5つのモードはいずれも PostgreSQL と
+Iggy を必要とします。
 
 **データプレーン** — `bin/guru-worker`。リスナーを終端してトラフィックを転送します。TOML ファイルから
 スタンドアロンで動作する（`SIGHUP` でリロード）か、エージェントモードでマスターから設定をストリーミング
@@ -77,8 +78,8 @@ Proxy Guru はマネージド TCP/TLS プロキシファブリックです。オ
 
 Tokio 上の Rust 2024、[`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau)（すべては `Processor`）、Tonic による gRPC、ストレージには
-PostgreSQL（sqlx、マイグレーションは `migrations/`）、オペレーター API のライブ `Watch*` ストリームには
-Redis の pub/sub、モジュール間イベントには AMQP、トレーシングには OpenTelemetry、そして1つの生成済み API
+PostgreSQL（sqlx と wakuwaku-entity、マイグレーションは `migrations/`）、オペレーター API のライブ `Watch*` ストリームには
+Redis の pub/sub、モジュール間イベントには Apache Iggy、トレーシングには `tracing`、そして1つの生成済み API
 クライアントを共有する `typescript/` 配下の Bun ワークスペース。
 
 ## 次のステップ

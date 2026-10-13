@@ -39,8 +39,9 @@ ACME 的 DNS-01 挑战获取这张证书，因此不需要任何东西在 80 端
 
 ## 签发任务
 
-`renew_certificates` 每 60 秒发布一次，并在 `--mode consumer` 中消费，其 tick 在
-`orchestration_job_run` 中声明，因此该任务在整个集群内每 `acme_interval_secs` 只运行一次。一次任务
+`renew_certificates` 是 `--mode cron` 在进程内运行的周期任务，每 60 秒唤醒一次，其 tick 在
+`orchestration_job_run` 中声明，因此该任务在整个集群内每 `acme_interval_secs` 只运行一次。所以需要出站访问
+ACME 目录、DNS 提供商 API 和公共解析器的是 `cron` 进程。一次任务
 会：
 
 1. 读取每个 `client_tls` Pod，解析它的目录，并创建缺失的证书记录行；

@@ -93,16 +93,16 @@ message 为 `revision <n> published` —— 包括 TOML 逐字节相同、但磁
 
 ## 周期任务
 
-两者都在 `--mode consumer` 中运行；`--mode cron` 只按固定节奏发布它们的信号，不打开数据库。
+两者都是 `--mode cron` 在进程内运行的周期任务（cron job）。
 
-| 任务 | 信号节奏 | 配置键（默认值） | 它做什么 |
+| 任务 | 唤醒节奏 | 配置键（默认值） | 它做什么 |
 |---|---|---|---|
 | `sweep_liveness` | 30 s | `liveness_interval_secs`（30） | 把沉默的服务器标记为 `Offline`，并吊销那些已经离线、注册后却从未上报过的服务器的会话。 |
 | `trim_health_history` | 300 s | `health_retention_interval_secs`（300） | 删除早于 `server_health_ttl_secs` / `pod_health_ttl_secs`（各 7 天）的记录。 |
 
-每个消费者在开始工作前都会在一行 `orchestration_job_run` 中声明这一次 tick，因此无论有多少个消费者
-在运行，该任务在每个配置间隔内都只执行一次。这个声明比较的是调度 tick，而不是墙上时钟：小于或等于
-信号节奏的间隔意味着“每个信号都运行一次”，更大的间隔则会让整个集群的该任务都慢下来。
+每次运行在开始工作前都会在一行 `orchestration_job_run` 中声明这一次 tick（compare-and-set），因此无论有多少个
+`cron` 进程在运行，该任务在整个集群内每个配置间隔都只执行一次；第二个 `cron` 进程只是备用，而不是重复执行。
+小于或等于唤醒节奏的间隔意味着“每次唤醒都运行”，更大的间隔则会让整个集群的该任务都慢下来。
 
 ## 回读
 

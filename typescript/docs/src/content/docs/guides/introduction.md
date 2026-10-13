@@ -9,20 +9,20 @@ every new revision automatically.
 
 ## The two planes
 
-**Control plane** — `bin/guru-master`. One binary with four modes selected by `--mode`
+**Control plane** — `bin/guru-master`. One binary with five modes selected by `--mode`
 (`GURU_WORKER_MODE`):
 
 | Mode | Responsibility |
 |---|---|
 | `dashboard_grpc` | Operator API consumed by the frontend |
 | `workers_grpc` | Worker API plus the config-view poller |
-| `consumer` | Every AMQP hook: the derivation hook, and all six periodic jobs |
-| `cron` | The clock: publishes one execution signal per due periodic job |
+| `consumer` | The Iggy event handlers: derivation of dirty canvases and the notification fan-out |
+| `notifier` | Notification delivery, exactly one instance |
+| `cron` | All six periodic jobs, run in-process |
 
-The last two are one job split in half on purpose. `cron` reads no configuration and opens no
-database connection; the `consumer` that receives a signal claims the run and does the work, so a
-sweep, a liveness check or a certificate renewal scales and fails over exactly like a canvas edit.
-All four modes need the broker.
+Every `cron` run claims its tick in the database before working, so several `cron` processes run
+each pass once per configured interval fleet-wide; a second one is a standby, not a duplicate.
+All five modes need PostgreSQL and the [Apache Iggy](https://iggy.apache.org) server.
 
 **Data plane** — `bin/guru-worker`. Terminates listeners and forwards traffic. It runs either
 standalone from a TOML file (reloaded on `SIGHUP`) or in agent mode, streaming configs from the
@@ -76,9 +76,9 @@ Business logic lives in `modules/`, one crate per feature:
 
 Rust 2024 on Tokio, [`wakuwaku`](https://crates.io/crates/wakuwaku) +
 [`kanau`](https://crates.io/crates/kanau) (everything is a `Processor`), gRPC via Tonic, PostgreSQL
-for storage (sqlx; migrations in `migrations/`), Redis pub/sub for the operator API's
-live `Watch*` streams, AMQP for inter-module events, OpenTelemetry for tracing, and a Bun workspace
-under `typescript/` sharing one generated API client.
+for storage (sqlx through wakuwaku-entity; migrations in `migrations/`), Redis pub/sub for the
+operator API's live `Watch*` streams, Apache Iggy for inter-module events, `tracing` for logs, and
+a Bun workspace under `typescript/` sharing one generated API client.
 
 ## Next
 

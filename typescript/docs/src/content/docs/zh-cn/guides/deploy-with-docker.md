@@ -1,6 +1,6 @@
 ---
 title: 使用 Docker 部署
-description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreSQL、RabbitMQ 与 Redis，并从 GitHub release 分发 worker 二进制文件。
+description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreSQL、Iggy 与 Redis，并从 GitHub release 分发 worker 二进制文件。
 ---
 
 本指南带你把单机生产部署从一台空机器一路做到可用的控制台。它假设你熟悉 Linux、Docker 和反向代理，
@@ -15,11 +15,11 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 
 | 组件 | 运行模式 | 通信对象 |
 |---|---|---|
-| 运维 API | `dashboard_grpc` | PostgreSQL、RabbitMQ、Redis |
-| Worker API | `workers_grpc` | PostgreSQL、RabbitMQ、Redis |
-| 周期任务 + 派生钩子 | `consumer` | PostgreSQL、RabbitMQ、Redis |
-| 调度器 | `cron` | RabbitMQ |
-| 通知投递 | `notifier` | PostgreSQL、RabbitMQ（**恰好一个实例**） |
+| 运维 API | `dashboard_grpc` | PostgreSQL、Iggy、Redis |
+| Worker API | `workers_grpc` | PostgreSQL、Iggy、Redis |
+| 派生与通知扇出（Iggy 事件处理器） | `consumer` | PostgreSQL、Iggy、Redis |
+| 周期任务 | `cron` | PostgreSQL、Iggy、Redis |
+| 通知投递 | `notifier` | PostgreSQL、Iggy（**恰好一个实例**） |
 | 控制台 | — | 运维 API（gRPC） |
 
 :::note
@@ -27,16 +27,16 @@ description: 从 GHCR 镜像运行控制平面，应用 Schema，搭建 PostgreS
 因此，我们不提供 Worker 节点的 Docker 镜像。
 :::
 
-状态只存在两个地方：**PostgreSQL**（画布、服务器、Pod 图、账号、配置视图）和 **RabbitMQ**
-（一个持久队列承载"这个画布变了"的提示，外加每个周期任务一个队列）。容器文件系统上不保存任何东西，
-所以每个容器都是可丢弃的。**Redis** 也是必需的，但它不持有状态：它在单一 pub/sub 频道上，把运维 API
+状态只存在两个地方：**PostgreSQL**（画布、服务器、Pod 图、账号、配置视图）和 **Iggy**
+（`canvas_dirty` 提示、健康事实与通知的日志，以及重试 topic；数据位于 `./data/iggy`）。容器文件系统上不保存任何东西，
+所以每个应用容器都是可丢弃的。**Redis** 也是必需的，但它不持有状态：它在单一 pub/sub 频道上，把运维 API
 的实时事件在各个 master 副本之间传递，并且不配置任何持久化，重启它最多丢掉正在路上的那几个事件。
 
-这两种钩子模式的分工，是你在做容量规划之前就应该理解的。`cron` 是一只时钟：它为每个到期任务发布一条执行
-信号，完全不打开数据库连接。`consumer` 才真正干活 —— 派生钩子*以及*所有周期任务 —— 因此清扫、存活检测和
-证书续期的扩缩容与故障转移方式，与一次画布编辑完全一致。
+后台模式的分工，是你在做容量规划之前就应该理解的。`consumer` 运行 Iggy 事件处理器 —— 编辑触发的派生
+（`CanvasDirty`）与通知扇出（`HealthChanged`）。`cron` 在进程内运行全部六个周期任务，每次运行都先在
+`orchestration_job_run` 中认领本次 tick，因此它和 `consumer` 一样需要数据库、`GURU_MASTER_KEY` 与 Redis。
 
-`notifier` 是第三种钩子模式，也是“随便扩容”这条规则的唯一例外：它负责把 `consumer` 的扇出所发布的邮件
+`notifier` 是“随便扩容”这条规则的唯一例外：它负责把 `consumer` 的扇出所发布的邮件
 和 Telegram 消息发出去，而第二个实例会把一次重启期间重叠的每条通知都发两遍，所以它会取得一把
 PostgreSQL advisory lock，并拒绝在已经持有它的同伴旁边启动。它也是唯一既不需要 `GURU_MASTER_KEY`
 也不需要 `REDIS_URL` 的模式（见[通知](/zh-cn/features/notifications/)）。
@@ -49,7 +49,7 @@ PostgreSQL advisory lock，并拒绝在已经持有它的同伴旁边启动。�
 | `50052` | `workers_grpc` | 数据平面节点可访问（VPN、私有网络，或一个终结 TLS 的 gRPC 代理）。 |
 | `3000` | 控制台 | 放在你的 HTTPS 反向代理之后；绝不要直接对外暴露。 |
 | `5432` | PostgreSQL | **私有。** 一个角色、一个数据库、一个密码。 |
-| `5672` | RabbitMQ | **私有。** |
+| `8090` | Iggy | **私有。** |
 | `6379` | Redis | **私有。** 只承载 pub/sub；其中没有任何持久状态。 |
 
 :::caution[两个 gRPC 端口都是明文的]
@@ -62,7 +62,7 @@ PostgreSQL advisory lock，并拒绝在已经持有它的同伴旁边启动。�
 
 先完成 **[前置条件](/zh-cn/guides/prerequisites/)**，再来看本指南。对于镜像部署，你需要那一页中的：
 Docker Engine 与 Compose 插件、在运维机器上检出一份本仓库（用于取得 Compose 文件）、`openssl`、
-一个带 TLS 证书的 DNS 名称 —— 以及 PostgreSQL、RabbitMQ 和 Redis 本身，那一页会用
+一个带 TLS 证书的 DNS 名称 —— 以及 PostgreSQL、Iggy 和 Redis 本身，那一页会用
 `/srv/guru/docker-compose.yml` 把它们拉起来，凭据放在 `/srv/guru/.env` 中。
 
 `manage-tool` CLI 同样不在镜像里，但它不必自己构建：它和 `guru-master` 一样，会作为原始二进制文件随每个
@@ -89,7 +89,7 @@ Bun 在这里可以跳过 —— 控制台以镜像形式发布。`perl` 只在�
 ## 4. 安排好密钥
 
 [前置条件](/zh-cn/guides/prerequisites/)已经在 Compose 文件旁创建了 `/srv/guru/.env`，其中包含数据存储
-凭据（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`RABBIT_USER`、`RABBIT_PASSWORD`）。
+凭据（`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`IGGY_USER`、`IGGY_PASSWORD`）。
 把你在第 3 节中固定的镜像标签追加进去：
 
 ```sh
@@ -102,27 +102,28 @@ FRONTEND_VERSION=v1.0.0
 `GURU_MASTER_KEY` 会在第 7 节加入同一个文件，那时 `manage-tool` 已经可以打印一个出来。
 
 :::caution[仓库里的 `.env` 是另一个文件]
-仓库根目录下可能有一个 `.env`，里面是*另一套*环境的凭据（`GURU_DATABASE_URL`、`AMQP_URI`），而从该
+仓库根目录下可能有一个 `.env`，里面是*另一套*环境的凭据（`GURU_DATABASE_URL`、`IGGY_URL`），而从该
 目录启动的每个进程都会继承它。在检出目录里运行 `manage-tool` 时，请显式传入 `--database-url`。
 一个被遗漏的参数，就是"本地"命令最终改写生产库的原因。
 :::
 
-## 5. PostgreSQL、RabbitMQ 与 Redis
+## 5. PostgreSQL、Iggy 与 Redis
 
 三个数据存储、它们的 Compose 服务以及背后的要求（PostgreSQL ≥ 16，带持久化存储；
-RabbitMQ 使用默认 vhost，URI 以斜杠结尾；Redis 7.x，只做 pub/sub，不需要任何持久化）都在
-**[前置条件 → PostgreSQL、RabbitMQ 与 Redis](/zh-cn/guides/prerequisites/#4-postgresqlrabbitmq-与-redis)** 中。
+Iggy 0.9.x 服务端，需要 `SYS_NICE`、`seccomp=unconfined` 与不受限的 `memlock`；Redis 7.x，只做 pub/sub，不需要任何持久化）都在
+**[前置条件 → PostgreSQL、Iggy 与 Redis](/zh-cn/guides/prerequisites/#4-postgresqliggy-与-redis)** 中。
 它们必须在任何 master 启动之前就位：
 
 ```sh
 cd /srv/guru
-docker compose ps          # postgres healthy, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, iggy healthy, redis up
+docker exec guru-iggy iggy -u <user> -p <password> stream list
 ```
 
-有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部五种** master 模式下消息中间件都是
-必需的 —— 周期性工作就是一条消息，所以 broker 中断会让派生、存活检测和证书续期一起停摆；master
-用 `/srv/guru/.env` 里的角色连接数据库，第 7 节中的 `x-master` 锚点会把它拼成一个 URL；
-而 Redis 在提供服务与派生的那三种模式下必填（`cron` 和 `notifier` 都不用它），丢掉它的代价也小得多。
+有三个后果值得在这里重复一遍，因为它们塑造了整个部署形态：在**全部五种** master 模式下 Iggy 和数据库都是
+必需的；master
+用 `/srv/guru/.env` 里的角色连接数据库和 Iggy，第 7 节中的 `x-master` 锚点会把它们拼成 URL；
+而 Redis 在除 `notifier` 外的所有模式下必填，丢掉它的代价也小得多。
 中断只会让已打开的 `Watch*` 流停止投递，除此之外别无影响 —— 编辑照样生效，画布照样派生，Worker 照样
 拿到自己的配置 —— 而且订阅端会自行重连，之后让每个 watcher 重新读一遍数据库。控制台跟随这些流，
 因此 Redis 停机期间，已打开的画布或健康状况页面会停止更新，并在它恢复后自行追上最新状态；这些页面上的
@@ -146,14 +147,14 @@ export GURU_DATABASE_URL
 ## 7. 运行控制平面
 
 `guru-master` 的*部署*类设置来自环境变量：`GURU_WORKER_MODE` 选择运行模式，而
-`GURU_DATABASE_URL`、`AMQP_URI`、`REDIS_URL` 和 `GURU_MASTER_KEY` **没有默认值**。
+`GURU_DATABASE_URL`、`IGGY_URL`、`REDIS_URL` 和 `GURU_MASTER_KEY` **没有默认值**。
 所有由运维按安装实例调优的项 —— 健康阈值与保留期、默认的 ACME 目录、续期窗口、各个周期任务的运行频率 ——
 都改为存放在数据库里（第 8 节），因此副本之间不需要保持环境变量一致。
 
 master key 只生成一次，并与数据库凭据一起保管 —— 它在静态存储层面加密每一个 DNS provider token 和证书
-私钥，没有它就无法恢复这些数据。三种需要读取密钥的模式都必须有它；`cron` 和 `notifier` 从不读取，而
-下面的锚点只是把同一份环境变量交给全部五个服务。`REDIS_URL` 的作用范围也类似 —— 提供服务与派生的那
-三种模式没有它就拒绝启动，`cron` 和 `notifier` 会忽略它。`manage-tool` 可以从某个 `master-v*`
+私钥，没有它就无法恢复这些数据。四种需要读取密钥的模式都必须有它；只有 `notifier` 从不读取，而
+下面的锚点只是把同一份环境变量交给全部五个服务。`REDIS_URL` 的作用范围也类似 —— 除 `notifier` 外的
+四种模式没有它就拒绝启动，`notifier` 会忽略它。`manage-tool` 可以从某个 `master-v*`
 release 下载（第 10 节），也可以从你的检出目录构建（第 8 节）；这个子命令不需要数据库：
 
 ```sh
@@ -161,7 +162,7 @@ release 下载（第 10 节），也可以从你的检出目录构建（第 8 �
 ```
 
 扩展同一个 `docker-compose.yml`：`x-master` 锚点放在 `services:` 上方，五个服务放在其中，与 `postgres`、
-`rabbitmq` 和 `redis` 并列：
+`iggy` 和 `redis` 并列：
 
 ```yaml
 x-master: &master
@@ -169,20 +170,20 @@ x-master: &master
   restart: unless-stopped
   environment: &master-env
     GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    IGGY_URL: iggy://${IGGY_USER}:${IGGY_PASSWORD}@iggy:8090
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
     postgres:
       condition: service_healthy
-    rabbitmq:
+    iggy:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... postgres, rabbitmq and redis from section 5 ...
+  # ... postgres, iggy and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -231,26 +232,25 @@ services:
   （`0.0.0.0:50052`），外加唤醒 worker 流的配置视图轮询器
   （`GURU_WATCH_POLL_MS`，默认 `1000`）。可以复制，但每个 worker 会话都固定在持有其流的那个实例上，
   所以前面要放一个纯 TCP/gRPC 负载均衡器，绝不能用 HTTP/1 代理。
-- **`consumer`** —— 所有钩子都在这里：收到 `CanvasDirty` 消息时重新派生一个画布（prefetch 为 8），
-  并在六个周期任务的执行信号到达时运行它们 —— 过期画布清扫、健康存活检测清扫、健康数据保留清理、
-  ACME 签发/续期、relay 叶子证书轮换，以及新服务器地址的国家查询。这也是需要出站 HTTPS 访问 ACME
-  目录、DNS provider API 和 `country_lookup_url`、以及需要 DNS 访问公共解析器的模式。为了吞吐和故障
-  转移可以复制它：派生由画布代数计数器守护，而每个周期任务在开始工作前都会在一行
-  `orchestration_job_run` 中认领本次运行，因此一条被投递两次、或被投递给两个副本的信号只会执行一次。
-  两个 ACME 任务也不会争抢同一个 DNS-01 挑战 —— 每次证书尝试都按行认领。
-- **`cron`** —— 只是时钟，仅此而已。它每 5 秒扫描一次，为每个到期任务发布一条执行信号：
-  `derive_stale_canvases` 与 `sweep_liveness` 每 30 秒，`renew_certificates` 与
-  `resolve_server_countries` 每 60 秒，`trim_health_history` 每 5 分钟，`rotate_relay_certificates`
-  每小时。它不打开数据库连接，从不读取 `GURU_MASTER_KEY`，也不保存任何本地状态，因此它持有的唯一机密
-  就是 `AMQP_URI` 里的 broker 凭据 —— 那也是它唯一离不开的东西。这里没有什么需要扩容的：一个副本就够了，
-  多一个也无害，因为 consumer 的运行认领会丢弃重复的那一条。一个任务实际允许多久运行一次是存储在
+- **`consumer`** —— Iggy 事件处理器都在这里：收到 `CanvasDirty` 事件时重新派生一个画布，收到
+  `HealthChanged` 时做通知扇出。offset 在处理之后才提交（至少一次）；派生由画布代数计数器守护，因此重复投递是无害的。
+  为了吞吐和故障转移可以复制它，但每个副本必须通过 `GURU_IGGY_PARTITIONS`（`--iggy-partitions`）读取
+  互不相交的分区集合（共 `0,1,2,3`；留空表示全部）—— 副本共享消费者名称，否则会在 offset 上互相竞争。
+- **`cron`** —— 在进程内运行全部六个周期任务：`derive_stale_canvases` 与 `sweep_liveness` 每 30 秒，
+  `renew_certificates` 与 `resolve_server_countries` 每 60 秒，`trim_health_history` 每 5 分钟，
+  `rotate_relay_certificates` 每小时；每个任务的第一次运行都在启动时。这也是需要出站 HTTPS 访问 ACME
+  目录、DNS provider API 和 `country_lookup_url`、以及需要 DNS 访问公共解析器的模式。每次运行在开始工作前
+  都会在一行 `orchestration_job_run` 中认领本次 tick（compare-and-set），因此多个 `cron` 副本在整个集群内
+  每个配置间隔只执行一次：第二个副本是备用，而不是重复执行。两个 ACME 运行也不会争抢同一个 DNS-01 挑战 ——
+  每次证书尝试都按行认领。停机时它会让正在进行的运行最多再执行 20 秒。一个任务实际允许多久运行一次是存储在
   数据库里的设置，不是启动参数 —— 见第 8 节。
-- **`notifier`** —— 通知投递，也是唯一必须**恰好运行一次**的模式：它消费 `consumer` 的扇出所发布的那
-  两个通知队列，并把每条通知通过 SMTP 和 Telegram Bot API 发出去。它会先取得一把会话级的 PostgreSQL
+- **`notifier`** —— 通知投递，也是唯一必须**恰好运行一次**的模式：它消费 `consumer` 的扇出所发布的
+  `notify_health_notice` topic，并把每条通知通过 SMTP 和 Telegram Bot API 发出去。它会先取得一把会话级的 PostgreSQL
   advisory lock，因此第二个副本会以非零码退出并给出
   `another notifier already holds the advisory lock; run exactly one` —— 这让 `deploy: replicas: 1`
   从一条约定变成了硬保证。它既不需要 `GURU_MASTER_KEY` 也不需要 `REDIS_URL`，只需要出站 SMTP 以及到
-  `telegram_api_base` 的 HTTPS。它停机期间，通知会在各自的队列里等着。
+  `telegram_api_base` 的 HTTPS。它停机期间，通知会留在 Iggy 的 `notify_health_notice` topic 里，等它重新上线后由消费者
+  `guru_notify_health_notice` 从已存储的 offset 继续处理。
 
 基于 TLS 或 QUIC 的 relay 链路在其 pod 派生之前需要内部 CA。请在运维机器上执行一次下面的命令，
 使用与 master 相同的 `GURU_MASTER_KEY`：
@@ -264,14 +264,13 @@ GURU_MASTER_KEY='<the key>' ./target/release/manage-tool \
 
 从代码中可以直接得出的三条运维注意事项：
 
-- `consumer`、`notifier` 和 `cron` 模式在 **AMQP 连接断开时会以非零码退出**（客户端不会重连，而一个
-  静默死掉的 consumer、或者一个把消息发到虚无处的时钟，比重启更糟）：
-  `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`。
-  `restart: unless-stopped` 正是让它自愈的机制 —— 不要移除它。
+- **保留 `restart: unless-stopped`。** 任何模式在启动时连不上数据存储都会以非零码退出，而重启策略正是把它们
+  带过“数据存储稍后才起来”这一段的机制 —— 不要移除它。`cron` 在停机时会让正在进行的运行最多再执行 20 秒，
+  然后中止它们。
 - **Redis 里没有任何需要保护的状态。** 它的 Compose 服务以 `--save "" --appendonly no` 运行，因为经过
   它的只有实时事件；重启它最多让已打开的 `Watch*` 流错过几次投递，订阅端每次重连都会打印一行
   `live bus connected`，随后让每个 watcher 重新读一遍数据库，所以不会有内容停留在旧状态。但它在启动时
-  必须可达：`REDIS_URL` 未设置或服务端连不上时，提供服务与派生的那三种模式都会立即退出。
+  必须可达：`REDIS_URL` 未设置或服务端连不上时，除 `notifier` 外的四种模式都会立即退出。
 - 镜像是 distroless 的：没有 shell，没有 `curl`。依赖调用 shell 的 Compose `healthcheck` 无法工作。
   请改从外部监控（TCP 连接 `50051`/`50052`，或采集日志）。
 
@@ -282,29 +281,18 @@ docker compose up -d
 docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
-健康的启动看起来是这样。consumer 为它绑定的每个队列打印一行，调度器打印一行列出它将使用的所有节奏：
+健康的启动看起来是这样。consumer 与 notifier 在启动消费者后各打印一行，`cron` 打印一行列出各个任务的唤醒周期：
 
 ```text
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_canvas_dirty" key="canvas_dirty"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_derive_stale_canvases" key="derive_stale_canvases"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rotate_relay_certificates" key="rotate_relay_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
-master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-consumer-1   | INFO guru_master: consuming
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
+master-notifier-1   | INFO guru_master: consuming
 ```
 
-此后调度器是安静的：每次发布都记在 `DEBUG` 级别
-（`published an execution signal job="sweep_liveness"`），而发布失败会是 `ERROR`，并且不会终止进程。
-所以在 cron 容器上设置 `GURU_LOG_LEVEL=debug` 就是确认时钟在走的方法，而一条
-`ERROR ... publishing an execution signal failed` 则是 broker 问题在连接被判定为丢失之前的表现形式。
+停机时如果有运行在 20 秒内没有结束，`cron` 会记下 `WARN ... cron jobs did not finish within 20 s; aborted`。
 
 ## 8. 创建第一个管理员
 
@@ -349,9 +337,8 @@ cargo build --release -p manage-tool
 
 周期任务的节奏也在同一个键上：`sweep_interval_secs`（30）、`liveness_interval_secs`（30）、
 `health_retention_interval_secs`（300）、`acme_interval_secs`（60）、
-`country_lookup_interval_secs`（60）和 `relay_rotation_interval_secs`（3600）。调度器以固定节奏发布，
-因为它不读取任何配置；每个 consumer 在每个*配置的*间隔内最多认领一次运行，所以一个小于或等于信号
-节奏的值意味着"每条信号都执行"，而更大的值会让该任务在整个集群范围内变慢：
+`country_lookup_interval_secs`（60）和 `relay_rotation_interval_secs`（3600）。每个任务按自己固定的周期唤醒；
+每次运行在每个*配置的*间隔内最多认领一次，所以一个小于或等于唤醒周期的值意味着"每次唤醒都执行"，而更大的值会让该任务在整个集群范围内变慢：
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -595,7 +582,7 @@ chmod +x guru-worker
 
 ```sh
 # 1. 数据存储
-docker compose ps                     # postgres、rabbitmq 健康，redis 已启动
+docker compose ps                     # postgres、iggy 健康，redis 已启动
 
 # 2. Schema
 ./manage-tool db migrate              # 来自第 6 节
@@ -639,9 +626,9 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   > guru-$(date +%F).sql
 ```
 
-如果你想要一条快速恢复路径，也请给 `postgres-data` 卷做快照。RabbitMQ 不需要备份：它的队列里装的是编辑
-提示和执行信号，两者都会被调度器重新发布，而代数计数器保证了幂等 —— 但 broker 必须是*运行中*的，
-因为它不在的时候不会有任何周期任务发生。
+如果你想要一条快速恢复路径，也请给 `postgres-data` 卷做快照。Iggy 的数据目录 `./data/iggy` 保存着
+`canvas_dirty` 提示、健康事实与通知的日志：丢掉它最多丢掉尚未处理的事件 —— 过期画布会被 `cron` 的
+`derive_stale_canvases` 重新派生，而代数计数器保证了幂等。
 Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB 配置运行，里面根本没有可保存的东西。
 换掉容器，各个 master 会重新订阅。
 
@@ -655,20 +642,19 @@ Redis 也不需要备份，而且理由更硬：它按不带 AOF、不带 RDB �
 |---|---|
 | 控制台登录返回 `Forbidden` / `Cross-site remote requests are forbidden` | 重建出的 origin ≠ 浏览器的 `Origin`。请用 HTTPS 提供服务，或设置 `PROTOCOL_HEADER`/`HOST_HEADER` 并转发 `X-Forwarded-Proto` 和 `X-Forwarded-Host`（带端口）。`ORIGIN` 没有任何效果。 |
 | 登录成功，但下一个请求又跳回 `/auth` | 带 `Secure` 的会话 cookie 被丢弃了 —— 浏览器是通过纯 HTTP 访问控制台的。 |
-| master 以 `this mode opens the database: set GURU_DATABASE_URL` 退出 | URL 未设置或为空；它没有默认值。`cron` 是唯一不需要它的模式。 |
-| master 以 `master key: GURU_MASTER_KEY is not set`（或 `must be 32 bytes`）退出 | `dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要这个密钥（`cron` 不读取它）。用 `manage-tool generate-master-key` 生成一个；它只从环境变量读取。 |
+| master 以 `master key: GURU_MASTER_KEY is not set`（或 `must be 32 bytes`）退出 | `dashboard_grpc`、`workers_grpc`、`consumer` 和 `cron` 都需要这个密钥（只有 `notifier` 不读取它）。用 `manage-tool generate-master-key` 生成一个；它只从环境变量读取。 |
+| master 以 `every mode opens the database: set GURU_DATABASE_URL (or pass --database-url)` 退出 | 未设置数据库 URL。五种模式（包括 `cron`）都需要它。 |
 | master 以 `stored config for key ... does not match its type` 退出 | 存储的文档损坏，或早于某次字段重命名。用 `manage-tool config get <key>` 检查它，并用 `config set` 重写。 |
-| 某个 TLS 客户端 Pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它运行在 `consumer` 中，由 `renew_certificates` 信号触发：确认有 `consumer` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 consumer 能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
+| 某个 TLS 客户端 Pod 一直停在 `invalid_pods`，提示 `certificate for … is pending` / `failed: …` | ACME 任务还没签发它，或上一次尝试失败了（`ListCertificates` 会显示 `last_error`）。它是 `cron` 中的 `renew_certificates` 任务：确认有 `cron` 在运行、DNS provider token 与 `domain_id`（Cloudflare zone id / Vercel domain）正确，并且 cron 容器能访问 ACME 目录。`RetryCertificate` 可以强制重试。 |
 | 某个 relay pod 一直停在 `invalid_pods`，提示 `internal CA not initialised` | 执行一次 `manage-tool orchestration init-ca`。 |
-| master 立即以 AMQP 错误退出 | `AMQP_URI` 未设置或不可达。五种模式都需要 broker。检查 URI 结尾的 `/`。 |
-| master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。`dashboard_grpc`、`workers_grpc` 和 `consumer` 都需要它；`cron` 和 `notifier` 不需要。 |
+| master 立即以 `Iggy is required: set IGGY_URL (or pass --iggy-url) …` 或 Iggy 连接错误退出 | `IGGY_URL` 未设置或不可达。五种模式都需要 Iggy。用 `docker exec guru-iggy iggy -u <user> -p <password> stream list` 检查服务端。 |
+| master 立即以 Redis 错误退出 | `REDIS_URL` 未设置，或服务端不可达。除 `notifier` 外的四种模式都需要它。 |
 | 已打开的画布或健康状况页面停止更新（刷新页面却能看到那次变更），或某个 `Watch*` 流不再投递快照 | Redis 挂了，或者为该流服务的那个 `dashboard_grpc` 副本访问不到它。在它的日志里找 `live bus connected`。编辑照样生效、照样派生，停掉的只有实时投递，重连之后就会恢复。 |
-| `consumer`、`notifier` 或 `cron` 周期性重启 | broker 丢失时属预期行为：客户端不重连，所以进程退出，再由重启策略把它拉起来。该排查的是 broker，不是 master。 |
 | 第二个 `notifier` 以 `another notifier already holds the advisory lock; run exactly one` 退出 | 属预期行为：投递是单实例的。请把它缩到一个副本，或者停掉持有那把锁的同伴。 |
 | 全新安装后立刻出现 `relation "…" does not exist` | migration 从未运行：`GURU_DATABASE_URL` 中的角色可能对该数据库没有 `CREATE` 权限。执行 `manage-tool db migrate` 并阅读它的报错。 |
 | `manage-tool` 写到了错误的数据库 | 工作目录下的某个 `.env` 提供了 `GURU_DATABASE_URL`。请始终显式传入 `--database-url`。 |
-| 画布编辑永远到不了 worker | `consumer` 挂了：编辑钩子和过期画布清扫都由它运行，没有它什么都不会派生。如果 `consumer` 是正常的，就检查 `cron` —— 没有时钟，清扫永远不会触发，只有带活跃 `CanvasDirty` 的编辑才会派生。 |
-| 周期任务不再发生（没有节点变 `Offline`，没有续期） | RabbitMQ 挂了，或者 `cron` 挂了。两者都是必需的：时钟发布信号，consumer 执行它们。 |
+| 画布编辑永远到不了 worker | `consumer` 挂了：`CanvasDirty` 事件由它处理。如果 `consumer` 是正常的，就检查 `cron` —— 过期画布的兜底清扫 `derive_stale_canvases` 在那里运行。 |
+| 周期任务不再发生（没有节点变 `Offline`，没有续期） | `cron` 挂了，或者连不上数据库。六个周期任务都在 `cron` 进程内运行。 |
 
 关于所有参数和变量，参见[配置](/zh-cn/reference/configuration/)；关于"派生"到底做了什么，参见
 [发布](/zh-cn/reference/rollout/)。

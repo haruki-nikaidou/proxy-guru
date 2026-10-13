@@ -79,7 +79,7 @@ health write ──▶ orchestration publishes `health_changed` (facts + labels)
 ```
 
 The facts carry their own labels — the server's or pod's name, the canvas and its name — so the
-notifier opens no database at all and a notice about a server that was since renamed still reads as
+notifier reads nothing from the database per notice, and a notice about a server that was since renamed still reads as
 it did when it happened.
 
 The split is deliberate. The fan-out is a database reader and scales with the other consumers; the
@@ -92,16 +92,16 @@ The fifth run mode of `guru-master`, and the only one this workspace requires to
 ```sh
 guru-master --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guru:guru@127.0.0.1:5672/'
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090'
 ```
 
-- **Exactly one instance.** Before binding its queues it takes a session-scoped PostgreSQL advisory
+- **Exactly one instance.** Before it starts consuming it takes a session-scoped PostgreSQL advisory
   lock; a second instance exits non-zero with `another notifier already holds the advisory lock; run
   exactly one`. The lock is released by the connection dying, so a killed notifier never blocks its
   successor, and a restart that overlaps its predecessor fails fast instead of doubling messages.
 - **No master key, no Redis.** It decrypts nothing and publishes nothing, so it takes neither
   `GURU_MASTER_KEY` nor `REDIS_URL` — only the database (for that lock and the `notify` config it
-  reads at startup) and the broker.
+  reads at startup) and Iggy.
 - It logs which channels it ended up with, which is the quickest check that its secrets arrived:
 
 ```text
@@ -109,8 +109,8 @@ INFO guru_master: notification channel channel="email: configured"
 INFO guru_master: notification channel channel="telegram: disabled (no GURU_TELEGRAM_BOT_TOKEN)"
 ```
 
-A notifier that is down does not lose notices: they queue in `guru_notify_health_notify_group` and
-`guru_notify_health_notify_personal` until it comes back.
+A notifier that is down does not lose notices: they stay in the Iggy topic `notify_health_notice`,
+and the consumer `guru_notify_health_notice` resumes from its stored offset when it comes back.
 
 ## Channels and their secrets
 

@@ -1,6 +1,6 @@
 ---
 title: Prerequisites
-description: Set up everything the control plane depends on before you deploy it — PostgreSQL, RabbitMQ, Redis, Docker, the build toolchain, Bun, and a hostname with a certificate.
+description: Set up everything the control plane depends on before you deploy it — PostgreSQL, Apache Iggy, Redis, Docker, the build toolchain, Bun, and a hostname with a certificate.
 ---
 
 import { Steps, Tabs, TabItem } from "@astrojs/starlight/components";
@@ -15,7 +15,7 @@ What each method actually needs:
 |                              | Deploy with Docker                                                                                                                        | Deploy Natively                                                            |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | PostgreSQL ≥ 16              | yes                                                                                                                                       | yes                                                                        |
-| RabbitMQ 3.13/4.x            | yes                                                                                                                                       | yes                                                                        |
+| Apache Iggy server 0.9.x     | yes                                                                                                                                       | yes                                                                        |
 | Redis 7.x                    | yes                                                                                                                                       | yes                                                                        |
 | Docker Engine + Compose      | yes (runs the published application images; optional for the datastores)                                                                  | no                                                                         |
 | Rust toolchain + `protoc`    | only if you build `manage-tool` yourself — it is also attached to every `master-v*` release                                                | yes — it builds every binary                                               |
@@ -27,7 +27,7 @@ What each method actually needs:
 ## 1. Docker Engine and Compose (image deployment only)
 
 Install Docker only if you are following the image deployment. Native deployment does not require
-Docker: install PostgreSQL, RabbitMQ and Redis directly, use managed services, or run them by
+Docker: install PostgreSQL, Iggy and Redis directly, use managed services, or run them by
 another method. Pick your distro once; every tab on this page follows.
 
 <Tabs syncKey="distro">
@@ -237,7 +237,7 @@ is the right place. Bun is not needed at all.
 
 </Steps>
 
-## 4. PostgreSQL, RabbitMQ and Redis
+## 4. PostgreSQL, Iggy and Redis
 
 ### What the control plane needs from them
 
@@ -245,35 +245,28 @@ is the right place. Bun is not needed at all.
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PostgreSQL | **16 or newer.** One database, reached through one URL. The control plane owns its schema: it applies the migrations it ships with, so the role it connects as needs ordinary `CREATE`/`ALTER` rights on that database — nothing cluster-wide. |
 |           | **Durable storage** on a volume you back up. This is the only irreplaceable state in the system. `pg_dump` of the one database is a complete backup.                                                                                                             |
-|           | **Room for the pool.** Each serving master holds up to `GURU_DB_POOL_SIZE` connections (10 by default) and there are three of them, so leave `max_connections` comfortably above thirty.                                                                          |
-| RabbitMQ  | Any 3.13/4.x server. The control plane declares its own exchange and its durable queues at startup, so nothing has to be pre-created — one user on the default vhost is enough. RabbitMQ is the only broker tested by this project.                                  |
-|           | URI form: `amqp://user:password@host:5672/`, where the **trailing slash** selects the default vhost. The `/%2f` form is rejected by the parser.                                                                                                                 |
-|           | The broker is **mandatory in all five master modes**. Periodic work _is_ a message: while it is down nothing sweeps stale canvases, nothing flips a silent server to `Offline` and nothing renews a certificate. Treat it as a dependency, not an optimisation. |
+|           | **Room for the pool.** Every master mode holds up to `GURU_DB_POOL_SIZE` connections (10 by default) and there are five of them, so leave `max_connections` comfortably above fifty.                                                                          |
+| Iggy      | **Apache Iggy server 0.9.x** — the release paired with the Rust SDK 0.11 that the control plane builds against. Linux only: in a container it needs `SYS_NICE`, `seccomp=unconfined` and an unlimited `memlock` (io_uring). The control plane creates its stream (`guru`) and topics at startup, idempotently, so nothing has to be pre-created — the root user the server creates is enough. |
+|           | URL form: `iggy://user:password@host:8090`, passed as `IGGY_URL`.                                                                                                                                                                                             |
+|           | Iggy is **mandatory in all five master modes**. It carries canvas-change hints, health facts and notices, and stores them durably (plus retry topics), so it is state to keep on a volume — but the periodic jobs run in-process in `cron` and do not depend on it. |
 | Redis     | **7.x or newer.** Pub/sub only — the control plane stores nothing in it, declares nothing and needs no persistence, so any reachable server works, including a managed one. One instance shared by the whole fleet: replicas find each other through it. |
-|           | URL form: `redis://127.0.0.1:6379/`, passed as `REDIS_URL`. Required in `dashboard_grpc`, `workers_grpc` and `consumer` — the three modes that serve or derive. `cron` and `notifier` never touch it.                                                     |
+|           | URL form: `redis://127.0.0.1:6379/`, passed as `REDIS_URL`. Required in every mode except `notifier`, which never touches it.                                                                                                                                  |
 |           | It carries the operator API's `Watch*` streams: every mutation publishes one event on the channel `guru:orchestration:live`, and each `dashboard_grpc` replica subscribes once and fans it out to the streams it serves. An outage costs open streams their deliveries and nothing else — edits still apply and still derive, and the subscriber reconnects with backoff and then asks every watcher to re-read the database. The dashboard's canvas editor and health page follow these streams, so an open page stops updating meanwhile and catches up on its own; `live bus connected` in a master's log is still the direct check. |
-
-:::caution[Non-RabbitMQ brokers are not supported drop-ins]
-The control plane uses the `amqprs` AMQP 0-9-1 client and RabbitMQ exchange and queue declaration
-semantics. Other brokers have not been tested. In particular, Azure Service Bus uses AMQP 1.0 and
-must not be assumed compatible; some or all control-plane messaging may fail. Use RabbitMQ unless
-you validate an alternative end to end.
-:::
 
 Neither containers nor Docker Compose are required for the datastores. Follow the official
 [PostgreSQL download page](https://www.postgresql.org/download/),
-[RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
+[Apache Iggy site](https://iggy.apache.org) and
 [Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/), use
 managed services, or use the Compose examples below. Whichever method you choose must satisfy the
 requirements above.
 
 ### Credentials
 
-Generate the passwords **URL-safe** — both are interpolated into a URI (`GURU_DATABASE_URL` and
-`AMQP_URI`), where `@`, `:`, `/` and `%` change the meaning of the URI:
+Generate the passwords **URL-safe** — both are interpolated into a URL (`GURU_DATABASE_URL` and
+`IGGY_URL`), where `@`, `:`, `/` and `%` change the meaning of the URL:
 
 ```sh
-openssl rand -hex 32          # once for PostgreSQL, once for RabbitMQ
+openssl rand -hex 32          # once for PostgreSQL, once for Iggy
 ```
 
 Hex avoids every quoting and percent-encoding question. If you insist on punctuation, percent-encode
@@ -292,14 +285,14 @@ Compose example also reads its datastore credentials from this file:
 ```sh
 # /path/to/proxy-guru/.env   (chmod 600; gitignored)
 GURU_DATABASE_URL=postgres://guru:<first hex string>@127.0.0.1:5432/guru
-RABBIT_USER=guru
-RABBIT_PASSWORD=<second hex string>
-AMQP_URI=amqp://guru:<second hex string>@127.0.0.1:5672/
+IGGY_USER=guru
+IGGY_PASSWORD=<second hex string>
+IGGY_URL=iggy://guru:<second hex string>@127.0.0.1:8090
 REDIS_URL=redis://127.0.0.1:6379/
 ```
 
 systemd later reads this file verbatim through `EnvironmentFile=`. Keep `GURU_DATABASE_URL` and
-`AMQP_URI` written out in full; systemd does **not** expand `${…}`.
+`IGGY_URL` written out in full; systemd does **not** expand `${…}`.
 
 </TabItem>
 <TabItem label="Image deployment">
@@ -310,13 +303,13 @@ POSTGRES_USER=guru
 POSTGRES_PASSWORD=<first hex string>
 POSTGRES_DB=guru
 
-RABBIT_USER=guru
-RABBIT_PASSWORD=<second hex string>
+IGGY_USER=guru
+IGGY_PASSWORD=<second hex string>
 ```
 
 Create `/srv/guru` first (`sudo mkdir -p /srv/guru`); the Compose file below lives next to this
 `.env`, and the image guide adds `MASTER_VERSION`, `FRONTEND_VERSION` and `GURU_MASTER_KEY` to it.
-`GURU_DATABASE_URL` and `AMQP_URI` never appear in it either: Compose builds both from the variables
+`GURU_DATABASE_URL` and `IGGY_URL` never appear in it either: Compose builds both from the variables
 above, the way it spells Redis out itself (`redis://redis:6379/`) because Redis needs no credentials.
 
 </TabItem>
@@ -329,11 +322,12 @@ above, the way it spells Redis out itself (`redis://redis:6379/`) because Redis 
 
 Install the three services with the official
 [PostgreSQL download page](https://www.postgresql.org/download/),
-[RabbitMQ download guide](https://www.rabbitmq.com/docs/download) and
+[Apache Iggy site](https://iggy.apache.org) (server 0.9.x binaries or packages) and
 [Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/). Create a
 `guru` role and a `guru` database owned by it, with a loopback listener on port `5432`; configure
-RabbitMQ with the user and password from `.env`, the default vhost, durable storage and a loopback
-listener on port `5672`; configure Redis with a loopback listener on port `6379` and persistence
+the Iggy server with `IGGY_ROOT_USERNAME`/`IGGY_ROOT_PASSWORD` set to the user and password from
+`.env`, durable storage and a TCP listener on `127.0.0.1:8090`; configure Redis with a loopback
+listener on port `6379` and persistence
 turned off (`save ""` and `appendonly no`), because nothing in it is worth restoring. Use your
 operating system's service manager to start all three services and enable them at boot.
 
@@ -371,19 +365,27 @@ services:
       timeout: 3s
       retries: 20
 
-  rabbitmq:
-    image: rabbitmq:4-alpine
+  iggy:
+    image: apache/iggy:0.9.0
     restart: unless-stopped
-    # The data directory is named after the node, rabbit@<hostname>: pin it, or
-    # every container recreation starts an empty broker.
-    hostname: rabbitmq
+    # io_uring: the server needs these on Linux.
+    cap_add: [SYS_NICE]
+    security_opt: ["seccomp=unconfined"]
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+      IGGY_ROOT_USERNAME: ${IGGY_USER}
+      IGGY_ROOT_PASSWORD: ${IGGY_PASSWORD}
+      IGGY_TCP_ADDRESS: 0.0.0.0:8090
+      IGGY_NODE_ADVERTISED_ADDRESS: localhost
+      IGGY_QUIC_ENABLED: "false"
+      IGGY_WEBSOCKET_ENABLED: "false"
     volumes:
-      - rabbit-data:/var/lib/rabbitmq
+      - iggy-data:/app/local_data
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      test: ["CMD-SHELL", "iggy -u \"$$IGGY_ROOT_USERNAME\" -p \"$$IGGY_ROOT_PASSWORD\" stream list"]
       interval: 10s
       timeout: 10s
       retries: 12
@@ -396,12 +398,12 @@ services:
 
 volumes:
   postgres-data:
-  rabbit-data:
+  iggy-data:
 ```
 
 ```sh
 cd /srv/guru
-sudo docker compose up -d postgres rabbitmq redis
+sudo docker compose up -d postgres iggy redis
 ```
 
 The masters are added to this same file later, in the image guide — the datastores have to exist
@@ -410,17 +412,16 @@ first, because a master applies the schema to the database as it starts.
 </TabItem>
 </Tabs>
 
-The Compose example needs one detail explained. RabbitMQ names its data directory after its node
-name, `rabbit@<hostname>`, which is why the service pins `hostname:`; without it every container
-recreation would start an empty broker. Redis is the odd one out on purpose: no volume, no
+The Compose example needs one detail explained. The Iggy server uses io_uring, which is why the
+service adds `SYS_NICE`, drops the default seccomp profile and lifts the `memlock` limit. Its data
+lives in the `iggy-data` volume, which keeps undelivered events across a container recreation.
+Redis is the odd one out on purpose: no volume, no
 published port and no healthcheck — the masters reach it over the Compose network, and a fresh empty
 server is exactly as useful as the one it replaces.
 
-The queues the consumer binds are created for you: `guru_orchestration_canvas_dirty` for edits, plus
-`guru_orchestration_derive_stale_canvases`, `guru_orchestration_sweep_liveness`,
-`guru_orchestration_trim_health_history`, `guru_orchestration_renew_certificates`,
-`guru_orchestration_rotate_relay_certificates` and `guru_orchestration_resolve_server_countries`
-for the six periodic jobs.
+The Iggy topology is created for you by every master as it starts: one stream `guru` with the
+topics `orchestration_canvas_dirty`, `orchestration_health_changed` and `notify_health_notice`, 4
+partitions each, plus a `retry_<topic>` for each once its consumer has started.
 
 ## 5. A hostname and a certificate
 

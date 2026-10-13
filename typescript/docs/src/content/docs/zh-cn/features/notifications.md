@@ -72,7 +72,7 @@ Worker 默认每 15 秒上报一次，而每次上报都会为每个 Pod 写入�
                  · 发送到该通知携带的每个目标地址
 ```
 
-这些事实自带标签 —— 服务器或 Pod 的名称、所属画布及其名称 —— 因此 notifier 完全不打开数据库，而一
+这些事实自带标签 —— 服务器或 Pod 的名称、所属画布及其名称 —— 因此 notifier 投递时无需再查询数据库，而一
 条关于某台此后被改名的服务器的通知，读起来仍然是它当时的样子。
 
 这样拆分是有意的。扇出是一个数据库读取方，与其他消费者一同扩展；投递侧要与 SMTP 中继和 Telegram 通
@@ -85,16 +85,16 @@ Worker 默认每 15 秒上报一次，而每次上报都会为每个 Pod 写入�
 ```sh
 guru-master --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guru:guru@127.0.0.1:5672/'
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090'
 ```
 
-- **恰好一个实例。** 在绑定队列之前，它会取得一把会话级的 PostgreSQL advisory lock；第二个实例会以
+- **恰好一个实例。** 在启动消费者之前，它会取得一把会话级的 PostgreSQL advisory lock；第二个实例会以
   非零码退出，并给出 `another notifier already holds the advisory lock; run exactly one`。这把锁随
   连接消亡而释放，因此被杀掉的 notifier 绝不会挡住它的后继者，而一次与前任重叠的重启会快速失败，而
   不是把消息发两遍。
 - **不需要 master key，也不需要 Redis。** 它不解密任何东西，也不发布任何东西，因此既不需要
   `GURU_MASTER_KEY` 也不需要 `REDIS_URL` —— 只需要数据库（用于那把锁，以及它在启动时读取的
-  `notify` 配置）和消息代理。
+  `notify` 配置）和 Iggy。
 - 它会把自己最终拿到的渠道记进日志，这是检查它的机密是否到位的最快方式：
 
 ```text

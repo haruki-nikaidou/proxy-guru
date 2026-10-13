@@ -1,6 +1,6 @@
 ---
 title: Deploy with Docker
-description: Run the control plane from the GHCR images, apply the schema, set up PostgreSQL, RabbitMQ and Redis, and ship the worker binary from a GitHub release.
+description: Run the control plane from the GHCR images, apply the schema, set up PostgreSQL, Apache Iggy and Redis, and ship the worker binary from a GitHub release.
 ---
 
 This guide walks a single-host production deployment from an empty machine to a working dashboard.
@@ -16,11 +16,11 @@ Five processes, all from **one** image, plus the dashboard:
 
 | Component | Run mode | Talks to |
 |---|---|---|
-| Operator API | `dashboard_grpc` | PostgreSQL, RabbitMQ, Redis |
-| Worker API | `workers_grpc` | PostgreSQL, RabbitMQ, Redis |
-| Periodic + derivation hooks | `consumer` | PostgreSQL, RabbitMQ, Redis |
-| Scheduler | `cron` | RabbitMQ |
-| Notification delivery | `notifier` | PostgreSQL, RabbitMQ (**exactly one instance**) |
+| Operator API | `dashboard_grpc` | PostgreSQL, Iggy, Redis |
+| Worker API | `workers_grpc` | PostgreSQL, Iggy, Redis |
+| Event handlers (derivation, notification fan-out) | `consumer` | PostgreSQL, Iggy, Redis |
+| Periodic jobs | `cron` | PostgreSQL, Iggy, Redis |
+| Notification delivery | `notifier` | PostgreSQL, Iggy (**exactly one instance**) |
 | Dashboard | — | Operator API (gRPC) |
 
 :::note
@@ -29,17 +29,19 @@ is bad practice. Therefore, we do not provide a Docker image for worker nodes.
 :::
 
 Durable state lives in exactly two places: **PostgreSQL** (canvases, servers, the pod graph, accounts,
-config views) and **RabbitMQ** (one durable queue for "this canvas changed" hints, plus one per
-periodic job). **Redis** is the third datastore and the only one that keeps nothing: it carries the
+config views) and **Apache Iggy** (one stream, `guru`, holding the log of "this canvas changed"
+hints, health facts and notices, plus their retry topics). **Redis** is the third datastore and the
+only one that keeps nothing: it carries the
 operator API's live events between master replicas on a single pub/sub channel, with no persistence
-configured. Nothing is kept on a container filesystem, so every container is disposable.
+configured. Nothing is kept on a master's container filesystem, so every master container is
+disposable.
 
-The two hook modes are the split to understand before you size anything. `cron` is a clock: it
-publishes one execution signal per due job and opens no database connection at all. `consumer`
-runs the work — the derivation hook *and* every periodic job — so sweeps, liveness and certificate
-renewal scale and fail over exactly like a canvas edit.
+The two background modes are the split to understand before you size anything. `consumer` runs the
+Iggy event handlers — the derivation of a changed canvas and the notification fan-out. `cron` runs
+all six periodic jobs in-process — sweeps, liveness and certificate renewal — and claims every run
+in the database first, so a second `cron` is a standby rather than a duplicate.
 
-`notifier` is the third hook mode and the one exception to "scale it freely": it sends the emails
+`notifier` is the third background mode and the one exception to "scale it freely": it sends the emails
 and Telegram messages the `consumer`'s fan-out publishes, and a second instance would double every
 notice a restart overlapped, so it takes a PostgreSQL advisory lock and refuses to start beside a
 peer that holds it. It is also the only mode that needs neither `GURU_MASTER_KEY` nor `REDIS_URL`
@@ -53,7 +55,7 @@ Ports, and who is allowed to reach them:
 | `50052` | `workers_grpc` | Reachable by data-plane nodes (VPN, private network, or a TLS-terminating gRPC proxy). |
 | `3000` | dashboard | Behind your HTTPS reverse proxy; never publish directly. |
 | `5432` | PostgreSQL | **Private.** One role, one database, one password. |
-| `5672` | RabbitMQ | **Private.** |
+| `8090` | Iggy | **Private.** Root user and password from `.env`. |
 | `6379` | Redis | **Private.** No credentials at all; the listener is the access control. |
 
 :::caution[The gRPC ports are plaintext]
@@ -68,7 +70,7 @@ crosses the public internet.
 Work through **[Prerequisites](/guides/prerequisites/)** before this guide. For an image deployment
 you need, from that page: Docker Engine and the Compose plugin, a checkout of this repository on an
 operator machine (for the Compose file), `openssl`, a DNS name with a TLS certificate — and
-PostgreSQL, RabbitMQ and Redis themselves, which
+PostgreSQL, Iggy and Redis themselves, which
 that page brings up from `/srv/guru/docker-compose.yml` with the credentials in `/srv/guru/.env`.
 
 `guru-master` and `manage-tool` are published as plain binaries too: every `master-v*` tag attaches
@@ -104,8 +106,8 @@ Both images are public, so no `docker login ghcr.io` is needed to pull.
 ## 4. Lay out the secrets
 
 [Prerequisites](/guides/prerequisites/) already created `/srv/guru/.env` next to the Compose file,
-with the datastore credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `RABBIT_USER`,
-`RABBIT_PASSWORD`). Append the image tags you pinned in section 3:
+with the datastore credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `IGGY_USER`,
+`IGGY_PASSWORD`). Append the image tags you pinned in section 3:
 
 ```sh
 # /srv/guru/.env  (append)
@@ -118,29 +120,29 @@ FRONTEND_VERSION=v1.0.0
 
 :::caution[The repository `.env` is a different file]
 The repository root may contain a `.env` with credentials of *another* environment
-(`GURU_DATABASE_URL`, `AMQP_URI`), and every process started from that directory inherits it. Pass
+(`GURU_DATABASE_URL`, `IGGY_URL`), and every process started from that directory inherits it. Pass
 `--database-url` explicitly when you run `manage-tool` from a checkout. A forgotten flag is how a
 "local" command ends up rewriting production.
 :::
 
-## 5. PostgreSQL, RabbitMQ and Redis
+## 5. PostgreSQL, Iggy and Redis
 
 All three datastores, their Compose services and the requirements behind them (PostgreSQL ≥ 16 with
-durable storage; RabbitMQ on the default vhost with a trailing-slash URI; Redis 7.x with no
-credentials and no persistence) live in
-**[Prerequisites → PostgreSQL, RabbitMQ and Redis](/guides/prerequisites/#4-postgresql-rabbitmq-and-redis)**.
+durable storage; Iggy server 0.9.x with `SYS_NICE`, `seccomp=unconfined` and an unlimited
+`memlock`; Redis 7.x with no credentials and no persistence) live in
+**[Prerequisites → PostgreSQL, Iggy and Redis](/guides/prerequisites/#4-postgresql-iggy-and-redis)**.
 They must be up before any master starts:
 
 ```sh
 cd /srv/guru
-docker compose ps          # postgres healthy, rabbitmq healthy, redis up
+docker compose ps          # postgres healthy, iggy healthy, redis up
 ```
 
-Three consequences worth repeating here, because they shape this deployment: the broker is mandatory
-in **all five** master modes — periodic work is a message, so a broker outage stalls derivation,
-liveness and certificate renewal — and the masters reach the database with the role in
+Three consequences worth repeating here, because they shape this deployment: Iggy is mandatory in
+**all five** master modes — every mode creates the stream and topics it needs at startup and
+refuses to start without `IGGY_URL` — and the masters reach the database with the role in
 `/srv/guru/.env`, which the `x-master` anchor in section 7 assembles into a URL. Redis is
-the third: required by the three modes that serve or derive, and far cheaper to lose.
+the third: required by every mode except `notifier`, and far cheaper to lose.
 An outage stops delivery on open `Watch*` streams and nothing else — edits still apply, canvases
 still derive, workers still get their config — and the subscriber reconnects on its own, then has
 every watcher re-read the database. The dashboard follows those streams, so while Redis is down an
@@ -165,16 +167,16 @@ If the database only listens on loopback on the server, tunnel to it:
 ## 7. Run the control plane
 
 `guru-master`'s *deployment* settings come from the environment: `GURU_WORKER_MODE` picks the mode,
-and `GURU_DATABASE_URL`, `AMQP_URI`, `REDIS_URL` and `GURU_MASTER_KEY` have
+and `GURU_DATABASE_URL`, `IGGY_URL`, `REDIS_URL` and `GURU_MASTER_KEY` have
 **no defaults**. Everything an operator tunes per installation — health thresholds and retention,
 the default ACME directory, the renewal window, how often each periodic job runs — lives in the
 database instead (step 8), so replicas need no matching environment.
 
 Generate the master key once and keep it with the database credentials — it encrypts every DNS
 provider token and certificate key at rest, and there is no way to recover them without it. The
-three modes that read a secret need it; `cron` and `notifier` never do, and the anchor below simply
-hands the same environment to all five. `REDIS_URL` has a similar scope — the three modes that
-serve or derive refuse to start without it, `cron` and `notifier` ignore it. `manage-tool` is either built
+four modes that read a secret need it; only `notifier` never does, and the anchor below simply
+hands the same environment to all five. `REDIS_URL` has the same scope — every mode except
+`notifier` refuses to start without it, and `notifier` ignores it. `manage-tool` is either built
 from your checkout or downloaded from a `master-v*` release (steps 8 and 10); this subcommand needs
 no database:
 
@@ -183,7 +185,7 @@ no database:
 ```
 
 Extend the same `docker-compose.yml`: the `x-master` anchor goes above `services:`, the five
-services inside it, next to `postgres`, `rabbitmq` and `redis`:
+services inside it, next to `postgres`, `iggy` and `redis`:
 
 ```yaml
 x-master: &master
@@ -191,20 +193,20 @@ x-master: &master
   restart: unless-stopped
   environment: &master-env
     GURU_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AMQP_URI: amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@rabbitmq:5672/
+    IGGY_URL: iggy://${IGGY_USER}:${IGGY_PASSWORD}@iggy:8090
     REDIS_URL: redis://redis:6379/
     GURU_MASTER_KEY: ${GURU_MASTER_KEY}
     GURU_LOG_LEVEL: info
   depends_on:
     postgres:
       condition: service_healthy
-    rabbitmq:
+    iggy:
       condition: service_healthy
     redis:
       condition: service_started
 
 services:
-  # ... postgres, rabbitmq and redis from section 5 ...
+  # ... postgres, iggy and redis from section 5 ...
 
   master-dashboard:
     <<: *master
@@ -253,30 +255,29 @@ What each mode is for, and how it scales:
   (`0.0.0.0:50052`), plus the config-view poller that wakes worker streams
   (`GURU_WATCH_POLL_MS`, default `1000`). Replicable, but each worker session is pinned to the
   instance holding its stream, so put a plain TCP/gRPC load balancer in front, never an HTTP/1 proxy.
-- **`consumer`** — every hook: it re-derives a canvas when a `CanvasDirty` message arrives (prefetch
-  8) and it runs all six periodic passes when their execution signals arrive — the stale-canvas
-  sweep, the health liveness sweep, health retention, ACME issuance/renewal, relay-leaf rotation
-  and the country lookup of new server addresses. This is the mode that needs outbound HTTPS to the
-  ACME directory, the DNS provider APIs and `country_lookup_url`, and DNS to public resolvers.
-  Replicate it for throughput and for failover: derivation is guarded by the canvas generation
-  counter, and every periodic pass claims its run in one `orchestration_job_run` row before working,
-  so a signal delivered twice or to two replicas runs once. Two ACME passes cannot race the same
-  DNS-01 challenge either — each certificate attempt is claimed per row.
-- **`cron`** — the clock, and only the clock. It scans every 5 s and publishes one execution signal
-  per due job: `derive_stale_canvases` and `sweep_liveness` every 30 s, `renew_certificates` and
-  `resolve_server_countries` every 60 s, `trim_health_history` every 5 min,
-  `rotate_relay_certificates` hourly. It opens no database connection, never reads
-  `GURU_MASTER_KEY` and keeps no local state, so the only secret it holds is the broker credential
-  in `AMQP_URI` — which is also the one thing it cannot run without. There is nothing to scale:
-  one replica is enough, and a second is harmless because the consumer's run claim discards the
-  duplicate. How often a job may actually run is a stored setting, not a flag — see step 8.
+- **`consumer`** — the Iggy event handlers: it re-derives a canvas when a `CanvasDirty` event
+  arrives and fans each `HealthChanged` event out into notices. This is the mode the operator
+  API's edits wait on. Replicate it for throughput and for failover, but give every replica a
+  **disjoint** `GURU_IGGY_PARTITIONS` set (0-based; empty = all of `0,1,2,3`): replicas share the
+  consumer names `guru_orchestration_canvas_dirty` and `guru_notify_health_changed` and would
+  otherwise race on the stored offsets. Derivation is guarded by the canvas generation counter, so
+  an event processed twice (delivery is at least once) is harmless.
+- **`cron`** — all six periodic jobs, in-process: `derive_stale_canvases` and `sweep_liveness`
+  every 30 s, `renew_certificates` and `resolve_server_countries` every 60 s,
+  `trim_health_history` every 5 min, `rotate_relay_certificates` hourly; the first run of each is
+  at start. This is the mode that needs outbound HTTPS to the ACME directory, the DNS provider APIs
+  and `country_lookup_url`, and DNS to public resolvers. Every run claims its tick in one
+  `orchestration_job_run` row before working, so a second replica is a standby that takes over,
+  never a duplicate; two ACME passes cannot race the same DNS-01 challenge either — each
+  certificate attempt is claimed per row. On shutdown it lets runs in progress finish for up to
+  20 s. How often a job may actually run is a stored setting, not a flag — see step 8.
 - **`notifier`** — notification delivery, and the one mode to run **exactly once**: it consumes the
-  two notice queues the `consumer`'s fan-out publishes to and sends each notice over SMTP and the
-  Telegram Bot API. It takes a session-scoped PostgreSQL advisory lock first, so a second replica
-  exits non-zero with `another notifier already holds the advisory lock; run exactly one` — which
-  makes `deploy: replicas: 1` a hard guarantee rather than a convention. It needs neither
-  `GURU_MASTER_KEY` nor `REDIS_URL`, only outbound SMTP and HTTPS to `telegram_api_base`. While it
-  is down, notices wait in their queues.
+  `notify_health_notice` topic the `consumer`'s fan-out publishes to and sends each notice over
+  SMTP and the Telegram Bot API. It takes a session-scoped PostgreSQL advisory lock first, so a
+  second replica exits non-zero with `another notifier already holds the advisory lock; run exactly
+  one` — which makes `deploy: replicas: 1` a hard guarantee rather than a convention. It needs
+  neither `GURU_MASTER_KEY` nor `REDIS_URL`, only outbound SMTP and HTTPS to `telegram_api_base`.
+  While it is down, notices wait in Iggy.
 
 Relay links over TLS or QUIC need the internal CA before their pods derive. Run this once from the
 operator machine, with the same `GURU_MASTER_KEY` the master uses:
@@ -291,10 +292,10 @@ refuses to run twice.
 
 Three operational notes that follow from the code:
 
-- The `consumer`, `notifier` and `cron` modes **exit non-zero when the AMQP connection drops** (the client does
-  not reconnect, and a silently dead consumer or a clock that publishes nowhere is worse than a
-  restart): `the AMQP connection was lost: restart once the broker at AMQP_URI is reachable again`.
-  `restart: unless-stopped` is what makes that self-healing — do not remove it.
+- A handler that fails is not lost: a database that is unavailable is retried in place, other
+  database errors and conflicts move the event to the topic's `retry_<topic>` (retried after 2, 4,
+  8 and 16 s), and anything else is dropped and logged. Keep `restart: unless-stopped` anyway —
+  it is what brings a crashed master back.
 - The images are distroless: no shell, no `curl`. A Compose `healthcheck` that shells out cannot
   work. Monitor from outside instead (a TCP connect to `50051`/`50052`, or scrape the logs).
 - Redis behaves the other way round: the subscriber reconnects by itself (500 ms doubling to 10 s)
@@ -310,31 +311,21 @@ docker compose up -d
 docker compose logs master-dashboard master-workers master-consumer master-cron master-notifier
 ```
 
-A healthy start looks like this. The consumer prints one line per queue it bound, the scheduler one
-line naming every cadence it will publish on:
+A healthy start looks like this. `consumer` and `notifier` log `consuming` once their handlers are
+running, and `cron` one line naming every job interval:
 
 ```text
 master-dashboard-1  | INFO guru_master: serving operator API addr=0.0.0.0:50051
 master-workers-1    | INFO guru_master: serving worker API addr=0.0.0.0:50052
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_canvas_dirty" key="canvas_dirty"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_derive_stale_canvases" key="derive_stale_canvases"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_rotate_relay_certificates" key="rotate_relay_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_sweep_liveness" key="sweep_liveness"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_trim_health_history" key="trim_health_history"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_renew_certificates" key="renew_certificates"
-master-consumer-1   | INFO guru_master: consuming queue="guru_orchestration_resolve_server_countries" key="resolve_server_countries"
-master-consumer-1   | INFO guru_master: consuming queue="guru_notify_health_changed" key="health_changed"
-master-cron-1       | INFO guru_master: scheduling periodic execution signals scan_interval_secs=5 derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
+master-consumer-1   | INFO guru_master: consuming
+master-cron-1       | INFO guru_master: running periodic jobs derive_stale_canvases_secs=30 rotate_relay_certificates_secs=3600 sweep_liveness_secs=30 trim_health_history_secs=300 renew_certificates_secs=60 resolve_server_countries_secs=60
 master-notifier-1   | INFO guru_master: notification channel channel="email: configured"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_group" key="health_notify_group"
-master-notifier-1   | INFO guru_master: consuming queue="guru_notify_health_notify_personal" key="health_notify_personal"
+master-notifier-1   | INFO guru_master: consuming
 ```
 
-The scheduler is quiet after that: each publication is logged at `DEBUG`
-(`published an execution signal job="sweep_liveness"`), while a publish that fails is an `ERROR`
-and does not end the process. So `GURU_LOG_LEVEL=debug` on the cron container is how you confirm
-the clock is ticking, and an `ERROR ... publishing an execution signal failed` is how a broker
-problem shows up before the connection is declared lost.
+A cron job that fails logs an error and runs again on its next tick; it does not end the process.
+To see the topology the masters created, list it on the Iggy container:
+`docker compose exec iggy iggy -u <user> -p <password> topic list guru`.
 
 ## 8. Create the first administrator
 
@@ -381,10 +372,10 @@ so restart them to pick a change up. See
 
 The cadence of the periodic jobs lives on the same key: `sweep_interval_secs` (30),
 `liveness_interval_secs` (30), `health_retention_interval_secs` (300), `acme_interval_secs` (60),
-`country_lookup_interval_secs` (60) and `relay_rotation_interval_secs` (3600). The scheduler
-publishes on a fixed cadence because it reads no configuration; each consumer claims a run at most
-once per *configured* interval, so a value at or below the signal's cadence means "run on every
-signal" and a larger one slows the job down fleet-wide:
+`country_lookup_interval_secs` (60) and `relay_rotation_interval_secs` (3600). Each job wakes on a
+fixed interval of its own; every run claims its tick at most once per *configured* interval, so a
+value at or below the job's own interval means "run on every tick" and a larger one slows the job
+down fleet-wide:
 
 ```sh
 ./target/release/manage-tool ... config set orchestration '{"acme_interval_secs":300}'
@@ -633,7 +624,7 @@ Work through these in order — each one fails loudly and independently:
 
 ```sh
 # 1. Datastores
-docker compose ps                     # postgres + rabbitmq healthy, redis up
+docker compose ps                     # postgres + iggy healthy, redis up
 
 # 2. Schema
 ./manage-tool db migrate              # from section 6
@@ -678,10 +669,11 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   > guru-$(date +%F).sql
 ```
 
-Snapshot the `postgres-data` volume too if you want a fast restore path. RabbitMQ needs no backup:
-its queues hold edit hints and execution signals, both of which the scheduler re-publishes and the
-generation counters make idempotent — but the broker has to be *running*, because no periodic job
-happens while it is not. Redis needs no backup either, and for a stronger reason: it is configured
+Snapshot the `postgres-data` volume too if you want a fast restore path. Iggy's `iggy-data` volume
+holds events that are not yet consumed (edit hints, health facts, notices); losing it drops those
+and nothing else — the `derive_stale_canvases` job re-derives every canvas a lost hint missed — so
+it is optional to back up, but the server has to be *running*, because no master starts without it.
+Redis needs no backup either, and for a stronger reason: it is configured
 without AOF and without RDB, so there is nothing in it to save. Replace the container and the
 masters resubscribe.
 
@@ -695,20 +687,20 @@ usual Docker log driver.
 |---|---|
 | Dashboard login returns `Forbidden` / `Cross-site remote requests are forbidden` | Reconstructed origin ≠ browser `Origin`. Serve over HTTPS, or set `PROTOCOL_HEADER`/`HOST_HEADER` and forward `X-Forwarded-Proto` and `X-Forwarded-Host` (with the port). `ORIGIN` has no effect. |
 | Login succeeds, next request bounces back to `/auth` | The `Secure` session cookie was dropped — the browser reached the dashboard over plain HTTP. |
-| Master exits with `this mode opens the database: set GURU_DATABASE_URL` | The URL is unset or empty; it has no default. `cron` is the one mode that does not need it. |
-| Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | `dashboard_grpc`, `workers_grpc` and `consumer` need the key (`cron` does not read it). Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
+| Master exits with `every mode opens the database: set GURU_DATABASE_URL (or pass --database-url)` | The URL is unset or empty; it has no default, and every mode needs it, `cron` included. |
+| Master exits with `master key: GURU_MASTER_KEY is not set` (or `must be 32 bytes`) | Every mode except `notifier` needs the key. Generate one with `manage-tool generate-master-key`; it is read from the environment only. |
 | Master exits with `stored config for key ... does not match its type` | The stored document is corrupt or predates a renamed field. Inspect it with `manage-tool config get <key>` and rewrite it with `config set`. |
-| A TLS client pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It runs in `consumer`, on the `renew_certificates` signal: check that a `consumer` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that the consumer reaches the ACME directory. `RetryCertificate` forces a retry. |
+| A TLS client pod stays in `invalid_pods` with `certificate for … is pending` / `failed: …` | The ACME pass has not issued it yet, or the last attempt failed (`ListCertificates` shows `last_error`). It is the `renew_certificates` job in `cron`: check that a `cron` is up, that the DNS provider token and `domain_id` (Cloudflare zone id / Vercel domain) are right, and that `cron` reaches the ACME directory. `RetryCertificate` forces a retry. |
 | A relay pod stays in `invalid_pods` with `internal CA not initialised` | Run `manage-tool orchestration init-ca` once. |
-| Master exits immediately with an AMQP error | `AMQP_URI` unset or unreachable. All five modes require the broker. Check the trailing `/` on the URI. |
-| Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. `dashboard_grpc`, `workers_grpc` and `consumer` all require it; `cron` and `notifier` do not. |
+| Master exits immediately with `Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090`, or with an Iggy connection error | `IGGY_URL` is unset, or the server is unreachable or rejects the credentials. All five modes require Iggy. Check that `docker compose exec iggy iggy -u <user> -p <password> stream list` works. |
+| Master exits immediately with `Redis is required: set REDIS_URL (or pass --redis-url), for example redis://127.0.0.1:6379/` | `REDIS_URL` is unset, or the server is unreachable. Every mode except `notifier` requires it. |
 | An open canvas or health page stops updating (a reload shows the change), or a `Watch*` stream stops delivering snapshots | Redis is down, or unreachable from the `dashboard_grpc` replica serving that stream — look for `live bus connected` in its log. Edits still apply and still derive; only the live delivery stops, and it resumes on reconnect. |
-| `consumer`, `notifier` or `cron` restarts periodically | Expected on broker loss: the client does not reconnect, so the process exits and the restart policy brings it back. Investigate the broker, not the master. |
+| Two `consumer` replicas process the same events twice | They read overlapping partitions under the same consumer names. Give each a disjoint `GURU_IGGY_PARTITIONS` set (0-based, out of `0,1,2,3`); empty means all of them. |
 | A second `notifier` exits with `another notifier already holds the advisory lock; run exactly one` | Expected: delivery is single-instance. Scale it to one replica, or stop the peer that holds the lock. |
 | `relation "…" does not exist` right after a clean install | The migrations never ran: the role in `GURU_DATABASE_URL` may lack `CREATE` on the database. Run `manage-tool db migrate` and read its error. |
 | `manage-tool` wrote to the wrong database | A `.env` in the working directory supplied `GURU_DATABASE_URL`. Always pass `--database-url`. |
-| Canvas edits never reach a worker | `consumer` is down: it runs both the edit hook and the stale-canvas sweep, so nothing derives without it. If `consumer` is up, check `cron` — without the clock the sweep never fires and only edits with a live `CanvasDirty` derive. |
-| Periodic jobs stop happening (nothing goes `Offline`, no renewals) | RabbitMQ is down, or `cron` is. Both are required: the clock publishes the signals, the consumer runs them. |
+| Canvas edits never reach a worker | `consumer` is down: it runs the edit hook, so an edit only derives on the next `derive_stale_canvases` sweep in `cron`. If neither is up, nothing derives. |
+| Periodic jobs stop happening (nothing goes `Offline`, no renewals) | `cron` is down: it runs every periodic job in-process. Run at least one; extra replicas are standbys. |
 
 See [Configuration](/reference/configuration/) for every flag and variable, and
 [Rollout](/reference/rollout/) for what "derivation" actually does.

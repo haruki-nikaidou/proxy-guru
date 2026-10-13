@@ -19,8 +19,8 @@ src/
 │   ├── db/         # PostgreSQL rows + compile-time-checked queries
 │   └── redis/      # Redis key/value types (rkyv-encoded)
 ├── services/       # business logic (stateful Processors)
-├── events/         # AMQP message payloads + routing
-├── hooks/          # background reactors: consumers, cron, event loggers
+├── events/         # Iggy event payloads + topics
+├── hooks/          # background reactors: Iggy event handlers, cron jobs, loggers
 └── rpc/            # gRPC service implementations (the transport edge)
 ```
 
@@ -36,12 +36,13 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 A processor is a `Clone`-able struct that owns its dependencies and implements
 `Processor<Input>` once per operation. The same abstraction is used everywhere:
 
-- **Entities** implement `Processor` on `wakuwaku::sqlx::DatabaseProcessor` (for
-  database work) or on their own type (for Redis).
+- **Entities** are wakuwaku-entity queries: an input struct implementing `Query`
+  (its `Read`/`Write` effect) and `Execute<PgSource>`, run by `base::db::Db`;
+  multi-statement transactions are `TxFlow`s run through `base::db::transact`.
 - **Services** implement `Processor` on a service struct that owns the database,
-  Redis, message queue, and any collaborating services.
-- **Hooks** implement `Processor` (plus `AmqpMessageProcessor`) to consume
-  events off the queue.
+  Redis, the event publisher, and any collaborating services.
+- **Hooks** implement `wakuwaku::iggy::EventHandler<E>` to react to events, or
+  `wakuwaku::CronJob` for periodic work.
 
 This keeps each unit small, individually testable, and trivially composable.
 
@@ -50,7 +51,7 @@ This keeps each unit small, individually testable, and trivially composable.
 ```
 gRPC request ──► rpc ──► services ──► entities ──► PostgreSQL / Redis
                             │
-                            └─► events ──► AMQP ──► hooks (this or another module)
+                            └─► events ──► Iggy ──► hooks (this or another module)
 ```
 
 ## Dependency direction

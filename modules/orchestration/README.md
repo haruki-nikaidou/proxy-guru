@@ -19,11 +19,11 @@ src/
 ├── services/       # graph (read, check, apply), derive, converge, rollout, agent,
 │                   # canvas, server, health, ca, acme, dns, live, watch,
 │                   # shell (remote shell, dashboard side), shell_channel (worker side)
-├── events/         # `CanvasDirty`, the periodic execution signals, live messages,
+├── events/         # `CanvasDirty` and `HealthChanged` (Iggy), live messages,
 │                   # the remote-shell relay envelopes
-├── hooks/          # schedule.rs (the `cron` clock and the run claim), derive.rs
-│                   # (derivation, stale-canvas sweep, relay leaf rotation),
-│                   # health.rs (liveness sweep, retention), acme.rs (issuance/renewal),
+├── hooks/          # derive.rs (the `CanvasDirty` handler, stale-canvas sweep and
+│                   # relay leaf rotation jobs), health.rs (liveness sweep, retention
+│                   # jobs), acme.rs (issuance/renewal job), country.rs (country job),
 │                   # live.rs and shell.rs (the Redis pub/sub subscribers)
 └── rpc/            # the operator API and the worker API, plus refresh-key middleware
 ```
@@ -58,7 +58,7 @@ compiled by `lib/guru_topology`:
 diagnostics it checks with. `ApplyGraph` takes one batch of puts and deletes,
 applies it to the tree in memory, allocates ports, runs `guru_topology::check`
 and the switch-safety check, and writes the batch in one transaction fenced on
-the root's generation (`entities::db::fence::touch_checked`) — or refuses all of
+the root's generation (`entities::db::fence::TouchChecked`) — or refuses all of
 it when any diagnostic is an error. `dry_run` answers the diagnostics without
 writing; `expected_generation` refuses a batch computed against a tree that has
 moved on. A batch of groups alone takes no fence and dirties nothing.
@@ -101,7 +101,7 @@ drawn on any canvas of its server's tree.
 
 - **The tree is the unit of everything.** Checks, switch safety and derivation
   load the whole tree (`entities::db::graph::LoadCanvasGraph`). Only the root's
-  `generation` counts: every edit bumps it (`fence::touch_checked`), and the
+  `generation` counts: every edit bumps it (`fence::TouchChecked`), and the
   derivation hook resolves the root of whatever canvas it is told about. Workers
   never touch it (see *Rollout*).
 - **Deleting** a canvas deletes its subtree in one transaction, and is refused
@@ -144,44 +144,44 @@ row is what lets a fleet acknowledge one revision in the same instant without
 contending on it (a writer that meets a locked row waits for it, so a hot row
 is a queue rather than an error, but the queue is still the fleet's latency).
 
-The `CanvasDirty` message is only latency: the two counters are what actually
-decide, and the periodic `derive_stale_canvases` pass acts on them, so a dropped
-message costs delay and never correctness. That backstop is itself a message,
-so a broker outage stalls derivation until the broker returns; the counters make
-the catch-up automatic once it does.
+The `CanvasDirty` event is only latency: the two counters are what actually
+decide, and the periodic `derive_stale_canvases` job acts on them, so a dropped
+event costs delay and never correctness. That backstop runs in `--mode cron`,
+independent of Iggy, so an Iggy outage only delays derivation until the next
+sweep.
 
 ## Periodic jobs
 
-Nothing periodic runs in the process that schedules it. `--mode cron` holds one
-`hooks::schedule::IntervalJob` per signal type — its own last-fire timestamp, so
-a 30 s job and an hourly one do not flatten each other — and publishes the due
-ones. It reads no configuration and opens no database connection. `--mode
-consumer` binds one durable queue per signal and runs the pass:
+Every periodic job is a `wakuwaku::CronJob` run in-process by `--mode cron`,
+each on its own fixed `INTERVAL`, so a 30 s job and an hourly one do not flatten
+each other:
 
-| Signal / routing key | Queue | Hook | Interval |
+| Job id | `CronJob` | `INTERVAL` | Configured interval |
 |---|---|---|---|
-| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | `hooks::derive::CanvasDeriver` | `sweep_interval()` |
-| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | `hooks::derive::CanvasDeriver` | `relay_rotation_interval()` |
-| `sweep_liveness` | `guru_orchestration_sweep_liveness` | `hooks::health::HealthCronHook` | `liveness_interval()` |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | `hooks::health::HealthCronHook` | `health_retention_interval()` |
-| `renew_certificates` | `guru_orchestration_renew_certificates` | `hooks::acme::AcmeCronHook` | `acme_interval()` |
+| `derive_stale_canvases` | `hooks::derive::DeriveStaleCanvasesJob` | 30 s | `sweep_interval()` |
+| `rotate_relay_certificates` | `hooks::derive::RotateRelayCertificatesJob` | 3600 s | `relay_rotation_interval()` |
+| `sweep_liveness` | `hooks::health::SweepLivenessJob` | 30 s | `liveness_interval()` |
+| `trim_health_history` | `hooks::health::TrimHealthHistoryJob` | 300 s | `health_retention_interval()` |
+| `renew_certificates` | `hooks::acme::RenewCertificatesJob` | 60 s | `acme_interval()` |
+| `resolve_server_countries` | `hooks::country::ResolveServerCountriesJob` | 60 s | `country_lookup_interval()` |
 
-Delivery is at-least-once and consumers are replicated, so every hook gates on
-`entities::db::job_run::ClaimJobRun::for_tick` first: one compare-and-set
-on the job's `orchestration_job_run` row, fenced on both the tick the signal was
-published for and the configured interval — which is measured between ticks, not
-between runs, so a pass that takes a minute does not push the next one out.
-Whoever wins runs the pass, everybody else returns having touched nothing, and a
-job cannot run twice for the same tick nor more often than its configured
-interval. That is why the publication cadence is a constant and the interval is
-configuration: the constant is a floor the scheduler can honour without reading
-the database, the interval is what an operator actually sees.
+`cron` processes may be replicated, so every job gates on
+`entities::db::job_run::ClaimJobRun::for_tick(<job id>, <configured interval>,
+OffsetDateTime::from(tick.fired_at))` first: one compare-and-set on the job's
+`orchestration_job_run` row, fenced on both the tick's `fired_at` and the
+configured interval — which is measured between ticks, not between runs, so a
+pass that takes a minute does not push the next one out. Whoever wins runs the
+pass, everybody else returns having touched nothing, and a job cannot run twice
+for the same tick nor more often than its configured interval. That is why the
+`INTERVAL` is a constant and the interval is configuration: the constant is the
+wake-up floor (`AtLeast`, so consecutive ticks are at least that far apart), the
+interval is what an operator actually sees.
 
 A pass that iterates rows claims them individually as well, and against the
 value it read rather than against a clock: ACME compare-and-sets the
 `last_attempt_at` its listing observed (`ClaimCertificateAttempt`) and relay
 rotation writes each leaf against the version it read (`RotateRelayCertificate`,
-`None` when another consumer got there first). Two consumers working the same
+`None` when another process got there first). Two passes working the same
 backlog therefore cannot collide, and neither can a pass whose listing went
 stale while it worked — an ACME order takes minutes. The claim stamps
 `last_attempt_at` before ordering, which is what holds the row out of
@@ -243,10 +243,10 @@ id, and a pod held under two listeners keeps the worst status.
 revision, and `Failed`/`Ready` rows the moment an ack lands, so status never
 waits for the next report. Every write is one transaction fenced on the
 server's `refresh_key_generation`, like the rest of the agent path. The stream
-closing marks the server `Offline`; `hooks::health::HealthCronHook` catches a
-worker that vanished without closing on the `sweep_liveness` signal (no report
-for `health_report_interval × health_offline_after_intervals`) and trims both
-tables to their TTLs on `trim_health_history`. Going offline hands the watch
+closing marks the server `Offline`; `hooks::health::SweepLivenessJob` catches a
+worker that vanished without closing (no report
+for `health_report_interval × health_offline_after_intervals`), and
+`hooks::health::TrimHealthHistoryJob` trims both tables to their TTLs. Going offline hands the watch
 session back (lease dropped, `watch_epoch` bumped), so a stream a proxy keeps
 open for a dead worker cannot hold the server. The same sweep revokes the
 session of a server that is already `Offline` once its registration
@@ -282,12 +282,12 @@ The internal CA is created once by `manage-tool orchestration init-ca`
 (`CaService` / `InitInternalCa`, which also touches every tree with a TLS/QUIC
 relay). The derivation hook issues relay leaves before deriving
 (`EnsureRelayCertificates`, SAN `<pod-key>.relay.guru.internal`), and on the
-`rotate_relay_certificates` signal `hooks::derive::CanvasDeriver` re-issues
+`rotate_relay_certificates` job `hooks::derive::RotateRelayCertificatesJob` re-issues
 leaves within `relay_cert_renew_before` of expiry and re-derives their canvases.
 Both re-issue paths replace an existing leaf, and both fence the write on the
 `version` they read: a pass whose compare-and-set is refused adopts the winning
 row instead of storing the leaf it signed, so overlapping derivations — or a
-derivation and a duplicate rotation signal — end with one new leaf, not two
+derivation and a duplicate rotation run — end with one new leaf, not two
 versions of clobbered material. Only a pod's first leaf is written
 unconditionally, and that write is an upsert on the `relay_certificate_pod`
 unique constraint: two passes issuing a pod's first leaf at once both succeed,

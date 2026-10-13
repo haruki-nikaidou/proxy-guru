@@ -1,13 +1,13 @@
 ---
 title: ローカル開発
-description: PostgreSQL、RabbitMQ、Redis、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
+description: PostgreSQL、Iggy、Redis、コントロールプレーン、ダッシュボードを 1 台のマシンで立ち上げます。
 ---
 
-コントロールプレーンには PostgreSQL データベース、AMQP ブローカー、そして Redis サーバーが必要です。
+コントロールプレーンには PostgreSQL データベース、Apache Iggy サーバー、そして Redis サーバーが必要です。
 それ以外はすべてワークスペースから実行できます。
 
 :::caution[リポジトリの `.env` は開発用プロファイルではありません]
-ルートの `.env` には**本番**の認証情報（`GURU_DATABASE_URL`、`AMQP_URI`、
+ルートの `.env` には**本番**の認証情報（`GURU_DATABASE_URL`、`IGGY_URL`、
 `REDIS_URL`）が入っていることがあり、起動した
 すべてのプロセスがそれを継承します。`--database-url` を明示的に渡す（あるいは変数を上書きする）ことで、
 ローカル実行がうっかりリモートのデータベースに接続しないようにしてください。
@@ -20,7 +20,14 @@ docker run -d --name guru-postgres -p 15432:5432 \
   -e POSTGRES_USER=guru -e POSTGRES_PASSWORD=guru -e POSTGRES_DB=guru \
   postgres:18.6-alpine
 
-docker run -d --name guru-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-alpine
+# Iggy 0.9.x needs SYS_NICE, seccomp=unconfined and unlimited memlock (io_uring);
+# `docker compose up iggy` from the repository root starts the same thing.
+docker run -d --name guru-iggy -p 8090:8090 \
+  --cap-add SYS_NICE --security-opt seccomp=unconfined --ulimit memlock=-1:-1 \
+  -e IGGY_ROOT_USERNAME=iggy -e IGGY_ROOT_PASSWORD=iggy \
+  -e IGGY_TCP_ADDRESS=0.0.0.0:8090 -e IGGY_NODE_ADVERTISED_ADDRESS=localhost \
+  -e IGGY_QUIC_ENABLED=false -e IGGY_WEBSOCKET_ENABLED=false \
+  apache/iggy:0.9.0
 
 # Pub/sub only, so nothing is persisted; `docker compose up redis` from the
 # repository root starts the same thing.
@@ -30,7 +37,8 @@ docker run -d --name guru-redis -p 6379:6379 redis:7-alpine \
 
 PostgreSQL は **16 以降**を使用してください。
 
-ブローカーの URI の書式には注意が必要です。デフォルトの vhost には `amqp://guest:guest@127.0.0.1:5672/` を使います。
+Iggy の URL は `iggy://<user>:<password>@<host>:8090` の形式で、ここでは `iggy://iggy:iggy@127.0.0.1:8090` です。
+ストリームとトピックは各モードが起動時に作成するため、事前に作るものはありません。
 Redis は `redis://127.0.0.1:6379/` を受け取り、認証情報はありません。ホスト側の `6379` を別のプロセスが
 使っている場合は、`docker compose up redis` の前に `.env` で `REDIS_PORT`（例: `16379`）を設定して
 ホスト側ポートをずらし、`REDIS_URL` にも同じポートを書いてください。
@@ -65,7 +73,7 @@ cargo run -p manage-tool -- --database-url "$GURU_DATABASE_URL" \
 
 ## 4. コントロールプレーン
 
-データベースに触れるすべてのモードは `GURU_MASTER_KEY` でシークレットを復号し、この変数にデフォルト値はありません。
+`notifier` 以外のすべてのモードは `GURU_MASTER_KEY` でシークレットを復号し、この変数にデフォルト値はありません。
 指定しない場合、プロセスは起動時に
 `Error: "master key: GURU_MASTER_KEY is not set"` で停止します。キーは一度だけ生成し（このサブコマンドは
 データベースを必要としません）、マスターを起動するシェルに設定しておきます:
@@ -83,30 +91,32 @@ export GURU_MASTER_KEY='<the printed value>'
 cargo run -p guru-master -- \
   --mode dashboard_grpc \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-`consumer` が動いていないとキャンバスは一切導出されないため、2 つ目のシェルで起動してください。これは編集の
-フックであると同時に、すべての定期ジョブ（古いキャンバスのスイープ、死活監視のスイープ、ヘルス履歴の保持、
-ACME とリレーリーフ証明書のローテーション）の実行主体でもあります:
+`consumer` が動いていないと編集したキャンバスは導出されないため、2 つ目のシェルで起動してください。これは
+Iggy のイベントハンドラー — `CanvasDirty` による導出と、`HealthChanged` による通知のファンアウト — を実行します:
 
 ```sh
 cargo run -p guru-master -- \
   --mode consumer \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/' \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
   --redis-url 'redis://127.0.0.1:6379/'
 ```
 
-3 つ目のシェルではクロックを動かします。`cron` は実行時刻になったジョブごとに実行シグナルを 1 件発行するだけで、
-それ以外は何もしません。データベース接続を開かず、`GURU_MASTER_KEY` を読まず、データベース引数も取らないため、
-設定はブローカーの URI だけです:
+3 つ目のシェルでは `cron` を動かします。6 つの定期ジョブ（古いキャンバスのスイープ、死活監視のスイープ、
+ヘルス履歴の保持、ACME とリレーリーフ証明書のローテーション、サーバーの国の解決）をすべてプロセス内で実行し、
+最初の実行は起動時です。ジョブはキャンバスを導出し、証明書を更新し、イベントを publish するため、引数は
+`consumer` と同じです:
 
 ```sh
-env -u GURU_MASTER_KEY cargo run -p guru-master -- \
+cargo run -p guru-master -- \
   --mode cron \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --database-url "$GURU_DATABASE_URL" \
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090' \
+  --redis-url 'redis://127.0.0.1:6379/'
 ```
 
 通知の配信は専用のモードが担い、そのインスタンスはちょうど 1 つだけです。マスターキーも Redis も必要とせず、
@@ -116,7 +126,7 @@ env -u GURU_MASTER_KEY cargo run -p guru-master -- \
 env -u GURU_MASTER_KEY GURU_TELEGRAM_BOT_TOKEN=... cargo run -p guru-master -- \
   --mode notifier \
   --database-url "$GURU_DATABASE_URL" \
-  --amqp-uri 'amqp://guest:guest@127.0.0.1:5672/'
+  --iggy-url 'iggy://iggy:iggy@127.0.0.1:8090'
 ```
 
 2 つ目の `notifier` は起動を拒否します — `another notifier already holds the advisory lock; run
@@ -126,9 +136,9 @@ exactly one` — これはバグではなく、ロックが効いている証拠
 届いたメールは `http://127.0.0.1:8025` で読めます。
 
 5 つ目のモードは `workers_grpc` で、ワーカー API と設定ビューのポーラーを兼ねており、引数は `dashboard_grpc` と
-まったく同じです。すべてのモードはブローカーを必要とします。RabbitMQ が停止していれば何も起動せず、`cron` か
-`consumer` が停止していれば定期ジョブは一切実行されません。`--redis-url`/`REDIS_URL` は、上記のうち提供と導出を
-行う 3 つのモードで必須で、`cron` と `notifier` は使いません。これがなければそれらのモードは起動しません。
+まったく同じです。すべてのモードは PostgreSQL と Iggy を必要とし、`IGGY_URL` がなければどのモードも
+起動時に失敗します。`cron` が停止していれば定期ジョブは一切実行されません。`--redis-url`/`REDIS_URL` は
+`notifier` 以外のすべてのモードで必須で、これがなければそれらのモードは起動しません。
 これはオペレーター API の `Watch*` ストリームを支えるライブバスで、
 ダッシュボードのキャンバスエディターとヘルスページはこのストリームを追従しています。Redis が停止すると、
 開いているページは更新を停止しますが（*ライブ* バッジはブラウザー自身の接続を示すもので、緑のままです）、
@@ -136,7 +146,7 @@ exactly one` — これはバグではなく、ロックが効いている証拠
 
 定期ジョブを間隔の到来を待たずに実行させたい場合は、そのクレーム行を削除します。テーブルは
 `orchestration_job_run` で、ジョブ名をキーにジョブごとに 1 行あるため、
-`DELETE orchestration_job_run:sweep_liveness` を実行すれば次の `sweep_liveness` シグナルで実際に処理が走ります。
+`DELETE orchestration_job_run:sweep_liveness` を実行すれば次の `sweep_liveness` の起動で実際に処理が走ります。
 
 ## 5. ダッシュボード
 

@@ -12,14 +12,15 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 | `--mode` | `GURU_WORKER_MODE` | `dashboard_grpc` |
 | `--dashboard-addr` | `GURU_DASHBOARD_GRPC_ADDR` | `0.0.0.0:50051` |
 | `--workers-addr` | `GURU_WORKERS_GRPC_ADDR` | `0.0.0.0:50052` |
-| `--database-url` | `GURU_DATABASE_URL` | *`cron` 以外のすべてのモードで必須* |
+| `--database-url` | `GURU_DATABASE_URL` | *すべてのモードで必須* |
 | `--db-pool-size` | `GURU_DB_POOL_SIZE` | `10`（1 以上である必要があります） |
 | `--db-statement-timeout-ms` | `GURU_DB_STATEMENT_TIMEOUT_MS` | `5000`（1 以上である必要があります） |
-| `--amqp-uri` | `AMQP_URI` | *すべてのモードで必須* |
-| `--redis-url` | `REDIS_URL` | *`dashboard_grpc`、`workers_grpc`、`consumer` で必須* |
+| `--iggy-url` | `IGGY_URL` | *すべてのモードで必須* |
+| `--iggy-partitions` | `GURU_IGGY_PARTITIONS` | 空 = すべて（`0,1,2,3`）。`consumer` が読むパーティション（0 始まり、カンマ区切り） |
+| `--redis-url` | `REDIS_URL` | *`notifier` 以外のすべてのモードで必須* |
 | `--watch-poll-ms` | `GURU_WATCH_POLL_MS` | `1000`（1 以上である必要があります） |
 | `--log-level` | `GURU_LOG_LEVEL` | `info` |
-| — | `GURU_MASTER_KEY` | *`dashboard_grpc`、`workers_grpc`、`consumer` では必須*（環境変数のみ。32 バイトのランダム値を base64 エンコードしたもの — `manage-tool generate-master-key`） |
+| — | `GURU_MASTER_KEY` | *`dashboard_grpc`、`workers_grpc`、`consumer`、`cron` では必須*（環境変数のみ。32 バイトのランダム値を base64 エンコードしたもの — `manage-tool generate-master-key`） |
 | — | `GURU_SMTP_PASSWORD` | *任意、`notifier` のみ*（環境変数のみ。未設定の場合は認証なしで送信します） |
 | — | `GURU_TELEGRAM_BOT_TOKEN` | *任意、`notifier` のみ*（環境変数のみ。未設定の場合は Telegram を無効にします） |
 
@@ -27,17 +28,26 @@ description: guru-master、guru-worker、manage-tool、ダッシュボードの�
 更新ウィンドウ、各定期ジョブの実行頻度 — は、環境変数ではなくデータベースに保存されます。
 [モジュール設定](#モジュール設定)を参照してください。
 
-`--mode` は `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier`、`cron` を受け付けます。ブローカー URI は
-`amqp://guru:guru@127.0.0.1:5672/` のような形式で、末尾の `/` がデフォルトの vhost を選択します。ブローカーは
-`cron` を含む**すべて**のモードで必須です。定期処理はメッセージとして publish されるため、ブローカーが停止すると、
-復旧するまで導出・liveness・証明書更新が止まります。
+`--mode` は `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier`、`cron` を受け付けます。Iggy の URL は
+`iggy://<user>:<password>@<host>:8090`（例: `iggy://iggy:iggy@127.0.0.1:8090`）の形式で、`cron` を含む
+**すべて**のモードで必須です。未設定なら起動は
+`Iggy is required: set IGGY_URL (or pass --iggy-url), for example iggy://iggy:iggy@127.0.0.1:8090` で失敗します。
+どのモードも起動時にストリーム `guru` とトピック（`orchestration_canvas_dirty`、`orchestration_health_changed`、
+`notify_health_notice`、それぞれ 4 パーティション）を冪等に作成するため、事前に作るものはありません。
+consumer は起動時に `retry_<topic>` トピックも作成します。
+
+`--iggy-partitions` は `consumer` が読むパーティションを選びます。空ならすべて（`0,1,2,3`）です。`consumer` の
+レプリカを複数動かす場合は、互いに重ならない集合を与えてください。レプリカは同じ consumer 名を共有するため、
+重なるとオフセットを奪い合います。ハンドラーが失敗した場合、データベースが応答しなければその場で再試行し、
+その他のデータベースエラーと衝突はキーを retry トピックへ送り（2、4、8、16 秒後に再試行）、それ以外は
+ログに残して破棄します。オフセットは処理の後に保存されます（at least once）。
 
 `notifier` は[通知](/ja/features/notifications/)の配信側で、インスタンスはちょうど 1 つだけです。これは
 PostgreSQL のアドバイザリロックで強制されます。起動時に `notify` 設定を読み、必要とするのはデータベースと
-ブローカーだけです — `GURU_MASTER_KEY`（何も復号しません）も `REDIS_URL`（ライブイベントを publish しません）も
+Iggy だけです — `GURU_MASTER_KEY`（何も復号しません）も `REDIS_URL`（ライブイベントを publish しません）も
 受け取りません。このモードが使う 2 つのチャンネルのシークレットは、上の表にある環境変数です。
 
-Redis は、提供と導出を行う 3 つのモードで必須であり、その理由も同じ種類のものです。これは
+Redis は `notifier` 以外のすべてのモードで必須であり、その理由も同じ種類のものです。これは
 オペレーター API の `Watch*` ストリームを支えるライブバスです。URL は `redis://127.0.0.1:6379/` のような
 形式です。すべての変更はチャンネル `guru:orchestration:live` にイベントを 1 件 publish し、各
 `dashboard_grpc` レプリカはこれを一度だけ subscribe します。そのため、あるレプリカに対して行われた編集は、
@@ -52,15 +62,13 @@ Redis は、提供と導出を行う 3 つのモードで必須であり、そ�
 ログ行 `live bus connected` で確認します。
 
 `GURU_MASTER_KEY` は保存時のすべてのシークレット — DNS プロバイダーの API トークン、ACME アカウントキー、
-証明書と CA の秘密鍵 — を暗号化するもので、シークレットを読み取る 3 つのモード
-`dashboard_grpc`、`workers_grpc`、`consumer` では必須です。`cron` はシークレットに触れず、このキーも読みません。
-`notifier` も同様です。これをフラグにしていないのは意図的です。argv はプロセス一覧から見えてしまいます。キーを
+証明書と CA の秘密鍵 — を暗号化するもので、シークレットを読み取る 4 つのモード
+`dashboard_grpc`、`workers_grpc`、`consumer`、`cron` では必須です。`notifier` はシークレットに触れず、このキーも
+読みません。これをフラグにしていないのは意図的です。argv はプロセス一覧から見えてしまいます。キーを
 失うと、すべての DNS プロバイダートークンを再入力し、すべての証明書を再発行することになります。また、キーを
 その場で変更することはサポートされていません。
 
-`GURU_DATABASE_URL` が必要なのは、接続を開く 4 つのモードだけです。`cron` はこれを無視し、データベース URL を
-まったく持たずに起動します。URL がなければ起動を拒む時計は、使われないだけのデータベース依存を抱えることに
-なるからです。接続を開くモードでは、プールが最大 `GURU_DB_POOL_SIZE` 本の接続を保持し、すべての
+`GURU_DATABASE_URL` は `cron` を含むすべてのモードで必要です。プールは最大 `GURU_DB_POOL_SIZE` 本の接続を保持し、すべての
 ステートメントはサーバー側で `GURU_DB_STATEMENT_TIMEOUT_MS` に制限されます。これを超えたステートメントは
 PostgreSQL によってキャンセルされ、エッジはそれを障害ではなく `UNAVAILABLE` として報告します。また、
 サービスを提供する master はそれぞれ起動時に、アドバイザリロックの下で未適用のマイグレーションをすべて
@@ -68,29 +76,26 @@ PostgreSQL によってキャンセルされ、エッジはそれを障害では
 
 ### スケジューリングと実行
 
-`cron` は時計であり、それ以外の何物でもありません。5 秒ごとにスキャンし、期限を迎えたジョブごとに実行シグナルを
-1 件 publish するだけで、データベース接続は開きません。`consumer` はシグナルごとに永続キューを 1 つバインドして
-パスを実行します。`CanvasDirty` の導出フックの隣で動くため、定期処理は編集とまったく同じようにスケールし、
-リトライされ、フェイルオーバーします。そして、ハングしたジョブが時計を止めることはありません。
+`cron` は 6 つの定期ジョブをすべてプロセス内で実行します。各ジョブは表の固定周期で起動し、最初の実行は
+プロセスの起動時です。`consumer` はもう定期ジョブを実行しません。停止時、`cron` は実行中のジョブを最大 20 秒
+待ってから中断します（systemd の `TimeoutStopSec=30s` の内側に収まります）。
 
-| ルーティングキー | キュー | publish 間隔 | 実行の最短間隔 | パスの内容 |
-|---|---|---|---|---|
-| `derive_stale_canvases` | `guru_orchestration_derive_stale_canvases` | 30 秒 | `sweep_interval_secs`（30） | `generation` が `derived_generation` を追い越したすべてのキャンバスを再導出します |
-| `sweep_liveness` | `guru_orchestration_sweep_liveness` | 30 秒 | `liveness_interval_secs`（30） | `health_report_interval_secs × health_offline_after_intervals` の間レポートのないサーバーを `Offline` にします |
-| `trim_health_history` | `guru_orchestration_trim_health_history` | 300 秒 | `health_retention_interval_secs`（300） | `server_health_ttl_secs` / `pod_health_ttl_secs` より古い `server_health_record` / `pod_health_record` 行を削除します |
-| `renew_certificates` | `guru_orchestration_renew_certificates` | 60 秒 | `acme_interval_secs`（60） | ACME の発行と更新: 有効期限の `acme_renew_before_secs` 前に更新し、失敗した試行は `acme_retry_after_secs` 後に再試行します |
-| `rotate_relay_certificates` | `guru_orchestration_rotate_relay_certificates` | 3600 秒 | `relay_rotation_interval_secs`（3600） | 有効期限まで `relay_cert_renew_before_secs` 以内になったリレーのリーフ証明書を再発行し、そのキャンバスを再導出します |
-| `resolve_server_countries` | `guru_orchestration_resolve_server_countries` | 60 秒 | `country_lookup_interval_secs`（60） | 国がまだ分からないサーバーの IPv4 アドレスについて、`country_lookup_url` で国を調べます。新しいアドレスや変わったアドレスはすぐに、失敗した照会は `country_lookup_retry_after_secs` 後に再度調べます |
+| ジョブ | 起動周期 | 実行の最短間隔 | パスの内容 |
+|---|---|---|---|
+| `derive_stale_canvases` | 30 秒 | `sweep_interval_secs`（30） | `generation` が `derived_generation` を追い越したすべてのキャンバスを再導出します |
+| `sweep_liveness` | 30 秒 | `liveness_interval_secs`（30） | `health_report_interval_secs × health_offline_after_intervals` の間レポートのないサーバーを `Offline` にします |
+| `trim_health_history` | 300 秒 | `health_retention_interval_secs`（300） | `server_health_ttl_secs` / `pod_health_ttl_secs` より古い `server_health_record` / `pod_health_record` 行を削除します |
+| `renew_certificates` | 60 秒 | `acme_interval_secs`（60） | ACME の発行と更新: 有効期限の `acme_renew_before_secs` 前に更新し、失敗した試行は `acme_retry_after_secs` 後に再試行します |
+| `rotate_relay_certificates` | 3600 秒 | `relay_rotation_interval_secs`（3600） | 有効期限まで `relay_cert_renew_before_secs` 以内になったリレーのリーフ証明書を再発行し、そのキャンバスを再導出します |
+| `resolve_server_countries` | 60 秒 | `country_lookup_interval_secs`（60） | 国がまだ分からないサーバーの IPv4 アドレスについて、`country_lookup_url` で国を調べます。新しいアドレスや変わったアドレスはすぐに、失敗した照会は `country_lookup_retry_after_secs` 後に再度調べます |
 
-層は 2 つあり、しかも同じ数字ではありません。スケジューラーは設定をまったく読まないため、真ん中の列の固定周期で
-publish します。一方 consumer は、何かを始める前に各実行を claim します — ジョブごとに `orchestration_job_run` 行を
-1 つ使い、compare-and-set で、設定された間隔につきフリート全体で最大 1 回だけです。間隔はシグナルが運ぶ
-*スケジューリングのティック*の間で測られ、consumer が処理に取りかかれた時刻の間ではありません。そのため、
-混み合った consumer が知らぬ間に周期を伸ばすことはありません。したがって、シグナルの周期以下の間隔は
-「毎シグナル」を意味し、それより大きい間隔はフリート全体でジョブを遅くします。そして重複配信や再配信された
-メッセージは、実行されるのではなく拒否されます。すでに実行されたティックは二度と claim できないからです。
-これらの間隔は保存された `orchestration` キーの値なので、変更はそのキーの他の設定と同じく consumer の
-再起動時に反映されます。
+層は 2 つあり、しかも同じ数字ではありません。ジョブは 2 列目の固定周期で起動します。一方、各実行は何かを
+始める前に claim します — ジョブごとに `orchestration_job_run` 行を 1 つ使い、compare-and-set で、設定された
+間隔につきフリート全体で最大 1 回だけです。そのため `cron` プロセスを複数動かしても各パスは間隔ごとに 1 回だけ
+実行され、2 台目は重複ではなくスタンバイになります。間隔は*スケジューリングのティック*の間で測られます。
+したがって、起動周期以下の間隔は「毎回」を意味し、それより大きい間隔はフリート全体でジョブを遅くします。
+すでに実行されたティックは二度と claim できません。これらの間隔は保存された `orchestration` キーの値なので、
+変更はそのキーの他の設定と同じく `cron` の再起動時に反映されます。
 
 サーバーは、desired リビジョンに `degraded_grace_secs` を超えて遅れている間、または最後に ack された
 リビジョンがいずれかの pod で失敗している間、`Degraded` になります。ここで挙げた値は保存された
@@ -420,6 +425,21 @@ failover のメンバーは、後ろにある生きているメンバーそれ�
 | `orchestration export-config --server <key>` | 1 つのサーバー向けに導出された `guru-worker` の TOML を出力します |
 | `orchestration init-ca` | リレーの TLS/QUIC リンク用の内部 CA を作成し、その証明書を出力します。既存のものを置き換えることは拒否します（`GURU_MASTER_KEY` が必要） |
 
+### アカウントと API キーの入力ルール
+
+`create-admin`、およびダッシュボードでのアカウント作成・パスワード変更・メールアドレス変更・API キー作成は、
+何よりも先に — 呼び出し元の権限より先に — 入力を検査します。そのため形の悪いリクエストには、誰が送っても
+`InvalidArgument` が返ります。
+
+- **メールアドレス:** まず前後の空白を除いて小文字化し（`' Admin@Example.com '` は `admin@example.com` として
+  保存されます）、そのうえで 3〜254 バイト、`@` がちょうど 1 つ、ローカル部とドメインが空でなく、空白や制御文字を
+  含まないこと（`not a valid email address`）。
+- **パスワード:** 8 文字以上、1024 バイト以下。
+- **API キー名:** 前後の空白を除いたうえで、空でなく、128 文字以下で、制御文字を含まないこと。
+
+ログインはこれらのルールで検査されず、正規化されるだけです。ルール導入前に作られたアカウントも
+サインインできます。`create-admin` は拒否されたルールを stderr に出力し、終了コード 1 で終了します。
+
 ## ダッシュボード
 
 | 環境変数 | デフォルト | 用途 |
@@ -462,7 +482,7 @@ manage-tool config set orchestration '{"acme_renew_before_secs":1209600}'
 
 6 つの `*_interval_secs` フィールドは、定期ジョブが実際に実行され得る頻度です
 （[スケジューリングと実行](#スケジューリングと実行)）。これらが環境変数ではなくここにあるのは、フリート
-全体で値が一致していなければならないからです。間隔を強制する claim は、すべての consumer が共有する
+全体で値が一致していなければならないからです。間隔を強制する claim は、すべての `cron` プロセスが共有する
 1 つのデータベース行です。
 
 ```sh
@@ -476,10 +496,9 @@ manage-tool config set orchestration '{"acme_interval_secs":300,"relay_rotation_
 ダッシュボードからの保存もライブリロードではありません。新しい値を反映するには**`guru-master` を再起動**
 してください。
 
-データベースを使う 4 つのモード — `dashboard_grpc`、`workers_grpc`、`consumer`、`notifier` — は起動時に、
-自分が必要とするキーを一度だけ読み、その値を各サービスへ渡します。ライブリロードはありません。`cron` は
-データベース接続を開かず、どのキーも読みません。実行シグナルを publish するだけで、それを受け取った
-consumer が保存された間隔を適用します。seed されていない環境ではデフォルト値で動作します。
+5 つのモードはいずれも起動時に、
+自分が必要とするキーを一度だけ読み、その値を各サービスへ渡します。ライブリロードはありません。`cron` の
+各ジョブは保存された間隔を claim に適用します。seed されていない環境ではデフォルト値で動作します。
 デシリアライズできない行はキー名を
 示して起動を失敗させます。これは意図的です。壊れたドキュメントをデフォルト値で代用すれば、オペレーターの
 設定全体を黙って入れ替えてしまい、たとえば ACME をステージングから本番のディレクトリへ移してしまう

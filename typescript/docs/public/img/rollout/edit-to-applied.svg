@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 452" width="640" height="452" role="img"
      font-family="system-ui, sans-serif">
-  <title>A graph edit publishes CanvasDirty and the cron job publishes derive_stale_canvases; both
-    are consumed by the derivation hook, which writes the desired snapshot of a server's config
-    view. A worker stream promotes it to in_flight, and AckConfig promotes that to applied.</title>
+  <title>A graph edit publishes CanvasDirty to Iggy and the derive_stale_canvases cron job runs
+    every 30 s; both drive the canvas deriver, which writes the desired snapshot of a server's
+    config view. A worker stream promotes it to in_flight, and AckConfig promotes that to applied.</title>
 
   <!--
     Drawn at the docs content width (640px) so it renders 1:1 and the 11px labels stay at 11px.
@@ -10,8 +10,8 @@
     Fixed light panel, no `prefers-color-scheme`: loaded through an <img>, this file cannot see the
     theme Starlight sets on <html>, so a media query would invert it whenever the site theme and the
     OS preference disagree. Same palette as img/canvas/graph-vs-drawing.svg, so both diagrams read
-    the same on either site theme. Legend: violet is a broker message (a trigger that can be lost),
-    slate is state the master owns, teal is the converged end state.
+    the same on either site theme. Legend: violet is a trigger (an Iggy event or a cron run, which
+    can be lost or late), slate is state the master owns, teal is the converged end state.
   -->
   <style>
     .panel     { fill: #ffffff; }
@@ -23,7 +23,7 @@
     .edge      { fill: none; stroke: #475569; stroke-width: 1.2; }
     .code      { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-    /* a message published on the broker */
+    /* a trigger: an Iggy event or a cron run */
     .msg-box   { fill: none; stroke: #6d28d9; stroke-width: 1.2; }
     .msg-name  { font-size: 13px; font-weight: 600; fill: #6d28d9; }
     .msg-edge  { fill: none; stroke: #6d28d9; stroke-width: 1.2; }
@@ -47,24 +47,24 @@
     </marker>
   </defs>
 
-  <!-- ===================== triggers: two broker messages ===================== -->
+  <!-- ===================== triggers: an event and a cron job ===================== -->
   <rect class="msg-box" x="40" y="22" width="240" height="54" rx="6" />
   <text class="msg-name code" x="160" y="45" text-anchor="middle">CanvasDirty</text>
   <text class="note" x="160" y="63" text-anchor="middle">published by a graph edit</text>
 
   <rect class="msg-box" x="360" y="22" width="240" height="54" rx="6" />
   <text class="msg-name code" x="480" y="45" text-anchor="middle">derive_stale_canvases</text>
-  <text class="note" x="480" y="63" text-anchor="middle">published by cron</text>
+  <text class="note" x="480" y="63" text-anchor="middle">cron job, every 30 s</text>
 
   <line class="msg-edge" x1="160" y1="76" x2="160" y2="100" />
   <line class="msg-edge" x1="480" y1="76" x2="480" y2="100" />
   <line class="msg-edge" x1="160" y1="100" x2="480" y2="100" />
   <line class="msg-edge" x1="320" y1="100" x2="320" y2="116" marker-end="url(#arrow-msg)" />
 
-  <!-- ===================== the consumer that derives ===================== -->
+  <!-- ===================== the deriver ===================== -->
   <rect class="box" x="180" y="118" width="280" height="56" rx="6" />
-  <text class="label" x="320" y="141" text-anchor="middle">derivation hook</text>
-  <text class="note code" x="320" y="159" text-anchor="middle">--mode consumer</text>
+  <text class="label" x="320" y="141" text-anchor="middle">canvas deriver</text>
+  <text class="note code" x="320" y="159" text-anchor="middle">--mode consumer / --mode cron</text>
 
   <line class="edge" x1="320" y1="174" x2="320" y2="218" marker-end="url(#arrow)" />
 

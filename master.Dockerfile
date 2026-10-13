@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.7
 #
-# `bin/guru-master` — the control plane. One image, four run modes selected with
-# `GURU_WORKER_MODE` (dashboard_grpc | workers_grpc | consumer | cron). `cron` is
-# only a clock: it publishes one execution signal per due periodic job, opens no
-# database connection and reads no GURU_MASTER_KEY. `consumer` is what runs the
-# derivation hook and every periodic job.
+# `bin/guru-master` — the control plane. One image, five run modes selected with
+# `GURU_WORKER_MODE` (dashboard_grpc | workers_grpc | consumer | notifier | cron).
+# `consumer` runs the Iggy event handlers (derivation, notification fan-out);
+# `cron` runs every periodic job in-process, each run claimed in the database so
+# several cron processes run a pass once.
 #
 # Build from the repository root:
 #   docker build -f master.Dockerfile -t guru-master .
@@ -42,9 +42,8 @@ RUN cargo build --release -p guru-master && \
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 COPY --from=builder /guru-master /usr/local/bin/guru-master
 
-# Required at run time, no sane default: GURU_DATABASE_URL and AMQP_URI. The broker is required in *every* mode — periodic work is a
-# message, so a broker outage stalls derivation, liveness and renewal until it
-# returns.
+# Required at run time, no sane default: GURU_DATABASE_URL and IGGY_URL, in every
+# mode; REDIS_URL and GURU_MASTER_KEY in every mode but notifier.
 ENV GURU_WORKER_MODE="dashboard_grpc"
 ENV GURU_DASHBOARD_GRPC_ADDR="0.0.0.0:50051"
 ENV GURU_WORKERS_GRPC_ADDR="0.0.0.0:50052"
