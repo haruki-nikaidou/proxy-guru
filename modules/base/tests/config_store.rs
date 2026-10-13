@@ -5,7 +5,6 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use base::db::Db;
 use base::entities::db::app_config::{ConfigJson, FindRawConfig, UpsertRawConfig};
 use base::services::config::{
     ConfigError, ConfigStore, LoadConfig, SeedConfig, StoreConfig, decode,
@@ -56,7 +55,9 @@ impl ConfigJson for SampleConfig {
 }
 
 fn setup(pool: sqlx::PgPool) -> ConfigStore {
-    ConfigStore { db: Db::new(pool) }
+    ConfigStore {
+        db: base::db::handle(pool),
+    }
 }
 
 /// An unseeded installation is a normal state, not an error.

@@ -9,17 +9,18 @@
 //! ## Module layout (the convention every module follows)
 //!
 //! - [`entities`] — persistence layer. Plain data types plus the
-//!   `Processor` implementations that read and write them. In this crate that
-//!   is [`entities::db`], which owns the shared `app_config` table.
+//!   `Query`/`Execute` implementations that read and write them. In this crate
+//!   that is [`entities::db`], which owns the shared `app_config` table.
 //! - [`services`] — business logic. Stateful `Processor`s that own their
-//!   dependencies (database, Redis, message queue, other services) and
+//!   dependencies (database, Redis, event publisher, other services) and
 //!   orchestrate entities to fulfil a use case.
 //! - [`rpc`] — the transport edge. gRPC service implementations that translate
 //!   protobuf requests into service/entity calls and back.
-//! - [`events`] — AMQP message payloads this module publishes or consumes,
-//!   together with their routing.
-//! - [`hooks`] — background reactors: AMQP consumers, cron jobs, and event
-//!   loggers that run outside the request path.
+//! - [`events`] — Iggy event payloads this module publishes or consumes,
+//!   together with their topics; in this crate, the stream and topology every
+//!   module shares.
+//! - [`hooks`] — background reactors: Iggy event handlers, cron jobs, and
+//!   event loggers that run outside the request path.
 //! - [`config`] — strongly typed configuration for the module, stored in the
 //!   database under a stable key and loaded through
 //!   [`services::config::ConfigStore`].

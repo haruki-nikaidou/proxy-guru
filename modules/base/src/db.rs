@@ -1,22 +1,47 @@
-//! The database handle every service holds, and the error every query returns.
+//! The database handle every service holds, the error every query returns,
+//! and the helpers every transaction is written with.
 //!
-//! [`Db`] is `wakuwaku`'s thin wrapper over a `PgPool`; entity queries are
-//! `Processor` impls on it, services hold a clone of it. There is no second
-//! layer: bounding a query is the server's job (`statement_timeout`, set on
-//! every connection by [`connect`]) and cancels the statement itself rather than
-//! abandoning it, so a client-side timer would only add a second clock that
-//! could disagree with the first.
+//! [`Db`] is wakuwaku-entity's capability handle over a [`PgSource`]: entity
+//! queries are `Query` + `Execute<PgSource>` pairs whose error is [`Error`],
+//! and `Db` runs any of them as a `Processor`. It holds no pool accessor, so
+//! whatever needs the pool itself (migrations, the notifier's session-scoped
+//! advisory lock, raw SQL in tests) keeps the [`sqlx::PgPool`] that [`connect`]
+//! returned next to it.
+//!
+//! A multi-statement transaction is a `TxFlow` whose `Abort` is
+//! `Result<Commit, Error>`: its step ends with [`commit`], [`rollback`] (a
+//! conflict or a failed statement) or [`refuse`] (a conditional write that
+//! matched nothing — nothing written, not an error), and [`transact`] runs it
+//! and folds the driver's outcome back into [`Error`].
+//!
+//! There is no second layer: bounding a query is the server's job
+//! (`statement_timeout`, set on every connection by [`connect`]) and cancels
+//! the statement itself rather than abandoning it, so a client-side timer would
+//! only add a second clock that could disagree with the first.
 //!
 //! Nothing here retries. Only a caller knows whether its operation is
 //! idempotent, and the one class of failure that is safe to retry blind is
 //! named as such: [`Error::Conflict`] means the transaction definitely did not
 //! commit.
 
+use kanau::processor::Processor;
+use sqlx::Postgres;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
+use wakuwaku::entity::sqlx::backend::{PgSource, SqlxSource};
+use wakuwaku::entity::sqlx::transaction::flow::AsSqlxError;
+use wakuwaku::entity::sqlx::transaction::{
+    Transaction, Tx, TxEnd, TxError, TxFlow, TxOutput, TxState,
+};
 
-pub use wakuwaku::integration::sqlx::DatabaseProcessor as Db;
+/// The handle services hold: every entity query and transaction runs through it.
+pub type Db = wakuwaku::entity::Db<PgSource, wakuwaku::entity::ReadWrite>;
+
+/// Wraps a pool (migrated already) into the handle services hold.
+pub fn handle(pool: sqlx::PgPool) -> Db {
+    Db::new(SqlxSource::new(pool))
+}
 
 /// The schema, applied by `guru-master` at startup and by `manage-tool db migrate`.
 ///
@@ -37,8 +62,8 @@ pub struct PoolSettings {
     pub application_name: &'static str,
 }
 
-/// Opens a pool and returns the handle services hold.
-pub async fn connect(url: &str, settings: PoolSettings) -> Result<Db, sqlx::Error> {
+/// Opens a pool. Run [`MIGRATOR`] on it, then wrap a clone with [`handle`].
+pub async fn connect(url: &str, settings: PoolSettings) -> Result<sqlx::PgPool, sqlx::Error> {
     let millis = settings.statement_timeout.as_millis().to_string();
     let options = url
         .parse::<PgConnectOptions>()?
@@ -54,20 +79,19 @@ pub async fn connect(url: &str, settings: PoolSettings) -> Result<Db, sqlx::Erro
             // be held by a ghost.
             ("idle_in_transaction_session_timeout", "30000"),
         ]);
-    let pool = PgPoolOptions::new()
+    PgPoolOptions::new()
         .max_connections(settings.max_connections)
         .min_connections(1)
         .acquire_timeout(settings.statement_timeout)
         .idle_timeout(Duration::from_secs(600))
         .max_lifetime(Duration::from_secs(1800))
         .connect_with(options)
-        .await?;
-    Ok(Db::new(pool))
+        .await
 }
 
 /// What an entity query can fail with.
 ///
-/// Every `Processor` on [`Db`] uses this as its error; `?` on a sqlx call
+/// Every `Execute` on [`PgSource`] uses this as its error; `?` on a sqlx call
 /// converts through [`From<sqlx::Error>`], which is where the one
 /// classification this workspace cares about is made.
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +119,17 @@ impl From<sqlx::Error> for Error {
             Some("40001") => Error::Conflict(SERIALIZATION_FAILURE),
             Some("40P01") => Error::Conflict(DEADLOCK),
             _ => Error::Query(error),
+        }
+    }
+}
+
+/// A failed statement inside a flow aborts the PostgreSQL transaction; a
+/// conflict raised by a query's own fence does not.
+impl AsSqlxError for Error {
+    fn as_sqlx_error(&self) -> Option<&sqlx::Error> {
+        match self {
+            Error::Query(e) => Some(e),
+            Error::Conflict(_) => None,
         }
     }
 }
@@ -133,6 +168,77 @@ impl Error {
             self
         }
     }
+}
+
+/// Runs the transaction `flow` and folds the driver's outcome into [`Error`].
+///
+/// The flow ends with [`commit`], [`rollback`] or [`refuse`]. A serializable
+/// `COMMIT` the server rejected is a conflict (the transaction is rolled
+/// back); a `COMMIT` whose outcome is unknown never is: it may have committed.
+pub async fn transact<F>(db: &Db, flow: F) -> Result<F::Commit, Error>
+where
+    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+    Db: Processor<Transaction<F>, Output = TxOutput<F::Commit, F::Abort>, Error = TxError>,
+{
+    match db.process(Transaction(flow)).await {
+        Ok(TxOutput::Committed(value)) => Ok(value),
+        Ok(TxOutput::RolledBack(result)) => result,
+        Err(TxError::Begin(e) | TxError::CommitRejected(e)) => Err(Error::from(e)),
+        Err(TxError::CommitUnknown(e)) => Err(Error::Query(e)),
+        // A flow that committed after a failed statement, or whose `finished`
+        // disagrees with its end: a bug in the flow, never a state of the
+        // database, so not a class a caller would retry on.
+        Err(error @ (TxError::Aborted | TxError::EndMismatch)) => Err(Error::Query(
+            sqlx::Error::InvalidArgument(error.to_string()),
+        )),
+    }
+}
+
+/// Ends the flow by committing `value`.
+pub async fn commit<F>(tx: Tx<'_, F>, value: F::Commit) -> TxState<'_, F>
+where
+    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+{
+    tx.end(
+        TxEnd::Commit {
+            output: value,
+            report: (),
+        }
+        .into(),
+    )
+    .await
+}
+
+/// Ends the flow by rolling back with `error`: a conflict, or the failed
+/// statement that aborted the transaction.
+pub async fn rollback<F>(tx: Tx<'_, F>, error: Error) -> TxState<'_, F>
+where
+    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+{
+    tx.end(
+        TxEnd::Rollback {
+            output: Err(error),
+            report: (),
+        }
+        .into(),
+    )
+    .await
+}
+
+/// Ends the flow by rolling back and answering `value`: a refused conditional
+/// write, which wrote nothing and is not an error.
+pub async fn refuse<F>(tx: Tx<'_, F>, value: F::Commit) -> TxState<'_, F>
+where
+    F: TxFlow<Database = Postgres, Report = (), Abort = Result<<F as TxFlow>::Commit, Error>>,
+{
+    tx.end(
+        TxEnd::Rollback {
+            output: Ok(value),
+            report: (),
+        }
+        .into(),
+    )
+    .await
 }
 
 fn sqlstate(error: &sqlx::Error) -> Option<&str> {
@@ -181,35 +287,22 @@ fn query_is_unavailable(error: &sqlx::Error) -> bool {
     }
 }
 
-impl From<Error> for wakuwaku::Error {
-    fn from(error: Error) -> Self {
-        match error {
-            Error::Query(e) => wakuwaku::Error::DatabaseError(e),
-            // `Io` is the variant wakuwaku documents as "solved by retrying",
-            // which is what a conflict is. `status_of` reads it back.
-            conflict @ Error::Conflict(_) => wakuwaku::Error::Io(anyhow::Error::new(conflict)),
-        }
-    }
-}
-
-/// The gRPC status a service error deserves.
-///
-/// `wakuwaku`'s own conversion answers `INTERNAL` for every database error, so
-/// anything that wants "try again" told apart from "this is a bug" goes through
-/// here instead of through `?`.
-pub fn status_of(error: wakuwaku::Error) -> tonic::Status {
-    match &error {
-        wakuwaku::Error::DatabaseError(e) if query_is_unavailable(e) => {
+/// The gRPC status a database error deserves: `UNAVAILABLE` when the database
+/// did not answer, `ABORTED` for a conflict (retry from a fresh read), and
+/// `INTERNAL` for the rest.
+pub fn status_of(error: Error) -> tonic::Status {
+    match error {
+        Error::Query(e) if query_is_unavailable(&e) => {
             tracing::warn!(error = %e, "database unavailable");
             tonic::Status::unavailable("Database unavailable")
         }
-        wakuwaku::Error::Io(e) => match e.downcast_ref::<Error>() {
-            Some(Error::Conflict(token)) => {
-                tonic::Status::aborted(format!("Write conflicted ({token}); retry"))
-            }
-            _ => tonic::Status::from(error),
-        },
-        _ => tonic::Status::from(error),
+        Error::Conflict(token) => {
+            tonic::Status::aborted(format!("Write conflicted ({token}); retry"))
+        }
+        Error::Query(e) => {
+            tracing::error!(error = %e, "database error");
+            tonic::Status::internal("Database error")
+        }
     }
 }
 
@@ -254,11 +347,11 @@ mod tests {
 
     #[test]
     fn a_conflict_reaches_the_edge_as_aborted() {
-        let status = status_of(Error::Conflict("stale").into());
+        let status = status_of(Error::Conflict("stale"));
         assert_eq!(status.code(), tonic::Code::Aborted);
-        let status = status_of(Error::Query(sqlx::Error::PoolTimedOut).into());
+        let status = status_of(Error::Query(sqlx::Error::PoolTimedOut));
         assert_eq!(status.code(), tonic::Code::Unavailable);
-        let status = status_of(Error::Query(sqlx::Error::RowNotFound).into());
+        let status = status_of(Error::Query(sqlx::Error::RowNotFound));
         assert_eq!(status.code(), tonic::Code::Internal);
     }
 }

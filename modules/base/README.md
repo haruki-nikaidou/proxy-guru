@@ -20,7 +20,7 @@ src/
 ├── entities/       # persistence layer
 │   └── db/         # PostgreSQL rows + queries (`app_config`); add `redis/` when a module caches
 ├── services/       # business logic (stateful Processors)
-├── events/         # AMQP message payloads + routing
+├── events/         # Iggy event payloads + topics (here: the shared stream/topology)
 ├── hooks/          # background reactors: consumers, cron, event loggers
 └── rpc/            # gRPC service implementations (the transport edge)
 ```
@@ -37,12 +37,13 @@ Processor = State + async fn(Input) -> Result<Output, Error>
 A processor is a `Clone`-able struct that owns its dependencies and implements
 `Processor<Input>` once per operation. The same abstraction is used everywhere:
 
-- **Entities** implement `Processor` on `base::db::Db` (for database work) or
-  on their own type (for Redis).
+- **Entities** implement `Query` + `Execute<PgSource>` so `base::db::Db` runs
+  them; a multi-statement transaction is a `TxFlow` run through
+  `base::db::transact`. Redis values implement `Processor` on their own type.
 - **Services** implement `Processor` on a service struct that owns the database,
-  Redis, message queue, and any collaborating services.
-- **Hooks** implement `Processor` (plus `AmqpMessageProcessor`) to consume
-  events off the queue.
+  Redis, event publisher, and any collaborating services.
+- **Hooks** implement `EventHandler` to consume events from Iggy, or `CronJob`
+  to run periodically.
 
 This keeps each unit small, individually testable, and trivially composable.
 
@@ -51,7 +52,7 @@ This keeps each unit small, individually testable, and trivially composable.
 ```
 gRPC request ──► rpc ──► services ──► entities ──► PostgreSQL / Redis
                             │
-                            └─► events ──► AMQP ──► hooks (this or another module)
+                            └─► events ──► Iggy ──► hooks (this or another module)
 ```
 
 ## Dependency direction
