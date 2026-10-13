@@ -41,23 +41,43 @@ pub async fn connect(url: &str) -> Result<Arc<IggyClient>, IggyError> {
     Ok(Arc::new(client))
 }
 
+/// Why the topology could not be ensured.
+#[derive(Debug, thiserror::Error)]
+pub enum TopologyError {
+    #[error(transparent)]
+    Iggy(#[from] IggyError),
+    /// The topic exists with another partition count, so a consumer naming
+    /// partitions from [`PARTITIONS`] would silently miss the keys hashed to
+    /// the others. Recreate the topic (or migrate it) instead of starting.
+    #[error(
+        "topic {topic} has {found} partitions, expected {expected}: delete and recreate it \
+         (its unconsumed events are lost) or set the consumers' partitions to match"
+    )]
+    PartitionCount {
+        topic: String,
+        found: u32,
+        expected: u32,
+    },
+}
+
 /// Creates [`STREAM`] and each of `topics` (with [`PARTITIONS`] partitions)
-/// when absent. Several processes may start together, so losing the race to
-/// create one counts as success.
-pub async fn ensure_topology(client: &IggyClient, topics: &[&str]) -> Result<(), IggyError> {
+/// when absent, and refuses an existing topic with another partition count.
+/// Several processes may start together, so losing the race to create one
+/// counts as success.
+pub async fn ensure_topology(client: &IggyClient, topics: &[&str]) -> Result<(), TopologyError> {
     let stream = Identifier::named(STREAM)?;
     if client.get_stream(&stream).await?.is_none() {
         match client.create_stream(STREAM).await {
             Ok(_) | Err(IggyError::StreamNameAlreadyExists(..)) => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
     for &topic in topics {
-        if client
+        if let Some(existing) = client
             .get_topic(&stream, &Identifier::named(topic)?)
             .await?
-            .is_some()
         {
+            check_partitions(topic, existing.partitions_count)?;
             continue;
         }
         let options = TopicCreateOptions {
@@ -66,8 +86,36 @@ pub async fn ensure_topology(client: &IggyClient, topics: &[&str]) -> Result<(),
         };
         match client.create_topic(&stream, topic, &options).await {
             Ok(_) | Err(IggyError::TopicNameAlreadyExists(..)) => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
     Ok(())
+}
+
+fn check_partitions(topic: &str, found: u32) -> Result<(), TopologyError> {
+    if found == PARTITIONS {
+        Ok(())
+    } else {
+        Err(TopologyError::PartitionCount {
+            topic: topic.to_owned(),
+            found,
+            expected: PARTITIONS,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_topic_left_with_another_partition_count_is_refused() {
+        assert!(check_partitions("t", PARTITIONS).is_ok());
+        let refused = check_partitions("orchestration_canvas_dirty", 4);
+        assert!(matches!(
+            refused,
+            Err(TopologyError::PartitionCount { ref topic, found: 4, expected: PARTITIONS })
+                if topic == "orchestration_canvas_dirty"
+        ));
+    }
 }
