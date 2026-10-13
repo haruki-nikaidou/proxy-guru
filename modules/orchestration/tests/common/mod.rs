@@ -5,6 +5,7 @@ use auth::entities::db::account::{AccountId, AccountRole, CreateAccount};
 use auth::services::identity::{Identity, IdentityKind};
 use auth::services::session::{Login, LoginResult, SessionService};
 use auth::utils::password::{Argon2PasswordAlgorithm, PasswordAlgorithm};
+use auth::utils::validation::prove_email;
 use base::db::Db;
 use kanau::processor::Processor;
 use orchestration::config::OrchestrationConfig;
@@ -38,9 +39,10 @@ use std::sync::Arc;
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// The database `#[sqlx::test]` created for this test, migrated with the
-/// workspace schema, wrapped in the handle services hold.
+/// workspace schema, wrapped in the handle services hold. Raw SQL in a test
+/// runs on the pool itself: the handle exposes none.
 pub fn setup(pool: sqlx::PgPool) -> Db {
-    Db::new(pool)
+    base::db::handle(pool)
 }
 
 pub fn pos(x: i64, y: i64) -> CanvasUiPosition {
@@ -363,6 +365,8 @@ pub fn pos0() -> CanvasUiPosition {
 /// Every service over one database, plus the derivation hook.
 pub struct World {
     pub db: Db,
+    /// The pool behind `db`, for the raw SQL a test plants or inspects.
+    pub pool: sqlx::PgPool,
     pub secrets: SecretKey,
     pub config: OrchestrationConfig,
     /// The in-process live bus every service in this world publishes to.
@@ -397,14 +401,14 @@ pub async fn world_with(
     pool: sqlx::PgPool,
     config: OrchestrationConfig,
 ) -> Result<World, Box<dyn std::error::Error>> {
-    let db = setup(pool);
+    let db = setup(pool.clone());
     let secrets = SecretKey::from_base64(&SecretKey::generate_base64())?;
     let bus = LiveBus::new();
-    // No broker, but a real bus: `amqp: None` keeps the derivation hook driven
+    // No broker, but a real bus: `events: None` keeps the derivation hook driven
     // by the tests themselves, while live events travel as they would in
     // production minus the Redis round trip.
     let notifier = Notifier {
-        amqp: None,
+        events: None,
         live: Some(LivePublisher::InProcess(bus.clone())),
     };
     let router = ShellRouter::new();
@@ -484,6 +488,7 @@ pub async fn world_with(
         bus,
         notifier,
         db,
+        pool,
         secrets,
         config,
     })
@@ -551,7 +556,7 @@ impl World {
         let hasher = Argon2PasswordAlgorithm::default();
         self.db
             .process(CreateAccount {
-                email: "operator@example.com".to_string(),
+                email: prove_email("operator@example.com").expect("a valid address"),
                 password_hash: hasher.hash_password("operator-password")?,
                 role: AccountRole::Maintainer,
             })

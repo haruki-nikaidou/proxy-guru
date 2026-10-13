@@ -22,8 +22,8 @@ use orchestration::entities::db::server::{
     ServerIpv6Resolve, ServerLogLevel,
 };
 use orchestration::entities::db::view::{ListStaleCanvases, TakeInFlight};
-use orchestration::events::{HealthFact, SweepLivenessSignal, health_facts};
-use orchestration::hooks::health::HealthCronHook;
+use orchestration::events::{HealthFact, health_facts};
+use orchestration::hooks::health::SweepLivenessJob;
 use orchestration::services::OrchestrationError;
 use orchestration::services::agent::{
     AckConfig, AgentIdentity, PodResult, RegisterCredential, RegisterWorker,
@@ -35,7 +35,9 @@ use orchestration::services::health::{
     HealthReportInput, MarkServerOffline, RecordHealthReport, SweepLiveness, TrimHealthHistory,
 };
 use orchestration::services::server::{AddressOverrides, CreateServer};
+use std::time::SystemTime;
 use time::{Duration, OffsetDateTime};
+use wakuwaku::{CronTick, ServiceCreation};
 
 /// One server, two client pods: `web` (443 → exit `web-out`) and `api`
 /// (8443 → exit `api-out`).
@@ -1007,18 +1009,20 @@ async fn backdate_report(w: &World, f: &Fixture, generation: i64) -> OffsetDateT
     stale
 }
 
-fn signal(tick: OffsetDateTime) -> SweepLivenessSignal {
-    SweepLivenessSignal {
-        tick_unix_secs: tick.unix_timestamp(),
+/// The tick a cron run carries, as the runtime would build it at `at`.
+fn tick_at(at: OffsetDateTime) -> CronTick {
+    CronTick {
+        run: 0,
+        fired_at: SystemTime::from(at),
     }
 }
 
-/// The cron scheduler publishes on a fixed cadence and AMQP is at-least-once, so
-/// the same pass reaches the consumers repeatedly. Both fences of the run claim
-/// are load-bearing, and this is the only place the pass is observed through the
-/// hook rather than the service.
+/// Every cron process runs every job on its own grid, so the same pass runs
+/// once per process per interval. Both fences of the run claim are
+/// load-bearing, and this is the only place the pass is observed through the
+/// job rather than the service.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_tick(
+async fn a_cron_job_runs_its_pass_once_per_interval_and_never_twice_per_tick(
     pool: sqlx::PgPool,
 ) -> TestResult {
     let w = world(pool).await?;
@@ -1026,46 +1030,42 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
     let agent = register(&w, &f.server).await?;
     backdate_report(&w, &f, agent.generation).await;
 
-    let hook = HealthCronHook {
-        health: w.health.clone(),
-    };
-    // A consumer that claims with a zero interval: the interval fence is wide
+    let job = SweepLivenessJob::create_service(w.health.clone());
+    // A process that claims with a zero interval: the interval fence is wide
     // open, so only the tick fence can refuse it.
-    let eager = HealthCronHook {
-        health: HealthService {
-            db: w.db.clone(),
-            config: OrchestrationConfig {
-                liveness_interval_secs: 0,
-                ..w.config.clone()
-            },
-            notifier: w.notifier.clone(),
+    let eager = SweepLivenessJob::create_service(HealthService {
+        db: w.db.clone(),
+        config: OrchestrationConfig {
+            liveness_interval_secs: 0,
+            ..w.config.clone()
         },
-    };
+        notifier: w.notifier.clone(),
+    });
     let tick = OffsetDateTime::now_utc();
 
-    hook.process(signal(tick)).await?;
+    job.process(tick_at(tick)).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Offline,
-        "the first signal runs the pass"
+        "the first run runs the pass"
     );
 
     backdate_report(&w, &f, agent.generation).await;
-    hook.process(signal(tick)).await?;
+    job.process(tick_at(tick)).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Online,
-        "a redelivery of the same tick does nothing"
+        "a second run for the same tick does nothing"
     );
 
-    hook.process(signal(tick + Duration::seconds(5))).await?;
+    job.process(tick_at(tick + Duration::seconds(5))).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Online,
         "a newer tick less than the interval past the last one is refused"
     );
 
-    eager.process(signal(tick)).await?;
+    eager.process(tick_at(tick)).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Online,
@@ -1073,12 +1073,12 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
     );
 
     // The regression this fence exists for: the interval is measured between
-    // ticks, not from the moment a consumer got round to the last message. These
-    // two ticks are exactly one interval apart while the run that stamped the row
+    // ticks, not from the moment the last run stamped the row. These two ticks
+    // are exactly one interval apart while the run that stamped the row
     // happened milliseconds ago, and the pass must still run — measuring from the
     // run would subtract the processing delay from every period and drop every
-    // other signal whenever the interval equals the publication cadence.
-    hook.process(signal(tick + Duration::seconds(30))).await?;
+    // other run whenever the interval equals the job's own.
+    job.process(tick_at(tick + Duration::seconds(30))).await?;
     assert_eq!(
         server_row(&w, &f.server).await.health_status,
         ServerHealthStatus::Offline,
@@ -1087,21 +1087,58 @@ async fn a_periodic_signal_runs_its_pass_once_per_interval_and_never_twice_per_t
     Ok(())
 }
 
-/// Two consumers handed the same signal at the same moment: one runs, the other
-/// finds the run claimed. Without this, a horizontally scaled consumer would run
-/// every pass as many times as it has instances.
+/// The tick → claim mapping: a run claims with the tick's `fired_at`, so the
+/// stored `last_signal_tick` is the tick itself, and a tick less than one
+/// interval after it leaves the row alone.
 #[sqlx::test(migrator = "base::db::MIGRATOR")]
-async fn two_consumers_handed_one_signal_run_the_pass_once(pool: sqlx::PgPool) -> TestResult {
+async fn a_cron_tick_claims_with_its_fired_at(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool.clone()).await?;
+    let job = SweepLivenessJob::create_service(HealthService {
+        db: w.db.clone(),
+        config: OrchestrationConfig {
+            liveness_interval_secs: 30,
+            ..w.config.clone()
+        },
+        notifier: w.notifier.clone(),
+    });
+    // Whole seconds: the column keeps microseconds, `SystemTime` nanoseconds.
+    let t = OffsetDateTime::now_utc().replace_nanosecond(0)?;
+    let claimed = || async {
+        sqlx::query_scalar!(
+            "SELECT last_signal_tick FROM orchestration_job_run WHERE id = 'sweep_liveness'"
+        )
+        .fetch_one(&pool)
+        .await
+    };
+
+    job.process(tick_at(t)).await?;
+    assert_eq!(claimed().await?, t, "the first tick claims");
+
+    job.process(tick_at(t + Duration::seconds(10))).await?;
+    assert_eq!(claimed().await?, t, "a tick inside the interval is refused");
+
+    job.process(tick_at(t + Duration::seconds(30))).await?;
+    assert_eq!(
+        claimed().await?,
+        t + Duration::seconds(30),
+        "a tick one interval later claims"
+    );
+    Ok(())
+}
+
+/// Two cron processes running the same job at the same moment: one runs the
+/// pass, the other finds the run claimed. Without this, every extra cron
+/// process would run every pass once more.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn two_processes_running_one_tick_run_the_pass_once(pool: sqlx::PgPool) -> TestResult {
     let w = world(pool).await?;
     let f = fixture(&w).await?;
     let agent = register(&w, &f.server).await?;
     backdate_report(&w, &f, agent.generation).await;
-    let hook = HealthCronHook {
-        health: w.health.clone(),
-    };
+    let job = SweepLivenessJob::create_service(w.health.clone());
     let tick = OffsetDateTime::now_utc();
 
-    let (a, b) = tokio::join!(hook.process(signal(tick)), hook.process(signal(tick)));
+    let (a, b) = tokio::join!(job.process(tick_at(tick)), job.process(tick_at(tick)));
     a?;
     b?;
 
@@ -1110,10 +1147,7 @@ async fn two_consumers_handed_one_signal_run_the_pass_once(pool: sqlx::PgPool) -
         .iter()
         .filter(|r| r.status == ServerHealthStatus::Offline)
         .count();
-    assert_eq!(
-        offline, 1,
-        "exactly one of the two deliveries swept: {history:?}"
-    );
+    assert_eq!(offline, 1, "exactly one of the two runs swept: {history:?}");
     Ok(())
 }
 

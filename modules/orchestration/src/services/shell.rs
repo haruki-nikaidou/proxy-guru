@@ -709,7 +709,7 @@ mod tests {
         // Never connected: no channel holds the server, so a (re-)attach goes
         // nowhere and nothing reads the database. These tests only look at
         // what reaches the client.
-        let db = Db::new(
+        let db = base::db::handle(
             sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgres://localhost/unused")
                 .unwrap(),

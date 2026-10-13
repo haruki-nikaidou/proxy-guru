@@ -112,7 +112,7 @@ async fn the_first_publish_after_a_broker_restart_is_delivered() -> TestResult {
     // The publisher connects while Redis is up and then goes quiet, which is
     // what leaves it holding a dead socket across the restart.
     let publisher = Notifier {
-        amqp: None,
+        events: None,
         live: Some(LivePublisher::Redis(
             redis::aio::ConnectionManager::new(client.clone()).await?,
         )),
@@ -179,7 +179,7 @@ async fn a_change_on_one_replica_refreshes_a_view_on_another(pool: sqlx::PgPool)
     // The world's services publish to Redis, not to either bus directly.
     let w = world(pool).await?;
     let publisher = Notifier {
-        amqp: None,
+        events: None,
         live: Some(LivePublisher::Redis(
             redis::aio::ConnectionManager::new(client.clone()).await?,
         )),

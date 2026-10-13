@@ -576,7 +576,10 @@ async fn only_a_session_edits_the_graph(pool: sqlx::PgPool) -> TestResult {
         })
         .await
         .expect_err("api keys may not edit the workspace");
-    assert!(matches!(err, OrchestrationError::Core(_)), "{err:?}");
+    assert!(
+        matches!(err, OrchestrationError::PermissionDenied),
+        "{err:?}"
+    );
     let outcome = w
         .graph
         .process(ApplyGraph {
