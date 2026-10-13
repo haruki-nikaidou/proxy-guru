@@ -8,7 +8,8 @@
 //! between the wire format and domain types.
 //!
 //! Declare each service in its own submodule and re-export the concrete type so
-//! the `app-server` binary can mount it:
+//! `guru-master` can mount it with
+//! `ServiceBuilder::compose_grpc_service(|s| ExampleServer::new(ExampleServiceImpl { .. }))`:
 //!
 //! ```ignore
 //! mod example_service;
@@ -45,3 +46,15 @@ pub mod middleware;
 pub use crate::services::{Identity, IdentityKind};
 pub use auth_service::AuthGrpc;
 pub use middleware::{API_KEY_METADATA, AuthLayer, AuthMiddleware, SESSION_ID_METADATA};
+
+use std::convert::Infallible;
+use wakuwaku::proof::ValidateError;
+
+/// A request field that failed its verifier is the caller's mistake: answer
+/// `INVALID_ARGUMENT` with the verifier's reason.
+pub fn validation_status(error: ValidateError<Infallible>) -> tonic::Status {
+    match error {
+        ValidateError::Deny(reason) => tonic::Status::invalid_argument(reason.0),
+        ValidateError::IoError(never) => match never {},
+    }
+}

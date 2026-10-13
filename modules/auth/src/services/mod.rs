@@ -1,37 +1,15 @@
 //! Business logic layer.
 //!
 //! A service is a stateful `Processor`: a
-//! `Clone`-able struct that owns its dependencies (database, Redis, message
-//! queue, other services, loaded config) and implements one `Processor` per
+//! `Clone`-able struct that owns its dependencies (database, Redis, event
+//! publisher, other services, loaded config) and implements one `Processor` per
 //! operation it supports.
 //!
 //! Services orchestrate [`entities`](crate::entities), publish
 //! [`events`](crate::events), and are the layer the [`rpc`](crate::rpc) edge
 //! calls into. Keep transport concerns (protobuf, HTTP) out of here — a service
-//! should be usable regardless of how it is invoked.
-//!
-//! ```ignore
-//! use kanau::processor::Processor;
-//! use wakuwaku::sqlx::DatabaseProcessor;
-//!
-//! #[derive(Clone)]
-//! pub struct ExampleService {
-//!     pub db: DatabaseProcessor,
-//! }
-//!
-//! pub struct DoSomething {
-//!     pub id: uuid::Uuid,
-//! }
-//!
-//! impl Processor<DoSomething> for ExampleService {
-//!     type Output = ();
-//!     type Error = wakuwaku::Error;
-//!     async fn process(&self, input: DoSomething) -> Result<(), Self::Error> {
-//!         // load entities, apply business rules, persist, emit events...
-//!         Ok(())
-//!     }
-//! }
-//! ```
+//! should be usable regardless of how it is invoked. Every operation fails with
+//! [`AuthError`], which the edge turns into a status with `?`.
 
 pub mod account;
 pub mod api_key;
@@ -47,5 +25,38 @@ pub use api_key::{
     ApiKeyService, AuthenticateApiKey, CreateApiKey, CreatedApiKey, ListApiKeys, RevokeApiKey,
 };
 pub use config::{AuthConfigService, ConfigDocument, GetModuleConfig, SetModuleConfig};
-pub use identity::{Identity, IdentityKind};
+pub use identity::{Identity, IdentityKind, PermissionDenied};
 pub use session::{AuthenticateSession, Login, LoginResult, Logout, SessionService};
+
+/// What an auth operation can fail with.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    #[error(transparent)]
+    Database(#[from] base::db::Error),
+    #[error("not found")]
+    NotFound,
+    #[error("permission denied")]
+    PermissionDenied,
+    #[error(transparent)]
+    Internal(anyhow::Error),
+}
+
+impl From<PermissionDenied> for AuthError {
+    fn from(_: PermissionDenied) -> Self {
+        AuthError::PermissionDenied
+    }
+}
+
+impl From<AuthError> for tonic::Status {
+    fn from(error: AuthError) -> Self {
+        match error {
+            AuthError::Database(e) => base::db::status_of(e),
+            AuthError::NotFound => tonic::Status::not_found("Not found"),
+            AuthError::PermissionDenied => tonic::Status::permission_denied("Permission denied"),
+            AuthError::Internal(e) => {
+                tracing::error!(error = %e, "internal error");
+                tonic::Status::internal("Internal server error")
+            }
+        }
+    }
+}

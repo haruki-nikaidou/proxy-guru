@@ -3,6 +3,9 @@
 use std::sync::LazyLock;
 
 use base::db::Db;
+
+use crate::services::AuthError;
+use crate::utils::validation::normalize_email;
 use kanau::processor::Processor;
 use time::{Duration, OffsetDateTime};
 
@@ -21,11 +24,6 @@ static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
         .hash_password("dummy-password-for-constant-time-login")
         .unwrap_or_default()
 });
-
-/// Normalize an email for lookup so login agrees with the stored canonical form.
-fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
-}
 
 /// How stale a session's recorded activity may get before it is written again.
 ///
@@ -60,9 +58,11 @@ pub enum LoginResult {
 
 impl Processor<Login> for SessionService {
     type Output = LoginResult;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:Login", skip_all, err)]
     async fn process(&self, input: Login) -> Result<Self::Output, Self::Error> {
+        // Login only normalizes: a policy check here would leak the policy and lock
+        // out accounts created before it.
         let email = normalize_email(&input.email);
         let account = self
             .db
@@ -104,7 +104,7 @@ pub struct AuthenticateSession {
 
 impl Processor<AuthenticateSession> for SessionService {
     type Output = Option<Identity>;
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:AuthenticateSession", skip_all, err)]
     async fn process(&self, input: AuthenticateSession) -> Result<Self::Output, Self::Error> {
         let session = match self
@@ -174,7 +174,7 @@ pub struct Logout {
 
 impl Processor<Logout> for SessionService {
     type Output = ();
-    type Error = wakuwaku::Error;
+    type Error = AuthError;
     #[tracing::instrument(name = "Service:Logout", skip_all, err)]
     async fn process(&self, input: Logout) -> Result<Self::Output, Self::Error> {
         self.db

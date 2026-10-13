@@ -15,7 +15,9 @@ use tonic::codegen::http;
 use tonic::codegen::{BoxFuture, Service};
 
 use crate::services::identity::Identity;
-use crate::services::{ApiKeyService, AuthenticateApiKey, AuthenticateSession, SessionService};
+use crate::services::{
+    ApiKeyService, AuthError, AuthenticateApiKey, AuthenticateSession, SessionService,
+};
 
 /// Metadata key carrying a human session id.
 pub const SESSION_ID_METADATA: &str = "x-session-id";
@@ -126,7 +128,7 @@ enum Resolved {
 }
 
 /// Keeps "not judged" separate from "judged and rejected".
-fn judge(lookup: Result<Option<Identity>, wakuwaku::Error>) -> Resolved {
+fn judge(lookup: Result<Option<Identity>, AuthError>) -> Resolved {
     match lookup {
         Ok(Some(identity)) => Resolved::Identity(identity),
         Ok(None) => Resolved::Anonymous,

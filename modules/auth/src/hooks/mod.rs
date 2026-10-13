@@ -2,37 +2,41 @@
 //!
 //! Hooks are where a module reacts to things instead of being called directly:
 //!
-//! - **AMQP consumers** — implement `AmqpMessageProcessor<E>` plus
-//!   `Processor<E>` to handle an [`event`](crate::events) delivered from the
-//!   queue.
-//! - **Cron jobs** — periodic tasks (cleanup, aggregation, reconciliation).
+//! - **Event handlers** — implement `wakuwaku::iggy::EventHandler<E>` to handle
+//!   an [`event`](crate::events) consumed from its Iggy topic.
+//! - **Cron jobs** — implement `wakuwaku::CronJob` (a `Processor<CronTick>`
+//!   with a fixed `INTERVAL`) for periodic tasks: cleanup, aggregation,
+//!   reconciliation.
 //! - **Event loggers** — persist or forward events for audit/observability.
 //!
-//! Like services, a hook is a `Clone`-able struct that owns its dependencies.
-//! The `app-server` binary wires hooks into its consumer/cron workers.
+//! Like services, a hook is a struct that owns its dependencies, and it
+//! implements `wakuwaku::ServiceCreation` so `guru-master` can build it from
+//! the `ServiceBuilder` its consumer/cron workers start.
 //!
 //! ```ignore
-//! use kanau::processor::Processor;
-//! use wakuwaku::amqp::AmqpMessageProcessor;
-//! use wakuwaku::redis::RedisConnection;
+//! use std::num::NonZeroUsize;
+//! use wakuwaku::ServiceCreation;
+//! use wakuwaku::iggy::EventHandler;
+//! use wakuwaku::iggy::error::HandleError;
 //!
 //! use crate::events::ExampleHappened;
+//! use crate::services::ExampleService;
 //!
-//! #[derive(Clone)]
 //! pub struct ExampleHook {
-//!     pub redis: RedisConnection,
+//!     pub service: ExampleService,
 //! }
 //!
-//! // Bind the hook to a durable queue name.
-//! impl AmqpMessageProcessor<ExampleHappened> for ExampleHook {
-//!     const QUEUE: &'static str = "app_base_example";
+//! impl ServiceCreation for ExampleHook {
+//!     type Dep = ExampleService;
+//!     fn create_service(service: ExampleService) -> Self {
+//!         Self { service }
+//!     }
 //! }
 //!
-//! impl Processor<ExampleHappened> for ExampleHook {
-//!     type Output = ();
-//!     type Error = wakuwaku::Error;
-//!     async fn process(&self, input: ExampleHappened) -> Result<(), Self::Error> {
-//!         // react to the event...
+//! impl EventHandler<ExampleHappened> for ExampleHook {
+//!     const MAX_BATCH: NonZeroUsize = NonZeroUsize::MIN;
+//!     async fn handle(&self, run: &[ExampleHappened]) -> Result<(), HandleError> {
+//!         // react to each event; classify failures as transient/retryable/unrecoverable
 //!         Ok(())
 //!     }
 //! }

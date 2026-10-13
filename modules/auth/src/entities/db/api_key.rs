@@ -1,8 +1,12 @@
 use crate::entities::db::account::AccountId;
-use base::db::{Db, Error};
+use crate::entities::db::tables;
+use crate::utils::validation::ApiKeyName;
 use db_types::table_record;
-use kanau::processor::Processor;
+use sqlx::PgConnection;
 use time::OffsetDateTime;
+use wakuwaku::entity::sqlx::backend::PgSource;
+use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::proof::Proven;
 
 table_record!(ApiKeyId, "api_key");
 
@@ -16,28 +20,33 @@ pub struct ApiKeyEntity {
 }
 
 pub struct CreateNewApiKey {
-    pub name: String,
+    pub name: Proven<String, ApiKeyName>,
     pub owner: AccountId,
     pub secret_sha256: String,
     pub created_at: OffsetDateTime,
 }
 
-impl Processor<CreateNewApiKey> for Db {
+impl Query for CreateNewApiKey {
+    type Effect = Write<tables::ApiKey>;
+}
+
+impl Execute<PgSource> for CreateNewApiKey {
     type Output = ApiKeyId;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:CreateNewApiKey", skip_all, err)]
-    async fn process(&self, input: CreateNewApiKey) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_scalar!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_scalar!(
             r#"INSERT INTO api_key (id, name, owner, secret_sha256, created_at)
                VALUES ($1, $2, $3, $4, $5) RETURNING id AS "id: ApiKeyId""#,
             ApiKeyId::new() as _,
-            input.name,
-            input.owner as _,
-            input.secret_sha256,
-            input.created_at
+            self.name.subject(),
+            self.owner as _,
+            self.secret_sha256,
+            self.created_at
         )
-        .fetch_one(self.db())
-        .await?)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -45,19 +54,24 @@ pub struct FindApiKeyByDigest {
     pub secret_sha256: String,
 }
 
-impl Processor<FindApiKeyByDigest> for Db {
+impl Query for FindApiKeyByDigest {
+    type Effect = Read<tables::ApiKey>;
+}
+
+impl Execute<PgSource> for FindApiKeyByDigest {
     type Output = Option<ApiKeyEntity>;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:FindApiKeyByDigest", skip_all, err)]
-    async fn process(&self, input: FindApiKeyByDigest) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_as!(
             ApiKeyEntity,
             r#"SELECT id AS "id: ApiKeyId", name, owner AS "owner: AccountId", secret_sha256, created_at
                FROM api_key WHERE secret_sha256 = $1"#,
-            input.secret_sha256
+            self.secret_sha256
         )
-        .fetch_optional(self.db())
-        .await?)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -65,19 +79,24 @@ pub struct FindApiKeyById {
     pub id: ApiKeyId,
 }
 
-impl Processor<FindApiKeyById> for Db {
+impl Query for FindApiKeyById {
+    type Effect = Read<tables::ApiKey>;
+}
+
+impl Execute<PgSource> for FindApiKeyById {
     type Output = Option<ApiKeyEntity>;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:FindApiKeyById", skip_all, err)]
-    async fn process(&self, input: FindApiKeyById) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_as!(
             ApiKeyEntity,
             r#"SELECT id AS "id: ApiKeyId", name, owner AS "owner: AccountId", secret_sha256, created_at
                FROM api_key WHERE id = $1"#,
-            input.id as _
+            self.id as _
         )
-        .fetch_optional(self.db())
-        .await?)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -93,19 +112,24 @@ pub struct ApiKeyOmitSecret {
     pub created_at: OffsetDateTime,
 }
 
-impl Processor<ListApiKeysByOwner> for Db {
+impl Query for ListApiKeysByOwner {
+    type Effect = Read<tables::ApiKey>;
+}
+
+impl Execute<PgSource> for ListApiKeysByOwner {
     type Output = Vec<ApiKeyOmitSecret>;
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:ListApiKeysByOwner", skip_all, err)]
-    async fn process(&self, input: ListApiKeysByOwner) -> Result<Self::Output, Self::Error> {
-        Ok(sqlx::query_as!(
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query_as!(
             ApiKeyOmitSecret,
             r#"SELECT id AS "id: ApiKeyId", name, owner AS "owner: AccountId", created_at
                FROM api_key WHERE owner = $1 ORDER BY created_at"#,
-            input.owner as _
+            self.owner as _
         )
-        .fetch_all(self.db())
-        .await?)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -113,29 +137,17 @@ pub struct DeleteApiKey {
     pub id: ApiKeyId,
 }
 
-impl Processor<DeleteApiKey> for Db {
+impl Query for DeleteApiKey {
+    type Effect = Write<tables::ApiKey>;
+}
+
+impl Execute<PgSource> for DeleteApiKey {
     type Output = ();
-    type Error = Error;
+    type Error = base::db::Error;
     #[tracing::instrument(name = "Query:DeleteApiKey", skip_all, err)]
-    async fn process(&self, input: DeleteApiKey) -> Result<Self::Output, Self::Error> {
-        sqlx::query!("DELETE FROM api_key WHERE id = $1", input.id as _)
-            .execute(self.db())
-            .await?;
-        Ok(())
-    }
-}
-
-pub struct DeleteApiKeysByOwner {
-    pub owner: AccountId,
-}
-
-impl Processor<DeleteApiKeysByOwner> for Db {
-    type Output = ();
-    type Error = Error;
-    #[tracing::instrument(name = "Query:DeleteApiKeysByOwner", skip_all, err)]
-    async fn process(&self, input: DeleteApiKeysByOwner) -> Result<Self::Output, Self::Error> {
-        sqlx::query!("DELETE FROM api_key WHERE owner = $1", input.owner as _)
-            .execute(self.db())
+    async fn execute(self, conn: &mut PgConnection) -> Result<Self::Output, Self::Error> {
+        sqlx::query!("DELETE FROM api_key WHERE id = $1", self.id as _)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }

@@ -9,6 +9,8 @@ use rpguru_sdk::auth as pb;
 
 use crate::entities::db::account::{AccountEntity, AccountId, AccountRole, FindAccountById};
 use crate::entities::db::api_key::{ApiKeyId, ApiKeyOmitSecret};
+use crate::rpc::validation_status;
+use crate::utils::validation::{API_KEY_NAME, NEW_PASSWORD, prove_email};
 use crate::rpc::middleware::{SESSION_ID_METADATA, from_request};
 use crate::services::api_key::ListApiKeys;
 use crate::services::config::{AuthConfigService, GetModuleConfig, SetModuleConfig};
@@ -107,8 +109,7 @@ impl pb::auth_server::Auth for AuthGrpc {
                 password: req.password,
                 user_agent: req.user_agent,
             })
-            .await
-            .map_err(base::db::status_of)?
+            .await?
         {
             LoginResult::Success(session_id) => pb::LoginReply {
                 result: pb::LoginResult::Success as i32,
@@ -134,8 +135,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         {
             self.sessions
                 .process(Logout { session_id })
-                .await
-                .map_err(base::db::status_of)?;
+                .await?;
         }
         Ok(Response::new(pb::LogoutReply {}))
     }
@@ -152,7 +152,7 @@ impl pb::auth_server::Auth for AuthGrpc {
                 id: identity.account_id.clone(),
             })
             .await
-            .map_err(wakuwaku::Error::from)?
+            .map_err(base::db::status_of)?
             .ok_or_else(|| Status::not_found("account not found"))?;
         let kind = match identity.kind {
             IdentityKind::Session => pb::IdentityKind::Session,
@@ -177,10 +177,11 @@ impl pb::auth_server::Auth for AuthGrpc {
             .process(ChangeOwnPassword {
                 actor,
                 current_password: req.current_password,
-                new_password: req.new_password,
+                new_password: NEW_PASSWORD
+                    .prove(req.new_password)
+                    .map_err(validation_status)?,
             })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         let result = match result {
             ChangePasswordResult::Changed => pb::ChangePasswordResult::Changed,
             ChangePasswordResult::WrongPassword => pb::ChangePasswordResult::WrongPassword,
@@ -200,11 +201,10 @@ impl pb::auth_server::Auth for AuthGrpc {
             .accounts
             .process(ChangeOwnEmail {
                 actor,
-                new_email: req.new_email,
+                new_email: prove_email(&req.new_email).map_err(validation_status)?,
                 current_password: req.current_password,
             })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         let result = match result {
             ChangeEmailResult::Changed => pb::ChangeEmailResult::ChangeEmailChanged,
             ChangeEmailResult::WrongPassword => pb::ChangeEmailResult::ChangeEmailWrongPassword,
@@ -222,16 +222,19 @@ impl pb::auth_server::Auth for AuthGrpc {
         let actor = from_request(&request)?;
         let req = request.into_inner();
         let role = role_from_proto(req.role)?;
+        let email = prove_email(&req.email).map_err(validation_status)?;
+        let password = NEW_PASSWORD
+            .prove(req.password)
+            .map_err(validation_status)?;
         let reply = match self
             .accounts
             .process(RegisterAccount {
                 actor,
-                email: req.email,
-                password: req.password,
+                email,
+                password,
                 role,
             })
-            .await
-            .map_err(base::db::status_of)?
+            .await?
         {
             RegisterResult::Created(account) => pb::CreateAccountReply {
                 result: pb::CreateAccountResult::Created as i32,
@@ -253,8 +256,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         let accounts = self
             .accounts
             .process(ListAccounts { actor })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         Ok(Response::new(pb::ListAccountsReply {
             accounts: accounts.into_iter().map(account_to_proto).collect(),
         }))
@@ -274,14 +276,13 @@ impl pb::auth_server::Auth for AuthGrpc {
                 target: target.clone(),
                 role,
             })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         let account = self
             .accounts
             .db
             .process(FindAccountById { id: target })
             .await
-            .map_err(wakuwaku::Error::from)?
+            .map_err(base::db::status_of)?
             .ok_or_else(|| Status::not_found("account not found"))?;
         Ok(Response::new(pb::UpdateAccountRoleReply {
             account: Some(account_to_proto(account)),
@@ -297,8 +298,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         let target = AccountId::from_key(&req.account_id);
         self.accounts
             .process(DeleteAccount { actor, target })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         Ok(Response::new(pb::DeleteAccountReply {}))
     }
 
@@ -312,10 +312,11 @@ impl pb::auth_server::Auth for AuthGrpc {
             .api_keys
             .process(CreateApiKey {
                 actor,
-                name: req.name,
+                name: API_KEY_NAME
+                    .prove(req.name.trim().to_owned())
+                    .map_err(validation_status)?,
             })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         Ok(Response::new(pb::CreateApiKeyReply {
             id: created.id.to_string(),
             secret: created.secret,
@@ -330,8 +331,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         let keys = self
             .api_keys
             .process(ListApiKeys { actor })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         Ok(Response::new(pb::ListApiKeysReply {
             keys: keys.into_iter().map(api_key_to_proto).collect(),
         }))
@@ -346,8 +346,7 @@ impl pb::auth_server::Auth for AuthGrpc {
         let id = ApiKeyId::from_key(&req.id);
         self.api_keys
             .process(RevokeApiKey { actor, id })
-            .await
-            .map_err(base::db::status_of)?;
+            .await?;
         Ok(Response::new(pb::RevokeApiKeyReply {}))
     }
 
