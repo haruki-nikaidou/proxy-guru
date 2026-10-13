@@ -6,7 +6,10 @@
 //!
 //! - One stream, [`STREAM`], holds every topic.
 //! - An event's topic is its key type's `PartitionKey::SUPER_PARTITION_NAME`;
-//!   every main topic has [`PARTITIONS`] partitions, ids `0..PARTITIONS`.
+//!   every main topic is created with [`PARTITIONS`] partition (id `0`). The
+//!   fleet is small, so one partition carries every key; a consumer still names
+//!   the partitions it reads (`guru-master --iggy-partitions`), so nothing ever
+//!   reads "every partition" by accident once a topic is split.
 //! - A consumer's retry topic, `retry_<topic>`, is created by wakuwaku when the
 //!   consumer starts, with the main topic's partition count.
 //! - Each module's `events` lists its main topics in a `TOPICS` constant, which
@@ -25,14 +28,10 @@ use wakuwaku::deps::iggy::prelude::{
 /// The stream every topic lives in.
 pub const STREAM: &str = "guru";
 
-/// Partition count of every main topic (ids `0..PARTITIONS`). Changing it
-/// reorders keys: a key's partition is its hash modulo this count.
-pub const PARTITIONS: u32 = 4;
-
-/// Every partition of a main topic, for a consumer that reads them all.
-pub fn all_partitions() -> Vec<u32> {
-    (0..PARTITIONS).collect()
-}
+/// Partition count of every main topic this process creates. Raising it
+/// reorders keys (a key's partition is its hash modulo this count) and needs
+/// the new partitions assigned to consumer replicas explicitly.
+pub const PARTITIONS: u32 = 1;
 
 /// Connects to the Iggy server at `url` (`iggy://user:password@host:port`);
 /// the credentials in the URL log the client in.
