@@ -105,6 +105,8 @@ fn edge_ok() -> PodStatus {
 
 struct Master {
     db: Db,
+    /// The raw pool, for fixtures that write SQL the entity layer has no query for.
+    pool: sqlx::PgPool,
     hub: WatchHub,
     addr: SocketAddr,
     shutdown: CancellationToken,
@@ -125,12 +127,13 @@ async fn boot_master_with(
     lease: SessionLease,
     config: OrchestrationConfig,
 ) -> Result<(Master, String), Box<dyn std::error::Error>> {
-    let sp = Db::new(pool);
+    let sp = base::db::handle(pool.clone());
 
     let hasher = Argon2PasswordAlgorithm::default();
     let account = sp
         .process(CreateAccount {
-            email: "ops@example.com".to_string(),
+            email: auth::utils::validation::prove_email("ops@example.com")
+                .map_err(|e| format!("{e:?}"))?,
             password_hash: hasher.hash_password("hunter2hunter2")?,
             role: AccountRole::Maintainer,
         })
@@ -144,7 +147,9 @@ async fn boot_master_with(
                 role: AccountRole::Maintainer,
                 kind: IdentityKind::Session,
             },
-            name: "worker".to_string(),
+            name: auth::utils::validation::API_KEY_NAME
+                .prove("worker".to_string())
+                .map_err(|e| format!("{e:?}"))?,
         })
         .await?;
 
@@ -154,6 +159,7 @@ async fn boot_master_with(
     Ok((
         Master {
             db: sp,
+            pool,
             hub,
             addr,
             shutdown,
@@ -796,7 +802,7 @@ async fn a_rotated_refresh_key_ends_an_open_stream(pool: sqlx::PgPool) -> TestRe
         &canvas.server as _,
         time::OffsetDateTime::now_utc() - time::Duration::seconds(60)
     )
-    .execute(master.db.db())
+    .execute(&master.pool)
     .await?;
     let second_key = register(&mut client, &server_key, &api_key).await?;
     assert_ne!(first_key, second_key);
