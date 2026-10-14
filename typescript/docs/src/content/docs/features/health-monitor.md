@@ -50,9 +50,11 @@ report from a superseded session is rejected, not recorded — and it writes:
 - one `pod_health_record` row per pod the report resolves.
 
 A reported tag is resolved against the server's `applied` snapshot first and its `desired` snapshot
-second; a tag in neither is skipped and writes nothing. When one pod is held under two listeners —
-which happens while its dependants switch to a new port — the two entries collapse into a single
-row carrying the **worst** of the two statuses.
+second; a tag in neither is skipped and writes nothing. So is a tag whose pod was deleted from the
+graph after that snapshot was derived: the worker keeps running and reporting the pod until it
+applies the next revision, and the rest of its report is recorded as usual. When one pod is held
+under two listeners — which happens while its dependants switch to a new port — the two entries
+collapse into a single row carrying the **worst** of the two statuses.
 
 Once that write has committed, the service publishes the record on the live bus — a separate step,
 not part of the transaction — which is what the dashboard's streams and a canvas's `WatchGraph`

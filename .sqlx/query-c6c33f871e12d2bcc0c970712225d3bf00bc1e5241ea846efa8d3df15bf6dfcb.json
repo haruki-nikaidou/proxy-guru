@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM orchestration_edge WHERE source_pod = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c6c33f871e12d2bcc0c970712225d3bf00bc1e5241ea846efa8d3df15bf6dfcb"
+}

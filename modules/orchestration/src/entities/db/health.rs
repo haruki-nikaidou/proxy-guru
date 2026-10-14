@@ -462,7 +462,9 @@ impl From<PodHealthWriteRow> for PodHealthWrite {
     }
 }
 
-/// Inserts pod records in one statement and returns the rows written.
+/// Inserts pod records in one statement and returns the rows written. A record
+/// whose pod no longer exists is skipped: a worker reports the pods of the
+/// revision it runs, which may name one deleted since.
 async fn insert_pod_records(
     conn: &mut PgConnection,
     records: &[NewPodHealthRecord],
@@ -491,9 +493,10 @@ async fn insert_pod_records(
     .collect())
 }
 
-/// Inserts a batch of pod records in one statement. The derivation hook's
-/// query (`Deploying` the moment a new revision is published); a report's pod
-/// records travel inside [`InsertServerHealthRecord`] instead.
+/// Inserts a batch of pod records in one statement, skipping any whose pod no
+/// longer exists. The derivation hook's query (`Deploying` the moment a new
+/// revision is published); a report's pod records travel inside
+/// [`InsertServerHealthRecord`] instead.
 #[derive(Debug)]
 pub struct InsertPodHealthRecords {
     pub records: Vec<NewPodHealthRecord>,

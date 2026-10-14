@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "-- Writes the batch and reads back each row's labels in the same statement: the\n-- pod's name, its canvas, and the canvas's name, so a notification can be\n-- phrased without a second read (which could see a pod already moved).\nWITH ins AS (\n    INSERT INTO pod_health_record (id, pod, status, message, report_time)\n    SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])\n    RETURNING id, pod, status, message, report_time\n)\nSELECT ins.id AS \"id!: PodHealthRecordId\", ins.pod AS \"pod!: PodId\",\n       ins.status AS \"status!: PodHealthStatus\", ins.message AS \"message!\",\n       ins.report_time AS \"report_time!\",\n       p.name AS \"pod_name!\", p.canvas AS \"canvas!: CanvasId\", c.name AS \"canvas_name!\"\nFROM ins\nJOIN orchestration_pod p ON p.id = ins.pod\nJOIN orchestration_canvas c ON c.id = p.canvas\n",
+  "query": "-- Writes the batch and reads back each row's labels in the same statement: the\n-- pod's name, its canvas, and the canvas's name, so a notification can be\n-- phrased without a second read (which could see a pod already moved).\n--\n-- A row whose pod no longer exists is skipped, not an error: a pod is deleted\n-- the moment the graph is applied, while its server runs — and reports — the\n-- revision that has it until the next one is applied. The pods that remain are\n-- locked first (`FOR KEY SHARE`, the lock the foreign-key check takes anyway),\n-- so a delete committed after this statement's snapshot is skipped here too\n-- instead of failing that check, and a later one waits for this transaction.\nWITH live AS (\n    SELECT r.id, r.pod, r.status, r.message, r.report_time\n    FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])\n         AS r(id, pod, status, message, report_time)\n    JOIN orchestration_pod p ON p.id = r.pod\n    FOR KEY SHARE OF p\n), ins AS (\n    INSERT INTO pod_health_record (id, pod, status, message, report_time)\n    SELECT id, pod, status, message, report_time FROM live\n    RETURNING id, pod, status, message, report_time\n)\nSELECT ins.id AS \"id!: PodHealthRecordId\", ins.pod AS \"pod!: PodId\",\n       ins.status AS \"status!: PodHealthStatus\", ins.message AS \"message!\",\n       ins.report_time AS \"report_time!\",\n       p.name AS \"pod_name!\", p.canvas AS \"canvas!: CanvasId\", c.name AS \"canvas_name!\"\nFROM ins\nJOIN orchestration_pod p ON p.id = ins.pod\nJOIN orchestration_canvas c ON c.id = p.canvas\n",
   "describe": {
     "columns": [
       {
@@ -112,5 +112,5 @@
       false
     ]
   },
-  "hash": "912afe5cd532002bf64b8a89f97bc8821597ac98054feea58e2d65496d47cef4"
+  "hash": "6002e4f21c829936092da663bd602590a10c4b83ad54bbb9eb5955a4efff647b"
 }
