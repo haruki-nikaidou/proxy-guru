@@ -13,9 +13,9 @@ use orchestration::entities::db::canvas::CanvasEntity;
 use orchestration::entities::db::edge::EdgeEntity;
 use orchestration::entities::db::exit::ExitEntity;
 use orchestration::entities::db::health::{
-    InsertServerHealthRecord, InsertServerHealthRecordFlow, ListPodHealthHistory,
-    ListServerHealthHistory, NewPodHealthRecord, PodHealthRecordEntity, PodHealthStatus,
-    ServerHealthRecordEntity, ServerHealthStatus,
+    InsertPodHealthRecords, InsertServerHealthRecord, InsertServerHealthRecordFlow,
+    ListPodHealthHistory, ListServerHealthHistory, NewPodHealthRecord, PodHealthRecordEntity,
+    PodHealthStatus, ServerHealthRecordEntity, ServerHealthStatus,
 };
 use orchestration::entities::db::pod::{PodEntity, PodId};
 use orchestration::entities::db::server::{
@@ -1460,5 +1460,196 @@ async fn a_health_write_carries_labels_and_announces_only_a_flip(pool: sqlx::PgP
         matches!(facts.as_slice(), [HealthFact::Pod { .. }]),
         "a routine report is not news: {facts:?}"
     );
+    Ok(())
+}
+
+// --- pods deleted under a running revision -----------------------------------------
+
+/// Deletes `api` (with its edge and exit) and derives the revision without it.
+/// The worker is handed nothing: it keeps running what it had.
+async fn delete_api(w: &World, f: &Fixture) -> TestResult {
+    w.apply(
+        &f.canvas_row,
+        GraphChange {
+            delete_pods: vec![f.api.id.clone()],
+            delete_edges: vec![edge_id("api-edge")],
+            delete_exits: vec![f.api_out.id.clone()],
+            ..GraphChange::default()
+        },
+    )
+    .await?;
+    w.derive(&f.canvas).await?;
+    Ok(())
+}
+
+/// A pod is deleted the moment the graph is applied, but its server runs the
+/// revision that has it until the next one is applied, and reports it all the
+/// while. The pod gets no row; the report is still the server's liveness and
+/// lands with every other pod's.
+///
+/// Seen live: one such row failed the whole write on its foreign key, which
+/// ended the health stream and the worker's session with it. Every
+/// re-registration's first report failed the same way, usually before the next
+/// revision could reach the worker, so its server sat `Offline` for minutes.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_report_naming_a_pod_deleted_since_its_revision_records_the_rest(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let agent = register(&w, &f.server).await?;
+    let applied = take_and_ack(&w, &agent, vec![ok("web"), ok("api")]).await?;
+    delete_api(&w, &f).await?;
+    let view = w.view(&f.server).await?;
+    assert_eq!(view.applied.as_ref().unwrap().revision, applied);
+    assert!(view.desired.as_ref().unwrap().revision > applied);
+
+    record(&w, &agent, vec![ok("web"), ok("api")]).await?;
+
+    let latest = server_history(&w, &f.server).await.pop().unwrap();
+    assert_eq!(latest.upload_bytes, 10, "the report itself is recorded");
+    assert_eq!(latest.status, ServerHealthStatus::Online);
+    assert_eq!(
+        server_row(&w, &f.server).await.last_health_report_at,
+        Some(latest.report_time)
+    );
+    let web = latest_pod(&w, &f.web.id).await.unwrap();
+    assert_eq!(
+        (web.status, web.report_time),
+        (PodHealthStatus::Ready, latest.report_time)
+    );
+    assert!(latest_pod(&w, &f.api.id).await.is_none());
+    Ok(())
+}
+
+/// The same race at ack time: the revision was handed over, then the pod was
+/// deleted before the worker's ack came back. The ack still lands.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn an_ack_naming_a_pod_deleted_since_its_revision_was_sent_lands(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let agent = register(&w, &f.server).await?;
+    let row = server_row(&w, &f.server).await;
+    let sent =
+        w.db.process(TakeInFlight {
+            server: f.server.clone(),
+            generation: row.refresh_key_generation,
+            epoch: row.watch_epoch,
+        })
+        .await?
+        .ok_or("nothing in flight")?;
+    delete_api(&w, &f).await?;
+
+    w.agents
+        .process(AckConfig {
+            agent: agent.clone(),
+            revision: sent.revision,
+            error: None,
+            pods: vec![ok("web"), ok("api")],
+        })
+        .await?;
+
+    let view = w.view(&f.server).await?;
+    assert_eq!(view.applied.as_ref().unwrap().revision, sent.revision);
+    assert_eq!(
+        server_row(&w, &f.server).await.health_status,
+        ServerHealthStatus::Online
+    );
+    assert_pods(&w, &[&f.web], PodHealthStatus::Ready, "").await;
+    assert!(latest_pod(&w, &f.api.id).await.is_none());
+    Ok(())
+}
+
+fn ready(pod: &PodId, report_time: OffsetDateTime) -> NewPodHealthRecord {
+    NewPodHealthRecord {
+        pod: pod.clone(),
+        status: PodHealthStatus::Ready,
+        message: String::new(),
+        report_time,
+    }
+}
+
+/// One row naming a pod that does not exist is skipped, not the batch: the
+/// derivation hook's `Deploying` rows go through the same statement.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_row_batch_skips_a_pod_that_no_longer_exists(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let now = OffsetDateTime::now_utc();
+
+    let written =
+        w.db.process(InsertPodHealthRecords {
+            records: vec![
+                ready(&f.web.id, now),
+                ready(&pod_id("gone"), now),
+                ready(&f.api.id, now),
+            ],
+        })
+        .await?;
+
+    let mut pods: Vec<&str> = written.iter().map(|p| p.record.pod.as_str()).collect();
+    pods.sort_unstable();
+    let mut expected = [f.web.id.as_str(), f.api.id.as_str()];
+    expected.sort_unstable();
+    assert_eq!(pods, expected);
+    Ok(())
+}
+
+/// A pod deleted by a transaction that commits while the batch is being
+/// written: the row is skipped, not a foreign-key violation. Without the lock
+/// the statement takes, its snapshot still sees the pod, and the foreign-key
+/// check — which waits for the delete — finds it gone.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_pod_deleted_while_its_row_is_written_is_skipped(pool: sqlx::PgPool) -> TestResult {
+    let w = world(pool).await?;
+    let f = fixture(&w).await?;
+    let now = OffsetDateTime::now_utc();
+
+    let mut delete = w.pool.begin().await?;
+    sqlx::query!(
+        "DELETE FROM orchestration_edge WHERE source_pod = $1",
+        &f.api.id as _
+    )
+    .execute(&mut *delete)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM orchestration_pod WHERE id = $1",
+        &f.api.id as _
+    )
+    .execute(&mut *delete)
+    .await?;
+
+    let insert = w.db.process(InsertPodHealthRecords {
+        records: vec![ready(&f.web.id, now), ready(&f.api.id, now)],
+    });
+    // Commit the delete only once the insert is blocked on its row lock.
+    let commit = async {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let waiting = sqlx::query_scalar!(
+                r#"SELECT count(*) AS "n!" FROM pg_stat_activity
+                   WHERE datname = current_database() AND wait_event_type = 'Lock'"#
+            )
+            .fetch_one(&w.pool)
+            .await?;
+            if waiting > 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the insert never waited for the delete"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        delete.commit().await
+    };
+    let (written, committed) = tokio::join!(insert, commit);
+    committed?;
+
+    let written = written?;
+    let pods: Vec<&str> = written.iter().map(|p| p.record.pod.as_str()).collect();
+    assert_eq!(pods, [f.web.id.as_str()]);
     Ok(())
 }

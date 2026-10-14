@@ -302,7 +302,8 @@ fn severity(status: PodHealthStatus) -> u8 {
 ///
 /// A tag resolves through `applied` first — that is what the worker runs — and
 /// `desired` otherwise, for the moment between a worker applying a revision and
-/// the master taking its ack. A tag in neither is not ours to judge.
+/// the master taking its ack. A tag in neither is not ours to judge. A pod
+/// deleted since `applied` was derived still resolves here; the write skips it.
 fn pod_records(
     view: &ServerConfigViewEntity,
     pods: &[PodResult],
