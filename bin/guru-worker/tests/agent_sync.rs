@@ -269,6 +269,9 @@ struct Canvas {
     canvas: orchestration::entities::db::canvas::CanvasId,
     server: ServerId,
     pod: PodEntity,
+    /// The pod's one edge and the exit it leads to, for a test that deletes it.
+    edge: EdgeId,
+    exit: ExitId,
     listen: SocketAddr,
 }
 
@@ -353,6 +356,7 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
             edge.id.as_str(),
         ))),
     };
+    let (edge_id, exit_id) = (edge.id.clone(), exit.id.clone());
     let outcome = graph_service(db)
         .process(ApplyGraph {
             actor: operator(),
@@ -373,6 +377,8 @@ async fn build_canvas(db: &Db) -> Result<Canvas, Box<dyn std::error::Error>> {
         canvas: canvas.id,
         server: server.id,
         pod,
+        edge: edge_id,
+        exit: exit_id,
         listen: format!("127.0.0.1:{port}").parse()?,
     })
 }
@@ -1017,6 +1023,113 @@ async fn health_replies_open_at_once_and_answer_every_report(pool: sqlx::PgPool)
         server_row(&master.db, &canvas.server).await.health_status,
         ServerHealthStatus::Offline
     );
+
+    master.shutdown.cancel();
+    Ok(())
+}
+
+/// A pod deleted while its server still runs the revision that has it. Until
+/// the next revision is applied the worker keeps naming the pod in its reports;
+/// they are answered, and the next revision reaches the same session.
+///
+/// Seen live: the first such report failed its write with `INTERNAL`, which
+/// ended the health stream and the session with it. Each re-registration's
+/// first report went out before its config stream could deliver the next
+/// revision and failed the same way, so the servers stayed on the old revision
+/// and showed `Offline` for minutes while still serving.
+#[sqlx::test(migrator = "base::db::MIGRATOR")]
+async fn a_report_naming_a_pod_deleted_since_its_revision_is_answered(
+    pool: sqlx::PgPool,
+) -> TestResult {
+    let (master, api_key) = boot_master(pool, SessionLease::default()).await?;
+    let canvas = build_canvas(&master.db).await?;
+    let server_key = canvas.server.to_string();
+    let mut client = within(
+        "a channel to the master",
+        WorkerAgentClient::connect(format!("http://{}", master.addr)),
+    )
+    .await?;
+    let key = register(&mut client, &server_key, &api_key).await?;
+    let ack = |revision: &ConfigRevision| -> Result<_, Box<dyn std::error::Error>> {
+        let mut ack = tonic::Request::new(ack_all_applied(revision));
+        ack.metadata_mut().insert("x-refresh-key", key.parse()?);
+        Ok(ack)
+    };
+
+    // Run a revision that has the pod: the sweeper may have derived the server
+    // before the pod was put, so the first one handed over may not.
+    let tag = canvas.pod.id.to_string();
+    let (mut stream, mut running) = watch(&mut client, &key).await?;
+    loop {
+        within("AckConfig", client.ack_config(ack(&running)?)).await?;
+        let config = Config::from_toml_str(&running.toml)?;
+        if config.forwardings.iter().any(|f| f.tag == tag) {
+            break;
+        }
+        running = within("a revision with the pod", stream.message())
+            .await?
+            .expect("the config stream stays open");
+    }
+    let (reports, mut replies) = open_health(&mut client, &key).await?;
+
+    // The worker takes nothing from here on: it keeps running `running`.
+    let outcome = graph_service(&master.db)
+        .process(ApplyGraph {
+            actor: operator(),
+            canvas: canvas.canvas.clone(),
+            change: GraphChange {
+                delete_pods: vec![canvas.pod.id.clone()],
+                delete_edges: vec![canvas.edge.clone()],
+                delete_exits: vec![canvas.exit.clone()],
+                ..GraphChange::default()
+            },
+            dry_run: false,
+            expected_generation: None,
+        })
+        .await?;
+    assert!(outcome.applied, "{:?}", outcome.diagnostics);
+    for _ in 0..2 {
+        reports
+            .send(HealthReport {
+                running_revision: running.revision,
+                pods: vec![PodStatus {
+                    tag: tag.clone(),
+                    error: None,
+                }],
+                ..HealthReport::default()
+            })
+            .await?;
+        within(
+            "the reply to a report naming the deleted pod",
+            replies.message(),
+        )
+        .await?
+        .expect("the report is answered");
+    }
+    assert_ne!(
+        server_row(&master.db, &canvas.server).await.health_status,
+        ServerHealthStatus::Offline
+    );
+
+    // The revision without the pod still reaches this session.
+    let next = within("the revision without the pod", stream.message())
+        .await?
+        .expect("the config stream stays open");
+    assert!(next.revision > running.revision);
+    assert!(Config::from_toml_str(&next.toml)?.forwardings.is_empty());
+    within("AckConfig", client.ack_config(ack(&next)?)).await?;
+    reports
+        .send(HealthReport {
+            running_revision: next.revision,
+            ..HealthReport::default()
+        })
+        .await?;
+    within(
+        "the reply to a report on the new revision",
+        replies.message(),
+    )
+    .await?
+    .expect("the report is answered");
 
     master.shutdown.cancel();
     Ok(())
