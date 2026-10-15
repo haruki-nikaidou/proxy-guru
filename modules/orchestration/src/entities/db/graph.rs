@@ -32,7 +32,7 @@ use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 /// Everything the graph of one canvas tree is made of.
 #[derive(Debug, Clone)]
@@ -175,8 +175,17 @@ impl LoadCanvasGraphFlow {
     }
 }
 
-impl Query for LoadCanvasGraphFlow {
-    type Effect = GraphEffect;
+tx_effect! {
+    /// The tables [`LoadCanvasGraphFlow`] touches.
+    pub enum LoadCanvasGraphEffect {
+        read OrchestrationCanvas,
+        read OrchestrationServer,
+        read OrchestrationPod,
+        read OrchestrationExit,
+        read OrchestrationEdge,
+        read OrchestrationGroup,
+        read OrchestrationGroupMember,
+    }
 }
 
 impl From<TxEnd<LoadCanvasGraphFlow>> for LoadCanvasGraphFlow {
@@ -186,6 +195,7 @@ impl From<TxEnd<LoadCanvasGraphFlow>> for LoadCanvasGraphFlow {
 }
 
 impl TxFlow for LoadCanvasGraphFlow {
+    type Capability = LoadCanvasGraphEffect;
     type Database = Postgres;
     type Commit = GraphRows;
     type Abort = Error;
@@ -448,15 +458,16 @@ impl ApplyGraphBatchFlow {
     }
 }
 
-impl Query for ApplyGraphBatchFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationGroup>,
-        Write<OrchestrationGroupMember>,
-        Write<OrchestrationEdge>,
-        Write<OrchestrationPod>,
-        Write<OrchestrationExit>,
-    );
+tx_effect! {
+    /// The tables [`ApplyGraphBatchFlow`] touches.
+    pub enum ApplyGraphBatchEffect {
+        write OrchestrationCanvas,
+        write OrchestrationGroup,
+        write OrchestrationGroupMember,
+        write OrchestrationEdge,
+        write OrchestrationPod,
+        write OrchestrationExit,
+    }
 }
 
 impl From<TxEnd<ApplyGraphBatchFlow>> for ApplyGraphBatchFlow {
@@ -466,6 +477,7 @@ impl From<TxEnd<ApplyGraphBatchFlow>> for ApplyGraphBatchFlow {
 }
 
 impl TxFlow for ApplyGraphBatchFlow {
+    type Capability = ApplyGraphBatchEffect;
     type Database = Postgres;
     type Commit = i64;
     type Abort = Error;
@@ -707,12 +719,13 @@ impl MoveGraphItemsFlow {
     }
 }
 
-impl Query for MoveGraphItemsFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationServer>,
-        Write<OrchestrationExit>,
-    );
+tx_effect! {
+    /// The tables [`MoveGraphItemsFlow`] touches.
+    pub enum MoveGraphItemsEffect {
+        write OrchestrationCanvas,
+        write OrchestrationServer,
+        write OrchestrationExit,
+    }
 }
 
 impl From<TxEnd<MoveGraphItemsFlow>> for MoveGraphItemsFlow {
@@ -722,6 +735,7 @@ impl From<TxEnd<MoveGraphItemsFlow>> for MoveGraphItemsFlow {
 }
 
 impl TxFlow for MoveGraphItemsFlow {
+    type Capability = MoveGraphItemsEffect;
     type Database = Postgres;
     type Commit = ();
     type Abort = Error;

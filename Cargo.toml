@@ -29,7 +29,7 @@ license = "MIT"
 tokio = { version = "1.49", features = ["full"] }
 
 # Framework
-wakuwaku = { version = "=1.0.0-rc2", features = ["iggy", "sqlx-pg"] }
+wakuwaku = { version = "=1.0.0-rc3", features = ["iggy", "sqlx-pg"] }
 kanau = { version = "0.6", features = [
     "message",
     "rkyv",

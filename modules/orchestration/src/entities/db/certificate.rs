@@ -18,7 +18,7 @@ use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 table_record!(CertificateId, "certificate");
 
@@ -527,8 +527,9 @@ impl TouchCanvasesFlow {
     }
 }
 
-impl Query for TouchCanvasesFlow {
-    type Effect = Write<OrchestrationCanvas>;
+tx_effect! {
+    /// The tables [`TouchCanvasesFlow`] touches.
+    pub enum TouchCanvasesEffect { write OrchestrationCanvas }
 }
 
 impl From<TxEnd<TouchCanvasesFlow>> for TouchCanvasesFlow {
@@ -538,6 +539,7 @@ impl From<TxEnd<TouchCanvasesFlow>> for TouchCanvasesFlow {
 }
 
 impl TxFlow for TouchCanvasesFlow {
+    type Capability = TouchCanvasesEffect;
     type Database = Postgres;
     type Commit = ();
     type Abort = Error;

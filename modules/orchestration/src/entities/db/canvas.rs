@@ -9,7 +9,7 @@ use sqlx::{PgConnection, Postgres};
 use std::collections::HashMap;
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 table_record!(CanvasId, "orchestration_canvas");
 
@@ -191,8 +191,9 @@ impl CreateCanvasFlow {
     }
 }
 
-impl Query for CreateCanvasFlow {
-    type Effect = Write<OrchestrationCanvas>;
+tx_effect! {
+    /// The tables [`CreateCanvasFlow`] touches.
+    pub enum CreateCanvasEffect { write OrchestrationCanvas }
 }
 
 impl From<TxEnd<CreateCanvasFlow>> for CreateCanvasFlow {
@@ -202,6 +203,7 @@ impl From<TxEnd<CreateCanvasFlow>> for CreateCanvasFlow {
 }
 
 impl TxFlow for CreateCanvasFlow {
+    type Capability = CreateCanvasEffect;
     type Database = Postgres;
     type Commit = CanvasEntity;
     type Abort = Error;
@@ -344,8 +346,9 @@ impl LoadCanvasTreeFlow {
     }
 }
 
-impl Query for LoadCanvasTreeFlow {
-    type Effect = Read<OrchestrationCanvas>;
+tx_effect! {
+    /// The tables [`LoadCanvasTreeFlow`] touches.
+    pub enum LoadCanvasTreeEffect { read OrchestrationCanvas }
 }
 
 impl From<TxEnd<LoadCanvasTreeFlow>> for LoadCanvasTreeFlow {
@@ -355,6 +358,7 @@ impl From<TxEnd<LoadCanvasTreeFlow>> for LoadCanvasTreeFlow {
 }
 
 impl TxFlow for LoadCanvasTreeFlow {
+    type Capability = LoadCanvasTreeEffect;
     type Database = Postgres;
     type Commit = Option<CanvasTree>;
     type Abort = Error;
@@ -578,12 +582,13 @@ impl DeleteCanvasRowFlow {
     }
 }
 
-impl Query for DeleteCanvasRowFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationEdge>,
-        Read<OrchestrationPod>,
-    );
+tx_effect! {
+    /// The tables [`DeleteCanvasRowFlow`] touches.
+    pub enum DeleteCanvasRowEffect {
+        write OrchestrationCanvas,
+        write OrchestrationEdge,
+        read OrchestrationPod,
+    }
 }
 
 impl From<TxEnd<DeleteCanvasRowFlow>> for DeleteCanvasRowFlow {
@@ -593,6 +598,7 @@ impl From<TxEnd<DeleteCanvasRowFlow>> for DeleteCanvasRowFlow {
 }
 
 impl TxFlow for DeleteCanvasRowFlow {
+    type Capability = DeleteCanvasRowEffect;
     type Database = Postgres;
     type Commit = ();
     type Abort = Error;

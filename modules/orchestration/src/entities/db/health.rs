@@ -18,7 +18,7 @@ use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 table_record!(ServerHealthRecordId, "server_health_record");
 
@@ -268,14 +268,15 @@ impl InsertServerHealthRecordFlow {
     }
 }
 
-impl Query for InsertServerHealthRecordFlow {
-    type Effect = (
-        Write<OrchestrationServer>,
-        Write<ServerHealthRecord>,
-        Write<PodHealthRecord>,
-        Read<OrchestrationCanvas>,
-        Read<OrchestrationPod>,
-    );
+tx_effect! {
+    /// The tables [`InsertServerHealthRecordFlow`] touches.
+    pub enum InsertServerHealthRecordEffect {
+        write OrchestrationServer,
+        write ServerHealthRecord,
+        write PodHealthRecord,
+        read OrchestrationCanvas,
+        read OrchestrationPod,
+    }
 }
 
 impl From<TxEnd<InsertServerHealthRecordFlow>> for InsertServerHealthRecordFlow {
@@ -285,6 +286,7 @@ impl From<TxEnd<InsertServerHealthRecordFlow>> for InsertServerHealthRecordFlow 
 }
 
 impl TxFlow for InsertServerHealthRecordFlow {
+    type Capability = InsertServerHealthRecordEffect;
     type Database = Postgres;
     type Commit = Option<HealthWrite>;
     type Abort = Error;
@@ -396,12 +398,13 @@ impl SetServerHealthStatusFlow {
     }
 }
 
-impl Query for SetServerHealthStatusFlow {
-    type Effect = (
-        Write<OrchestrationServer>,
-        Write<ServerHealthRecord>,
-        Read<OrchestrationCanvas>,
-    );
+tx_effect! {
+    /// The tables [`SetServerHealthStatusFlow`] touches.
+    pub enum SetServerHealthStatusEffect {
+        write OrchestrationServer,
+        write ServerHealthRecord,
+        read OrchestrationCanvas,
+    }
 }
 
 impl From<TxEnd<SetServerHealthStatusFlow>> for SetServerHealthStatusFlow {
@@ -411,6 +414,7 @@ impl From<TxEnd<SetServerHealthStatusFlow>> for SetServerHealthStatusFlow {
 }
 
 impl TxFlow for SetServerHealthStatusFlow {
+    type Capability = SetServerHealthStatusEffect;
     type Database = Postgres;
     type Commit = Option<HealthWrite>;
     type Abort = Error;

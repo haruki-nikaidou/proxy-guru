@@ -8,11 +8,12 @@
 
 use crate::entities::db::canvas::CanvasId;
 use crate::entities::db::fence::Touch;
-use crate::entities::db::graph::{GraphEffect, GraphRows, LoadGraph};
+use crate::entities::db::graph::{GraphRows, LoadGraph};
 use crate::entities::db::pod::PodId;
 use crate::entities::db::server::ServerId;
 use crate::entities::db::tables::{
-    OrchestrationCanvas, OrchestrationServer, OrchestrationServerConfigView,
+    OrchestrationCanvas, OrchestrationEdge, OrchestrationExit, OrchestrationGroup,
+    OrchestrationGroupMember, OrchestrationPod, OrchestrationServer, OrchestrationServerConfigView,
 };
 use crate::entities::db::tree::TreeOf;
 use base::db::Error;
@@ -23,7 +24,7 @@ use sqlx::{PgConnection, Postgres};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, IsolationLevel, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 table_record!(ServerConfigViewId, "orchestration_server_config_view");
 
@@ -464,11 +465,12 @@ impl ForgetServerAppliedRowFlow {
     }
 }
 
-impl Query for ForgetServerAppliedRowFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`ForgetServerAppliedRowFlow`] touches.
+    pub enum ForgetServerAppliedRowEffect {
+        write OrchestrationCanvas,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<ForgetServerAppliedRowFlow>> for ForgetServerAppliedRowFlow {
@@ -478,6 +480,7 @@ impl From<TxEnd<ForgetServerAppliedRowFlow>> for ForgetServerAppliedRowFlow {
 }
 
 impl TxFlow for ForgetServerAppliedRowFlow {
+    type Capability = ForgetServerAppliedRowEffect;
     type Database = Postgres;
     type Commit = ();
     type Abort = Error;
@@ -614,8 +617,18 @@ impl LoadCanvasDerivationInputFlow {
     }
 }
 
-impl Query for LoadCanvasDerivationInputFlow {
-    type Effect = (GraphEffect, Read<OrchestrationServerConfigView>);
+tx_effect! {
+    /// The tables [`LoadCanvasDerivationInputFlow`] touches.
+    pub enum LoadCanvasDerivationInputEffect {
+        read OrchestrationCanvas,
+        read OrchestrationServer,
+        read OrchestrationPod,
+        read OrchestrationExit,
+        read OrchestrationEdge,
+        read OrchestrationGroup,
+        read OrchestrationGroupMember,
+        read OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<LoadCanvasDerivationInputFlow>> for LoadCanvasDerivationInputFlow {
@@ -625,6 +638,7 @@ impl From<TxEnd<LoadCanvasDerivationInputFlow>> for LoadCanvasDerivationInputFlo
 }
 
 impl TxFlow for LoadCanvasDerivationInputFlow {
+    type Capability = LoadCanvasDerivationInputEffect;
     type Database = Postgres;
     type Commit = Option<DerivationInput>;
     type Abort = Error;
@@ -814,11 +828,12 @@ impl CommitCanvasDerivationFlow {
     }
 }
 
-impl Query for CommitCanvasDerivationFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`CommitCanvasDerivationFlow`] touches.
+    pub enum CommitCanvasDerivationEffect {
+        write OrchestrationCanvas,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<CommitCanvasDerivationFlow>> for CommitCanvasDerivationFlow {
@@ -828,6 +843,7 @@ impl From<TxEnd<CommitCanvasDerivationFlow>> for CommitCanvasDerivationFlow {
 }
 
 impl TxFlow for CommitCanvasDerivationFlow {
+    type Capability = CommitCanvasDerivationEffect;
     type Database = Postgres;
     type Commit = bool;
     type Abort = Error;

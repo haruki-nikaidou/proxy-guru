@@ -14,7 +14,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use time::OffsetDateTime;
 use wakuwaku::entity::sqlx::backend::PgSource;
 use wakuwaku::entity::sqlx::transaction::{Either, Tx, TxEnd, TxFlow, TxState};
-use wakuwaku::entity::{Execute, Query, Read, Write};
+use wakuwaku::entity::{Execute, Query, Read, Write, tx_effect};
 
 table_record!(ServerId, "orchestration_server");
 
@@ -485,12 +485,13 @@ impl CreateServerFlow {
     }
 }
 
-impl Query for CreateServerFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Write<OrchestrationServer>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`CreateServerFlow`] touches.
+    pub enum CreateServerEffect {
+        write OrchestrationCanvas,
+        write OrchestrationServer,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<CreateServerFlow>> for CreateServerFlow {
@@ -500,6 +501,7 @@ impl From<TxEnd<CreateServerFlow>> for CreateServerFlow {
 }
 
 impl TxFlow for CreateServerFlow {
+    type Capability = CreateServerEffect;
     type Database = Postgres;
     type Commit = ServerEntity;
     type Abort = Error;
@@ -717,8 +719,12 @@ impl UpdateServerSettingsFlow {
     }
 }
 
-impl Query for UpdateServerSettingsFlow {
-    type Effect = (Write<OrchestrationCanvas>, Write<OrchestrationServer>);
+tx_effect! {
+    /// The tables [`UpdateServerSettingsFlow`] touches.
+    pub enum UpdateServerSettingsEffect {
+        write OrchestrationCanvas,
+        write OrchestrationServer,
+    }
 }
 
 impl From<TxEnd<UpdateServerSettingsFlow>> for UpdateServerSettingsFlow {
@@ -728,6 +734,7 @@ impl From<TxEnd<UpdateServerSettingsFlow>> for UpdateServerSettingsFlow {
 }
 
 impl TxFlow for UpdateServerSettingsFlow {
+    type Capability = UpdateServerSettingsEffect;
     type Database = Postgres;
     type Commit = ServerEntity;
     type Abort = Error;
@@ -990,12 +997,13 @@ impl DeleteServerRowFlow {
     }
 }
 
-impl Query for DeleteServerRowFlow {
-    type Effect = (
-        Write<OrchestrationCanvas>,
-        Read<OrchestrationPod>,
-        Write<OrchestrationServer>,
-    );
+tx_effect! {
+    /// The tables [`DeleteServerRowFlow`] touches.
+    pub enum DeleteServerRowEffect {
+        write OrchestrationCanvas,
+        read OrchestrationPod,
+        write OrchestrationServer,
+    }
 }
 
 impl From<TxEnd<DeleteServerRowFlow>> for DeleteServerRowFlow {
@@ -1005,6 +1013,7 @@ impl From<TxEnd<DeleteServerRowFlow>> for DeleteServerRowFlow {
 }
 
 impl TxFlow for DeleteServerRowFlow {
+    type Capability = DeleteServerRowEffect;
     type Database = Postgres;
     type Commit = ();
     type Abort = Error;
@@ -1300,11 +1309,12 @@ impl RegisterWorkerSessionFlow {
     }
 }
 
-impl Query for RegisterWorkerSessionFlow {
-    type Effect = (
-        Write<OrchestrationServer>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`RegisterWorkerSessionFlow`] touches.
+    pub enum RegisterWorkerSessionEffect {
+        write OrchestrationServer,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<RegisterWorkerSessionFlow>> for RegisterWorkerSessionFlow {
@@ -1314,6 +1324,7 @@ impl From<TxEnd<RegisterWorkerSessionFlow>> for RegisterWorkerSessionFlow {
 }
 
 impl TxFlow for RegisterWorkerSessionFlow {
+    type Capability = RegisterWorkerSessionEffect;
     type Database = Postgres;
     /// The rotated row, or `None` when a live session still holds the server.
     type Commit = Option<ServerEntity>;
@@ -1486,11 +1497,12 @@ impl UpdateReportedAddressesFlow {
     }
 }
 
-impl Query for UpdateReportedAddressesFlow {
-    type Effect = (
-        Write<OrchestrationServer>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`UpdateReportedAddressesFlow`] touches.
+    pub enum UpdateReportedAddressesEffect {
+        write OrchestrationServer,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<UpdateReportedAddressesFlow>> for UpdateReportedAddressesFlow {
@@ -1500,6 +1512,7 @@ impl From<TxEnd<UpdateReportedAddressesFlow>> for UpdateReportedAddressesFlow {
 }
 
 impl TxFlow for UpdateReportedAddressesFlow {
+    type Capability = UpdateReportedAddressesEffect;
     type Database = Postgres;
     /// `true` when the stored set changed (and the view's `seq` moved).
     type Commit = bool;
@@ -1644,11 +1657,12 @@ impl ClaimServerWatchSessionFlow {
     }
 }
 
-impl Query for ClaimServerWatchSessionFlow {
-    type Effect = (
-        Write<OrchestrationServer>,
-        Write<OrchestrationServerConfigView>,
-    );
+tx_effect! {
+    /// The tables [`ClaimServerWatchSessionFlow`] touches.
+    pub enum ClaimServerWatchSessionEffect {
+        write OrchestrationServer,
+        write OrchestrationServerConfigView,
+    }
 }
 
 impl From<TxEnd<ClaimServerWatchSessionFlow>> for ClaimServerWatchSessionFlow {
@@ -1658,6 +1672,7 @@ impl From<TxEnd<ClaimServerWatchSessionFlow>> for ClaimServerWatchSessionFlow {
 }
 
 impl TxFlow for ClaimServerWatchSessionFlow {
+    type Capability = ClaimServerWatchSessionEffect;
     type Database = Postgres;
     /// The claimed row, or `None` when the generation is no longer current.
     type Commit = Option<ServerEntity>;

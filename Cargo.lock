@@ -5976,9 +5976,9 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "wakuwaku"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4258788f2cc135b449a275ca662572e6a1956c19dbe43c287e74962ec47dd8c"
+checksum = "1433fc1013d1faa2f72f6c8abef49df3a934c74ef599f15b2fee4ba713e70970"
 dependencies = [
  "futures-util",
  "iggy",
@@ -5994,9 +5994,9 @@ dependencies = [
 
 [[package]]
 name = "wakuwaku-entity"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9ce8eeec12e117702a269798ba48c5abd8b61a658149b93924601460426849"
+checksum = "82ce2300f92ad07bc962390703c49a6528d8b4dbe6845657441aa4da42603969"
 dependencies = [
  "either",
  "kanau",
