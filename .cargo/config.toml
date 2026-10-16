@@ -1,0 +1,10 @@
+# The private registry the worker's QUIC stack comes from (shinku-quinn,
+# shinku-quic). Reading it needs a token: `cargo login --registry cgyu` locally,
+# `CARGO_REGISTRIES_CGYU_TOKEN` in CI. Cargo resolves the whole workspace, so a
+# master-only build needs it too.
+[registry]
+global-credential-providers = ["cargo:token"]
+
+[registries.cgyu]
+index = "sparse+https://crate.cgyu.cc/api/v1/crates/"
+credential-provider = ["cargo:token"]

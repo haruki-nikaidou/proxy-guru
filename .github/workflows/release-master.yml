@@ -62,6 +62,10 @@ jobs:
           key: release-master-${{ env.TARGET }}
 
       - name: Build guru-master and manage-tool
+        env:
+          # Cargo resolves the whole workspace, and the worker's QUIC stack comes
+          # from the private `cgyu` registry (.cargo/config.toml).
+          CARGO_REGISTRIES_CGYU_TOKEN: ${{ secrets.CARGO_REGISTRIES_CGYU_TOKEN }}
         run: |
           cargo build --release --locked \
             -p guru-master -p manage-tool \

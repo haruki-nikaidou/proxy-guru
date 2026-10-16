@@ -23,10 +23,14 @@ tokio = { version = "1", features = ["full"] }
 openssl = { version = "0.10", features = ["vendored"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-quinn = { version = "0.11", features = ["runtime-tokio"] }
-# The congestion-control trait the brutal sender implements (`quinn` does not
-# re-export `RttEstimator`). Resolved to vendor/quinn-proto by the workspace patch.
-quinn-proto = "0.11"
+# quinn from shinku-quic, patched for brutal: its pacer sends at the rate the
+# congestion controller reports, and its receiver tolerates the holes a sender
+# that never backs off leaves (shinku-quic's PATCHES.md). The package is renamed,
+# so no `[patch]` is needed and a crates.io quinn cannot stand in for it; the
+# library is still `quinn`. Both live on the private `cgyu` registry
+# (`.cargo/config.toml`), which needs `CARGO_REGISTRIES_CGYU_TOKEN`.
+quinn = { package = "shinku-quinn", version = "0.1", registry = "cgyu", features = ["runtime-tokio"] }
+shinku-quic = { version = "0.1", registry = "cgyu" }
 smallvec = { version = "1.15", features = ["serde"] }
 compact_str = { version = "0.10", features = ["serde"] }
 tracing = "0.1"

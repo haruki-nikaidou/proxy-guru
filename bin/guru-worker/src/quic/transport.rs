@@ -3,19 +3,20 @@
 //!
 //! quinn's defaults suit a web client: Cubic, a 1.25 MB per-stream receive window
 //! that is never enlarged, 10 MB unacknowledged per connection. A relay link that
-//! is asked for a rate gets brutal (see [`super::brutal`]) and windows sized for
-//! it: at 2x the bandwidth-delay product in flight, a window of half a second of
-//! the peer's rate covers paths up to 250 ms.
+//! is asked for a rate gets brutal ([`shinku_quic::congestion::Brutal`]) and
+//! windows sized for it: at 2x the bandwidth-delay product in flight, a window of
+//! half a second of the peer's rate covers paths up to 250 ms.
 //!
-//! The receive window does more than admit bytes. quinn caps how many holes a
-//! stream may hold at once in proportion to it (see
-//! `vendor/quinn-proto/PATCH.md`), and a fixed-rate sender on a lossy path leaves
-//! many: a window too small for the peer's rate does not merely throttle the
-//! stream, it ends the connection. So `receive_mbps` is not optional decoration
-//! on a link that sets `send_mbps` at the other end.
+//! The receive window does more than admit bytes. shinku-quic's quinn caps how
+//! many holes a stream may hold at once in proportion to it (patch 2 in its
+//! `PATCHES.md`), and a fixed-rate sender on a lossy path leaves many: a window
+//! too small for the peer's rate does not merely throttle the stream, it ends the
+//! connection. So `receive_mbps` is not optional decoration on a link that sets
+//! `send_mbps` at the other end.
 
-use crate::quic::brutal::BrutalConfig;
 use guru_worker_config::{KeepAlive, QuicCongestion, QuicTuning};
+use shinku_quic::Bandwidth;
+use shinku_quic::congestion::BrutalConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,10 +86,13 @@ pub fn build(ka: &KeepAlive, tuning: Option<&QuicTuning>) -> Arc<quinn::Transpor
     }
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(max_streams(tuning)));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(0));
-    if let Some(t) = tuning.filter(|t| t.congestion == QuicCongestion::Brutal && t.send_mbps > 0) {
-        transport.congestion_controller_factory(Arc::new(BrutalConfig {
-            bytes_per_second: bytes_per_second(t.send_mbps),
-        }));
+    if let Some(rate) = tuning
+        .filter(|t| t.congestion == QuicCongestion::Brutal)
+        .and_then(|t| Bandwidth::from_mbps(u64::from(t.send_mbps)))
+    {
+        // Loss compensation on, as hysteria does: the rate is raised by the share
+        // the path dropped, a quarter at most.
+        transport.congestion_controller_factory(Arc::new(BrutalConfig::new(rate)));
     }
     Arc::new(transport)
 }

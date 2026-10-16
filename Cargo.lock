@@ -1944,8 +1944,6 @@ dependencies = [
  "orchestration",
  "parking_lot",
  "ppp",
- "quinn",
- "quinn-proto",
  "rand 0.9.5",
  "rcgen",
  "reqwest 0.12.28",
@@ -1955,6 +1953,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "shinku-quic",
+ "shinku-quinn",
  "smallvec",
  "socket2",
  "sqlx",
@@ -3855,7 +3855,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.17"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -4788,6 +4790,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shinku-quic"
+version = "0.1.0"
+source = "sparse+https://crate.cgyu.cc/api/v1/crates/"
+checksum = "1169deb6b3f808f402be6448904a66c7657adb4b706f2e6b51d6e16e8e157cce"
+dependencies = [
+ "rand 0.10.2",
+ "shinku-quinn",
+ "shinku-quinn-proto",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "shinku-quinn"
+version = "0.1.0"
+source = "sparse+https://crate.cgyu.cc/api/v1/crates/"
+checksum = "1f3908cc8a91c79e088181d3ea258cd021c29d23441db2b17d0ae83c0d790265"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "pin-project-lite",
+ "quinn-udp",
+ "rustc-hash",
+ "rustls",
+ "shinku-quinn-proto",
+ "socket2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "shinku-quinn-proto"
+version = "0.1.0"
+source = "sparse+https://crate.cgyu.cc/api/v1/crates/"
+checksum = "5c9fa88e106dbc06bf1d08670295df631481427ce020b6c57f6891f568f25ec6"
+dependencies = [
+ "bytes",
+ "fastbloom",
+ "getrandom 0.4.3",
+ "lru-slab",
+ "rand 0.10.2",
+ "rand_pcg",
+ "ring",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "slab",
+ "thiserror 2.0.20",
+ "tinyvec",
+ "tracing",
+ "web-time",
 ]
 
 [[package]]

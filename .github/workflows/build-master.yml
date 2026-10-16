@@ -65,6 +65,10 @@ jobs:
           context: .
           file: ./master.Dockerfile
           push: true
+          # A BuildKit secret, never a build arg: the token stays out of the
+          # image and its history. See master.Dockerfile.
+          secrets: |
+            cgyu_token=${{ secrets.CARGO_REGISTRIES_CGYU_TOKEN }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # No `cache-from`/`cache-to`: `type=gha,mode=max` exports every
