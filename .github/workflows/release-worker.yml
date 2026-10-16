@@ -58,6 +58,10 @@ jobs:
           key: release-worker-${{ matrix.target }}
 
       - name: Build guru-worker
+        env:
+          # The worker's QUIC stack (shinku-quinn, shinku-quic) comes from the
+          # private `cgyu` registry, see .cargo/config.toml.
+          CARGO_REGISTRIES_CGYU_TOKEN: ${{ secrets.CARGO_REGISTRIES_CGYU_TOKEN }}
         run: |
           set -euo pipefail
           if [[ "$TARGET" == *-musl ]]; then
